@@ -35,7 +35,9 @@ pub struct EqGains(Arc<[AtomicU32; BAND_COUNT]>);
 
 impl Default for EqGains {
     fn default() -> Self {
-        Self(Arc::new(std::array::from_fn(|_| AtomicU32::new(0f32.to_bits()))))
+        Self(Arc::new(std::array::from_fn(|_| {
+            AtomicU32::new(0f32.to_bits())
+        })))
     }
 }
 
@@ -134,9 +136,8 @@ impl<S: Source> Equalizer<S> {
     fn rebuild(&mut self) {
         let fs = self.sample_rate.get() as f32;
         let gains = self.gains.snapshot();
-        let make_row = || {
-            std::array::from_fn(|b| Filter::new(coefficients(BAND_CENTERS_HZ[b], gains[b], fs)))
-        };
+        let make_row =
+            || std::array::from_fn(|b| Filter::new(coefficients(BAND_CENTERS_HZ[b], gains[b], fs)));
         self.filters = (0..self.channels.get()).map(|_| make_row()).collect();
         self.applied = gains;
         self.channel_cursor = 0;
@@ -262,7 +263,12 @@ mod tests {
     const LEN: usize = 44_100; // 1 s
 
     fn sine(freq: f32) -> Sine {
-        Sine { freq, rate: RATE, n: LEN, i: 0 }
+        Sine {
+            freq,
+            rate: RATE,
+            n: LEN,
+            i: 0,
+        }
     }
 
     /// RMS of the second half of the signal, after filters have settled.
@@ -295,7 +301,10 @@ mod tests {
         let reference: Vec<f32> = sine(1000.0).collect();
         let out: Vec<f32> = Equalizer::new(sine(1000.0), gains).collect();
         let g = gain_db(&out, &reference);
-        assert!((g - 6.0).abs() < 0.3, "expected ≈ +6 dB at 1 kHz, got {g:.2} dB");
+        assert!(
+            (g - 6.0).abs() < 0.3,
+            "expected ≈ +6 dB at 1 kHz, got {g:.2} dB"
+        );
     }
 
     #[test]
@@ -341,14 +350,22 @@ mod tests {
         }
         let reference: Vec<f32> = sine(1000.0).collect();
         let g = gain_db(&out, &reference);
-        assert!((g - 6.0).abs() < 0.3, "expected ≈ +6 dB after change, got {g:.2} dB");
+        assert!(
+            (g - 6.0).abs() < 0.3,
+            "expected ≈ +6 dB after change, got {g:.2} dB"
+        );
     }
 
     #[test]
     fn bands_above_nyquist_are_bypassed_not_panicking() {
         let gains = EqGains::default();
         gains.set(9, 12.0); // 16 kHz band on a 22.05 kHz stream
-        let src = Sine { freq: 1000.0, rate: 22_050, n: 22_050, i: 0 };
+        let src = Sine {
+            freq: 1000.0,
+            rate: 22_050,
+            n: 22_050,
+            i: 0,
+        };
         let out: Vec<f32> = Equalizer::new(src, gains).collect();
         assert_eq!(out.len(), 22_050);
         assert!(out.iter().all(|x| x.is_finite()));

@@ -42,7 +42,10 @@ pub struct OpenedStream {
 /// Build the one HTTP client the engine uses for its lifetime.
 pub fn build_client(user_agent: &str) -> reqwest::Client {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("Icy-MetaData", reqwest::header::HeaderValue::from_static("1"));
+    headers.insert(
+        "Icy-MetaData",
+        reqwest::header::HeaderValue::from_static("1"),
+    );
     reqwest::Client::builder()
         .user_agent(user_agent)
         .default_headers(headers)

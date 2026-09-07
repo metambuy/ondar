@@ -295,7 +295,12 @@ impl Engine {
     }
 }
 
-type BoxedReader = Box<dyn Read + Seek + Send + Sync + 'static>;
+/// `Read + Seek` can't be combined directly in a trait object (only one non-auto trait is
+/// allowed), so this supertrait bundles them.
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
+type BoxedReader = Box<dyn ReadSeek + Send + Sync + 'static>;
 
 /// Body of a decode thread: connect → probe → decode into the ring, reconnecting on drop.
 fn run_session(
@@ -477,7 +482,12 @@ fn run_session(
     }
 }
 
-fn retry_or_fail(ctx: &SessionCtx, backoff: &mut Backoff, code: ErrorCode, message: String) -> bool {
+fn retry_or_fail(
+    ctx: &SessionCtx,
+    backoff: &mut Backoff,
+    code: ErrorCode,
+    message: String,
+) -> bool {
     match backoff.next() {
         Some((attempt, delay)) => {
             ctx.set_state(PlaybackState::Reconnecting { attempt });

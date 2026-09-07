@@ -22,8 +22,10 @@ pub mod events {
 }
 
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,onda_audio=debug"))
-        .init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,onda_audio=debug"),
+    )
+    .init();
 
     let user_agent = format!("Onda/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent);

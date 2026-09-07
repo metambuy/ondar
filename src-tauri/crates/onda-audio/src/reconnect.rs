@@ -17,6 +17,7 @@ pub struct Backoff {
 impl Backoff {
     /// Returns the delay before the next attempt, or `None` when attempts are exhausted.
     /// The returned attempt number is 1-based, for display.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<(u32, Duration)> {
         if self.attempt >= MAX_ATTEMPTS {
             return None;
@@ -42,7 +43,9 @@ mod tests {
     #[test]
     fn five_attempts_then_gives_up() {
         let mut b = Backoff::default();
-        let delays: Vec<u64> = std::iter::from_fn(|| b.next()).map(|(_, d)| d.as_secs()).collect();
+        let delays: Vec<u64> = std::iter::from_fn(|| b.next())
+            .map(|(_, d)| d.as_secs())
+            .collect();
         assert_eq!(delays, vec![1, 2, 4, 8, 16]);
         assert!(b.next().is_none());
         b.reset();

@@ -155,7 +155,7 @@ mod tests {
         );
 
         // Read in awkward chunk sizes to exercise the boundary logic.
-        let mut audio = Vec::new();
+        let mut audio: Vec<u8> = Vec::new();
         let mut buf = [0u8; 5];
         loop {
             let n = reader.read(&mut buf).unwrap();
