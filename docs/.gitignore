@@ -1,0 +1,7 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/resources/tiles/
+src/bindings.ts
+.DS_Store
+*.log

@@ -1,0 +1,24 @@
+[package]
+name = "onda-audio"
+version = "0.1.0"
+description = "Onda audio engine: HTTP stream → decode → EQ → output. No Tauri dependency."
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Playback + Symphonia decoders. `mp4` = AAC codec + ADTS demuxer (most AAC radio), `mp3`, `vorbis`, `flac`.
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "mp4", "vorbis", "flac", "wav"] }
+# Buffered HTTP reader (Read + Seek) with bounded in-memory storage for live streams.
+stream-download = { version = "0.24", default-features = false, features = ["reqwest", "reqwest-native-tls"] }
+reqwest = { version = "0.13", default-features = false }
+tokio = { version = "1.52", features = ["rt-multi-thread"] }
+tokio-util = "0.7"
+# DSP
+biquad = "0.6"
+# Real-time-safe SPSC ring buffer between the decode thread and the audio callback.
+rtrb = "0.4"
+# Types shared with the UI
+serde = { version = "1", features = ["derive"] }
+ts-rs = { version = "12", features = ["serde-compat"] }
+thiserror = "2"
+log = "0.4"
