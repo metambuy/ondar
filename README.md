@@ -109,6 +109,49 @@ poisoning DNS for the stream host via `/etc/hosts` and hitting Play, forcing 6 r
 failures (the initial attempt + 5 retries) with the expected 1/2/4/8/16 s backoff before
 `Error`.
 
+**Design fix — underrun counter replaces a boolean `starved` flag:**
+
+The boolean `RingStats.starved` was written by two different threads in two different
+directions: the audio callback set it `true` on every underrun, and the engine thread (plus,
+before the previous fix, the decode thread) cleared it `false` on resume. A plain boolean
+can't distinguish "nothing happened" from "something happened right as it was being
+cleared" — if the engine's `store(false)` on resume landed after a genuinely new underrun's
+`store(true)` from the audio thread, that new underrun was silently lost, and `tick()` would
+have no way to know a fresh starvation had just occurred. This is a dedupe/lost-wakeup race,
+not a data race (each individual store is atomic and safe) — but a clear from one thread can
+still clobber a set from another.
+
+Fixed by making the audio thread the *only* writer, and making it *only ever increment*:
+`RingStats.starved: AtomicBool` → `underruns: AtomicU64`, a monotonic count of underrun
+*events* (a contiguous silent run counts once, via `RingSource.in_underrun`, not once per
+sample). The engine now only ever reads it, comparing against its own private
+`last_underruns` snapshot (reset whenever a new ring attaches) to derive `new_underrun` —
+nothing clears the counter, so nothing can be clobbered. All three `starved.store(false)`
+sites from the previous fix (decode-thread initial attach, and `tick()`'s two resume arms)
+are gone.
+
+**Design fix — pause and resume can no longer land in the same tick:**
+
+The previous `decide_tick` could return both a pause and a resume action in one call — a real
+test (`both_conditions_can_fire_in_the_same_tick`) asserted this was fine. It wasn't: an
+Icecast burst-on-connect (default burst-size 64 KB, ≈4 s at 128 kbps — more than the whole 2 s
+ring) can refill the ring within a single 100 ms tick, and `stream-download`'s own
+`retry_timeout` reconnect (default 5 s of no data) fires on *every* stall. So on every
+internal reconnect, the old logic would flash `Buffering` then `Playing` back-to-back — the
+UI would never show a stable `Buffering` state for what is, from the listener's perspective, a
+real interruption. `decide_tick` now returns a single `TickOutcome` and early-returns
+immediately after deciding to `PauseAndBuffer`, before ever reaching the resume check, so the
+two can no longer coexist in one outcome.
+
+Resuming also now requires *sustained* recovery, not just an instantaneous fill reading:
+`ready_ticks` counts consecutive ticks with the ring ≥75% full and no new underrun, and must
+reach a dwell threshold (`DWELL_TICKS` = 10 ticks / 1.0 s normally, `DWELL_TICKS_UNSTABLE` =
+40 ticks / 4.0 s once a connection has logged ≥3 underruns within the last
+`UNDERRUN_WINDOW_TICKS` = 300 ticks / 30 s) before `tick()` resumes output. **All of these
+numbers — the 75% fill threshold, both dwell lengths, the window, and the instability count —
+are placeholders**, not measured; they're marked as such in `engine.rs` and need real numbers
+from `scripts/stall-server.py` (not yet written) before they mean anything.
+
 ## Known limitations (M1)
 
 - Shoutcast v1 servers that answer `ICY 200 OK` instead of `HTTP/1.x` are rejected by hyper
