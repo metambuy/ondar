@@ -16,6 +16,7 @@
 //!
 //! The UI only ever sees [`EngineEvent`]s and the [`PlaybackState`] snapshot.
 
+use std::collections::VecDeque;
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -181,6 +182,24 @@ struct Engine {
     playing_since: Option<Instant>,
     /// State as of the last `tick()`, used only to detect transitions into `Playing`.
     last_state: PlaybackState,
+    /// The `RingStats` `tick()` is currently tracking. Compared by pointer each tick: a
+    /// change (including from `None`) means a fresh ring just attached (first connect or a
+    /// reconnect), and `last_underruns`/`ready_ticks`/`underrun_ticks` all reset — a stale
+    /// ring's counts must never leak into a new one's.
+    current_ring: Option<Arc<RingStats>>,
+    /// `stats.underruns` as of the last tick for `current_ring`. `new_underrun` is derived by
+    /// comparing against this, not by clearing a flag — see `RingStats::underruns`.
+    last_underruns: u64,
+    /// Consecutive ticks with the ring refilled past threshold and no new underrun; reset to
+    /// 0 on any tick that fails either condition. Must reach the dwell threshold before
+    /// `tick()` resumes output.
+    ready_ticks: u32,
+    /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
+    tick_index: u64,
+    /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
+    /// first. Its length is `recent_underruns`, which lengthens the resume dwell after
+    /// repeated underruns rather than only reacting to the most recent one.
+    underrun_ticks: VecDeque<u64>,
 }
 
 impl Engine {
@@ -201,6 +220,11 @@ impl Engine {
             volume: 1.0,
             playing_since: None,
             last_state: PlaybackState::Idle,
+            current_ring: None,
+            last_underruns: 0,
+            ready_ticks: 0,
+            tick_index: 0,
+            underrun_ticks: VecDeque::new(),
         }
     }
 
@@ -243,37 +267,81 @@ impl Engine {
             return;
         };
 
-        let starved = stats.starved.load(Ordering::Relaxed);
+        self.tick_index += 1;
+
+        // A different ring than last tick (including no ring at all last tick) means a fresh
+        // connection just attached — first connect or a reconnect. Its RingStats starts at
+        // underruns == 0; carrying over a previous ring's counts would misfire new_underrun.
+        let is_new_ring = !self
+            .current_ring
+            .as_ref()
+            .is_some_and(|r| Arc::ptr_eq(r, &stats));
+        let current_underruns = stats.underruns.load(Ordering::Relaxed);
+        if is_new_ring {
+            self.current_ring = Some(stats.clone());
+            self.last_underruns = current_underruns;
+            self.ready_ticks = 0;
+            self.underrun_ticks.clear();
+        }
+        let new_underrun = current_underruns > self.last_underruns;
+        self.last_underruns = current_underruns;
+
+        if new_underrun {
+            self.underrun_ticks.push_back(self.tick_index);
+        }
+        while self
+            .underrun_ticks
+            .front()
+            .is_some_and(|&t| self.tick_index - t >= UNDERRUN_WINDOW_TICKS as u64)
+        {
+            self.underrun_ticks.pop_front();
+        }
+        let recent_underruns = self.underrun_ticks.len() as u32;
+
         let fill = stats.fill.load(Ordering::Relaxed);
+        if is_refilled(fill, stats.capacity) && !new_underrun {
+            self.ready_ticks = self.ready_ticks.saturating_add(1);
+        } else {
+            self.ready_ticks = 0;
+        }
+
         let user_paused = self.shared.paused.load(Ordering::Relaxed);
         let stable = self
             .playing_since
             .is_some_and(|t| t.elapsed() >= STABLE_AFTER);
 
-        for action in decide_tick(starved, fill, stats.capacity, &current, user_paused, stable) {
-            match action {
-                TickAction::PauseAndBuffer => {
-                    log::debug!("underrun: pausing output until the ring refills");
-                    if let Some(p) = &self.player {
-                        p.pause();
-                    }
-                    session.set_state(PlaybackState::Buffering);
+        let outcome = decide_tick(
+            new_underrun,
+            fill,
+            stats.capacity,
+            &current,
+            user_paused,
+            stable,
+            self.ready_ticks,
+            recent_underruns,
+        );
+
+        match outcome.transition {
+            Some(Transition::PauseAndBuffer) => {
+                log::debug!("underrun: pausing output until the ring refills");
+                if let Some(p) = &self.player {
+                    p.pause();
                 }
-                TickAction::ResumePlaying => {
-                    stats.starved.store(false, Ordering::Relaxed);
-                    if let Some(p) = &self.player {
-                        p.play();
-                    }
-                    session.set_state(PlaybackState::Playing);
-                }
-                TickAction::ResumePaused => {
-                    stats.starved.store(false, Ordering::Relaxed);
-                    session.set_state(PlaybackState::Paused);
-                }
-                TickAction::ResetBackoff => {
-                    session.backoff.lock().unwrap().reset();
-                }
+                session.set_state(PlaybackState::Buffering);
             }
+            Some(Transition::ResumePlaying) => {
+                if let Some(p) = &self.player {
+                    p.play();
+                }
+                session.set_state(PlaybackState::Playing);
+            }
+            Some(Transition::ResumePaused) => {
+                session.set_state(PlaybackState::Paused);
+            }
+            None => {}
+        }
+        if outcome.reset_backoff {
+            session.backoff.lock().unwrap().reset();
         }
     }
 
@@ -516,7 +584,6 @@ fn run_session(
             if let Some(src) = source.take_if(|_| filled >= fill_target) {
                 player.clear();
                 player.append(Equalizer::new(src, ctx.shared.gains.clone()));
-                ring.stats.starved.store(false, Ordering::Relaxed);
                 if ctx.shared.paused.load(Ordering::Relaxed) {
                     ctx.set_state(PlaybackState::Paused);
                 } else {
@@ -565,43 +632,99 @@ fn retry_or_fail(ctx: &SessionCtx, code: ErrorCode, message: String) -> bool {
     }
 }
 
+// Resume/dwell/instability thresholds below are placeholders pending measurement against
+// `scripts/stall-server.py` — not yet written. Do not treat these numbers as tuned.
+
+/// Resume once the ring is at least this fraction full (3/4 = 75%).
+const RESUME_FILL_NUM: usize = 3;
+const RESUME_FILL_DEN: usize = 4;
+/// Ticks the ring must stay refilled with no new underrun before resuming (1.0 s at
+/// `TICK_INTERVAL`).
+const DWELL_TICKS: u32 = 10;
+/// Longer dwell applied once a connection has shown `UNDERRUN_PANIC_COUNT`+ underruns
+/// recently (4.0 s) — an unstable connection gets more time to prove itself before resuming.
+const DWELL_TICKS_UNSTABLE: u32 = 40;
+/// Window (in ticks; 30 s at `TICK_INTERVAL`) over which underrun events count toward
+/// `DWELL_TICKS_UNSTABLE` kicking in.
+const UNDERRUN_WINDOW_TICKS: u32 = 300;
+const UNDERRUN_PANIC_COUNT: u32 = 3;
+
+/// Shared by `decide_tick` and `Engine::tick`'s `ready_ticks` bookkeeping.
+fn is_refilled(fill: usize, capacity: usize) -> bool {
+    fill * RESUME_FILL_DEN >= capacity * RESUME_FILL_NUM
+}
+
 /// What `Engine::tick()` should do, decided in isolation from the real `Player`/`SessionCtx`
 /// so this logic is unit-testable without a live audio device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TickAction {
+enum Transition {
     PauseAndBuffer,
     ResumePlaying,
     ResumePaused,
-    ResetBackoff,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TickOutcome {
+    transition: Option<Transition>,
+    reset_backoff: bool,
 }
 
 /// Pure decision function behind [`Engine::tick`]. `state` is the state observed at the start
-/// of the tick (before any of the returned actions are applied).
+/// of the tick (before the returned outcome is applied). `new_underrun` is whether the ring's
+/// underrun counter advanced since the previous tick (not raw "is silent right now" — see
+/// `RingStats::underruns`); `ready_ticks`/`recent_underruns` are the caller's running counts
+/// (consecutive good ticks, and underrun events within `UNDERRUN_WINDOW_TICKS`).
+///
+/// Pause and resume can never be emitted in the same tick: once a fresh underrun is seen while
+/// not already `Buffering`, this returns immediately with `PauseAndBuffer`, even if the ring
+/// looks fully refilled by the time this tick runs. That refilled-on-arrival case is real, not
+/// hypothetical — an Icecast burst-on-connect (default burst-size 64 KB, ~4 s at 128 kbps) can
+/// fill the entire 2 s ring within one 100 ms tick, and `stream-download`'s own
+/// `retry_timeout` reconnect (default 5 s idle) fires on every stall — so without the
+/// early-return, a normal internal reconnect would flash `Buffering` then `Playing` back to
+/// back on every stall.
+#[allow(clippy::too_many_arguments)]
 fn decide_tick(
-    starved: bool,
+    new_underrun: bool,
     fill: usize,
     capacity: usize,
     state: &PlaybackState,
     user_paused: bool,
     stable: bool,
-) -> Vec<TickAction> {
-    let mut actions = Vec::new();
-    if starved {
-        if *state != PlaybackState::Buffering {
-            actions.push(TickAction::PauseAndBuffer);
-        }
-        if fill >= capacity / 2 {
-            actions.push(if user_paused {
-                TickAction::ResumePaused
-            } else {
-                TickAction::ResumePlaying
-            });
-        }
+    ready_ticks: u32,
+    recent_underruns: u32,
+) -> TickOutcome {
+    let mut out = TickOutcome {
+        transition: None,
+        reset_backoff: stable,
+    };
+
+    // User-paused and not buffering: the callback isn't pulling, so nothing is starving in
+    // any sense the user cares about. Refill silently, stay Paused.
+    if user_paused && *state != PlaybackState::Buffering {
+        return out;
     }
-    if stable {
-        actions.push(TickAction::ResetBackoff);
+
+    if *state != PlaybackState::Buffering {
+        if new_underrun {
+            out.transition = Some(Transition::PauseAndBuffer);
+        }
+        return out; // never pause and resume in the same tick
     }
-    actions
+
+    let dwell = if recent_underruns >= UNDERRUN_PANIC_COUNT {
+        DWELL_TICKS_UNSTABLE
+    } else {
+        DWELL_TICKS
+    };
+    if is_refilled(fill, capacity) && !new_underrun && ready_ticks >= dwell {
+        out.transition = Some(if user_paused {
+            Transition::ResumePaused
+        } else {
+            Transition::ResumePlaying
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -609,62 +732,160 @@ mod tick_tests {
     use super::*;
 
     const CAP: usize = 1000;
+    // Comfortably above the 75% resume threshold at CAP = 1000.
+    const REFILLED: usize = 800;
 
     #[test]
-    fn not_starved_is_a_no_op() {
+    fn no_new_underrun_is_a_no_op() {
+        let out = decide_tick(false, 0, CAP, &PlaybackState::Playing, false, false, 0, 0);
         assert_eq!(
-            decide_tick(false, 0, CAP, &PlaybackState::Playing, false, false),
-            vec![]
+            out,
+            TickOutcome {
+                transition: None,
+                reset_backoff: false
+            }
         );
     }
 
     #[test]
-    fn starved_while_playing_pauses_and_buffers() {
-        assert_eq!(
-            decide_tick(true, 100, CAP, &PlaybackState::Playing, false, false),
-            vec![TickAction::PauseAndBuffer]
-        );
+    fn new_underrun_while_playing_pauses_and_buffers() {
+        let out = decide_tick(true, 100, CAP, &PlaybackState::Playing, false, false, 0, 0);
+        assert_eq!(out.transition, Some(Transition::PauseAndBuffer));
     }
 
     #[test]
-    fn starved_already_buffering_does_not_repeat_pause() {
-        assert_eq!(
-            decide_tick(true, 100, CAP, &PlaybackState::Buffering, false, false),
-            vec![]
+    fn new_underrun_while_playing_pauses_even_if_ring_already_refilled() {
+        // Replaces the old both_conditions_can_fire_in_the_same_tick, which asserted the
+        // opposite. See decide_tick's doc comment for why that behaviour was wrong.
+        let out = decide_tick(
+            true,
+            CAP,
+            CAP,
+            &PlaybackState::Playing,
+            false,
+            false,
+            100,
+            0,
         );
+        assert_eq!(out.transition, Some(Transition::PauseAndBuffer));
     }
 
     #[test]
-    fn starved_with_enough_fill_resumes_playing() {
-        assert_eq!(
-            decide_tick(true, 600, CAP, &PlaybackState::Buffering, false, false),
-            vec![TickAction::ResumePlaying]
+    fn new_underrun_while_buffering_is_not_repeated() {
+        let out = decide_tick(
+            true,
+            100,
+            CAP,
+            &PlaybackState::Buffering,
+            false,
+            false,
+            0,
+            0,
         );
+        assert_eq!(out.transition, None);
     }
 
     #[test]
-    fn starved_with_enough_fill_resumes_paused_if_user_paused() {
-        assert_eq!(
-            decide_tick(true, 600, CAP, &PlaybackState::Buffering, true, false),
-            vec![TickAction::ResumePaused]
+    fn buffering_refilled_and_dwelled_resumes_playing() {
+        let out = decide_tick(
+            false,
+            REFILLED,
+            CAP,
+            &PlaybackState::Buffering,
+            false,
+            false,
+            DWELL_TICKS,
+            0,
         );
+        assert_eq!(out.transition, Some(Transition::ResumePlaying));
     }
 
     #[test]
-    fn both_conditions_can_fire_in_the_same_tick() {
-        // Starvation just detected (state hasn't caught up to Buffering yet) but the ring has
-        // already refilled past target by the time this tick runs.
-        assert_eq!(
-            decide_tick(true, 600, CAP, &PlaybackState::Playing, false, false),
-            vec![TickAction::PauseAndBuffer, TickAction::ResumePlaying]
+    fn buffering_refilled_but_not_dwelled_enough_stays_buffering() {
+        let out = decide_tick(
+            false,
+            REFILLED,
+            CAP,
+            &PlaybackState::Buffering,
+            false,
+            false,
+            DWELL_TICKS - 1,
+            0,
         );
+        assert_eq!(out.transition, None);
     }
 
     #[test]
-    fn stability_resets_backoff_independent_of_starvation() {
-        assert_eq!(
-            decide_tick(false, 0, CAP, &PlaybackState::Playing, false, true),
-            vec![TickAction::ResetBackoff]
+    fn buffering_refilled_and_dwelled_but_new_underrun_stays_buffering() {
+        let out = decide_tick(
+            true,
+            REFILLED,
+            CAP,
+            &PlaybackState::Buffering,
+            false,
+            false,
+            DWELL_TICKS,
+            0,
         );
+        assert_eq!(out.transition, None);
+    }
+
+    #[test]
+    fn buffering_refilled_and_dwelled_resumes_paused_if_user_paused() {
+        let out = decide_tick(
+            false,
+            REFILLED,
+            CAP,
+            &PlaybackState::Buffering,
+            true,
+            false,
+            DWELL_TICKS,
+            0,
+        );
+        assert_eq!(out.transition, Some(Transition::ResumePaused));
+    }
+
+    #[test]
+    fn user_paused_while_playing_suppresses_pause_on_new_underrun() {
+        let out = decide_tick(true, 100, CAP, &PlaybackState::Playing, true, false, 0, 0);
+        assert_eq!(out.transition, None);
+    }
+
+    #[test]
+    fn unstable_connection_requires_longer_dwell() {
+        let out = decide_tick(
+            false,
+            REFILLED,
+            CAP,
+            &PlaybackState::Buffering,
+            false,
+            false,
+            DWELL_TICKS,
+            UNDERRUN_PANIC_COUNT,
+        );
+        assert_eq!(out.transition, None);
+
+        let out = decide_tick(
+            false,
+            REFILLED,
+            CAP,
+            &PlaybackState::Buffering,
+            false,
+            false,
+            DWELL_TICKS_UNSTABLE,
+            UNDERRUN_PANIC_COUNT,
+        );
+        assert_eq!(out.transition, Some(Transition::ResumePlaying));
+    }
+
+    #[test]
+    fn stability_resets_backoff_regardless_of_transition() {
+        let out = decide_tick(false, 0, CAP, &PlaybackState::Playing, false, true, 0, 0);
+        assert!(out.reset_backoff);
+        assert_eq!(out.transition, None);
+
+        let out = decide_tick(true, 0, CAP, &PlaybackState::Playing, false, true, 0, 0);
+        assert!(out.reset_backoff);
+        assert_eq!(out.transition, Some(Transition::PauseAndBuffer));
     }
 }
