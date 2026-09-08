@@ -8,7 +8,8 @@ Nothing in this milestone touches the tray or the real UI; `src/App.tsx` is a te
 
 ## Prerequisites (macOS, Apple Silicon)
 
-- Rust ≥ 1.85 via rustup (`rustup update stable`)
+- Rust ≥ 1.91 via rustup (`rustup update stable`) — `Cargo.toml` still declares 1.85, but
+  `stream-download` 0.24.4 itself requires 1.91; see ONDA.md "Verified versions"
 - Node ≥ 20
 - Xcode Command Line Tools (`xcode-select --install`)
 
@@ -89,8 +90,7 @@ Fixed by:
   on `rx.recv()` forever. `tick()` — not the decode loop — pauses/resumes the player and
   flips `Buffering`/`Playing` in response to `RingStats`, and resets the reconnect backoff
   after 30 s of stable playback.
-- `stream::build_client` gained `.read_timeout(Duration::from_secs(20))`, so a connection that
-  goes silent (not just one that resets) is eventually forced to error out and reconnect.
+- 'stream::build_client' gained '.read_timeout(Duration::from_secs(20))' as a backstop. Note that 'stream-download' already re-requests on its own after 'retry_timeout' (default 5 s) of no data, so on a stalled stream the internal reconnect fires first; read_timeout only matters if that reconnect connects and then never delivers a byte.
 - `Backoff` moved from a decode-thread-local variable into `SessionCtx`
   (`Arc<Mutex<Backoff>>`), since both the decode thread (advancing it on failure) and the
   engine thread (resetting it on stability) need it now.

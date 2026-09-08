@@ -68,28 +68,58 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Layer | Choice | Rationale / notes |
 |---|---|---|
 | Shell | **Tauri v2** (2.11.x) | The point of the exercise. `macos-private-api` feature enabled (needed for transparency/vibrancy). |
-| Core language | **Rust** (MSRV 1.85, edition 2024) | All logic: networking, cache, audio, DSP, tray, window |
+| Core language | **Rust** (edition 2024; MSRV nominally 1.85 in `Cargo.toml`, **not actually achievable** — see Verified versions) | All logic: networking, cache, audio, DSP, tray, window |
 | UI | **Vite + React 18 + TypeScript** | Thin view layer only; keeps map work tractable |
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). |
 | Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** first; `tauri-plugin-positioner` 2.3.x (`tray-icon` feature) as fallback | Tauri 2 already gives the tray icon rect; positioner only if its Position enum saves real work. Decide at M2. |
 | Vibrancy | **`window-vibrancy`** (tauri-apps) + `transparent: true` | Applies `NSVisualEffectView` material to the panel |
 | Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
 | Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
-| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and can block for up to `read_timeout` (20 s) on a dead connection, so **buffering supervision lives on the engine thread** (100 ms poll of shared `RingStats`, not the decode loop) — a stalled stream still reports `Buffering` even while decode itself is stuck in a read. |
+| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. Resume hysteresis (fill threshold in seconds of audio + dwell, longer dwell after repeated underruns): values TBD, measured against `scripts/stall-server.py`. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
 | Station API | **Rust** `reqwest` client for radio-browser.info; **`hickory-resolver`** for the SRV lookup | `reqwest` cannot do SRV; a resolver crate is required |
 | Cache | **SQLite** (`rusqlite`, bundled) | Offline country/station lists, favourites, recents |
 | TS types | **`ts-rs`** | Stable. `tauri-specta` is still 2.0.0-rc.x (rc.25; docs.rs build failing) — revisit when it ships 2.0. |
 
-### Verified versions (2026-09-07)
+### Verified versions (2026-09-08, from `Cargo.lock`)
 
-- `tauri` 2.11.5, `tauri-build` 2.6.3, `wry` 0.56, `tao` 0.36
-- `tauri-nspanel`: branch `v2.1`, git only — record the pinned rev in `Cargo.toml` and here
-- `tauri-plugin-positioner` 2.3.4, `window-vibrancy` 0.8.0, `hickory-resolver` 0.26.2
-- `rodio` 0.22.2, `stream-download` 0.24.4 (no ICY support — we strip it ourselves), `rtrb` 0.4.0, `biquad` 0.6.0
+**Locked today** (M1 actually depends on these — exact versions from `cargo tree`/`Cargo.lock`,
+not crates.io lookups):
+
+- `tauri` 2.11.5, `tauri-build` 2.6.3
+- `wry` 0.55.1, `tao` 0.35.3 — **correction:** previously recorded here as 0.56/0.36; those
+  were never checked against a lockfile.
+- `rodio` 0.22.2, `stream-download` 0.24.4 (no ICY support — we strip it ourselves),
+  `rtrb` 0.4.0, `biquad` 0.6.0
 - `ts-rs` 12.0.1
+- `reqwest` 0.13.4 — **single version in the tree** (`cargo tree -d`, checked 2026-09-08):
+  used directly by `onda-audio` and pulled in identically by `stream-download`. No
+  duplicate-major bloat.
+- `thiserror` — two majors present: `2.0.20` (used directly by `onda`, `onda-audio`, `tauri`,
+  `rodio`, `stream-download`, `ts-rs`) and `1.0.69` (transitive, via `json-patch` ←
+  `tauri-utils`). Not a problem — 1.x/2.x coexist fine — noted for completeness.
+- `window-vibrancy` 0.6.0 — **already in the tree, transitively, via `tauri` itself.** Nothing
+  in Onda's own `Cargo.toml` depends on it yet. This list previously recorded `0.8.0` here,
+  from a crates.io lookup never checked against a lockfile — when M2 adds it explicitly,
+  re-verify the current crates.io version rather than trusting either number.
+
+**Not yet a dependency** (M2+; last-checked crates.io/GitHub state, *not* locked — re-verify
+before actually adding):
+
+- `tauri-nspanel`: branch `v2.1`, git only, no releases. Pinned commit rev not yet
+  researched — do this when M2 actually starts, not before (a rev pinned now would likely be
+  stale by then).
+- `tauri-plugin-positioner` 2.3.4, `hickory-resolver` 0.26.2
 - `tauri-specta` 2.0.0-rc.25 (not adopted)
+
+**MSRV correction:** `Cargo.toml` declares `rust-version = "1.85"` at the workspace level, but
+`stream-download` 0.24.4's own manifest declares `rust-version = "1.91.0"`. So 1.85 has never
+actually been buildable since `stream-download` was added — it only went unnoticed because the
+toolchain here is 1.98. `Cargo.toml` itself is unchanged in this pass (docs-only commit); the
+workspace `rust-version` should be bumped (or the constraint reconsidered) before anyone tries
+to build with an older toolchain. `README.md`'s "Rust ≥ 1.85" prerequisite line has the same
+issue and needs the same correction.
 
 Re-verify at the start of each milestone that touches these; update this list.
 
