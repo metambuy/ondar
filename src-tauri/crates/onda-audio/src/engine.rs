@@ -4,10 +4,13 @@
 //!
 //! * **engine thread** (`onda-audio`): owns the output device (`MixerDeviceSink`), the
 //!   `Player`, and the Tokio runtime that `stream-download` needs. It receives
-//!   [`AudioCommand`]s over a channel and never blocks on network or decoding.
+//!   [`AudioCommand`]s over a channel, polling on a short timeout so it can also supervise
+//!   ring buffering (see [`Engine::tick`]) — it never blocks on network or decoding itself.
 //! * **one decode thread per session** (`onda-decode`): opens the HTTP stream, probes it with
-//!   Symphonia, decodes into the ring buffer, manages buffering/reconnect state, and exits when
-//!   its session is cancelled.
+//!   Symphonia, decodes into the ring buffer, and exits when its session is cancelled. It no
+//!   longer drives buffering/reconnect *state* — it only reports ring occupancy — because it
+//!   can be blocked for many seconds inside a network read (see `stream::build_client`'s
+//!   `read_timeout`) and must not be the sole thing detecting starvation.
 //! * **audio callback** (cpal, owned by rodio): pulls from `Equalizer<RingSource>`. Never
 //!   blocks, never allocates.
 //!
@@ -15,7 +18,7 @@
 
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,9 +31,12 @@ use tokio_util::sync::CancellationToken;
 use crate::eq::{EqGains, Equalizer};
 use crate::icy::IcyReader;
 use crate::reconnect::{Backoff, STABLE_AFTER};
-use crate::ring;
+use crate::ring::{self, RingStats};
 use crate::stream;
 use crate::types::{EngineEvent, ErrorCode, IcyMetadata, PlaybackState, StreamInfo};
+
+/// How often the engine thread wakes up (absent a command) to run [`Engine::tick`].
+const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
@@ -111,13 +117,22 @@ impl Shared {
     }
 }
 
-/// Per-session cancellation. Cloned into the decode thread.
+/// Per-session cancellation and cross-thread state. Cloned into the decode thread; also held
+/// by the engine thread (`Engine::session`) so `tick()` can supervise it.
 #[derive(Clone)]
 struct SessionCtx {
     cancel: Arc<AtomicBool>,
     /// The download task's token, set by the decode thread once a stream is open, so `Stop`
     /// can unblock a read that is waiting on the network.
     download: Arc<Mutex<Option<CancellationToken>>>,
+    /// Set by the decode thread once a ring is attached, cleared at teardown. `None` means
+    /// there is no live ring to supervise (connecting, reconnecting, or between sessions).
+    ring: Arc<Mutex<Option<Arc<RingStats>>>>,
+    /// Exponential backoff for this session's connection attempts. Shared because the decode
+    /// thread advances it on failure but the engine thread resets it once playback has been
+    /// stable for a while (`Engine::tick`) — that reset used to happen in the decode thread,
+    /// but the trigger condition now lives in the engine.
+    backoff: Arc<Mutex<Backoff>>,
     shared: Shared,
 }
 
@@ -147,6 +162,10 @@ impl SessionCtx {
             thread::sleep(Duration::from_millis(50));
         }
     }
+
+    fn ring_stats(&self) -> Option<Arc<RingStats>> {
+        self.ring.lock().unwrap().clone()
+    }
 }
 
 struct Engine {
@@ -157,6 +176,11 @@ struct Engine {
     player: Option<Arc<Player>>,
     session: Option<SessionCtx>,
     volume: f32,
+    /// When the current session last transitioned into `Playing`, as observed by `tick()`.
+    /// Drives the "reset backoff after `STABLE_AFTER` of continuous playback" rule.
+    playing_since: Option<Instant>,
+    /// State as of the last `tick()`, used only to detect transitions into `Playing`.
+    last_state: PlaybackState,
 }
 
 impl Engine {
@@ -175,21 +199,82 @@ impl Engine {
             player: None,
             session: None,
             volume: 1.0,
+            playing_since: None,
+            last_state: PlaybackState::Idle,
         }
     }
 
     fn run(mut self, rx: Receiver<AudioCommand>) {
-        while let Ok(cmd) = rx.recv() {
-            match cmd {
-                AudioCommand::Play { url, station_id } => self.play(url, station_id),
-                AudioCommand::Pause => self.pause(),
-                AudioCommand::Resume => self.resume(),
-                AudioCommand::Stop => self.stop(),
-                AudioCommand::SetVolume(v) => self.set_volume(v),
+        loop {
+            match rx.recv_timeout(TICK_INTERVAL) {
+                Ok(AudioCommand::Play { url, station_id }) => self.play(url, station_id),
+                Ok(AudioCommand::Pause) => self.pause(),
+                Ok(AudioCommand::Resume) => self.resume(),
+                Ok(AudioCommand::Stop) => self.stop(),
+                Ok(AudioCommand::SetVolume(v)) => self.set_volume(v),
+                Err(RecvTimeoutError::Timeout) => {}
+                // Handle dropped: shut down cleanly.
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            self.tick();
+        }
+        self.stop();
+    }
+
+    /// Buffering supervision. Runs on every wake-up of the engine thread (every
+    /// `TICK_INTERVAL`, or right after handling a command), so starvation is noticed even
+    /// while the decode thread is blocked on a stalled network read — unlike the old design,
+    /// which detected it inside the decode loop and so never noticed a hang at all.
+    fn tick(&mut self) {
+        let current = self.shared.state();
+        if current == PlaybackState::Playing {
+            if self.last_state != PlaybackState::Playing {
+                self.playing_since = Some(Instant::now());
+            }
+        } else {
+            self.playing_since = None;
+        }
+        self.last_state = current.clone();
+
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let Some(stats) = session.ring_stats() else {
+            return;
+        };
+
+        let starved = stats.starved.load(Ordering::Relaxed);
+        let fill = stats.fill.load(Ordering::Relaxed);
+        let user_paused = self.shared.paused.load(Ordering::Relaxed);
+        let stable = self
+            .playing_since
+            .is_some_and(|t| t.elapsed() >= STABLE_AFTER);
+
+        for action in decide_tick(starved, fill, stats.capacity, &current, user_paused, stable) {
+            match action {
+                TickAction::PauseAndBuffer => {
+                    log::debug!("underrun: pausing output until the ring refills");
+                    if let Some(p) = &self.player {
+                        p.pause();
+                    }
+                    session.set_state(PlaybackState::Buffering);
+                }
+                TickAction::ResumePlaying => {
+                    stats.starved.store(false, Ordering::Relaxed);
+                    if let Some(p) = &self.player {
+                        p.play();
+                    }
+                    session.set_state(PlaybackState::Playing);
+                }
+                TickAction::ResumePaused => {
+                    stats.starved.store(false, Ordering::Relaxed);
+                    session.set_state(PlaybackState::Paused);
+                }
+                TickAction::ResetBackoff => {
+                    session.backoff.lock().unwrap().reset();
+                }
             }
         }
-        // Handle dropped: shut down cleanly.
-        self.stop();
     }
 
     /// Open the output device on first use so a missing device is reported as a playback
@@ -239,6 +324,8 @@ impl Engine {
         let ctx = SessionCtx {
             cancel: Arc::new(AtomicBool::new(false)),
             download: Arc::new(Mutex::new(None)),
+            ring: Arc::new(Mutex::new(None)),
+            backoff: Arc::new(Mutex::new(Backoff::default())),
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
@@ -265,10 +352,10 @@ impl Engine {
             self.shared.paused.store(false, Ordering::Relaxed);
             if self.shared.state() == PlaybackState::Paused {
                 p.play();
-                // The decode thread will downgrade this to Buffering if the ring is starved.
+                // tick() will downgrade this to Buffering if the ring is starved.
                 self.shared.set_state(PlaybackState::Playing);
             }
-            // If we are Buffering, the decode thread resumes output once the ring refills.
+            // If we are Buffering, tick() resumes output once the ring refills.
         }
     }
 
@@ -310,8 +397,6 @@ fn run_session(
     rt: tokio::runtime::Handle,
     player: Arc<Player>,
 ) {
-    let mut backoff = Backoff::default();
-
     loop {
         if ctx.cancelled() {
             return;
@@ -322,7 +407,7 @@ fn run_session(
             Ok(o) => o,
             Err(e) => {
                 log::warn!("connect failed: {}", e.message);
-                if !retry_or_fail(&ctx, &mut backoff, e.code, e.message) {
+                if !retry_or_fail(&ctx, e.code, e.message) {
                     return;
                 }
                 continue;
@@ -364,7 +449,7 @@ fn run_session(
             }
             Err(e) => {
                 log::warn!("decoder failed to open: {e}");
-                if !retry_or_fail(&ctx, &mut backoff, ErrorCode::Decode, e.to_string()) {
+                if !retry_or_fail(&ctx, ErrorCode::Decode, e.to_string()) {
                     return;
                 }
                 continue;
@@ -383,16 +468,19 @@ fn run_session(
         ctx.set_state(PlaybackState::Buffering);
 
         // 3. Pre-fill half the ring, then attach the source so playback starts without a gap.
-        //    From then on: an underrun pauses the player and reports `Buffering`; refilling to
-        //    the target resumes it. The user's own pause is tracked separately (`paused`).
+        //    From then on, this thread only reports occupancy (`stats.fill`, on the same
+        //    cadence as before); the engine thread's `tick()` is what pauses/resumes output
+        //    and flips `Buffering`/`Playing` in response, since it isn't at risk of blocking
+        //    on the network the way this thread is.
         let (mut ring, source) = ring::ring(sample_rate, channels);
+        *ctx.ring.lock().unwrap() = Some(ring.stats.clone());
         let mut source = Some(source);
-        let fill_target = ring.capacity / 2;
-        let mut playing_since: Option<Instant> = None;
+        let fill_target = ring.stats.capacity / 2;
         let mut samples_since_check: u32 = 0;
 
         loop {
             if ctx.cancelled() {
+                *ctx.ring.lock().unwrap() = None;
                 return;
             }
             let Some(sample) = decoder.next() else {
@@ -408,6 +496,7 @@ fn run_session(
                     Err(PushError::Full(v)) => {
                         pending = v;
                         if ctx.cancelled() {
+                            *ctx.ring.lock().unwrap() = None;
                             return;
                         }
                         thread::sleep(Duration::from_millis(5));
@@ -421,51 +510,25 @@ fn run_session(
             }
             samples_since_check = 0;
 
-            let filled = ring.capacity - ring.producer.slots();
-            let paused = ctx.shared.paused.load(Ordering::Relaxed);
+            let filled = ring.stats.capacity - ring.producer.slots();
+            ring.stats.fill.store(filled, Ordering::Relaxed);
 
             if let Some(src) = source.take_if(|_| filled >= fill_target) {
                 player.clear();
                 player.append(Equalizer::new(src, ctx.shared.gains.clone()));
-                ring.starved.store(false, Ordering::Relaxed);
-                if paused {
+                ring.stats.starved.store(false, Ordering::Relaxed);
+                if ctx.shared.paused.load(Ordering::Relaxed) {
                     ctx.set_state(PlaybackState::Paused);
                 } else {
                     player.play();
                     ctx.set_state(PlaybackState::Playing);
-                    playing_since = Some(Instant::now());
                 }
-                continue;
-            }
-            if source.is_some() {
-                continue; // still pre-filling
-            }
-
-            if ring.starved.load(Ordering::Relaxed) {
-                if filled >= fill_target {
-                    ring.starved.store(false, Ordering::Relaxed);
-                    if paused {
-                        ctx.set_state(PlaybackState::Paused);
-                    } else {
-                        player.play();
-                        ctx.set_state(PlaybackState::Playing);
-                        playing_since = Some(Instant::now());
-                    }
-                } else if ctx.shared.state() != PlaybackState::Buffering {
-                    log::debug!("underrun: pausing output until the ring refills");
-                    player.pause();
-                    ctx.set_state(PlaybackState::Buffering);
-                    playing_since = None;
-                }
-            }
-
-            if playing_since.is_some_and(|t| t.elapsed() >= STABLE_AFTER) && backoff.attempt() > 0 {
-                backoff.reset();
             }
         }
 
         // Dropping the producer lets the RingSource drain and end, which empties the Player
         // queue; the reconnect path attaches a fresh source.
+        *ctx.ring.lock().unwrap() = None;
         drop(ring);
         if ctx.cancelled() {
             return;
@@ -473,7 +536,6 @@ fn run_session(
         log::warn!("stream ended or read failed; reconnecting");
         if !retry_or_fail(
             &ctx,
-            &mut backoff,
             ErrorCode::Network,
             "the stream ended unexpectedly".to_string(),
         ) {
@@ -482,24 +544,127 @@ fn run_session(
     }
 }
 
-fn retry_or_fail(
-    ctx: &SessionCtx,
-    backoff: &mut Backoff,
-    code: ErrorCode,
-    message: String,
-) -> bool {
+fn retry_or_fail(ctx: &SessionCtx, code: ErrorCode, message: String) -> bool {
+    let mut backoff = ctx.backoff.lock().unwrap();
     match backoff.next() {
         Some((attempt, delay)) => {
+            drop(backoff);
             ctx.set_state(PlaybackState::Reconnecting { attempt });
             ctx.sleep_cancellable(delay);
             !ctx.cancelled()
         }
         None => {
+            let attempts = backoff.attempt();
+            drop(backoff);
             ctx.set_state(PlaybackState::Error {
                 code,
-                message: format!("{message} (gave up after {} attempts)", backoff.attempt()),
+                message: format!("{message} (gave up after {attempts} attempts)"),
             });
             false
         }
+    }
+}
+
+/// What `Engine::tick()` should do, decided in isolation from the real `Player`/`SessionCtx`
+/// so this logic is unit-testable without a live audio device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TickAction {
+    PauseAndBuffer,
+    ResumePlaying,
+    ResumePaused,
+    ResetBackoff,
+}
+
+/// Pure decision function behind [`Engine::tick`]. `state` is the state observed at the start
+/// of the tick (before any of the returned actions are applied).
+fn decide_tick(
+    starved: bool,
+    fill: usize,
+    capacity: usize,
+    state: &PlaybackState,
+    user_paused: bool,
+    stable: bool,
+) -> Vec<TickAction> {
+    let mut actions = Vec::new();
+    if starved {
+        if *state != PlaybackState::Buffering {
+            actions.push(TickAction::PauseAndBuffer);
+        }
+        if fill >= capacity / 2 {
+            actions.push(if user_paused {
+                TickAction::ResumePaused
+            } else {
+                TickAction::ResumePlaying
+            });
+        }
+    }
+    if stable {
+        actions.push(TickAction::ResetBackoff);
+    }
+    actions
+}
+
+#[cfg(test)]
+mod tick_tests {
+    use super::*;
+
+    const CAP: usize = 1000;
+
+    #[test]
+    fn not_starved_is_a_no_op() {
+        assert_eq!(
+            decide_tick(false, 0, CAP, &PlaybackState::Playing, false, false),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn starved_while_playing_pauses_and_buffers() {
+        assert_eq!(
+            decide_tick(true, 100, CAP, &PlaybackState::Playing, false, false),
+            vec![TickAction::PauseAndBuffer]
+        );
+    }
+
+    #[test]
+    fn starved_already_buffering_does_not_repeat_pause() {
+        assert_eq!(
+            decide_tick(true, 100, CAP, &PlaybackState::Buffering, false, false),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn starved_with_enough_fill_resumes_playing() {
+        assert_eq!(
+            decide_tick(true, 600, CAP, &PlaybackState::Buffering, false, false),
+            vec![TickAction::ResumePlaying]
+        );
+    }
+
+    #[test]
+    fn starved_with_enough_fill_resumes_paused_if_user_paused() {
+        assert_eq!(
+            decide_tick(true, 600, CAP, &PlaybackState::Buffering, true, false),
+            vec![TickAction::ResumePaused]
+        );
+    }
+
+    #[test]
+    fn both_conditions_can_fire_in_the_same_tick() {
+        // Starvation just detected (state hasn't caught up to Buffering yet) but the ring has
+        // already refilled past target by the time this tick runs.
+        assert_eq!(
+            decide_tick(true, 600, CAP, &PlaybackState::Playing, false, false),
+            vec![TickAction::PauseAndBuffer, TickAction::ResumePlaying]
+        );
+    }
+
+    #[test]
+    fn stability_resets_backoff_independent_of_starvation() {
+        assert_eq!(
+            decide_tick(false, 0, CAP, &PlaybackState::Playing, false, true),
+            vec![TickAction::ResetBackoff]
+        );
     }
 }

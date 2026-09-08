@@ -52,6 +52,63 @@ src-tauri/crates/onda-audio/
   types.rs               IPC types (ts-rs exported)
 ```
 
+## M1 deviations
+
+Changes made while bringing the scaffold up and while fixing a design bug found during
+manual testing.
+
+**Build fixes** (the scaffold had never been compiled against the pinned crate versions):
+
+- `Box<dyn Read + Seek + Send + Sync>` isn't legal Rust — only one non-auto trait is allowed
+  in a trait object. Added a `ReadSeek: Read + Seek` supertrait in `engine.rs`.
+- A test in `icy.rs` needed an explicit `Vec<u8>` annotation the compiler couldn't infer.
+- `Backoff::next` collides with clippy's `should_implement_trait` lint (it isn't an
+  `Iterator`); allowed rather than renamed, since it isn't meant to be one and renaming would
+  touch two call sites for no benefit.
+- This scaffold's `package.json` has no `typecheck`/`lint` scripts — only `dev`/`build`/
+  `preview`/`tauri`. `tsc --noEmit` was run directly instead.
+
+**Design fix — buffering supervision moved off the decode thread:**
+
+The decode loop used to detect ring starvation and drive the `Buffering`/`Playing`
+transitions itself, on its own per-1024-sample cadence. That cadence only advances between
+calls to `decoder.next()` — and a dead network connection leaves that call blocked
+indefinitely, so a stalled stream was never reported as `Buffering`; audio just went silent
+while the state stayed `Playing`. The `reqwest` client also had no `read_timeout`, so nothing
+ever forced a stuck read to fail and unblock the decode thread.
+
+Fixed by:
+
+- `ring.rs` gained `RingStats { starved, fill, capacity }`, shared via `SessionCtx`. The audio
+  callback (never blocked) sets `starved`, and now also zeroes `fill` the instant it detects
+  starvation — otherwise a stale, pre-hang `fill` value could make the engine think the ring
+  had already recovered while the decode thread was still stuck.
+- The decode thread reports `fill` on its existing 1024-sample cadence and keeps only the
+  initial pre-fill/attach transition; the ongoing pause/resume logic moved out entirely.
+- The engine thread now polls every 100 ms (`rx.recv_timeout` + `tick()`) instead of blocking
+  on `rx.recv()` forever. `tick()` — not the decode loop — pauses/resumes the player and
+  flips `Buffering`/`Playing` in response to `RingStats`, and resets the reconnect backoff
+  after 30 s of stable playback.
+- `stream::build_client` gained `.read_timeout(Duration::from_secs(20))`, so a connection that
+  goes silent (not just one that resets) is eventually forced to error out and reconnect.
+- `Backoff` moved from a decode-thread-local variable into `SessionCtx`
+  (`Arc<Mutex<Backoff>>`), since both the decode thread (advancing it on failure) and the
+  engine thread (resetting it on stability) need it now.
+- `engine.rs`'s `tick()` decision logic is factored into a pure `decide_tick()` function,
+  unit-tested directly (`Player` is a concrete rodio type, not a trait, so faking it would
+  have meant real structural changes; testing the decision in isolation from the I/O avoids
+  that).
+
+Verified by hand: a real 10 s Wi-Fi drop → `buffering` → recovers to `playing` on Wi-Fi
+returning. A real ~2-minute Wi-Fi-off did *not* produce a clean test of the reconnect cascade
+— the OS kept trickling partial data through rather than a full outage, so `read_timeout`
+never got a full 20 s silent gap to fire on (it did, however, repeatedly and correctly
+trigger `buffering`, which is itself confirmation the fix works). The
+`reconnecting (1)…(5) → error [network]` cascade was instead verified deterministically by
+poisoning DNS for the stream host via `/etc/hosts` and hitting Play, forcing 6 real connect
+failures (the initial attempt + 5 retries) with the expected 1/2/4/8/16 s backoff before
+`Error`.
+
 ## Known limitations (M1)
 
 - Shoutcast v1 servers that answer `ICY 200 OK` instead of `HTTP/1.x` are rejected by hyper

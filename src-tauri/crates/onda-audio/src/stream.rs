@@ -50,6 +50,10 @@ pub fn build_client(user_agent: &str) -> reqwest::Client {
         .user_agent(user_agent)
         .default_headers(headers)
         .connect_timeout(std::time::Duration::from_secs(10))
+        // Without this, a dead connection that never sends a byte and never resets (common
+        // when the network drops mid-stream) leaves the decode thread's read blocked
+        // forever, so starvation is detected but the session never reconnects.
+        .read_timeout(std::time::Duration::from_secs(20))
         .build()
         .expect("reqwest client with static configuration")
 }
