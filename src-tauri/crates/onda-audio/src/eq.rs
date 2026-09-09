@@ -352,6 +352,48 @@ mod tests {
     }
 
     #[test]
+    fn boost_at_broadcast_realistic_level_also_exceeds_unity() {
+        // 0.95 peak (broadcast content, heavily limited to sit near full scale) with a more
+        // moderate +4 dB boost — not the +12 dB extreme.
+        let gains = EqGains::default();
+        gains.set(1, 4.0); // 62.5 Hz band
+        let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 0.95), gains).collect();
+        let tail = &out[out.len() / 2..];
+        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(
+            peak > 1.0,
+            "expected +4 dB on 0.95 peak input to exceed unity, got peak {peak:.3}"
+        );
+    }
+
+    #[test]
+    fn already_above_unity_input_passes_through_unclamped() {
+        // Distinguishes "no headroom management" (Equalizer is transparent to whatever it's
+        // given, including already out-of-range input) from "something saturates in-path"
+        // (would show up here as output magnitude capped at/below the input's, or wrapped).
+        // Flat (0 dB) gains, so any deviation from the input is the Equalizer clamping/
+        // wrapping, not the EQ curve doing its job.
+        let reference: Vec<f32> = sine_peak(62.5, 1.5).collect();
+        let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 1.5), EqGains::default()).collect();
+        assert_eq!(out.len(), reference.len());
+        let max_err = out
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_err < 1e-4,
+            "flat EQ altered an already-above-unity input by up to {max_err} \
+             (expected pure passthrough — no clamp/wrap in the adapter)"
+        );
+        let peak = out.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(
+            (peak - 1.5).abs() < 1e-4,
+            "expected the 1.5 input peak to survive unchanged, got {peak:.3}"
+        );
+    }
+
+    #[test]
     fn gains_are_clamped() {
         let gains = EqGains::default();
         gains.set(0, 40.0);
