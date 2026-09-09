@@ -1,6 +1,7 @@
 # Onda — project document
 
-*Last updated: 2026-09-08 (M1 buffering-supervision fix — see README "M1 deviations").*
+*Last updated: 2026-09-08 (M1 stall/reconnect testing pass — see "Reconnect ownership
+and stream timeouts").*
 
 ## What Onda is
 
@@ -75,7 +76,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Vibrancy | **`window-vibrancy`** (tauri-apps) + `transparent: true` | Applies `NSVisualEffectView` material to the panel |
 | Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
 | Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
-| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. Resume hysteresis (fill threshold in seconds of audio + dwell, longer dwell after repeated underruns): values TBD, measured against `scripts/stall-server.py`. |
+| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis (fill threshold in seconds of audio + dwell, longer dwell after repeated underruns): values TBD; `scripts/stall-server.py` now exists — tuning is its own pass. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
 | Station API | **Rust** `reqwest` client for radio-browser.info; **`hickory-resolver`** for the SRV lookup | `reqwest` cannot do SRV; a resolver crate is required |
@@ -173,12 +174,12 @@ Both values are env-overridable (`ONDA_READ_TIMEOUT_SECS`, `ONDA_RETRY_TIMEOUT_S
 so `stream.rs` clamps `read_timeout` to `retry_timeout * 2` and warns if the invariant
 is violated.
 
-**Two upstream bugs in `stream-download` 0.24.4** (filed against
+**Two upstream bugs in `stream-download` 0.24.4** (to file against
 `aschey/stream-download-rs`, links TBD): `handle_reconnect` tests only the outer
 `timeout` result, so a failed reconnect (e.g. a 416 to a retried range request) still
 fires `on_reconnect` and leaves the loop polling a dead stream — also a spin; and the
 fast-`Err` path above, which is jointly `reqwest`'s non-resetting `ReadTimeoutBody`
-sleep (separately filed against `seanmonstar/reqwest`, link TBD) and
+sleep (separately to file against `seanmonstar/reqwest`, link TBD) and
 `stream-download`'s `handle_bytes` returning `Continue` with no backoff on repeated
 `Err`. Neither is fixed in Onda. A post-M1 pass should add an engine-level watchdog
 (max time in `Buffering` with no bytes arriving → fail the session → external
