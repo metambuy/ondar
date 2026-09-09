@@ -151,14 +151,42 @@ TypeScript, stop — it belongs in Rust.
 - **Shoutcast v1 servers** (`ICY 200 OK` status line) are rejected by hyper/reqwest and surface
   as an `Http` error. Rare via radio-browser's `url_resolved`; measure at M3 before deciding
   whether a raw-socket fallback is worth it.
-- **EQ has no headroom management.** A `+12 dB` band boost is ×4 linear gain with no limiter
-  or soft-clip in `Equalizer`; near-full-scale content clips downstream at the sink. Measured:
-  0.7 peak input, band 1 (62.5 Hz) at +12 dB → output peak 2.787
-  (`eq.rs::boost_near_full_scale_exceeds_unity_no_limiting`). This is the normal case, not an
-  edge case: ×4 gain clips anything above 0.25 peak, and broadcast radio is heavily limited to
-  sit near full scale — so a single band at max clips most stations. The EQ is not shippable
-  without headroom management. Likely fixes for M5: makeup attenuation scaled to the summed
-  positive band gains, or a soft-clip stage after the EQ `Source` adapter — decide then.
+- - **EQ has no headroom management.** A `+12 dB` band boost is ×4 linear gain with no
+  limiter or soft-clip in `Equalizer`. Measured headless: 0.7 peak input, band 1
+  (62.5 Hz) at +12 dB → output peak 2.787
+  (`eq.rs::boost_near_full_scale_exceeds_unity_no_limiting`); 0.95 peak at +4 dB →
+  1.5058 (`boost_at_broadcast_realistic_level_also_exceeds_unity`); a flat EQ passes a
+  1.5-peak input through unchanged (`already_above_unity_input_passes_through_unclamped`).
+    No clamp or saturating cast exists between the EQ and the device: `Player::append`
+  adds only `.amplify()` as a value transform (rodio `amplify.rs:63-65`, a pure
+  multiply), and `biquad` 0.6's `DirectForm2Transposed` step (`lib.rs:175-181`) is a
+  pure IIR multiply-accumulate. Onda opens the sink without `.with_sample_format()`
+  (`engine.rs:387`), but that does **not** mean rodio defaults to `f32`:
+  `from_device` calls `.with_supported_config()` (rodio `stream.rs:339-352`), which
+  takes whatever format CoreAudio reports for the device. macOS's HAL is natively
+  float32 so this is `f32` in practice, but it is a runtime fact, not a guarantee in
+  Onda's or rodio's source. If a device did report `I16`, the cast (rodio
+  `stream.rs:531`) is the last step before the device callback — still downstream of
+  `.amplify()`, so it changes nothing about the volume argument below. Onda's own code
+  does no int cast either way.Two consequences worth stating: the app's `Vol` slider is applied *after*
+  the EQ, so lowering it scales the entire EQ output and can hold peaks under ±1.0; and
+  clipping requires the boosted band to contain real energy — a high-passed talk stream
+  has almost nothing at 63 Hz, so +12 dB there is near-inaudible on it while music at
+  the same setting is not. Still not shippable: broadcast radio is limited to sit near
+  full scale, so a boosted band that does match the content will clip it. Likely fixes
+  for M5: makeup attenuation scaled to the summed positive band gains, or a soft-clip
+  stage after the EQ `Source` adapter — decide then.
+
+- **The audible grit reported on 2026-09-08 was external to Onda** (resolved 2026-09-09).
+  It was heard through a WiFi speaker, i.e. downstream of a 48→44.1 kHz resample, a
+  float-to-16-bit conversion, and the speaker's own DSP and bass protection. Two
+  independent results rule out the signal path. Arithmetic: the grit persisted at ¼
+    `Vol`, where the +4 dB case peaks at 0.376 and cannot clip at any stage. By ear:
+  re-tested through wired headphones at 63 Hz +12 dB on both the same 128 kbps talk
+  stream (no audible change — a high-passed talk signal has almost no energy at 63 Hz,
+  so this test alone proves little) and a music station (bass clearly boosted, no grit). The clipping measured above is real, but it was never the explanation for
+  what was heard, and the earlier claim that near-full-scale content "clips downstream
+  at the sink" is withdrawn as a description of an audible fault.
 - **Signing/notarisation** requires a paid Apple Developer ID certificate. Assumed yes;
   decision deferred to M6. Tauri's bundler handles it from env vars once the cert exists.
 
@@ -182,16 +210,18 @@ Both values are env-overridable (`ONDA_READ_TIMEOUT_SECS`, `ONDA_RETRY_TIMEOUT_S
 so `stream.rs` clamps `read_timeout` to `retry_timeout * 2` and warns if the invariant
 is violated.
 
-**Two upstream bugs in `stream-download` 0.24.4** (to file against
-`aschey/stream-download-rs`, links TBD): `handle_reconnect` tests only the outer
-`timeout` result, so a failed reconnect (e.g. a 416 to a retried range request) still
-fires `on_reconnect` and leaves the loop polling a dead stream — also a spin; and the
-fast-`Err` path above, which is jointly `reqwest`'s non-resetting `ReadTimeoutBody`
-sleep (separately to file against `seanmonstar/reqwest`, link TBD) and
-`stream-download`'s `handle_bytes` returning `Continue` with no backoff on repeated
-`Err`. Neither is fixed in Onda. A post-M1 pass should add an engine-level watchdog
-(max time in `Buffering` with no bytes arriving → fail the session → external
-reconnect), which covers both and anything upstream breaks next.
+**Two upstream bugs in `stream-download` 0.24.4, not reported upstream** (decided
+2026-09-09 — the findings are recorded here rather than filed; revisit if either
+starts costing us): `handle_reconnect` tests only the outer `timeout` result, so a
+failed reconnect (e.g. a 416 to a retried range request) still fires `on_reconnect`
+and leaves the loop polling a dead stream — a spin, measured at 125,253 log lines /
+28.8 MB over 14 s; and the fast-`Err` path above, which is jointly `reqwest`
+0.13.4's `ReadTimeoutBody` not clearing its elapsed sleep on the error return
+(`async_impl/body.rs:351-353` skips the reset at `:358`) and `stream-download`'s
+`handle_bytes` returning `Continue` with no backoff on repeated `Err` — measured at
+4.15M log lines in 40 s. Neither is fixed in Onda. A post-M1 pass should add an
+engine-level watchdog (max time in `Buffering` with no bytes arriving → fail the
+session → external reconnect), which covers both and anything upstream breaks next.
 
 **Latency-to-live ≈ max(prefetch_secs, burst_secs)** — how far behind the live
 broadcast the audio actually is, *not* how long until playback starts, and *not*

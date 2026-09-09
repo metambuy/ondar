@@ -211,6 +211,11 @@ ONDA.md ("Reconnect ownership and stream timeouts"); summary:
   the reconnect path handles. "Rejoin live on resume" is M5 polish.
 - Sample-rate/channel changes mid-stream (rare on radio) are handled by the EQ adapter but
   not by the ring buffer; the stream restarts via the reconnect path if the decoder ends.
-- **EQ boosts can clip.** No limiter/soft-clip/makeup-gain exists yet — a large band boost on
-  near-full-scale content pushes samples past ±1.0, which clips at the audio sink. Measured
-  (`eq.rs`): 0.7 peak in, +12 dB at 62.5 Hz, peak out 2.787. Deferred to M5 (EQ UI).
+- **The EQ has no headroom management.** A single band at `+12 dB` is ×4 linear gain
+  with no limiter or soft-clip, and nothing between the EQ and the audio device clamps:
+  measured output peaks of 2.787 (0.7 in, +12 dB) and 1.5058 (0.95 in, +4 dB) reach
+  CoreAudio, which is where the first clamp happens. Content whose energy sits in a
+  boosted band will therefore clip at broadcast levels. Note that the volume slider is
+  applied after the EQ, so lowering it avoids this. A headroom fix is scheduled for M5.
+  (An audible artefact reported during M1 testing was traced to the playback chain
+  outside the app, not to this clipping — see ONDA.md.)
