@@ -151,6 +151,14 @@ TypeScript, stop — it belongs in Rust.
 - **Shoutcast v1 servers** (`ICY 200 OK` status line) are rejected by hyper/reqwest and surface
   as an `Http` error. Rare via radio-browser's `url_resolved`; measure at M3 before deciding
   whether a raw-socket fallback is worth it.
+- **EQ has no headroom management.** A `+12 dB` band boost is ×4 linear gain with no limiter
+  or soft-clip in `Equalizer`; near-full-scale content clips downstream at the sink. Measured:
+  0.7 peak input, band 1 (62.5 Hz) at +12 dB → output peak 2.787
+  (`eq.rs::boost_near_full_scale_exceeds_unity_no_limiting`). This is the normal case, not an
+  edge case: ×4 gain clips anything above 0.25 peak, and broadcast radio is heavily limited to
+  sit near full scale — so a single band at max clips most stations. The EQ is not shippable
+  without headroom management. Likely fixes for M5: makeup attenuation scaled to the summed
+  positive band gains, or a soft-clip stage after the EQ `Source` adapter — decide then.
 - **Signing/notarisation** requires a paid Apple Developer ID certificate. Assumed yes;
   decision deferred to M6. Tauri's bundler handles it from env vars once the cert exists.
 

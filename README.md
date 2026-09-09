@@ -211,3 +211,6 @@ ONDA.md ("Reconnect ownership and stream timeouts"); summary:
   the reconnect path handles. "Rejoin live on resume" is M5 polish.
 - Sample-rate/channel changes mid-stream (rare on radio) are handled by the EQ adapter but
   not by the ring buffer; the stream restarts via the reconnect path if the decoder ends.
+- **EQ boosts can clip.** No limiter/soft-clip/makeup-gain exists yet — a large band boost on
+  near-full-scale content pushes samples past ±1.0, which clips at the audio sink. Measured
+  (`eq.rs`): 0.7 peak in, +12 dB at 62.5 Hz, peak out 2.787. Deferred to M5 (EQ UI).

@@ -229,6 +229,7 @@ mod tests {
     /// sample rate and length without pulling in feature flags.
     struct Sine {
         freq: f32,
+        amp: f32,
         rate: u32,
         n: usize,
         i: usize,
@@ -241,7 +242,7 @@ mod tests {
             }
             let t = self.i as f32 / self.rate as f32;
             self.i += 1;
-            Some((2.0 * std::f32::consts::PI * self.freq * t).sin())
+            Some(self.amp * (2.0 * std::f32::consts::PI * self.freq * t).sin())
         }
     }
     impl Source for Sine {
@@ -263,8 +264,13 @@ mod tests {
     const LEN: usize = 44_100; // 1 s
 
     fn sine(freq: f32) -> Sine {
+        sine_peak(freq, 1.0)
+    }
+
+    fn sine_peak(freq: f32, amp: f32) -> Sine {
         Sine {
             freq,
+            amp,
             rate: RATE,
             n: LEN,
             i: 0,
@@ -328,6 +334,24 @@ mod tests {
     }
 
     #[test]
+    fn boost_near_full_scale_exceeds_unity_no_limiting() {
+        // +12 dB is ×4 linear. The Equalizer applies gain with no limiter/soft-clip of its
+        // own, so near-full-scale content boosted at a band pushes the output past ±1.0 —
+        // it clips downstream at the sink, not here. This characterises current headroom
+        // behaviour; it is not a regression guard against clipping itself (no fix is applied
+        // in M1 — see ONDA.md/README "Known limitations").
+        let gains = EqGains::default();
+        gains.set(1, 12.0); // 62.5 Hz band
+        let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 0.7), gains).collect();
+        let tail = &out[out.len() / 2..];
+        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(
+            peak > 1.0,
+            "expected +12 dB on 0.7 peak input to exceed unity, got peak {peak:.3}"
+        );
+    }
+
+    #[test]
     fn gains_are_clamped() {
         let gains = EqGains::default();
         gains.set(0, 40.0);
@@ -362,6 +386,7 @@ mod tests {
         gains.set(9, 12.0); // 16 kHz band on a 22.05 kHz stream
         let src = Sine {
             freq: 1000.0,
+            amp: 1.0,
             rate: 22_050,
             n: 22_050,
             i: 0,
