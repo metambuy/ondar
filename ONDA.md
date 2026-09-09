@@ -103,6 +103,8 @@ not crates.io lookups):
   in Onda's own `Cargo.toml` depends on it yet. This list previously recorded `0.8.0` here,
   from a crates.io lookup never checked against a lockfile — when M2 adds it explicitly,
   re-verify the current crates.io version rather than trusting either number.
+- `tracing-subscriber` 0.3.23 (env-filter; replaces `env_logger` — its `init()` installs
+  a `LogTracer` itself, so `tracing-log` is not a direct dependency)
 
 **Not yet a dependency** (M2+; last-checked crates.io/GitHub state, *not* locked — re-verify
 before actually adding):
@@ -150,6 +152,76 @@ TypeScript, stop — it belongs in Rust.
   whether a raw-socket fallback is worth it.
 - **Signing/notarisation** requires a paid Apple Developer ID certificate. Assumed yes;
   decision deferred to M6. Tauri's bundler handles it from env vars once the cert exists.
+
+### Reconnect ownership and stream timeouts (measured 2026-09-08, M1)
+
+**Onda owns all reconnects.** `stream-download`'s internal reconnect is a file-download
+feature: it decides Range-vs-plain-GET from the `Accept-Ranges` of the *first* response,
+cached at `HttpStream::new()`. A live Icecast mount doesn't send that header, so every
+internal reconnect is a bare GET whose byte 0 is spliced onto the writer's current
+position — an audible content jump with no state change to explain it (measured: the
+engine never left `Playing`). It is reached only on a *hang*, never on an error or a
+clean EOF, so in practice `close`/`reset` recover through our own Backoff and a fresh
+`stream::open()`, which restarts at live and surfaces `Reconnecting`/`Buffering` properly.
+
+**`read_timeout` must stay strictly greater than `retry_timeout`.** Defaults 20 s / 5 s.
+If `read_timeout` fires first, `reqwest`'s `ReadTimeoutBody` never clears its elapsed
+sleep (`body.rs` ~336-360), so the body yields `Err(TimedOut)` on every poll forever;
+`stream-download`'s `handle_bytes` logs and returns `Continue` with no backoff, giving a
+CPU-bound spin (measured: 4.15M log lines in 40 s, stuck in `Buffering`, no recovery).
+Both values are env-overridable (`ONDA_READ_TIMEOUT_SECS`, `ONDA_RETRY_TIMEOUT_SECS`),
+so `stream.rs` clamps `read_timeout` to `retry_timeout * 2` and warns if the invariant
+is violated.
+
+**Two upstream bugs in `stream-download` 0.24.4** (filed against
+`aschey/stream-download-rs`, links TBD): `handle_reconnect` tests only the outer
+`timeout` result, so a failed reconnect (e.g. a 416 to a retried range request) still
+fires `on_reconnect` and leaves the loop polling a dead stream — also a spin; and the
+fast-`Err` path above, which is jointly `reqwest`'s non-resetting `ReadTimeoutBody`
+sleep (separately filed against `seanmonstar/reqwest`, link TBD) and
+`stream-download`'s `handle_bytes` returning `Continue` with no backoff on repeated
+`Err`. Neither is fixed in Onda. A post-M1 pass should add an engine-level watchdog
+(max time in `Buffering` with no bytes arriving → fail the session → external
+reconnect), which covers both and anything upstream breaks next.
+
+**Latency-to-live ≈ max(prefetch_secs, burst_secs)** — how far behind the live
+broadcast the audio actually is, *not* how long until playback starts, and *not*
+bounded by `RING_SECONDS` (contrary to the old `ring.rs` comment). Mechanism: prefetch
+and/or burst hand the decoder a head start of already-downloaded audio; once playback
+runs at 1× and the network settles into real-time pacing, that head start is never
+clawed back, so it becomes a standing offset behind live. `IcyMetadata` is measured
+earlier than the corresponding audio is heard, because the decode thread can read
+ahead of the audio callback by whatever fits in the ring —
+`ring_occupancy = min(RING_SECONDS, max(prefetch_secs, burst_secs))`, not always the
+full 2 s. So `IcyMetadata` lag (what the harness actually measures) is latency-to-live
+minus that occupancy, and adding `ring_occupancy` back to the measured `IcyMetadata`
+lag reconstructs the audible figure:
+
+| prefetch | burst | max(prefetch,burst) | ring_occupancy | measured `IcyMetadata` lag | audible (reconstructed) |
+|---|---|---|---|---|---|
+| 3.07 s | 0 | 3.07 s | 2.0 s | 1.26–1.46 s | 3.3–3.5 s |
+| 3.07 s | 4.10 s | 4.10 s | 2.0 s | 1.8–2.0 s | 3.8–4.0 s |
+| 3.07 s | 8.19 s | 8.19 s | 2.0 s | 6.2–6.3 s | 8.2–8.3 s |
+| 0.51 s | 0 | 0.51 s | 0.51 s | 0.49–0.50 s | ~1.0 s |
+
+The reconstructed audible figure tracks `max(prefetch_secs, burst_secs)` across all
+four points with no special case. The `IcyMetadata`-lag formula alone
+(`max(...) − ring_occupancy`) needs one: at the fourth point it floors at 0 against a
+measured 0.49–0.50 s — a 0.49 s miss, the same order as an earlier flat-floor reading's
+0.8 s miss on that same point, so this point alone doesn't cleanly favour either model.
+That the miss (0.49 s) is close to `prefetch_secs` itself (0.51 s) at that point is
+unexplained — not attributed to connect/decode-startup overhead or anything else here.
+
+Harness resolution: `--icy-metaint 4000` at 16000 B/s quantises title-boundary timing
+to 0.25 s steps, and (measured − predicted) across the four `IcyMetadata`-lag points
+runs −0.3 s to +0.49 s. Nothing finer than ~0.5 s is resolvable with this harness as
+configured.
+
+Practical read: against a bursting Icecast (64 KB ≈ 4.1 s), the 48 KB prefetch (3.07 s)
+is free — the burst already dominates `max()`. Against a burst-less server, prefetch
+alone sets latency-to-live, making `prefetch_bytes` a direct dial there: 16 KB would
+buy back roughly 2 s in that case. Input for the hysteresis tuning pass, not a change
+now.
 
 ## API etiquette (non-negotiable)
 
