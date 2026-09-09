@@ -102,8 +102,13 @@ Fixed by:
 Verified by hand: a real 10 s Wi-Fi drop → `buffering` → recovers to `playing` on Wi-Fi
 returning. A real ~2-minute Wi-Fi-off did *not* produce a clean test of the reconnect cascade
 — the OS kept trickling partial data through rather than a full outage, so `read_timeout`
-never got a full 20 s silent gap to fire on (it did, however, repeatedly and correctly
-trigger `buffering`, which is itself confirmation the fix works). The
+never got a full 20 s silent gap to fire on. `buffering` did fire repeatedly during that
+trickle — confirmation the underrun-driven supervision itself works — but at the time
+neither the reconnect counter nor `stream_download=debug` logs were captured, so whether
+those recoveries were `stream-download`'s internal `retry_timeout` reconnects (as opposed
+to, say, underrun/resume cycling with no reconnect involved at all) was never actually
+confirmed. Both are available now (`ReconnectInfo`'s count, `RUST_LOG=stream_download=debug`
+— see "Stall testing") if this particular test is repeated. The
 `reconnecting (1)…(5) → error [network]` cascade was instead verified deterministically by
 poisoning DNS for the stream host via `/etc/hosts` and hitting Play, forcing 6 real connect
 failures (the initial attempt + 5 retries) with the expected 1/2/4/8/16 s backoff before
@@ -150,7 +155,52 @@ reach a dwell threshold (`DWELL_TICKS` = 10 ticks / 1.0 s normally, `DWELL_TICKS
 `UNDERRUN_WINDOW_TICKS` = 300 ticks / 30 s) before `tick()` resumes output. **All of these
 numbers — the 75% fill threshold, both dwell lengths, the window, and the instability count —
 are placeholders**, not measured; they're marked as such in `engine.rs` and need real numbers
-from `scripts/stall-server.py` (not yet written) before they mean anything.
+from `scripts/stall-server.py` (now written — see "Stall testing"); tuning is its own pass.
+
+## Stall testing
+
+Pulling real Wi-Fi is nondeterministic and slow to repeat. `scripts/stall-server.py` is a
+deterministic stand-in: a raw-socket test server (not `http.server` — this needs control
+over the status line and half-open/reset/hang behaviour that `http.server` hides) that
+loops an MP3 at real-time rate and can simulate a stall (holds the connection open, sends
+nothing further), a clean close, a TCP reset, a legacy Shoutcast `ICY 200 OK` status line,
+a bare accept-and-hold `hang` (no status line at all), and in-band ICY metadata with title
+rotation on a schedule.
+
+```sh
+python3 scripts/stall-server.py --file <mp3> --mode stall --after 8 --hold 20
+```
+
+See `--help` for the full flag set (`--range {honour,ignore,reject}`, `--burst-bytes`,
+`--icy-metaint`, `--titles`, `--title-every`, `--bitrate`).
+
+`cargo run -p onda-audio --example stall_bench -- <url> [duration_secs]` drives the real
+`AudioEngine` headlessly against it — the same code path the interactive bench (`App.tsx`)
+uses, without a webview or a human clicking Play — and prints a timestamped event trace
+(state transitions, `StreamInfo`, `IcyMetadata`, and the `ReconnectInfo` count). Three env
+vars, read directly by the engine, let a run vary timeouts and prefetch without a rebuild:
+`ONDA_READ_TIMEOUT_SECS`, `ONDA_RETRY_TIMEOUT_SECS`, `ONDA_PREFETCH_BYTES`. Add
+`RUST_LOG=stream_download=debug,onda_audio=debug` to see the underlying `stream-download`
+spans alongside the bench's own trace.
+
+Findings from this pass — mechanism, measurements, and the four-point latency model are in
+ONDA.md ("Reconnect ownership and stream timeouts"); summary:
+
+- **Onda owns recovery, not `stream-download`.** Its internal reconnect only fires on a
+  hang, and (being a file-download feature) would splice a plain GET onto the writer's
+  current position with no `Accept-Ranges` from a live Icecast mount — an audible,
+  unannounced content jump. In practice `close`/`reset` recover through Onda's own
+  external Backoff and a fresh `stream::open()`, which is what actually surfaces
+  `Reconnecting`/`Buffering` correctly.
+- **`read_timeout` must stay strictly greater than `retry_timeout`.** Get this backwards
+  (both are env-overridable, so a bad override alone can do it) and a fast read error spins
+  the download loop forever instead of ever reaching a reconnect — measured at 4.15M log
+  lines in 40 s, stuck in `Buffering`. `stream.rs` now clamps and warns if this is violated.
+  Two related bugs found upstream in `stream-download` 0.24.4 (plus a companion question
+  against `reqwest`) — see ONDA.md for detail and issue links.
+- **Latency-to-live ≈ `max(prefetch_secs, burst_secs)`**, not bounded by the ring
+  (`RING_SECONDS`) as an earlier `ring.rs` comment claimed — see ONDA.md for the measured
+  model, its harness-resolution caveats, and what it means for `prefetch_bytes` tuning.
 
 ## Known limitations (M1)
 
