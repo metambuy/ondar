@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -34,7 +34,7 @@ use crate::icy::IcyReader;
 use crate::reconnect::{Backoff, STABLE_AFTER};
 use crate::ring::{self, RingStats};
 use crate::stream;
-use crate::types::{EngineEvent, ErrorCode, IcyMetadata, PlaybackState, StreamInfo};
+use crate::types::{EngineEvent, ErrorCode, IcyMetadata, PlaybackState, ReconnectInfo, StreamInfo};
 
 /// How often the engine thread wakes up (absent a command) to run [`Engine::tick`].
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -134,6 +134,11 @@ struct SessionCtx {
     /// stable for a while (`Engine::tick`) — that reset used to happen in the decode thread,
     /// but the trigger condition now lives in the engine.
     backoff: Arc<Mutex<Backoff>>,
+    /// `stream-download`'s internal reconnect count for this session (its own idle-
+    /// `retry_timeout` recovery, not one of `backoff`'s external attempts) — advanced by the
+    /// `Settings::on_reconnect` callback attached in `stream::open`, read by `Engine::tick`
+    /// to emit `EngineEvent::Reconnect` when it changes.
+    reconnect_count: Arc<AtomicU64>,
     shared: Shared,
 }
 
@@ -200,6 +205,13 @@ struct Engine {
     /// first. Its length is `recent_underruns`, which lengthens the resume dwell after
     /// repeated underruns rather than only reacting to the most recent one.
     underrun_ticks: VecDeque<u64>,
+    /// The session's `reconnect_count` `tick()` is currently tracking, compared by pointer
+    /// each tick (same idiom as `current_ring`) — a change means a new `Play`, so
+    /// `last_reconnect_count` resets rather than leaking a previous session's count forward.
+    current_reconnect_counter: Option<Arc<AtomicU64>>,
+    /// `reconnect_count` as of the last tick for `current_reconnect_counter`; a change from
+    /// this is what triggers `EngineEvent::Reconnect`.
+    last_reconnect_count: u64,
 }
 
 impl Engine {
@@ -225,6 +237,8 @@ impl Engine {
             ready_ticks: 0,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
+            current_reconnect_counter: None,
+            last_reconnect_count: 0,
         }
     }
 
@@ -263,6 +277,25 @@ impl Engine {
         let Some(session) = self.session.clone() else {
             return;
         };
+
+        // A different counter than last tick means a new `Play` session; reset so a previous
+        // session's count can't leak into this one's first delta.
+        let is_new_session = !self
+            .current_reconnect_counter
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(c, &session.reconnect_count));
+        if is_new_session {
+            self.current_reconnect_counter = Some(session.reconnect_count.clone());
+            self.last_reconnect_count = session.reconnect_count.load(Ordering::Relaxed);
+        }
+        let reconnect_count = session.reconnect_count.load(Ordering::Relaxed);
+        if reconnect_count != self.last_reconnect_count {
+            self.last_reconnect_count = reconnect_count;
+            session.shared.emit(EngineEvent::Reconnect(ReconnectInfo {
+                count: reconnect_count,
+            }));
+        }
+
         let Some(stats) = session.ring_stats() else {
             return;
         };
@@ -394,6 +427,7 @@ impl Engine {
             download: Arc::new(Mutex::new(None)),
             ring: Arc::new(Mutex::new(None)),
             backoff: Arc::new(Mutex::new(Backoff::default())),
+            reconnect_count: Arc::new(AtomicU64::new(0)),
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
@@ -471,7 +505,11 @@ fn run_session(
         }
 
         // 1. Connect.
-        let opened = match rt.block_on(stream::open(&client, url.clone())) {
+        let opened = match rt.block_on(stream::open(
+            &client,
+            url.clone(),
+            ctx.reconnect_count.clone(),
+        )) {
             Ok(o) => o,
             Err(e) => {
                 log::warn!("connect failed: {}", e.message);

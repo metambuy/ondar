@@ -66,6 +66,15 @@ pub struct IcyMetadata {
     pub title: Option<String>,
 }
 
+/// `stream-download`'s internal reconnect count (its own idle-`retry_timeout` recovery, not
+/// one of our external `Backoff` attempts — see `stream::open`'s `Settings::on_reconnect`).
+/// Cumulative for the current session (since the last `Play`); emitted whenever it advances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReconnectInfo {
+    pub count: u64,
+}
+
 /// One equalizer band as shown in the UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -82,4 +91,5 @@ pub enum EngineEvent {
     State(PlaybackState),
     StreamInfo(StreamInfo),
     Metadata(IcyMetadata),
+    Reconnect(ReconnectInfo),
 }

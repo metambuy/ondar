@@ -19,13 +19,22 @@ pub mod events {
     pub const STATE: &str = "playback:state";
     pub const STREAM_INFO: &str = "playback:stream_info";
     pub const METADATA: &str = "playback:metadata";
+    pub const RECONNECT: &str = "playback:reconnect";
 }
 
 pub fn run() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,onda_audio=debug"),
-    )
-    .init();
+    // `stream-download` logs via `tracing`, not `log`; `tracing_subscriber::fmt`'s `init()`
+    // installs a `LogTracer` itself (its default `tracing-log` feature), which is what lets
+    // `onda_audio`'s own `log::` call sites still show up here too — one `RUST_LOG` drives
+    // both. Same default filter `env_logger` used, so behaviour when `RUST_LOG` is unset is
+    // unchanged.
+    use tracing_subscriber::EnvFilter;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,onda_audio=debug")),
+        )
+        .init();
 
     let user_agent = format!("Onda/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent);
@@ -42,6 +51,7 @@ pub fn run() {
                             EngineEvent::State(s) => handle.emit(events::STATE, s),
                             EngineEvent::StreamInfo(i) => handle.emit(events::STREAM_INFO, i),
                             EngineEvent::Metadata(m) => handle.emit(events::METADATA, m),
+                            EngineEvent::Reconnect(r) => handle.emit(events::RECONNECT, r),
                         };
                         if let Err(e) = result {
                             log::warn!("failed to emit engine event: {e}");

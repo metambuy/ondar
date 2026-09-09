@@ -6,6 +6,9 @@
 //! response headers before handing the reader to the decoder.
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use reqwest::Url;
 use stream_download::http::HttpStream;
@@ -13,16 +16,51 @@ use stream_download::source::DecodeError;
 use stream_download::storage::bounded::BoundedStorageProvider;
 use stream_download::storage::memory::MemoryStorageProvider;
 use stream_download::{Settings, StreamDownload};
+use tokio_util::sync::CancellationToken;
 
 use crate::types::ErrorCode;
 
 pub type Reader = StreamDownload<BoundedStorageProvider<MemoryStorageProvider>>;
 
 /// Bytes to buffer before the decoder is allowed to start. At 128 kbit/s this is ~3 s.
+/// Overridable via `ONDA_PREFETCH_BYTES` (see [`prefetch_bytes`]) so stall testing can trade
+/// startup latency against burst-size realism without a rebuild.
 pub const PREFETCH_BYTES: u64 = 48 * 1024;
 /// Size of the in-memory ring the HTTP body is written into (~16 s at 128 kbit/s; also the
 /// maximum look-back Symphonia can use while probing, which needs only a few KB).
 pub const BUFFER_BYTES: usize = 256 * 1024;
+/// `reqwest`'s per-read timeout — also covers the wait for a first connect's response headers
+/// (see `PendingRequest::poll` in `reqwest`), not just body reads. A backstop for a reconnect
+/// that connects and then never delivers a byte. Overridable via `ONDA_READ_TIMEOUT_SECS`.
+const READ_TIMEOUT_SECS: u64 = 20;
+/// `stream-download`'s own idle-reconnect timeout: no new data for this long triggers an
+/// internal reconnect (see `Settings::retry_timeout`). Overridable via
+/// `ONDA_RETRY_TIMEOUT_SECS`.
+const RETRY_TIMEOUT_SECS: u64 = 5;
+
+fn env_duration_secs(var: &str, default_secs: u64) -> Duration {
+    Duration::from_secs(
+        std::env::var(var)
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(default_secs),
+    )
+}
+
+fn read_timeout() -> Duration {
+    env_duration_secs("ONDA_READ_TIMEOUT_SECS", READ_TIMEOUT_SECS)
+}
+
+fn retry_timeout() -> Duration {
+    env_duration_secs("ONDA_RETRY_TIMEOUT_SECS", RETRY_TIMEOUT_SECS)
+}
+
+fn prefetch_bytes() -> u64 {
+    std::env::var("ONDA_PREFETCH_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(PREFETCH_BYTES)
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
@@ -49,11 +87,12 @@ pub fn build_client(user_agent: &str) -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(user_agent)
         .default_headers(headers)
-        .connect_timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(10))
         // Without this, a dead connection that never sends a byte and never resets (common
         // when the network drops mid-stream) leaves the decode thread's read blocked
-        // forever, so starvation is detected but the session never reconnects.
-        .read_timeout(std::time::Duration::from_secs(20))
+        // forever, so starvation is detected but the session never reconnects. Also covers
+        // the wait for a first connect's response headers, not just body reads.
+        .read_timeout(read_timeout())
         .build()
         .expect("reqwest client with static configuration")
 }
@@ -65,8 +104,15 @@ pub fn parse_url(url: &str) -> Result<Url, StreamError> {
     })
 }
 
-/// Connect and return a reader once `PREFETCH_BYTES` have arrived.
-pub async fn open(client: &reqwest::Client, url: Url) -> Result<OpenedStream, StreamError> {
+/// Connect and return a reader once `PREFETCH_BYTES` have arrived. `reconnect_count` is
+/// advanced every time `stream-download` reconnects internally (idle `retry_timeout`, not one
+/// of our own external retries) — see `Settings::on_reconnect` below and `SessionCtx` in
+/// `engine.rs`, which is what actually surfaces it as an event.
+pub async fn open(
+    client: &reqwest::Client,
+    url: Url,
+    reconnect_count: Arc<AtomicU64>,
+) -> Result<OpenedStream, StreamError> {
     let stream = match HttpStream::new(client.clone(), url).await {
         Ok(s) => s,
         Err(e) => return Err(classify_http_error(e.decode_error().await)),
@@ -89,7 +135,15 @@ pub async fn open(client: &reqwest::Client, url: Url) -> Result<OpenedStream, St
         MemoryStorageProvider,
         NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer"),
     );
-    let settings = Settings::default().prefetch_bytes(PREFETCH_BYTES);
+    let settings = Settings::default()
+        .prefetch_bytes(prefetch_bytes())
+        .retry_timeout(retry_timeout())
+        .on_reconnect(
+            move |_stream: &HttpStream<reqwest::Client>, _token: &CancellationToken| {
+                let n = reconnect_count.fetch_add(1, Ordering::Relaxed) + 1;
+                log::debug!("stream-download internal reconnect (session count now {n})");
+            },
+        );
 
     let reader = match StreamDownload::from_stream(stream, storage, settings).await {
         Ok(r) => r,

@@ -22,3 +22,9 @@ serde = { version = "1", features = ["derive"] }
 ts-rs = { version = "12", features = ["serde-compat"] }
 thiserror = "2"
 log = "0.4"
+
+[dev-dependencies]
+# Only for the stall_bench example — a separate process, so it needs its own tracing
+# subscriber to see stream-download's internal reconnect/retry logs (see src-tauri's
+# lib.rs::run for why tracing-subscriber, not env_logger).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
