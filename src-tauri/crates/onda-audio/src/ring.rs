@@ -11,7 +11,21 @@ use std::time::Duration;
 use rodio::{ChannelCount, SampleRate, Source};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-/// Seconds of audio the ring can hold. Latency to live is bounded by this.
+/// Seconds of audio the ring can hold. This does *not* bound latency-to-live — two different
+/// figures, both driven by `max(prefetch_secs, burst_secs)` (whichever hands the decoder more
+/// audio up front), not this ring:
+///
+/// - **First audible sample** ≈ `max(prefetch_secs, burst_secs)` — how long until there's
+///   enough buffered to start decoding at all.
+/// - **`IcyMetadata` freshness** ≈ `max(prefetch_secs, burst_secs) − RING_SECONDS` — once
+///   decoding starts, the decoder drains that head start faster than real time until the ring
+///   is full and it blocks on ring space; whatever didn't fit in the ring is the residual lag
+///   behind the server's real-time position, which is where in-band ICY metadata lives.
+///
+/// Measured via `scripts/stall-server.py --mode metaint` (README "Stall testing"): fits data
+/// from prefetch 8192/49152B and burst 0/65536/131072B to within ~0.3 s. Below `RING_SECONDS`
+/// (small prefetch, no burst) the formula goes negative; freshness floors out around 0.3–0.5 s
+/// of fixed connect/decode-startup overhead instead.
 pub const RING_SECONDS: usize = 2;
 
 /// Shared, cross-thread view of one ring's occupancy. The audio callback (consumer) advances

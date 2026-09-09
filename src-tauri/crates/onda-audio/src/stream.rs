@@ -6,8 +6,8 @@
 //! response headers before handing the reader to the decoder.
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use reqwest::Url;
@@ -47,12 +47,40 @@ fn env_duration_secs(var: &str, default_secs: u64) -> Duration {
     )
 }
 
+/// `read_timeout` must stay strictly greater than `retry_timeout`: `stream-download`'s own
+/// idle reconnect (`handle_reconnect`) only runs when its outer `timeout(retry_timeout, ..)`
+/// elapses, which requires the read to hang rather than error. If `reqwest`'s `read_timeout`
+/// fires first, the body stream yields a fast `Err` on every subsequent poll instead of
+/// hanging (`reqwest`'s `ReadTimeoutBody` never resets its sleep on that path), so
+/// `stream-download`'s `handle_bytes` logs and retries in a tight loop forever — a real spin,
+/// not just a slow reconnect. See README "Stall testing" (Run A) for the measured case.
+/// Resolved and clamped once per process; both `read_timeout()` and `retry_timeout()` read
+/// from the same memoized pair so they can never observe different env snapshots.
+fn resolved_timeouts() -> (Duration, Duration) {
+    static TIMEOUTS: OnceLock<(Duration, Duration)> = OnceLock::new();
+    *TIMEOUTS.get_or_init(|| {
+        let read = env_duration_secs("ONDA_READ_TIMEOUT_SECS", READ_TIMEOUT_SECS);
+        let retry = env_duration_secs("ONDA_RETRY_TIMEOUT_SECS", RETRY_TIMEOUT_SECS);
+        if read <= retry {
+            let clamped = retry * 2;
+            log::warn!(
+                "read_timeout ({read:?}) <= retry_timeout ({retry:?}); this can never let \
+                 stream-download's idle reconnect run and spins instead on a fast read error \
+                 (see README \"Stall testing\"). Clamping read_timeout to {clamped:?}."
+            );
+            (clamped, retry)
+        } else {
+            (read, retry)
+        }
+    })
+}
+
 fn read_timeout() -> Duration {
-    env_duration_secs("ONDA_READ_TIMEOUT_SECS", READ_TIMEOUT_SECS)
+    resolved_timeouts().0
 }
 
 fn retry_timeout() -> Duration {
-    env_duration_secs("ONDA_RETRY_TIMEOUT_SECS", RETRY_TIMEOUT_SECS)
+    resolved_timeouts().1
 }
 
 fn prefetch_bytes() -> u64 {
