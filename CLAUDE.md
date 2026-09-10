@@ -86,6 +86,22 @@ onda/
 `onda-audio` package is what regenerates the bindings** — see the note on workspace test
 scoping below. Commit them.
 
+That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
+export_bindings_<type>` that writes the `.ts` file. So the 34 tests `cargo test --workspace`
+reports break down as **28 hand-written + 6 ts-rs-generated**:
+
+| | |
+|---|---|
+| `engine::tick_tests` | 11 |
+| `eq::tests` | 10 |
+| `icy::tests` | 3 |
+| `ring::tests` | 3 |
+| `reconnect::tests` | 1 |
+| `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
+
+Counting `#[test]` attributes in source gives 28 and will not reconcile with the runner's 34
+until those 6 are accounted for. `cargo test -p onda-audio -- --list` is the authority.
+
 ## Commands
 
 ```bash
@@ -99,12 +115,13 @@ pnpm gen:bindings            # alias for `cargo test -p onda-audio` (ts-rs write
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 34 tests (all in onda-audio); also regenerates src/bindings/ —
-                              # plain `cargo test` with no `-p`/`--workspace` only runs the
-                              # root `onda` package (0 tests) and silently skips onda-audio;
-                              # this workspace has a real [package] at the root, so cargo
-                              # doesn't default to "all members" the way a virtual workspace
-                              # would. Use `--workspace` or `-p onda-audio` explicitly.
+cargo test --workspace       # 34 tests, all in the onda_audio binary; the other 4 binaries
+                              # (onda_lib, onda, and both doc-test targets) have 0. Plain
+                              # `cargo test` with no `-p`/`--workspace` only runs the root
+                              # `onda` package (0 tests) and silently skips onda-audio; this
+                              # workspace has a real [package] at the root, so cargo doesn't
+                              # default to "all members" the way a virtual workspace would.
+                              # Use `--workspace` or `-p onda-audio` explicitly.
 cargo run -p onda-audio --example stall_bench    # against scripts/stall-server.py
 ```
 
