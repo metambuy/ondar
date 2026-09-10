@@ -15,13 +15,13 @@ Nothing in this milestone touches the tray or the real UI; `src/App.tsx` is a te
 ## First run
 
 ```sh
-npm install
+pnpm install
 cd src-tauri && cargo test --workspace      # runs EQ/ICY/ring tests AND regenerates src/bindings/*.ts (ts-rs)
-cd .. && npm run tauri dev
+cd .. && pnpm tauri dev
 ```
 
 `src-tauri/icons/icon.png` is a 1×1 placeholder. Before the first `tauri build`, generate a
-real set with `npm run tauri icon path/to/1024.png`.
+real set with `pnpm tauri icon path/to/1024.png`.
 
 ## M1 exit criteria
 
