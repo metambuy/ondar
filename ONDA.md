@@ -69,7 +69,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Layer | Choice | Rationale / notes |
 |---|---|---|
 | Shell | **Tauri v2** (2.11.x) | The point of the exercise. `macos-private-api` feature enabled (needed for transparency/vibrancy). |
-| Core language | **Rust** (edition 2024; MSRV nominally 1.85 in `Cargo.toml`, **not actually achievable** — see Verified versions) | All logic: networking, cache, audio, DSP, tray, window |
+| Core language | **Rust** (edition 2024; MSRV 1.91 in `Cargo.toml`, matching `stream-download` 0.24.4's own declared requirement) | All logic: networking, cache, audio, DSP, tray, window |
 | UI | **Vite + React 18 + TypeScript** | Thin view layer only; keeps map work tractable |
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). |
 | Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** first; `tauri-plugin-positioner` 2.3.x (`tray-icon` feature) as fallback | Tauri 2 already gives the tray icon rect; positioner only if its Position enum saves real work. Decide at M2. |

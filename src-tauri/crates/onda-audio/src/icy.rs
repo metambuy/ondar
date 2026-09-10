@@ -44,11 +44,11 @@ impl<R: Read> IcyReader<R> {
         if len > 0 {
             let mut block = vec![0u8; len];
             self.inner.read_exact(&mut block)?;
-            if let Some(title) = parse_stream_title(&block) {
-                if self.last_title.as_deref() != Some(title.as_str()) {
-                    self.last_title = Some(title.clone());
-                    (self.on_title)(title);
-                }
+            if let Some(title) = parse_stream_title(&block)
+                && self.last_title.as_deref() != Some(title.as_str())
+            {
+                self.last_title = Some(title.clone());
+                (self.on_title)(title);
             }
         }
         self.until_meta = self.metaint;

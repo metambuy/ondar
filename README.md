@@ -8,8 +8,7 @@ Nothing in this milestone touches the tray or the real UI; `src/App.tsx` is a te
 
 ## Prerequisites (macOS, Apple Silicon)
 
-- Rust ≥ 1.91 via rustup (`rustup update stable`) — `Cargo.toml` still declares 1.85, but
-  `stream-download` 0.24.4 itself requires 1.91; see ONDA.md "Verified versions"
+- Rust ≥ 1.91 via rustup (`rustup update stable`)
 - Node ≥ 20
 - Xcode Command Line Tools (`xcode-select --install`)
 
@@ -20,10 +19,6 @@ npm install
 cd src-tauri && cargo test --workspace      # runs EQ/ICY/ring tests AND regenerates src/bindings/*.ts (ts-rs)
 cd .. && npm run tauri dev
 ```
-
-The scaffold was written against the crate sources but has not been compiled yet — expect
-to fix a handful of type/borrow errors on the first `cargo check`. Report them back; they
-are part of the exercise.
 
 `src-tauri/icons/icon.png` is a 1×1 placeholder. Before the first `tauri build`, generate a
 real set with `npm run tauri icon path/to/1024.png`.
