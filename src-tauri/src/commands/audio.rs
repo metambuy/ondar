@@ -1,5 +1,18 @@
-//! Playback commands. Each one is a thin, non-blocking message to the audio engine; results
-//! arrive as `playback:*` events, not as return values.
+//! Playback commands. Thin by design: validate, dispatch, return.
+//!
+//! They dispatch three different ways, and the return type follows the mechanism:
+//!
+//! * **Channel message, returns `Result`** — [`play`], [`set_volume`]. Send an
+//!   `AudioCommand` and return immediately; the `Result` reports argument validation only.
+//!   The playback outcome arrives later as a `playback:*` event, never as a return value.
+//! * **Channel message, returns `()`** — [`pause`], [`resume`], [`stop`]. Nothing to
+//!   validate.
+//! * **Direct engine access, never touches the channel** — [`set_eq_gain`], [`get_eq`],
+//!   [`get_playback_state`]. These reach into `AudioEngine` through the shared handle.
+//!   `set_eq_gain` stores an atomic into `EqGains` that the audio thread picks up at its
+//!   next frame-boundary check; the getters read a snapshot synchronously. Because gains
+//!   live on the handle rather than in the command stream, they are *not* ordered against
+//!   `play`/`stop` and survive a session change.
 
 use tauri::State;
 

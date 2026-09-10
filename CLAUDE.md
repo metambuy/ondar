@@ -138,16 +138,25 @@ Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`.
 
-Most commands are **non-blocking messages** sent down an `mpsc` channel to the engine thread.
-`play`, `set_volume`, and `set_eq_gain` validate arguments first and return
-`Result<(), OndaError>` — that `Result` reports argument validation only, never a playback
-outcome, which arrives later as an event. `pause`, `resume`, and `stop` can't fail on bad
-input, so they return `()`.
+"Every command is a message to the engine" is **not** true here. The eight commands fall into
+three groups, and which group a command is in determines what its return value means:
 
-`get_eq` and `get_playback_state` are the exception to "commands are messages": they read
-`AudioEngine::eq()` / `AudioEngine::state()` directly — a `Mutex` lock and an atomic-array
-snapshot — and return real data synchronously, without going through the command channel or
-the engine thread at all.
+| Group | Commands | Mechanism |
+|---|---|---|
+| Channel message, returns `Result` | `play`, `set_volume` | Validate args, send an `AudioCommand`, return. The `Result` reports **argument validation only** — never a playback outcome, which arrives later as an event. |
+| Channel message, returns `()` | `pause`, `resume`, `stop` | Nothing to validate, so no `Result` at all. |
+| Direct engine access, never touches the channel | `set_eq_gain`, `get_eq`, `get_playback_state` | Reach into `AudioEngine` through a shared handle. `set_eq_gain` validates and returns `Result`; the two getters return data synchronously with no `Result`. |
+
+The third group is the one that surprises. `set_eq_gain` *looks* like a setter that should be
+sequenced with playback, but it calls `state.engine.eq().set(..)` — a `Relaxed` atomic store
+into `EqGains`, picked up by the EQ adapter on the audio thread at its next frame-boundary
+check (every 64 frames). It never reaches the engine thread or the command channel. `get_eq`
+and `get_playback_state` likewise read `AudioEngine::eq()` / `AudioEngine::state()` directly
+(an atomic-array snapshot and a `Mutex` lock respectively).
+
+Practical consequence: EQ changes are **not** ordered against `play`/`stop`. A `set_eq_gain`
+issued just before a `play` applies to the new session immediately, because gains live on the
+engine handle and outlive any one session — they are not part of the command stream.
 
 Types crossing the boundary live in `crates/onda-audio/src/types.rs` and derive
 `Serialize, Deserialize, TS` with `#[ts(export)]`. Adding one means adding it there, running
