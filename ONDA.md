@@ -68,7 +68,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 
 | Layer | Choice | Rationale / notes |
 |---|---|---|
-| Shell | **Tauri v2** (2.11.x) | The point of the exercise. `macos-private-api` feature enabled (needed for transparency/vibrancy). |
+| Shell | **Tauri v2** (2.11.x) | The point of the exercise. `macos-private-api` (needed for transparency/vibrancy) is **to enable at M2** — as of 2026-09-10 `Cargo.toml` has `features = []` and `tauri.conf.json` has no `macOSPrivateApi` key. |
 | Core language | **Rust** (edition 2024; MSRV 1.91 in `Cargo.toml`, matching `stream-download` 0.24.4's own declared requirement) | All logic: networking, cache, audio, DSP, tray, window |
 | UI | **Vite + React 18 + TypeScript** | Thin view layer only; keeps map work tractable |
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). |
@@ -132,6 +132,25 @@ The webview is a **renderer and an input device**. It holds no business logic, n
 network calls, no persistence. Every meaningful action is a Tauri command; every state change
 arrives as a Tauri event. If you find yourself writing a `fetch()` or an `<audio>` element in
 TypeScript, stop — it belongs in Rust.
+
+## Repo tooling
+
+- **Remote:** private GitHub repo `metambuy/onda`. *(Not created as of 2026-09-10 — `gh` is
+  not installed on the build machine, so creation is a manual step in the GitHub web UI.
+  Until it exists the repo is local-only and unbacked-up.)*
+- **CI:** `.github/workflows/ci.yml`, on push and pull_request, `macos-latest` only (CoreAudio
+  is a hard dependency; there is no Linux/Windows path to test). It runs, in order:
+  `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
+  `cargo clippy --all-targets -- -D warnings`; `cargo test --workspace`;
+  `git diff --exit-code src/bindings`; `pnpm typecheck`; `pnpm lint`; `cargo build`.
+  The bindings check runs immediately after the tests because ts-rs regenerates
+  `src/bindings/` during the test run — drifted committed bindings fail there. It is
+  `cargo build`, not `pnpm tauri build`: a full bundle is slow and pointless before M6, and
+  the tile pyramid must never enter CI.
+- **Formatting and MSRV are pinned, not toolchain-dependent:** `src-tauri/rustfmt.toml`
+  (`edition = "2024"`, `max_width = 100` — rustfmt's own defaults, written down so a future
+  toolchain change cannot silently restyle the tree) and `src-tauri/clippy.toml`
+  (`msrv = "1.91"`, matching the workspace `rust-version`).
 
 ## Constraints and known tradeoffs
 
@@ -261,6 +280,32 @@ is free — the burst already dominates `max()`. Against a burst-less server, pr
 alone sets latency-to-live, making `prefetch_bytes` a direct dial there: 16 KB would
 buy back roughly 2 s in that case. Input for the hysteresis tuning pass, not a change
 now.
+
+### Bare `cargo test` runs nothing (found 2026-09-10)
+
+`src-tauri/Cargo.toml` declares a `[workspace]` *and* a real `[package]` at the same root.
+For that layout cargo's default scope is the root package alone, not all members — the
+"defaults to every member" behaviour belongs to *virtual* manifests (a `[workspace]` with no
+`[package]`). So from `src-tauri`:
+
+| Invocation | What actually runs |
+|---|---|
+| `cargo test` | the `onda` package only — **0 tests**, exit 0, no warning |
+| `cargo test --workspace` | 34 tests (all in `onda-audio`) |
+| `cargo test -p onda-audio` | the same 34 |
+
+It reports success either way, which is what made it survive this long. **Implication worth
+stating plainly: any "cargo test passes" claim made before 2026-09-10 needs re-reading against
+which invocation was used.** `README.md`'s instructions were fine — they have always said
+`cargo test --workspace` and `cargo test -p onda-audio`. The *verification ritual* in
+`CLAUDE.md` and `docs/BUILD_PLAN.md` was not: it said bare `cargo test`, so any milestone
+check that followed the ritual as written — M1's included — proved nothing about the audio
+engine. Both files are corrected as of 2026-09-10 and CI uses `--workspace`.
+
+Corollary: the 34 is itself worth pinning down, because 28 is the number you get counting
+`#[test]` in source. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
+`export_bindings_<type>` test per exported type, which is the mechanism that writes
+`src/bindings/`. `cargo test -p onda-audio -- --list` is the authority.
 
 ## API etiquette (non-negotiable)
 
