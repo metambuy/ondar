@@ -135,9 +135,10 @@ TypeScript, stop — it belongs in Rust.
 
 ## Repo tooling
 
-- **Remote:** private GitHub repo `metambuy/onda`. *(Not created as of 2026-09-10 — `gh` is
-  not installed on the build machine, so creation is a manual step in the GitHub web UI.
-  Until it exists the repo is local-only and unbacked-up.)*
+- **Remote:** private GitHub repo `metambuy/onda` (created 2026-09-10, visibility `PRIVATE`,
+  default branch `main`). `gh` 2.100.0 is installed on the build machine and authenticated as
+  `metambuy` over HTTPS; git operations use the same credential. The `m1-done` tag is pushed
+  and dereferences to `4b4ee3d`.
 - **CI:** `.github/workflows/ci.yml`, on push and pull_request, `macos-latest` only (CoreAudio
   is a hard dependency; there is no Linux/Windows path to test). It runs, in order:
   `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
@@ -146,7 +147,13 @@ TypeScript, stop — it belongs in Rust.
   The bindings check runs immediately after the tests because ts-rs regenerates
   `src/bindings/` during the test run — drifted committed bindings fail there. It is
   `cargo build`, not `pnpm tauri build`: a full bundle is slow and pointless before M6, and
-  the tile pyramid must never enter CI.
+  the tile pyramid must never enter CI. Node and pnpm are pinned to the development
+  machine's majors (Node 26; pnpm from `package.json`'s `packageManager`, so the lockfile,
+  local installs and CI cannot drift apart).
+  **First run green** on `fba1133`, 5m6s cold-cache:
+  [run 34495743288](https://github.com/metambuy/onda/actions/runs/34495743288). Its
+  `cargo test` step logged `running 34 tests` / `34 passed` — the `--workspace` finding below
+  is therefore confirmed on a machine other than the one that wrote it, not just locally.
 - **Formatting and MSRV are pinned, not toolchain-dependent:** `src-tauri/rustfmt.toml`
   (`edition = "2024"`, `max_width = 100` — rustfmt's own defaults, written down so a future
   toolchain change cannot silently restyle the tree) and `src-tauri/clippy.toml`
