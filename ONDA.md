@@ -151,13 +151,13 @@ TypeScript, stop — it belongs in Rust.
 - **Shoutcast v1 servers** (`ICY 200 OK` status line) are rejected by hyper/reqwest and surface
   as an `Http` error. Rare via radio-browser's `url_resolved`; measure at M3 before deciding
   whether a raw-socket fallback is worth it.
-- - **EQ has no headroom management.** A `+12 dB` band boost is ×4 linear gain with no
+- **EQ has no headroom management.** A `+12 dB` band boost is ×4 linear gain with no
   limiter or soft-clip in `Equalizer`. Measured headless: 0.7 peak input, band 1
   (62.5 Hz) at +12 dB → output peak 2.787
   (`eq.rs::boost_near_full_scale_exceeds_unity_no_limiting`); 0.95 peak at +4 dB →
   1.5058 (`boost_at_broadcast_realistic_level_also_exceeds_unity`); a flat EQ passes a
   1.5-peak input through unchanged (`already_above_unity_input_passes_through_unclamped`).
-    No clamp or saturating cast exists between the EQ and the device: `Player::append`
+  No clamp or saturating cast exists between the EQ and the device: `Player::append`
   adds only `.amplify()` as a value transform (rodio `amplify.rs:63-65`, a pure
   multiply), and `biquad` 0.6's `DirectForm2Transposed` step (`lib.rs:175-181`) is a
   pure IIR multiply-accumulate. Onda opens the sink without `.with_sample_format()`
@@ -168,7 +168,7 @@ TypeScript, stop — it belongs in Rust.
   Onda's or rodio's source. If a device did report `I16`, the cast (rodio
   `stream.rs:531`) is the last step before the device callback — still downstream of
   `.amplify()`, so it changes nothing about the volume argument below. Onda's own code
-  does no int cast either way.Two consequences worth stating: the app's `Vol` slider is applied *after*
+  does no int cast either way. Two consequences worth stating: the app's `Vol` slider is applied *after*
   the EQ, so lowering it scales the entire EQ output and can hold peaks under ±1.0; and
   clipping requires the boosted band to contain real energy — a high-passed talk stream
   has almost nothing at 63 Hz, so +12 dB there is near-inaudible on it while music at

@@ -197,7 +197,7 @@ ONDA.md ("Reconnect ownership and stream timeouts"); summary:
   the download loop forever instead of ever reaching a reconnect — measured at 4.15M log
   lines in 40 s, stuck in `Buffering`. `stream.rs` now clamps and warns if this is violated.
   Two related bugs found upstream in `stream-download` 0.24.4 (plus a companion question
-  against `reqwest`) — see ONDA.md for detail and issue links.
+  against `reqwest`) — see ONDA.md for detail; not filed upstream (decision recorded there).
 - **Latency-to-live ≈ `max(prefetch_secs, burst_secs)`**, not bounded by the ring
   (`RING_SECONDS`) as an earlier `ring.rs` comment claimed — see ONDA.md for the measured
   model, its harness-resolution caveats, and what it means for `prefetch_bytes` tuning.
@@ -212,10 +212,11 @@ ONDA.md ("Reconnect ownership and stream timeouts"); summary:
 - Sample-rate/channel changes mid-stream (rare on radio) are handled by the EQ adapter but
   not by the ring buffer; the stream restarts via the reconnect path if the decoder ends.
 - **The EQ has no headroom management.** A single band at `+12 dB` is ×4 linear gain
-  with no limiter or soft-clip, and nothing between the EQ and the audio device clamps:
-  measured output peaks of 2.787 (0.7 in, +12 dB) and 1.5058 (0.95 in, +4 dB) reach
-  CoreAudio, which is where the first clamp happens. Content whose energy sits in a
-  boosted band will therefore clip at broadcast levels. Note that the volume slider is
-  applied after the EQ, so lowering it avoids this. A headroom fix is scheduled for M5.
+  with no limiter or soft-clip, and no clamp or saturating cast exists anywhere between
+  the EQ and the audio device: measured output peaks of 2.787 (0.7 in, +12 dB) and
+  1.5058 (0.95 in, +4 dB) reach the device uncapped. Content whose energy sits in a
+  boosted band will therefore clip at broadcast levels. The volume slider is applied
+  after the EQ, so lowering it can hold peaks under ±1.0, but does not always avoid
+  clipping. A headroom fix is scheduled for M5.
   (An audible artefact reported during M1 testing was traced to the playback chain
   outside the app, not to this clipping — see ONDA.md.)
