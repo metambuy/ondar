@@ -22,12 +22,15 @@ jobs:
       - uses: actions/checkout@v7
 
       # Must precede setup-node; this action does not install Node itself.
-      # `version` is required because package.json has no packageManager field.
+      # No `version:` on purpose — it reads package.json's packageManager field, so the
+      # lockfile, local installs and CI cannot drift onto different pnpm majors.
       - uses: pnpm/action-setup@v6
         with:
-          version: 12
           cache: true
 
+      # Matches the development machine (node -v => v26.8.1). Pinned to what Martín
+      # actually runs rather than to the newest available: CI validating a major nobody
+      # uses locally is a false signal in both directions.
       - uses: actions/setup-node@v7
         with:
           node-version: 26

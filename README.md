@@ -9,7 +9,9 @@ Nothing in this milestone touches the tray or the real UI; `src/App.tsx` is a te
 ## Prerequisites (macOS, Apple Silicon)
 
 - Rust ≥ 1.91 via rustup (`rustup update stable`)
-- Node ≥ 20
+- Node 26 (what CI pins and what this is developed against)
+- pnpm 12.3.4 — pinned in `package.json`'s `packageManager`, so CI and local installs
+  cannot drift apart
 - Xcode Command Line Tools (`xcode-select --install`)
 
 ## First run
