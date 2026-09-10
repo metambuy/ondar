@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A push to a branch with an open PR would otherwise run this twice over.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    # macOS only: the audio engine builds against CoreAudio, and this is the only
+    # platform Onda targets. No Linux/Windows matrix — see CLAUDE.md.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Must precede setup-node; this action does not install Node itself.
+      # `version` is required because package.json has no packageManager field.
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+          cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The Cargo workspace is at src-tauri/, not the repo root.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      # --workspace is load-bearing: src-tauri/Cargo.toml has a real [package] at its
+      # root, so a bare `cargo test` runs only that package and reports 0 tests while
+      # silently skipping all 34 in onda-audio.
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --workspace
+
+      # Runs from the repo root, and deliberately after cargo test: ts-rs regenerates
+      # src/bindings/ during the test run, so drifted committed bindings fail here.
+      - name: Bindings are up to date
+        run: git diff --exit-code src/bindings
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm lint
+        run: pnpm lint
+
+      # cargo build, not `pnpm tauri build`: a full bundle is slow and pointless until
+      # M6, and the map tile pyramid must never enter CI.
+      - name: cargo build
+        working-directory: src-tauri
+        run: cargo build
