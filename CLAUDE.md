@@ -1,193 +1,253 @@
 # CLAUDE.md — Onda
 
-> Place at the repository root. Claude Code reads this automatically at session start.
-> Keep it under ~250 lines; move detail into `docs/` and link it.
+> Repository root. Claude Code reads this at session start.
+> This file describes **the repo as it is**. Decisions, versions and milestone numbering live
+> in `ONDA.md`; per-milestone exit criteria and open questions live in `docs/BUILD_PLAN.md`.
+> If this file and the code disagree, the code is right — fix this file in the same commit.
 
 ## What this repo is
 
 **Onda** — a macOS menu bar internet radio player. Tauri v2 shell, Rust core, thin
-React/TypeScript view layer. Satellite map (bundled NASA Blue Marble), Rust audio pipeline
-with a real equalizer, station data from radio-browser.info.
+React/TypeScript view layer. Rust audio pipeline with a real 10-band equalizer, station data
+from radio-browser.info, a bundled NASA Blue Marble satellite map.
 
-Target platform is **macOS only** (Apple Silicon first, Intel via universal binary at
-release). Do not add Windows/Linux code paths.
+Target platform is **macOS only** (Apple Silicon first, universal binary at release). Do not
+add Windows/Linux code paths.
 
 ## The one rule
 
 **The webview is a renderer, not an application.**
 
 TypeScript may: render, animate, handle input, hold ephemeral view state.
-TypeScript may **not**: make network requests, decode or play audio, persist data, hold
-domain state that outlives a render.
+TypeScript may **not**: make network requests, decode or play audio, persist data, hold domain
+state that outlives a render.
 
 Every action → `invoke()` a Tauri command. Every state change → a Tauri event from Rust.
-If a feature seems to need `fetch`, `<audio>`, `localStorage`, or a `setInterval` polling
-loop in TS, the design is wrong; move it to Rust and emit an event.
+If a feature seems to need `fetch`, `<audio>`, `localStorage`, or a `setInterval` polling loop
+in TS, the design is wrong; move it to Rust and emit an event.
 
-## Layout
+`src/api.ts` is the **only** file that imports from `@tauri-apps/api`. Keep it that way.
+
+## Milestones (ONDA.md numbering — the tags follow this, not any other list)
+
+| | | |
+|---|---|---|
+| M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
+| M2 | Tray + NSPanel popover | next |
+| M3 | Station API + SQLite cache + country/station UI | |
+| M4 | Map (tile pyramid, Leaflet, markers) | |
+| M5 | Spectrum + EQ UI, tray animation, polish | |
+| M6 | Signing, notarisation, DMG | |
+
+One milestone per session. Do not start the next milestone's work early. Do not leave a
+milestone with failing checks.
+
+## Layout (actual)
 
 ```
 onda/
-├── src-tauri/
-│   ├── src/
-│   │   ├── main.rs              # entry, tray setup, activation policy
-│   │   ├── app/                 # window/panel lifecycle, tray, positioning
-│   │   ├── audio/
-│   │   │   ├── mod.rs           # AudioEngine: owns the output stream + control channel
-│   │   │   ├── stream.rs        # stream-download + reconnect/backoff
-│   │   │   ├── decode.rs        # symphonia wiring
-│   │   │   ├── eq.rs            # biquad band bank as a rodio Source adapter
-│   │   │   ├── spectrum.rs      # rustfft analysis -> event payloads
-│   │   │   └── icy.rs           # ICY metadata -> NowPlaying
-│   │   ├── stations/
-│   │   │   ├── client.rs        # radio-browser HTTP client (SRV discovery, UA, retries)
-│   │   │   ├── model.rs         # Station, Country, filters
-│   │   │   └── cache.rs         # SQLite cache + TTL
-│   │   ├── geo/                 # country bboxes, city db, marker projection
-│   │   ├── store.rs             # favourites, recents, settings (SQLite)
-│   │   ├── commands.rs          # #[tauri::command] surface — thin, no logic
-│   │   ├── events.rs            # event names + payload structs (single source of truth)
-│   │   └── error.rs             # AppError + thiserror
-│   ├── resources/
-│   │   ├── tiles/               # generated Blue Marble pyramid (gitignored, built by xtask)
-│   │   ├── countries.geojson    # simplified outlines
-│   │   └── cities.json          # ported from PixelRadio
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── src/                         # React + TS
-│   ├── main.tsx
-│   ├── bindings.ts              # GENERATED — do not edit by hand
-│   ├── ipc.ts                   # typed wrappers over invoke/listen
-│   ├── components/
-│   ├── map/                     # Leaflet setup, CRS, tile layer, markers
-│   └── styles/
-├── tools/
-│   └── tiles/                   # vips-based tile pyramid build script
-└── docs/
-    ├── build-plan.md
-    ├── audio-pipeline.md
-    └── map-pipeline.md
+├── CLAUDE.md                     this file
+├── ONDA.md                       project document — decisions, verified versions, findings
+├── README.md                     prerequisites, first run, M1 exit criteria, stall testing
+├── docs/
+│   ├── BUILD_PLAN.md             exit criteria + open questions per milestone
+│   └── PROJECT_INSTRUCTIONS.md   paste-into-a-Claude-Project source; not read at session start
+├── scripts/stall-server.py       local Icecast-alike for stall/reconnect testing
+├── index.html, vite.config.ts, tsconfig.json
+├── package.json                  pnpm; pnpm-workspace.yaml carries `allowBuilds: esbuild`
+├── src/                          React dev bench (renderer only)
+│   ├── App.tsx                   M1 test bench — replaced at M2
+│   ├── api.ts                    THE Rust boundary: invoke wrappers + event listeners
+│   └── bindings/                 GENERATED by ts-rs — do not edit by hand
+└── src-tauri/
+    ├── Cargo.toml                workspace: ".", "crates/onda-audio"
+    ├── tauri.conf.json
+    ├── capabilities/default.json
+    ├── icons/icon.png            PLACEHOLDER (70 bytes) — real set needed before any bundle
+    ├── src/                      Tauri shell only. No domain logic.
+    │   ├── main.rs               calls onda_lib::run()
+    │   ├── lib.rs                AppState, `events` module, tracing init, event forwarder
+    │   ├── error.rs              OndaError → `{ code, message }`
+    │   └── commands/audio.rs     8 thin commands; validate args, send, return
+    └── crates/onda-audio/        the engine. No Tauri dependency — unit-testable standalone.
+        ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
+        ├── stream.rs             stream-download open, ICY headers, timeout invariant
+        ├── icy.rs                in-band ICY title stripping
+        ├── ring.rs               rtrb ring → rodio Source (never blocks the audio callback)
+        ├── eq.rs                 10-band biquad peaking EQ as a rodio Source adapter
+        ├── reconnect.rs          Backoff: 1/2/4/8/16 s, 5 attempts, reset after 30 s stable
+        ├── types.rs              IPC types (ts-rs `#[ts(export)]`)
+        └── examples/stall_bench.rs
 ```
+
+`src/bindings/*.ts` is generated by **ts-rs**, not tauri-specta. `.cargo/config.toml` sets
+`TS_RS_EXPORT_DIR = src/bindings` (relative to the repo root), so **`cargo test` in the
+`onda-audio` package is what regenerates the bindings** — see the note on workspace test
+scoping below. Commit them.
 
 ## Commands
 
 ```bash
-pnpm install                 # frontend deps
-pnpm tauri dev               # run the app (this is the dev loop)
-pnpm tauri build             # release bundle
+pnpm install                 # frontend deps (pnpm only — do not use npm)
+pnpm tauri dev               # the dev loop
+pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm lint                    # eslint
-cargo fmt --all              # from src-tauri/
+pnpm gen:bindings            # alias for `cargo test -p onda-audio` (ts-rs writes src/bindings/)
+
+cd src-tauri
+cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test                   # Rust unit tests
-pnpm test                    # vitest (view logic only)
-pnpm gen:bindings            # regenerate src/bindings.ts from Rust types
-./tools/tiles/build.sh       # regenerate the map tile pyramid (needs libvips)
+cargo test --workspace       # 34 tests (all in onda-audio); also regenerates src/bindings/ —
+                              # plain `cargo test` with no `-p`/`--workspace` only runs the
+                              # root `onda` package (0 tests) and silently skips onda-audio;
+                              # this workspace has a real [package] at the root, so cargo
+                              # doesn't default to "all members" the way a virtual workspace
+                              # would. Use `--workspace` or `-p onda-audio` explicitly.
+cargo run -p onda-audio --example stall_bench    # against scripts/stall-server.py
 ```
 
-Before declaring any task done: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`,
-`pnpm typecheck`, and `pnpm tauri dev` launching without a console error.
+Before declaring any task done: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test --workspace`, `pnpm typecheck`, and `pnpm tauri dev` launching without a console
+error.
+
+## The IPC contract
+
+Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
+`play(url, stationId)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
+`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`.
+
+Events (names defined once, in `src-tauri/src/lib.rs::events`):
+`playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`.
+
+Most commands are **non-blocking messages** sent down an `mpsc` channel to the engine thread.
+`play`, `set_volume`, and `set_eq_gain` validate arguments first and return
+`Result<(), OndaError>` — that `Result` reports argument validation only, never a playback
+outcome, which arrives later as an event. `pause`, `resume`, and `stop` can't fail on bad
+input, so they return `()`.
+
+`get_eq` and `get_playback_state` are the exception to "commands are messages": they read
+`AudioEngine::eq()` / `AudioEngine::state()` directly — a `Mutex` lock and an atomic-array
+snapshot — and return real data synchronously, without going through the command channel or
+the engine thread at all.
+
+Types crossing the boundary live in `crates/onda-audio/src/types.rs` and derive
+`Serialize, Deserialize, TS` with `#[ts(export)]`. Adding one means adding it there, running
+`cargo test -p onda-audio` (plain `cargo test` won't touch this package — see above), and
+committing the generated `.ts`.
 
 ## Rust conventions
 
 - **No `unwrap()` / `expect()` / `panic!` in any code reachable from a command or the audio
-  thread.** Return `Result<T, AppError>`. `expect()` is acceptable only in `main.rs` setup
-  where failure means the app genuinely cannot run.
-- One error type, `AppError` (`thiserror`), serialisable to the frontend with a stable
-  `kind` discriminant so the UI can branch on it (`Network`, `StreamUnavailable`,
-  `Decode`, `Cache`, `Internal`).
-- `tracing` for logging, never `println!`. Audio-thread logging is rate-limited.
-- Async I/O on Tokio; **audio runs on its own dedicated thread**, never on the async runtime.
-  The engine is driven by a `crossbeam`/`std::sync::mpsc` command channel — the command
-  handler sends a message and returns immediately, it never blocks on audio.
+  thread.** `expect()` is acceptable only in `lib.rs::run` setup where failure means the app
+  genuinely cannot start.
+- One shell error type, `OndaError` (`thiserror`), serialised as `{ code, message }` with a
+  stable `code` discriminant so the UI branches on it without parsing strings. Engine-side
+  failure reasons are `types::ErrorCode` (`network`, `http`, `unsupported_format`, `decode`,
+  `device`, `invalid_url`) carried inside `PlaybackState::Error`.
+- Logging: `log::` inside `onda-audio`; the shell installs `tracing_subscriber::fmt` (its
+  `tracing-log` feature bridges `log` call sites), so one `RUST_LOG` drives both — including
+  `stream-download`'s internal `tracing` output. Never `println!`. Audio-thread logging is
+  rate-limited.
+- The engine runs on its **own thread**, driven by a `std::sync::mpsc` command channel and a
+  100 ms tick (`TICK_INTERVAL`). Tokio exists only for `stream-download`'s HTTP. Decode runs
+  on a further per-session thread. Commands never block on audio.
 - No allocation, locking, or logging inside the per-sample DSP path.
-- Commands are thin: parse → call a module function → map the error. Domain logic lives in
-  modules and is unit-testable without Tauri.
-- Public types crossing the IPC boundary derive `Serialize`, `Deserialize`, `specta::Type`,
-  and use `#[serde(rename_all = "camelCase")]`.
+- Buffering supervision lives on the **engine thread**, not the decode loop — a stalled read
+  blocks `decoder.next()` indefinitely, so a decode-cadence supervisor cannot see a stall.
+- State-machine changes go through `decide_tick`, the pure function at the bottom of
+  `engine.rs`, so they stay unit-testable without an audio device. It has 11 tests. Add to
+  them; do not route new transitions around it.
+- Commands are thin: validate → send → map the error. Domain logic lives in `onda-audio`.
+- Never add a dependency without saying what it does and why std or an existing crate is not
+  enough.
 
 ## TypeScript conventions
 
-- Strict mode on. No `any`. Import IPC types from `bindings.ts`.
-- Function components + hooks. Local state by default; a single small Zustand store only for
-  state genuinely shared across panes (popover expansion, selected country).
-- Rust is the source of truth for player state — the UI mirrors events, it does not
-  optimistically maintain a parallel model.
-- CSS modules, no framework. Colours and spacing come from CSS custom properties in
-  `styles/tokens.css`; both light and dark values must be defined there.
-- Every interactive element is keyboard reachable and labelled.
-
-## macOS specifics
-
-- Activation policy `Accessory` and `LSUIElement` in Info.plist — no Dock icon, no menu bar
-  menus.
-- The popover is an `NSPanel` (via `tauri-nspanel`), non-activating, hides on resign-key,
-  positioned under the tray item (`tauri-plugin-positioner`, `TrayCenter`).
-- Tray icon must be a **template image** (`set_icon_as_template(true)`) so it tints with the
-  menu bar.
-- Window vibrancy via Tauri's `macos_private_api` / effects config; the popover background is
-  never a flat opaque colour.
-- Expanding the popover resizes the window and repositions it against the tray anchor in the
-  same frame — no visible jump.
-- These community crates move fast. **Check the current API on docs.rs before writing against
-  `tauri-nspanel` or `tauri-plugin-positioner`**, and flag it if their API differs from what
-  this file assumes.
+- Strict mode. No `any`. Import IPC types from `src/bindings/`.
+- Function components + hooks. Local state by default; a single small store only for state
+  genuinely shared across panes (popover expansion, selected country) — introduce it at M2,
+  not before.
+- Rust is the source of truth for player state; the UI mirrors events and never maintains an
+  optimistic parallel model.
+- CSS modules, no framework. Colours and spacing from CSS custom properties; both light and
+  dark values defined together.
+- Every interactive element keyboard reachable and labelled.
 
 ## Audio pipeline invariants
 
+```
+HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [decode thread]
+  → rtrb ring (RING_SECONDS = 2) → Equalizer (10 × biquad peaking) → Player → MixerDeviceSink
+```
+
 1. One `AudioEngine`, owned by Tauri state, created once at startup.
-2. Playback graph: `stream-download` (HTTP, buffered) → `symphonia` decode →
-   `EqSource` (biquad bank) → volume → `rodio` sink → `cpal` device.
-3. Switching stations tears down the source but keeps the output stream and device alive.
-4. Network failures use exponential backoff (1s, 2s, 4s, 8s, cap 30s) with a visible
-   `Reconnecting` state; give up after 5 attempts and surface a `StreamUnavailable` error.
-5. ICY metadata is parsed from the same stream (`icy-metadata`) and emitted as
-   `now-playing-changed`; absence of metadata is normal, not an error.
-6. EQ gains are applied without clicks (smooth coefficient interpolation) and a pre-amp
-   guards against clipping when multiple bands are boosted.
-7. Call the radio-browser click endpoint exactly once, when the first audio frame plays.
+2. Switching stations tears down the session but keeps the device and `Player` alive.
+3. **Onda owns all reconnects.** `stream-download`'s internal reconnect fires only on a hang
+   and, on a live Icecast mount, splices a plain GET's byte 0 onto the writer's position — an
+   audible jump with no state change. Real recovery is our own `Backoff` + a fresh
+   `stream::open()`. See ONDA.md, "Reconnect ownership and stream timeouts".
+4. **`read_timeout` must stay strictly greater than `retry_timeout`** (20 s / 5 s). Inverted,
+   the download loop spins forever. `stream.rs` clamps and warns. Both are env-overridable
+   (`ONDA_READ_TIMEOUT_SECS`, `ONDA_RETRY_TIMEOUT_SECS`, `ONDA_PREFETCH_BYTES`).
+5. Backoff is 1/2/4/8/16 s, 5 attempts, counter reset after 30 s of stable playback; then
+   `PlaybackState::Error { code: network }`.
+6. ICY metadata absence is normal, not an error.
+7. EQ: 10 ISO-266 octave bands, Q = 1.414, ±12 dB. Gains are atomics read at frame boundaries
+   every 64 frames; changed bands get new coefficients while **filter state is preserved** —
+   that is what avoids the click. There is no gain ramp or interpolation, and (until the
+   Phase-1 headroom fix lands) **no makeup gain or limiter**: +12 dB on a band with real
+   energy pushes broadcast-level content past ±1.0.
+8. Call the radio-browser click endpoint exactly once, when playback actually starts (M3).
 
-## Map invariants
+## macOS specifics (M2 — none of this exists yet)
 
-- Tiles are generated at build time by `tools/tiles/build.sh` and shipped as app resources;
-  they are **never** fetched from the network at runtime.
-- Blue Marble is equirectangular (plate carrée), so lat/lng → pixel is linear. Use Leaflet's
-  `EPSG4326` CRS; do not reimplement the projection.
-- The map is always framed by the selected country's bounding box (from
-  `countries.geojson`), fitted with padding; zoom is clamped so a country can never be
-  smaller than 40% of the viewport nor zoomed past the available tile resolution.
-- Panning is clamped to the country bbox plus a small margin — the user cannot get lost.
-- Markers come from Rust (station lat/lng), already deduplicated and capped (~200 per country).
+- Activation policy `Accessory` + `LSUIElement` — no Dock icon, no menu bar menus.
+- The popover is a non-activating `NSPanel` via `tauri-nspanel` (git dep, branch `v2.1`, pin
+  the commit rev in both `Cargo.toml` and ONDA.md). The `v2.1` API is `PanelBuilder` +
+  `tauri_panel!`; the older `v2` branch's `to_panel()` API is not what we target.
+- Position from Tauri's own `TrayIconEvent::Click { rect }` first. `tauri-plugin-positioner`
+  only if that proves insufficient.
+- Vibrancy needs **`macos-private-api`**, which is *not enabled yet*: `Cargo.toml` currently
+  has `tauri = { version = "2.11", features = [] }` and `tauri.conf.json` has no
+  `macOSPrivateApi`. Enable both, plus `transparent: true`, before expecting vibrancy to work.
+- Tray icon must be a template image (`set_icon_as_template(true)`).
+- Expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
+- Fallback recorded in advance: if `tauri-nspanel` v2.1 is unusable against the pinned Tauri
+  version, use a borderless always-on-top window with manual blur handling and record the
+  decision in ONDA.md.
+
+## Map invariants (M4 — none of this exists yet)
+
+- Tiles are generated at build time and shipped as app resources. They are **never** fetched
+  from the network at runtime.
+- Blue Marble is equirectangular, so lat/lng → pixel is linear. Use Leaflet's `EPSG4326` CRS;
+  do not reimplement the projection. Note its zoom-0 grid is **2×1**.
+- The map is framed by the selected country's bbox with padding; panning is clamped to that
+  bbox plus a margin.
+- Markers come from Rust, deduplicated and capped (~200 per country).
+- Installed size above 100 MB is accepted (ONDA.md, 2026-09-07). If it must be cut, drop the
+  deepest zoom level before dropping quality.
 
 ## Known risks — check these before trusting this file
 
-1. **`tauri-nspanel` / `tauri-plugin-positioner` API drift.** Both are community crates that
-   move faster than this document. Verify the current API on docs.rs/GitHub before writing
-   against them (M1). If `tauri-nspanel` is unmaintained for Tauri v2, fall back to a
-   borderless always-on-top window with manual blur handling and record the decision in
-   `docs/`.
-2. **HLS and redirect-chain streams.** `stream-download` handles plain HTTP/Icecast streams,
-   not HLS playlists. Some radio-browser entries are `.m3u8`. Detect these and surface a
-   clear `StreamUnavailable`/unsupported error rather than hanging. Count how many stations
-   this affects before deciding whether HLS support earns its own milestone.
-3. **Bundle size vs map depth.** The tile pyramid is the largest single asset. If the app
-   exceeds ~80 MB installed, drop the deepest zoom level before dropping image quality.
-4. **Sparse station coordinates.** Only ~30% of radio-browser stations have lat/lng, so map
-   markers are thin in some countries. The country dropdown is the primary navigation; the
-   map must never become the only way to reach a station.
-5. **Stream reliability.** Dead and mislabelled streams are common. Honest error states and
+1. **`tauri-nspanel` / `tauri-plugin-positioner` API drift.** Verify against docs.rs/GitHub
+   before writing code, and record what you find in ONDA.md's "Verified versions".
+2. **HLS and redirect chains.** `stream-download` handles plain HTTP/Icecast, not `.m3u8`.
+   Detect and surface `unsupported_format` rather than hanging. Also: Shoutcast v1 servers
+   (`ICY 200 OK` status line) are rejected by hyper and surface as `http`.
+3. **Sparse station coordinates.** ~30 % of radio-browser stations have lat/lng. The country
+   dropdown is the primary navigation; the map must never be the only route to a station.
+4. **Stream reliability.** Dead and mislabelled streams are common. Honest error states and
    reconnect behaviour are a feature, not polish — do not paper over them with spinners.
-6. **Build host.** macOS-only targets: building, signing and notarising all require macOS.
-   Do not attempt to produce a release bundle from Linux.
+5. **Build host.** Building, signing and notarising all require macOS.
 
 ## Working style
 
-- **Plan first.** For anything beyond a one-file fix, propose the plan and wait.
-- **One milestone per session** (see `docs/build-plan.md`). Do not start the next milestone's
-  work early; do not leave a milestone with failing checks.
-- **Small commits**, conventional-commit style (`feat(audio): …`, `fix(map): …`), each one
-  building and passing checks on its own.
-- Never add a dependency without saying what it does and why the std/existing option is not
-  enough.
-- Do not add features that are not in the current milestone. Write them down instead.
+- **Plan first.** Anything beyond a one-file fix: propose the plan and wait.
+- **Small commits**, conventional style (`feat(audio):`, `fix(map):`, `docs:`), each building
+  and passing checks on its own. Docs commits stay separate from code commits.
+- When a decision is made or reversed, it goes into **ONDA.md**, not just the chat.
 - If a documented approach turns out to be wrong, stop and say so before improvising.
+- Verify crate claims against docs.rs or the source before writing code against them.
+- Martín prefers concise, factual answers with sources. Skip the preamble.
