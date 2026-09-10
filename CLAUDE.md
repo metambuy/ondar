@@ -51,7 +51,8 @@ onda/
 ├── README.md                     prerequisites, first run, M1 exit criteria, stall testing
 ├── docs/
 │   ├── BUILD_PLAN.md             exit criteria + open questions per milestone
-│   └── PROJECT_INSTRUCTIONS.md   paste-into-a-Claude-Project source; not read at session start
+│   └── PROJECT_INSTRUCTIONS.md   stub; the real text now lives in the Claude Project's
+│                                 instructions field, not this repo
 ├── scripts/stall-server.py       local Icecast-alike for stall/reconnect testing
 ├── index.html, vite.config.ts, tsconfig.json
 ├── package.json                  pnpm; pnpm-workspace.yaml carries `allowBuilds: esbuild`
