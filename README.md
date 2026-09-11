@@ -31,7 +31,8 @@ real set with `pnpm tauri icon path/to/1024.png`.
 2. ICY titles update in the "Now" line on stations that send them.
 3. Pull the network: state goes `buffering` → `reconnecting (n)` → `playing` when it returns,
    or `error [network]` after 5 attempts (1+2+4+8+16 s).
-4. EQ sliders audibly change the sound; `cargo test -p onda-audio` passes.
+4. EQ sliders audibly change the sound, and the output stays bounded below ±1.0 however
+   far a band is boosted; `cargo test -p onda-audio` passes.
 5. Switching stations silences the old one immediately.
 
 ## Layout
@@ -45,7 +46,8 @@ src-tauri/crates/onda-audio/
   stream.rs              HTTP open via stream-download; ICY headers
   icy.rs                 In-band ICY metadata stripping
   ring.rs                rtrb ring buffer → rodio Source (never blocks the audio callback)
-  eq.rs                  10-band biquad peaking EQ as a rodio Source adapter
+  eq.rs                  10-band biquad peaking EQ as a rodio Source adapter; its
+                         output is soft-clipped, so it cannot exceed ±1.0
   reconnect.rs           Backoff policy
   types.rs               IPC types (ts-rs exported)
 ```
@@ -208,12 +210,3 @@ ONDA.md ("Reconnect ownership and stream timeouts"); summary:
   the reconnect path handles. "Rejoin live on resume" is M5 polish.
 - Sample-rate/channel changes mid-stream (rare on radio) are handled by the EQ adapter but
   not by the ring buffer; the stream restarts via the reconnect path if the decoder ends.
-- **The EQ has no headroom management.** A single band at `+12 dB` is ×4 linear gain
-  with no limiter or soft-clip, and no clamp or saturating cast exists anywhere between
-  the EQ and the audio device: measured output peaks of 2.787 (0.7 in, +12 dB) and
-  1.5058 (0.95 in, +4 dB) reach the device uncapped. Content whose energy sits in a
-  boosted band will therefore clip at broadcast levels. The volume slider is applied
-  after the EQ, so lowering it can hold peaks under ±1.0, but does not always avoid
-  clipping. A headroom fix is scheduled for M5.
-  (An audible artefact reported during M1 testing was traced to the playback chain
-  outside the app, not to this clipping — see ONDA.md.)

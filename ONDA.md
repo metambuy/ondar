@@ -184,31 +184,76 @@ TypeScript, stop — it belongs in Rust.
 - **Shoutcast v1 servers** (`ICY 200 OK` status line) are rejected by hyper/reqwest and surface
   as an `Http` error. Rare via radio-browser's `url_resolved`; measure at M3 before deciding
   whether a raw-socket fallback is worth it.
-- **EQ has no headroom management.** A `+12 dB` band boost is ×4 linear gain with no
-  limiter or soft-clip in `Equalizer`. Measured headless: 0.7 peak input, band 1
-  (62.5 Hz) at +12 dB → output peak 2.787
-  (`eq.rs::boost_near_full_scale_exceeds_unity_no_limiting`); 0.95 peak at +4 dB →
-  1.5058 (`boost_at_broadcast_realistic_level_also_exceeds_unity`); a flat EQ passes a
-  1.5-peak input through unchanged (`already_above_unity_input_passes_through_unclamped`).
-  No clamp or saturating cast exists between the EQ and the device: `Player::append`
-  adds only `.amplify()` as a value transform (rodio `amplify.rs:63-65`, a pure
-  multiply), and `biquad` 0.6's `DirectForm2Transposed` step (`lib.rs:175-181`) is a
-  pure IIR multiply-accumulate. Onda opens the sink without `.with_sample_format()`
-  (`engine.rs:387`), but that does **not** mean rodio defaults to `f32`:
-  `from_device` calls `.with_supported_config()` (rodio `stream.rs:339-352`), which
-  takes whatever format CoreAudio reports for the device. macOS's HAL is natively
-  float32 so this is `f32` in practice, but it is a runtime fact, not a guarantee in
-  Onda's or rodio's source. If a device did report `I16`, the cast (rodio
-  `stream.rs:531`) is the last step before the device callback — still downstream of
-  `.amplify()`, so it changes nothing about the volume argument below. Onda's own code
-  does no int cast either way. Two consequences worth stating: the app's `Vol` slider is applied *after*
-  the EQ, so lowering it scales the entire EQ output and can hold peaks under ±1.0; and
-  clipping requires the boosted band to contain real energy — a high-passed talk stream
-  has almost nothing at 63 Hz, so +12 dB there is near-inaudible on it while music at
-  the same setting is not. Still not shippable: broadcast radio is limited to sit near
-  full scale, so a boosted band that does match the content will clip it. Likely fixes
-  for M5: makeup attenuation scaled to the summed positive band gains, or a soft-clip
-  stage after the EQ `Source` adapter — decide then.
+- **EQ output is bounded by a soft-clip stage** (added 2026-09-11, Phase 1 item 4; **exit
+  criterion 3 met**). Below 0.95 the stage is the identity bit for bit; above it a rational
+  knee, `T + W*(1 - 1/(1+s))` with `s = (|x|-T)/W` and `W = 1-T`, asymptotic to 1.0 and
+  continuous in value and slope at the threshold. Rational rather than `tanh`: one divide
+  against a transcendental in the audio callback, for the same C1 shape.
+
+  `t = 0.95` is the broadcast peak level, chosen from the sweep below
+  (`examples/eq_headroom_sweep.rs` at `9ad668f`, before the stage existed — it cannot be
+  reproduced from a later revision, because `Equalizer` now bounds its own output):
+
+```
+TABLE 1 — transparency cost (flat EQ, so the shaper is the only stage acting)
+  signal                                            t     peak dB    resid dB
+                                                                  (THD proxy)
+  A  62.5 Hz sine, peak 0.95                     0.80   -0.6086  -31.4121
+  A  62.5 Hz sine, peak 0.95                     0.85   -0.3736  -35.7350
+  A  62.5 Hz sine, peak 0.95                     0.90   -0.1537  -44.0993
+  A  62.5 Hz sine, peak 0.95                     0.95    0.0000      -inf
+  B  62.5 Hz sine, peak 1.00                     0.80   -0.9152  -28.0078
+  B  62.5 Hz sine, peak 1.00                     0.85   -0.6772  -30.4938
+  B  62.5 Hz sine, peak 1.00                     0.90   -0.4455  -34.2164
+  B  62.5 Hz sine, peak 1.00                     0.95   -0.2199  -40.9601
+  C  multi-tone 5 x sine, peak 0.95              0.80   -0.6086  -40.0254
+  C  multi-tone 5 x sine, peak 0.95              0.85   -0.3736  -45.3995
+  C  multi-tone 5 x sine, peak 0.95              0.90   -0.1537  -54.4529
+  C  multi-tone 5 x sine, peak 0.95              0.95    0.0000      -inf
+  D  multi-tone 5 x sine, peak 1.00              0.80   -0.9152  -35.5063
+  D  multi-tone 5 x sine, peak 1.00              0.85   -0.6772  -39.2151
+  D  multi-tone 5 x sine, peak 1.00              0.90   -0.4455  -43.9189
+  D  multi-tone 5 x sine, peak 1.00              0.95   -0.2199  -51.3238
+
+TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
+  case                                     pre-shaper     t=0.80     t=0.85     t=0.90     t=0.95
+  1  62.5 Hz @0.70, band 1 +12 dB             2.78707   0.98171   0.98922   0.99497   0.99868
+  2  62.5 Hz @0.95, band 1 +4 dB              1.50583   0.95584   0.97208   0.98583   0.99587
+  3  multi-tone @0.95, all 10 bands +12 dB    7.45484   0.99416   0.99667   0.99850   0.99962
+```
+
+  At 0.95 the `-inf` rows are literal: material sitting at the broadcast peak passes through
+  **bit-exact**, which is the point of putting the threshold there rather than lower. The
+  bound holds at 0.99868 / 0.99587 / 0.99962 for the three overdriven cases, and
+  `eq.rs`'s tests assert those figures, so the shipped constant stays pinned to the swept
+  curve.
+
+  **Limitation of the measurement, not of the code:** the residual column is total error
+  energy and cannot distinguish harmonic order, so it under-reports how harsh a narrow knee
+  sounds once the shaper is heavily engaged. That regime was not measured. Accepted, because
+  heavy engagement only happens when the user has asked for a large boost on content that has
+  energy in that band, and because what exit criterion 3 requires is the bound — not the
+  timbre of deliberate overdrive.
+
+  **Placement:** the stage is inside `Equalizer`, not a separate `Source` adapter, so the
+  bound is a property of the EQ stage and cannot be bypassed by assembling the graph
+  differently.
+
+  **Why a shaper was needed at all, and why it is now the only bound in the path.** Nothing
+  downstream clamps: `Player::append` adds only `.amplify()` as a value transform (rodio
+  `amplify.rs:63-65`, a pure multiply), and `biquad` 0.6's `DirectForm2Transposed` step
+  (`lib.rs:175-181`) is a pure IIR multiply-accumulate. Onda opens the sink without
+  `.with_sample_format()` (`engine.rs:387`), which does **not** mean rodio defaults to `f32`:
+  `from_device` calls `.with_supported_config()` (rodio `stream.rs:339-352`), taking whatever
+  format CoreAudio reports. macOS's HAL is natively float32 so this is `f32` in practice, but
+  that is a runtime fact, not a guarantee in Onda's or rodio's source. If a device did report
+  `I16`, the cast (rodio `stream.rs:531`) is the last step before the device callback, still
+  downstream of `.amplify()`. Onda's own code does no int cast either way. Two observations
+  that still hold: the `Vol` slider is applied *after* the EQ and `set_volume` clamps to
+  `0.0..=1.0` (`engine.rs:523`), so bounding the EQ output bounds the whole chain to the
+  device; and clipping only ever required the boosted band to contain real energy — a
+  high-passed talk stream has almost nothing at 63 Hz, so +12 dB there was near-inaudible on
+  it while music at the same setting was not.
 
 - **The audible grit reported on 2026-09-08 was external to Onda** (resolved 2026-09-09).
   It was heard through a WiFi speaker, i.e. downstream of a 48→44.1 kHz resample, a
@@ -441,7 +486,7 @@ watchdog's progress signal must not be confused by it — which is why it counts
 than inferring from `fill`.
 
 
-### Bare `cargo test` runs nothing (found 2026-09-10)
+### Bare `cargo test` skips the engine (found 2026-09-10)
 
 `src-tauri/Cargo.toml` declares a `[workspace]` *and* a real `[package]` at the same root.
 For that layout cargo's default scope is the root package alone, not all members — the
@@ -450,11 +495,13 @@ For that layout cargo's default scope is the root package alone, not all members
 
 | Invocation | What actually runs |
 |---|---|
-| `cargo test` | the `onda` package only — **0 tests**, exit 0, no warning |
-| `cargo test --workspace` | 34 tests (all in `onda-audio`) |
-| `cargo test -p onda-audio` | the same 34 |
+| `cargo test` | the `onda` package only — its own 3 tests, exit 0, no warning |
+| `cargo test --workspace` | 51 tests — 48 in `onda-audio`, 3 in the shell |
+| `cargo test -p onda-audio` | the 48 that matter for the engine |
 
-It reports success either way, which is what made it survive this long. **Implication worth
+It reports success either way, which is what made it survive this long — and as of block 2
+it is **more** dangerous, not less: the shell crate gained its own tests, so a bare run now
+prints a plausible-looking `3 passed` rather than an obviously-empty `0 passed`. **Implication worth
 stating plainly: any "cargo test passes" claim made before 2026-09-10 needs re-reading against
 which invocation was used.** `README.md`'s instructions were fine — they have always said
 `cargo test --workspace` and `cargo test -p onda-audio`. The *verification ritual* in
@@ -462,8 +509,8 @@ which invocation was used.** `README.md`'s instructions were fine — they have 
 check that followed the ritual as written — M1's included — proved nothing about the audio
 engine. Both files are corrected as of 2026-09-10 and CI uses `--workspace`.
 
-Corollary: the 34 is itself worth pinning down, because 28 is the number you get counting
-`#[test]` in source. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
+Corollary: the count is itself worth pinning down, because 45 is the number you get counting
+`#[test]` in source against a reported 51. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
 `export_bindings_<type>` test per exported type, which is the mechanism that writes
 `src/bindings/`. `cargo test -p onda-audio -- --list` is the authority.
 

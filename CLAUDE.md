@@ -87,19 +87,20 @@ onda/
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 34 tests `cargo test --workspace`
-reports break down as **28 hand-written + 6 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 51 tests `cargo test --workspace`
+reports break down as **45 hand-written + 6 ts-rs-generated**:
 
 | | |
 |---|---|
-| `engine::tick_tests` | 11 |
-| `eq::tests` | 10 |
+| `engine::tick_tests` | 20 |
+| `eq::tests` | 15 |
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
+| `log_rate_limit::tests` | 3 — in the **shell** crate, not `onda-audio` |
 
-Counting `#[test]` attributes in source gives 28 and will not reconcile with the runner's 34
+Counting `#[test]` attributes in source gives 45 and will not reconcile with the runner's 51
 until those 6 are accounted for. `cargo test -p onda-audio -- --list` is the authority.
 
 ## Commands
@@ -115,8 +116,8 @@ pnpm gen:bindings            # alias for `cargo test -p onda-audio` (ts-rs write
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 34 tests, all in the onda_audio binary; the other 4 binaries
-                              # (onda_lib, onda, and both doc-test targets) have 0. Plain
+cargo test --workspace       # 51 tests: 48 in the onda_audio binary and 3 in the shell's
+                              # onda_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `onda` package (0 tests) and silently skips onda-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
@@ -183,7 +184,7 @@ committing the generated `.ts`.
 - Buffering supervision lives on the **engine thread**, not the decode loop — a stalled read
   blocks `decoder.next()` indefinitely, so a decode-cadence supervisor cannot see a stall.
 - State-machine changes go through `decide_tick`, the pure function at the bottom of
-  `engine.rs`, so they stay unit-testable without an audio device. It has 11 tests. Add to
+  `engine.rs`, so they stay unit-testable without an audio device. It has 20 tests. Add to
   them; do not route new transitions around it.
 - Commands are thin: validate → send → map the error. Domain logic lives in `onda-audio`.
 - Never add a dependency without saying what it does and why std or an existing crate is not
