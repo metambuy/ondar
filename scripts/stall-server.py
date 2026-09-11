@@ -266,6 +266,20 @@ class Server:
         if args.burst_bytes > 0:
             raw_send(take(args.burst_bytes))
 
+        # Absolute-schedule pacing. Sleeping `interval - time_spent_sending` looks like it
+        # compensates, and it does compensate for `sendall` — but every deadline is derived
+        # from "now", so `time.sleep` overshoot (1-3 ms on macOS) and the uncompensated loop
+        # head accumulate against no fixed reference. Measured: 15,429 B/s against a nominal
+        # 16,000 B/s, 3.6% slow, which surfaced as a spurious ~3%-per-10s decay in ICY
+        # freshness and invalidated an earlier latency table. Anchoring each deadline to
+        # `paced_start` and keying it on bytes actually sent makes the error bounded rather
+        # than cumulative. Keyed on bytes, not slice count, so `slice_bytes` rounding at odd
+        # bitrates cannot skew the rate. The burst stays outside the schedule: it is
+        # deliberate head start.
+        bytes_per_sec = args.bitrate * 1000 / 8
+        paced_start = time.monotonic()
+        paced_bytes = 0
+
         cutoff_hit = False
         while True:
             elapsed = time.monotonic() - conn_start
@@ -287,10 +301,12 @@ class Server:
                     sock.close()
                     return "reset"
 
-            slice_start = time.monotonic()
             raw_send(take(self.slice_bytes))
-            slice_elapsed = time.monotonic() - slice_start
-            time.sleep(max(0.0, 0.1 - slice_elapsed))
+            paced_bytes += self.slice_bytes
+            deadline = paced_start + paced_bytes / bytes_per_sec
+            now = time.monotonic()
+            if deadline > now:
+                time.sleep(deadline - now)
 
 
 def parse_args() -> argparse.Namespace:
