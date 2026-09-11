@@ -671,7 +671,7 @@ fn retry_or_fail(ctx: &SessionCtx, code: ErrorCode, message: String) -> bool {
 }
 
 // Resume/dwell/instability thresholds below are placeholders pending measurement against
-// `scripts/stall-server.py` — not yet written. Do not treat these numbers as tuned.
+// `scripts/stall-server.py`. Do not treat these numbers as tuned.
 
 /// Resume once the ring is at least this fraction full (3/4 = 75%).
 const RESUME_FILL_NUM: usize = 3;

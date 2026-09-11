@@ -17,15 +17,22 @@ use rtrb::{Consumer, Producer, RingBuffer};
 ///
 /// - **First audible sample** ≈ `max(prefetch_secs, burst_secs)` — how long until there's
 ///   enough buffered to start decoding at all.
-/// - **`IcyMetadata` freshness** ≈ `max(prefetch_secs, burst_secs) − RING_SECONDS` — once
-///   decoding starts, the decoder drains that head start faster than real time until the ring
-///   is full and it blocks on ring space; whatever didn't fit in the ring is the residual lag
-///   behind the server's real-time position, which is where in-band ICY metadata lives.
+/// - **`IcyMetadata` freshness** ≈ `max(prefetch_secs, burst_secs) − ring_occupancy`, where
+///   `ring_occupancy = min(RING_SECONDS, max(prefetch_secs, burst_secs))` — once decoding
+///   starts, the decoder drains that head start faster than real time until the ring is full
+///   and it blocks on ring space; whatever didn't fit in the ring is the residual lag behind
+///   the server's real-time position, which is where in-band ICY metadata lives. The occupancy
+///   is capped by the ring but is *not* always the full `RING_SECONDS` — a head start smaller
+///   than the ring never fills it, which is why the subtrahend is the `min`, not a flat
+///   `RING_SECONDS`.
 ///
 /// Measured via `scripts/stall-server.py --mode metaint` (README "Stall testing"): fits data
-/// from prefetch 8192/49152B and burst 0/65536/131072B to within ~0.3 s. Below `RING_SECONDS`
-/// (small prefetch, no burst) the formula goes negative; freshness floors out around 0.3–0.5 s
-/// of fixed connect/decode-startup overhead instead.
+/// from prefetch 8192/49152B and burst 0/65536/131072B to within ~0.3 s. At the smallest point
+/// (8192B prefetch, no burst) the formula floors at 0 against a measured 0.49–0.50 s; that
+/// miss is **unexplained** — it is close to `prefetch_secs` itself there, but nothing here
+/// attributes it to that or to connect/decode-startup overhead. Note the harness cannot
+/// resolve it either way: at `--icy-metaint 4000` and 16000 B/s, title timing quantises to
+/// 0.25 s steps and nothing finer than ~0.5 s is resolvable. See ONDA.md's latency table.
 pub const RING_SECONDS: usize = 2;
 
 /// Shared, cross-thread view of one ring's occupancy. The audio callback (consumer) advances
