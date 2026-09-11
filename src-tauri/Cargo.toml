@@ -28,6 +28,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 log = "0.4"
+# Already in the tree via tracing-subscriber, stream-download and hyper-util; linked
+# directly because implementing a tracing Filter needs `Event`/`Subscriber` by name.
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]

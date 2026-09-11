@@ -3,6 +3,7 @@
 
 mod commands;
 mod error;
+mod log_rate_limit;
 
 use std::thread;
 
@@ -29,10 +30,14 @@ pub fn run() {
     // both. Same default filter `env_logger` used, so behaviour when `RUST_LOG` is unset is
     // unchanged.
     use tracing_subscriber::EnvFilter;
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,onda_audio=debug")),
+    use tracing_subscriber::prelude::*;
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,onda_audio=debug"));
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_filter(filter)
+                .with_filter(log_rate_limit::RateLimit::new()),
         )
         .init();
 
