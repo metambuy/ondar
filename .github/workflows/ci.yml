@@ -4,10 +4,22 @@ on:
   push:
   pull_request:
 
-# A push to a branch with an open PR would otherwise run this twice over.
+# Two rules, and the second was learned the hard way.
+#
+# Dedupe: a push to a branch with an open PR fires both `push` and `pull_request`, so without
+# a shared group the same commit is built twice.
+#
+# Never cancel on main: with `cancel-in-progress: true` everywhere, consecutive pushes to main
+# cancel each other. That happened — a commit's run was cancelled by the next push, and the
+# re-run of the older commit then cancelled HEAD's run — leaving commits on main that were
+# never actually verified while the branch looked green. Superseding a run is fine on a branch,
+# where only the tip matters; on main every commit has to stand on its own.
+#
+# `cancel-in-progress` accepts an expression, not just a literal (GitHub Actions workflow
+# syntax, "Using concurrency"), which is what makes the split expressible in one group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
