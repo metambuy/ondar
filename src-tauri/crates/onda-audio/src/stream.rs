@@ -24,20 +24,38 @@ pub type Reader = StreamDownload<BoundedStorageProvider<MemoryStorageProvider>>;
 
 /// Bytes to buffer before the decoder is allowed to start — 2.05 s at 128 kbit/s.
 ///
-/// Chosen at the knee rather than by taste. `RING_SECONDS * byte_rate` is the point where the
-/// head start exactly fills the ring: below it the whole head start fits, so nothing is left
-/// over as a standing offset behind the live edge and ICY freshness floors at zero; above it
-/// the surplus becomes exactly that offset. Measured at 128 kbit/s, burst-less: 32 KB gives
-/// +0.013 s freshness — statistically identical to 16 KB's +0.014 s — where 48 KB costs
-/// +0.71 s and 1.0 s more time-to-first-audio. 32 KB keeps twice the `fill_target` margin that
-/// made 16 KB thin: 16 KB is 1.024 s of audio against a 1.0 s fill target, ~20 ms of headroom.
+/// Bounded from both sides, and at 128 kbit/s the two bounds coincide:
 ///
-/// The knee moves with bitrate and this constant does not. 32 KB is 2.05 s at 128 kbit/s, but
-/// 0.82 s at 320 kbit/s — *below* the 1.0 s fill target, so prefetch stops doing anything
-/// there — and 4.1 s at 64 kbit/s, well past the knee and paying lag for it. Correct at
-/// 128 kbit/s, degrading at both ends. M3 refinement: radio-browser's station record carries
-/// `bitrate`, which makes `prefetch_bytes = RING_SECONDS * bitrate / 8` computable before
-/// `open` and the knee reachable at every bitrate rather than one.
+/// - **Floor: one decoder read.** The decoder asks for 32768 B at a time (see
+///   [`crate::icy::MAX_OBSERVED_READ`]). With less prefetch than that, it asks for a full read,
+///   `stream-download` holds only part of it, and the decode thread blocks for the remainder at
+///   1x while the ring drains. Measured at 16 KB, burst-less: the stream underruns 2.0 s into
+///   playback **with no network fault at all**, and again on a cycle — an audible dropout after
+///   every station start. This floor is a fixed byte count; it does not scale with bitrate.
+/// - **Ceiling: the knee, `RING_SECONDS * byte_rate`.** Where the head start exactly fills the
+///   ring. Above it the surplus cannot fit and becomes a standing offset behind the live edge:
+///   measured ICY lag +0.194 s at 32 KB against +1.214 s at 48 KB.
+///
+/// At 128 kbit/s the floor is 32768 B and the knee is 32001 B, so 32 KB is at once the smallest
+/// value that does not starve the decoder and the largest that costs no freshness.
+///
+/// Jitter tolerance is the third axis and it favours more prefetch: measured time from a stall
+/// to the underrun is +0.41 s at 32 KB and +1.40 s at 48 KB. 32 KB is the deliberate trade —
+/// the knee — not the maximum.
+///
+/// **The bounds scale differently, so a fixed value cannot be right everywhere:**
+///
+/// | bitrate | one decoder read | knee | with a fixed 32 KB |
+/// |---|---|---|---|
+/// | 64 kbit/s | 4.10 s | 16 KB | floor *exceeds* the knee; ~2.1 s of lag is structural |
+/// | 128 kbit/s | 2.05 s | 31 KB | they coincide; optimal |
+/// | 320 kbit/s | 0.82 s | 78 KB | safe, but only 0.82 s of buffer where the ring holds 2.0 s |
+///
+/// M3 refinement: radio-browser's station record carries `bitrate`, making
+/// `prefetch_bytes = max(one_decoder_read, RING_SECONDS * bitrate / 8)` computable before
+/// `open`. The `max` matters — the knee alone would starve the decoder at 64 kbit/s. Note the
+/// first term is pinned to a dependency's internal behaviour and **must be re-verified on any
+/// rodio or symphonia bump**.
 ///
 /// Overridable via `ONDA_PREFETCH_BYTES` (see [`prefetch_bytes`]) so stall testing can trade
 /// startup latency against burst-size realism without a rebuild.
@@ -99,7 +117,7 @@ pub fn retry_timeout() -> Duration {
     resolved_timeouts().1
 }
 
-fn prefetch_bytes() -> u64 {
+pub fn prefetch_bytes() -> u64 {
     std::env::var("ONDA_PREFETCH_BYTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())

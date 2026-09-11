@@ -11,6 +11,7 @@
 //! logs alongside this binary's own event trace.
 
 use std::env;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
@@ -71,6 +72,24 @@ fn main() {
         final_state,
         reconnects
     );
+
+    // Tripwire. `PREFETCH_BYTES` has to cover at least one decoder read or the decode thread
+    // starves on its first refill — measured at 16 KB as an audible dropout 2 s into playback
+    // with no network fault. The read size is chosen by rodio/symphonia, not by Onda, so a
+    // dependency bump can break this silently. Checked here because this is where the evidence
+    // was found, and it costs nothing.
+    let max_read = onda_audio::icy::MAX_OBSERVED_READ.load(Ordering::Relaxed) as u64;
+    let prefetch = onda_audio::stream::prefetch_bytes();
+    if max_read > prefetch {
+        println!(
+            "!!! PREFETCH TOO SMALL: decoder asked for {max_read} B, prefetch is {prefetch} B. \
+             Expect spontaneous underruns ~2 s into playback on a healthy network. The read \
+             size is rodio/symphonia's, not ours — re-derive PREFETCH_BYTES (stream.rs) after \
+             a dependency bump."
+        );
+    } else {
+        println!("--- max decoder read {max_read} B vs prefetch {prefetch} B: ok ---");
+    }
     engine.send(AudioCommand::Stop);
     std::thread::sleep(Duration::from_millis(200));
 }

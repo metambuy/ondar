@@ -161,6 +161,13 @@ TypeScript, stop — it belongs in Rust.
 
 ## Constraints and known tradeoffs
 
+- **ICY metadata lags ~2 s on 64 kbit/s streams, structurally.** The decoder reads 32768 B at
+  a time, which is 4.10 s of audio at 64 kbit/s, while the ring holds 2.0 s — so prefetch must
+  sit above the knee and the surplus becomes standing lag behind live. Not a tuning miss and
+  not fixable by tuning `prefetch_bytes`: the floor is set by a dependency's read size and the
+  ceiling by `RING_SECONDS`. Raising `RING_SECONDS` to 4 would close it at the cost of memory
+  and of a longer worst-case resume everywhere else. Titles are late on these stations; audio
+  is unaffected. See "The prefetch knee".
 - **Offline map resolution is capped.** Blue Marble NG tops out at 500 m/px (eight 21600×21600
   tiles) and we ship the 2 km/px 21600×10800 composite. Small countries will be shown at
   native resolution and upscale gently past that; this is accepted, not a bug.
@@ -274,8 +281,9 @@ lag reconstructs the audible figure:
 
 Re-measured 2026-09-11 on the corrected harness, five samples per cell over 55 s, every
 figure a mean with its spread. The model fits to within 0.15 s at every point, with a
-consistent +0.10–0.15 s offset wherever the predicted lag is non-zero and +0.025 s where
-it is zero — a fixed overhead, not a scaling error. **The old special case is gone**: the
+**two regimes, and they split exactly at the `fill_target` floor**: ~0.025 s where TTFA is
+fill_target-limited (8 and 16 KB) and ~0.10–0.15 s where it is prefetch-limited (32 KB and
+up). Describing both as one constant offset hides the split. **The old special case is gone**: the
 small-prefetch point no longer misses by 0.49 s, and the previous "unexplained" residual
 there was an artefact of the harness, not of Onda.
 
@@ -290,9 +298,10 @@ gated by whichever is slower — bytes arriving or decoding:
   regardless of prefetch, against a `max()` of 4.10 s. A burst does not gate startup at all.
 
 Practical read: against a bursting Icecast (64 KB ≈ 4.1 s) the burst dominates `max()` and
-prefetch is free either way. Against a burst-less server prefetch alone sets latency-to-live,
-and the knee at `RING_SECONDS × byte_rate` ≈ 32 KB is where the head start exactly fills the
-ring — the largest prefetch that still costs nothing in freshness. See "The prefetch knee".
+prefetch is free either way, so this choice only bites on burst-less servers. There, prefetch
+alone sets latency-to-live, and it is bounded below by one decoder read and above by the knee
+at `RING_SECONDS × byte_rate` — which at 128 kbit/s are the same ~32 KB. See "The prefetch
+knee" for why the lower bound is the binding one and why it is not ours to choose.
 
 ### The harness paced 3.57% slow, and it invalidated the table above (found 2026-09-11)
 
@@ -315,19 +324,48 @@ after: **15,996.4 B/s, −0.022%**, and spread within a run fell from ~0.3 s per
 
 ### The prefetch knee (measured 2026-09-11)
 
-`prefetch_bytes` is 32 KB, chosen at the knee: `RING_SECONDS × byte_rate` is where the head
-start exactly fills the ring. Below it the whole head start fits and freshness floors at
-zero; above it the surplus becomes a standing offset behind live. At 128 kbit/s that is
-~31.25 KB, and 32 KB measures +0.194 s against 16 KB's +0.026 s and 48 KB's +1.214 s, while
-keeping twice the `fill_target` margin that made 16 KB thin (16 KB is 1.024 s of audio
-against a 1.0 s fill target).
+`prefetch_bytes` is 32 KB, bounded from **both** sides — and at 128 kbit/s the two bounds
+coincide, which is the only reason a single constant works at all:
 
-**The knee moves with bitrate and the constant does not.** 32 KB is 2.05 s at 128 kbit/s,
-0.82 s at 320 kbit/s — *below* `fill_target`, where prefetch stops doing anything — and
-4.1 s at 64 kbit/s, past the knee and paying lag for it. Correct at 128, degrading at both
-ends. **M3 refinement:** radio-browser's station record carries `bitrate`, making
-`prefetch_bytes = RING_SECONDS × bitrate / 8` computable before `open` and the knee
-reachable at every bitrate rather than one.
+- **Floor: one decoder read, 32768 B.** Below it the decode thread asks for a full read,
+  `stream-download` holds only part of it, and the thread blocks for the remainder at 1× while
+  the ring drains. Measured at 16 KB, burst-less: the stream underruns **2.0 s into playback
+  with no network fault at all** (`Playing` at 2.118 s, `Buffering` at 4.133 s, six seconds
+  before the injected stall), then repeats — an audible dropout after every station start. A
+  fixed byte count; it does not scale with bitrate.
+- **Ceiling: the knee, `RING_SECONDS × byte_rate`,** ~31.25 KB at 128 kbit/s. Above it the
+  surplus head start cannot fit in the ring and becomes a standing offset behind live: +0.194 s
+  at 32 KB against +1.214 s at 48 KB.
+
+An earlier version of this note justified 32 KB by freshness parity with 16 KB and by margin
+over `fill_target`. Both were wrong: the freshness figures were pre-harness-fix, and dropping
+below `fill_target` costs nothing — 8 KB and 16 KB give identical TTFA (1.285 / 1.281 s)
+because the fill target simply takes over as the constraint. The right number for the wrong
+reason, and it survives only because floor and ceiling coincide here.
+
+Jitter tolerance is the third axis and it favours more prefetch — time from stall to underrun
+is +0.41 s at 32 KB against +1.40 s at 48 KB. 32 KB is the deliberate trade at the knee, not
+the maximum.
+
+**The two bounds scale differently, so no fixed value is right everywhere:**
+
+| bitrate | one decoder read | knee | with a fixed 32 KB |
+|---|---|---|---|
+| 64 kbit/s | 4.10 s | 16 KB | floor **exceeds** the knee; ~2.1 s of lag is structural |
+| 128 kbit/s | 2.05 s | 31 KB | they coincide; optimal |
+| 320 kbit/s | 0.82 s | 78 KB | safe, but 0.82 s of buffer where the ring holds 2.0 s |
+
+**M3 refinement:** radio-browser's station record carries `bitrate`, making
+`prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` computable before `open`.
+The `max` is load-bearing — the knee alone starves the decoder at 64 kbit/s.
+
+**The first term is pinned to a dependency's internal behaviour.** `onda-audio` never
+constructs a `MediaSourceStream`; rodio 0.22.2 does it internally over symphonia-core 0.5.5 and
+chooses the 32768 B read size. It is not a property of decoding and not ours to set, so it
+**must be re-verified on any rodio or symphonia bump**. A bump that raises it reintroduces the
+spontaneous underruns above, silently. `crates/onda-audio/src/icy.rs` records the largest
+observed read (`MAX_OBSERVED_READ`) and `examples/stall_bench.rs` fails loudly when it exceeds
+the effective prefetch — verified to fire at 16 KB and stay quiet at 32 KB.
 
 ### The unstable dwell was selected and then cancelled (found and fixed 2026-09-11)
 

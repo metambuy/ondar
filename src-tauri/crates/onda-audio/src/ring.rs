@@ -32,13 +32,13 @@ use rtrb::{Consumer, Producer, RingBuffer};
 ///   than the ring never fills it, which is why the subtrahend is the `min`, not a flat
 ///   `RING_SECONDS`.
 ///
-/// Measured via `scripts/stall-server.py --mode metaint` (README "Stall testing"): fits data
-/// from prefetch 8192/49152B and burst 0/65536/131072B to within ~0.3 s. At the smallest point
-/// (8192B prefetch, no burst) the formula floors at 0 against a measured 0.49–0.50 s; that
-/// miss is **unexplained** — it is close to `prefetch_secs` itself there, but nothing here
-/// attributes it to that or to connect/decode-startup overhead. Note the harness cannot
-/// resolve it either way: at `--icy-metaint 4000` and 16000 B/s, title timing quantises to
-/// 0.25 s steps and nothing finer than ~0.5 s is resolvable. See ONDA.md's latency table.
+/// Re-measured 2026-09-11 via `scripts/stall-server.py --mode metaint`, five samples per cell
+/// over 55 s (README "Stall testing"): the model fits to within 0.15 s across prefetch
+/// 8192–49152 B and burst 0/65536/131072 B. Earlier figures here were taken against a harness
+/// that paced 3.57% slow, which made freshness decay ~0.3 s per 10 s through every run and
+/// produced an apparent 0.49 s miss at the smallest point that was recorded as "unexplained".
+/// It was the harness; with pacing fixed the residual is ~0.025 s there and the special case
+/// is gone. See ONDA.md's latency table.
 pub const RING_SECONDS: usize = 2;
 
 /// Shared, cross-thread view of one ring's occupancy. The audio callback (consumer) advances

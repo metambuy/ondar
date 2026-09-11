@@ -12,6 +12,21 @@
 //! a callback.
 
 use std::io::{self, Read, Seek, SeekFrom};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Largest read length the decoder has asked us for, process-wide. Diagnostic only.
+///
+/// `PREFETCH_BYTES` must cover at least one of these or the decode thread starves on its first
+/// refill — see `stream::PREFETCH_BYTES`. Crucially this size is **not Onda's to choose**:
+/// `onda-audio` never constructs a `MediaSourceStream`; rodio 0.22.2 does it internally over
+/// symphonia-core 0.5.5, and picks the size. Observed at 32768 B on 2026-09-11.
+///
+/// A rodio or symphonia bump that raises it would reintroduce spontaneous underruns roughly
+/// 2 s into every station start, on a perfectly healthy network, with no error raised and
+/// nothing in CI to catch it. `examples/stall_bench.rs` checks this against the effective
+/// prefetch and fails loudly, which is the cheapest tripwire available and sits where the
+/// evidence was originally found.
+pub static MAX_OBSERVED_READ: AtomicUsize = AtomicUsize::new(0);
 
 pub type TitleCallback = Box<dyn FnMut(String) + Send + Sync>;
 
@@ -58,6 +73,7 @@ impl<R: Read> IcyReader<R> {
 
 impl<R: Read> Read for IcyReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        MAX_OBSERVED_READ.fetch_max(buf.len(), Ordering::Relaxed);
         if buf.is_empty() {
             return Ok(0);
         }
