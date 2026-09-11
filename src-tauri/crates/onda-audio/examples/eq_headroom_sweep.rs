@@ -1,19 +1,23 @@
-//! Sweeps a candidate soft-clip threshold for the EQ headroom fix (Phase 1 item 4), so the
-//! constant is chosen from data rather than taste. Measures the two things that trade against
-//! each other: what the shaper costs when nothing needs clipping, and what it bounds when
-//! something does.
+//! Cross-checks the shipped soft-clip stage against the curve that chose its threshold, and
+//! reports what `Equalizer` actually bounds its output to.
 //!
 //! Usage: `cargo run -p onda-audio --example eq_headroom_sweep --release`
 //!
-//! Measurement only — nothing here changes playback, and `eq.rs` is untouched. The shaper is
-//! defined **locally** and parameterised by `t` on purpose: no constant for it exists in
-//! `eq.rs` yet, and once one does, this example stays the cross-check that the shipped value
-//! matches the curve that was actually swept.
+//! **This is no longer the block A sweep.** That run — the t = [0.80, 0.85, 0.90, 0.95] tables
+//! over transparency cost and bound, which is what chose t = 0.95 — was taken at `9ad668f`,
+//! before the shaper existed, and is recorded in ONDA.md. It cannot be reproduced here any
+//! more: `soft_clip` now lives inside `Equalizer`, so `through_eq` returns already-bounded
+//! output and re-shaping it would print numbers that look like measurements but are shaped
+//! twice. Those tables were removed rather than left with a caveat, because the trap is
+//! someone pasting them into ONDA.md later.
 //!
-//! Everything is measured over the **settled tail** — the second half of each signal — the same
+//! What remains is the part that stays true: the example keeps its **own** implementation of
+//! the curve, written independently of `eq.rs`, and checks the two agree. That is the useful
+//! invariant — if the shipped constant or the shipped formula drifts from what was swept, this
+//! catches it.
+//!
+//! Everything is measured over the settled tail — the second half of each signal — the same
 //! convention `eq.rs`'s `settled_rms` uses, so the biquads' startup transient is excluded.
-//! Output is fixed-width and carries its own provenance line, so a run can be pasted into
-//! ONDA.md verbatim.
 
 use std::num::NonZero;
 use std::process::Command;
@@ -21,18 +25,20 @@ use std::time::Duration;
 
 use rodio::{ChannelCount, SampleRate, Source};
 
-use onda_audio::eq::Equalizer;
+use onda_audio::eq::{self, Equalizer};
 use onda_audio::{BAND_COUNT, EqGains};
 
 const RATE: u32 = 44_100;
 /// 1 s per signal, matching `eq.rs`'s tests so Table 2's pre-shaper peaks are comparable to
 /// the recorded M1 baselines.
 const LEN: usize = 44_100;
-const THRESHOLDS: [f32; 4] = [0.80, 0.85, 0.90, 0.95];
+/// The threshold block A's sweep selected.
+const T: f32 = 0.95;
 const MULTI_TONE_HZ: [f32; 5] = [62.5, 250.0, 1000.0, 4000.0, 8000.0];
 
-/// The shaper under test: linear below `t`, then a `s/(1+s)` knee that is continuous at `t` and
-/// asymptotic to 1.0, so it cannot produce an output above unity however hard it is driven.
+/// The swept curve, kept in the form block A used — `s/(1+s)`, where `eq.rs` ships the
+/// algebraically identical `1 - 1/(1+s)`. Written independently on purpose: agreement between
+/// two separate expressions of the same curve is the check, so this must not call `soft_clip`.
 fn shape(x: f32, t: f32) -> f32 {
     let a = x.abs();
     if a <= t {
@@ -172,55 +178,44 @@ fn main() {
         RATE,
         LEN as f32 / RATE as f32
     );
-    println!(
-        "shaper: linear below t, then t + (1-t)*s/(1+s) where s = (|x|-t)/(1-t); asymptotic to 1.0"
-    );
 
-    // ---- Table 1: what the shaper costs when nothing needs clipping ----
-    println!();
-    println!("TABLE 1 — transparency cost (flat EQ, so the shaper is the only stage acting)");
-    println!(
-        "  {:<44} {:>6} {:>11} {:>11}",
-        "signal", "t", "peak dB", "resid dB"
-    );
-    println!("  {:<44} {:>6} {:>11} {:>11}", "", "", "", "(THD proxy)");
-
-    let signals: [(&str, Vec<f32>); 4] = [
-        ("A  62.5 Hz sine, peak 0.95", sine(62.5, 0.95)),
-        ("B  62.5 Hz sine, peak 1.00", sine(62.5, 1.00)),
-        ("C  multi-tone 5 x sine, peak 0.95", multi_tone(0.95)),
-        ("D  multi-tone 5 x sine, peak 1.00", multi_tone(1.00)),
-    ];
-
-    for (label, signal) in &signals {
-        // Flat EQ: the shaper's input, and the reference the residual is fitted against.
-        let pre = through_eq(signal, EqGains::default());
-        let x = settled(&pre);
-        for t in THRESHOLDS {
-            let post = shaped(&pre, t);
-            let y = settled(&post);
-            let peak_ratio = if peak(x) > 0.0 {
-                peak(y) / peak(x)
-            } else {
-                0.0
-            };
-            println!(
-                "  {:<44} {:>6.2} {} {}",
-                label,
-                t,
-                db(peak_ratio),
-                residual_db(y, x)
-            );
+    // ---- Cross-check: the shipped curve against the swept one ----
+    //
+    // Compared within a tolerance rather than exactly: `s/(1+s)` and `1 - 1/(1+s)` are
+    // algebraically identical but round differently in the last ulp at large `s`, so `==`
+    // would fail spuriously. The range spans everything the band bank can produce — the
+    // measured worst case is 7.45.
+    let mut worst = 0.0f32;
+    let mut worst_at = 0.0f32;
+    for i in 0..=200_000 {
+        let x = 20.0 * (i as f32 / 200_000.0) - 10.0; // -10 ..= 10
+        let d = (shape(x, T) - onda_audio::eq::soft_clip(x)).abs();
+        if d > worst {
+            worst = d;
+            worst_at = x;
         }
     }
-
-    // ---- Table 2: what the shaper bounds when the EQ drives it past unity ----
     println!();
-    println!("TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)");
+    println!("CROSS-CHECK — example's own curve vs the shipped eq::soft_clip, over [-10, 10]");
     println!(
-        "  {:<40} {:>10} {:>10} {:>10} {:>10} {:>10}",
-        "case", "pre-shaper", "t=0.80", "t=0.85", "t=0.90", "t=0.95"
+        "  shipped SOFT_CLIP_THRESHOLD = {}",
+        eq::SOFT_CLIP_THRESHOLD
     );
+    println!("  swept threshold             = {T}");
+    println!("  worst |difference|          = {worst:.3e} at x = {worst_at:.4}");
+    if worst < 1e-6 && eq::SOFT_CLIP_THRESHOLD == T {
+        println!("  -> ok: the shipped stage matches the curve the threshold was chosen from");
+    } else {
+        println!(
+            "  -> MISMATCH: the shipped stage has drifted from the swept curve. Re-run the \
+             block A sweep before trusting ONDA.md's threshold justification."
+        );
+    }
+
+    // ---- What Equalizer actually bounds its output to, for block A's three cases ----
+    println!();
+    println!("BOUND — peak out of Equalizer (soft-clip included) for block A's cases");
+    println!("  {:<44} {:>10}", "case", "peak");
 
     let band1_12 = EqGains::default();
     band1_12.set(1, 12.0);
@@ -246,18 +241,23 @@ fn main() {
     ];
 
     for (label, signal, gains) in cases {
-        let pre = through_eq(&signal, gains);
-        let pre_peak = peak(settled(&pre));
-        let posts: Vec<String> = THRESHOLDS
-            .iter()
-            .map(|&t| format!("{:10.5}", peak(settled(&shaped(&pre, t)))))
-            .collect();
-        println!("  {:<40} {:10.5}{}", label, pre_peak, posts.concat());
+        let out = through_eq(&signal, gains);
+        println!("  {:<44} {:10.5}", label, peak(settled(&out)));
     }
 
+    // ---- Transparency: at broadcast peak the stage must not engage at all ----
     println!();
-    println!(
-        "note: table 2's pre-shaper peaks for cases 1 and 2 are the recorded M1 baselines\n      \
-         (2.787 and 1.5058). A mismatch means the EQ stage moved, not the shaper."
-    );
+    println!("TRANSPARENCY — flat EQ at the broadcast peak the threshold was chosen for");
+    for (label, signal) in [
+        ("62.5 Hz sine, peak 0.95", sine(62.5, 0.95)),
+        ("multi-tone, peak 0.95", multi_tone(0.95)),
+    ] {
+        let out = through_eq(&signal, EqGains::default());
+        let max_err = out
+            .iter()
+            .zip(&signal)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        println!("  {label:<44} max |out - in| = {max_err:.3e}");
+    }
 }

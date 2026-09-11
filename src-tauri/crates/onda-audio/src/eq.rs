@@ -7,6 +7,17 @@
 //!
 //! The adapter sits in the real-time path (audio callback), which is why gains are atomics
 //! and no locks or allocations happen inside `next()` after construction.
+//!
+//! [`soft_clip`] is applied as the last operation of every sample, **inside** this adapter
+//! rather than as a separate `Source` wrapper. That makes the bound a property of the EQ stage
+//! itself, which no caller can forget to wrap — a boosted band cannot put a sample past ±1.0
+//! no matter how the graph is assembled.
+//!
+//! Non-finite input other than infinity still propagates: a NaN in is a NaN out. That is
+//! pre-existing behaviour and is explicitly **not** fixed here. It is harmless to the filters
+//! because the shaper is the last stage and nothing feeds back through it — a NaN arriving
+//! from upstream poisons the biquad state on its way in, which is a separate concern from
+//! anything the shaper does.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -28,6 +39,33 @@ pub const BAND_CENTERS_HZ: [f32; BAND_COUNT] = [
 pub const BAND_Q: f32 = 1.414;
 
 pub const MAX_GAIN_DB: f32 = 12.0;
+
+/// Output magnitude never exceeds this. It is strictly below it across the whole range the
+/// audio path can produce — the measured worst case out of the band bank is 7.45 — and
+/// saturates to exactly the ceiling above roughly 8e4 (about +98 dBFS), where `1.0 / (1.0 + s)`
+/// underflows the f32 mantissa and `1.0 - that` rounds to exactly 1.0. An infinite input
+/// saturates here too.
+pub const SOFT_CLIP_CEILING: f32 = 1.0;
+/// Below this magnitude the shaper is the identity, bit for bit. 0.95 because broadcast radio
+/// is limited to sit at roughly that peak — see ONDA.md for the sweep it came from.
+pub const SOFT_CLIP_THRESHOLD: f32 = 0.95;
+
+/// Linear below [`SOFT_CLIP_THRESHOLD`], then a rational knee asymptotic to
+/// [`SOFT_CLIP_CEILING`]. Continuous in value and in slope at the threshold, so a signal
+/// crossing it does not produce an edge.
+#[inline]
+pub fn soft_clip(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= SOFT_CLIP_THRESHOLD {
+        return x;
+    }
+    const W: f32 = SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD;
+    let s = (a - SOFT_CLIP_THRESHOLD) / W;
+    // `1.0 - 1.0 / (1.0 + s)`, NOT `s / (1.0 + s)`. They are algebraically identical for every
+    // finite `s`, but at `s = inf` the latter is `inf / inf` = NaN where this form gives
+    // `1.0 - 0.0` = 1.0 and saturates to exactly the ceiling. Do not "simplify" it back.
+    (SOFT_CLIP_THRESHOLD + W * (1.0 - 1.0 / (1.0 + s))).copysign(x)
+}
 
 /// Shared, lock-free gain table. Cloning shares the same underlying values.
 #[derive(Clone, Debug)]
@@ -197,7 +235,7 @@ impl<S: Source> Iterator for Equalizer<S> {
         if self.channel_cursor >= self.channels.get() as usize {
             self.channel_cursor = 0;
         }
-        Some(x)
+        Some(soft_clip(x))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -263,8 +301,10 @@ mod tests {
     const RATE: u32 = 44_100;
     const LEN: usize = 44_100; // 1 s
 
+    /// 0.4 peak so the frequency-response tests stay below the soft-clip knee and measure the
+    /// filter rather than the shaper: 0.4 at +6 dB is 0.8, under the 0.95 threshold.
     fn sine(freq: f32) -> Sine {
-        sine_peak(freq, 1.0)
+        sine_peak(freq, 0.4)
     }
 
     fn sine_peak(freq: f32, amp: f32) -> Sine {
@@ -289,8 +329,11 @@ mod tests {
 
     #[test]
     fn flat_eq_is_transparent() {
-        let reference: Vec<f32> = sine(1000.0).collect();
-        let out: Vec<f32> = Equalizer::new(sine(1000.0), EqGains::default()).collect();
+        // At broadcast peak level the shaper never engages (0.95 is the threshold, and the
+        // comparison is `<=`), so a flat EQ is bit-exact. This is the `-inf` residual row of
+        // the block A sweep, asserted rather than merely measured.
+        let reference: Vec<f32> = sine_peak(1000.0, 0.95).collect();
+        let out: Vec<f32> = Equalizer::new(sine_peak(1000.0, 0.95), EqGains::default()).collect();
         assert_eq!(out.len(), reference.len());
         let max_err = out
             .iter()
@@ -334,62 +377,61 @@ mod tests {
     }
 
     #[test]
-    fn boost_near_full_scale_exceeds_unity_no_limiting() {
-        // +12 dB is ×4 linear. The Equalizer applies gain with no limiter/soft-clip of its
-        // own, so near-full-scale content boosted at a band pushes the output past ±1.0 —
-        // it clips downstream at the sink, not here. This characterises current headroom
-        // behaviour; it is not a regression guard against clipping itself (no fix is applied
-        // in M1 — see ONDA.md/README "Known limitations").
+    fn boost_near_full_scale_is_bounded() {
+        // +12 dB is ×4 linear, and the band bank still produces a 2.787 peak internally — that
+        // has not changed. `soft_clip` is what bounds it on the way out. 0.99868 is the t=0.95
+        // column of block A's sweep (ONDA.md), so this also pins the shipped threshold to the
+        // curve that was actually swept.
         let gains = EqGains::default();
         gains.set(1, 12.0); // 62.5 Hz band
         let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 0.7), gains).collect();
         let tail = &out[out.len() / 2..];
         let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
         assert!(
-            peak > 1.0,
-            "expected +12 dB on 0.7 peak input to exceed unity, got peak {peak:.3}"
+            peak < SOFT_CLIP_CEILING,
+            "expected the output to stay under the ceiling, got peak {peak:.5}"
+        );
+        assert!(
+            (peak - 0.99868).abs() < 5e-4,
+            "expected block A's t=0.95 figure 0.99868, got {peak:.5}"
         );
     }
 
     #[test]
-    fn boost_at_broadcast_realistic_level_also_exceeds_unity() {
+    fn boost_at_broadcast_realistic_level_is_bounded() {
         // 0.95 peak (broadcast content, heavily limited to sit near full scale) with a more
-        // moderate +4 dB boost — not the +12 dB extreme.
+        // moderate +4 dB boost — not the +12 dB extreme. The EQ stage still reaches 1.5058
+        // internally; 0.99587 is block A's t=0.95 figure for it.
         let gains = EqGains::default();
         gains.set(1, 4.0); // 62.5 Hz band
         let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 0.95), gains).collect();
         let tail = &out[out.len() / 2..];
         let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
         assert!(
-            peak > 1.0,
-            "expected +4 dB on 0.95 peak input to exceed unity, got peak {peak:.3}"
+            peak < SOFT_CLIP_CEILING,
+            "expected the output to stay under the ceiling, got peak {peak:.5}"
+        );
+        assert!(
+            (peak - 0.99587).abs() < 5e-4,
+            "expected block A's t=0.95 figure 0.99587, got {peak:.5}"
         );
     }
 
     #[test]
-    fn already_above_unity_input_passes_through_unclamped() {
-        // Distinguishes "no headroom management" (Equalizer is transparent to whatever it's
-        // given, including already out-of-range input) from "something saturates in-path"
-        // (would show up here as output magnitude capped at/below the input's, or wrapped).
-        // Flat (0 dB) gains, so any deviation from the input is the Equalizer clamping/
-        // wrapping, not the EQ curve doing its job.
-        let reference: Vec<f32> = sine_peak(62.5, 1.5).collect();
+    fn already_above_unity_input_is_bounded() {
+        // mp3 and AAC decoders legitimately emit samples past ±1.0 on hot masters — intersample
+        // peaks survive the encode and come back out above full scale. Those are bounded even
+        // with a flat EQ, which is why the shaper is unconditional rather than bypassed when no
+        // band is boosted.
         let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 1.5), EqGains::default()).collect();
-        assert_eq!(out.len(), reference.len());
-        let max_err = out
-            .iter()
-            .zip(&reference)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        assert!(
-            max_err < 1e-4,
-            "flat EQ altered an already-above-unity input by up to {max_err} \
-             (expected pure passthrough — no clamp/wrap in the adapter)"
-        );
         let peak = out.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
         assert!(
-            (peak - 1.5).abs() < 1e-4,
-            "expected the 1.5 input peak to survive unchanged, got {peak:.3}"
+            peak < SOFT_CLIP_CEILING,
+            "expected a 1.5-peak input to be bounded, got {peak:.5}"
+        );
+        assert!(
+            (peak - 0.99583).abs() < 5e-4,
+            "expected soft_clip(1.5) = 0.99583, got {peak:.5}"
         );
     }
 
@@ -436,5 +478,92 @@ mod tests {
         let out: Vec<f32> = Equalizer::new(src, gains).collect();
         assert_eq!(out.len(), 22_050);
         assert!(out.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn soft_clip_is_identity_below_threshold() {
+        // Bit-exact, not approximately: below the knee the shaper must not touch the signal.
+        for i in 0..=4000 {
+            let x = -SOFT_CLIP_THRESHOLD + 2.0 * SOFT_CLIP_THRESHOLD * (i as f32 / 4000.0);
+            assert_eq!(soft_clip(x), x, "identity violated at {x}");
+        }
+        for x in [0.0f32, -0.0, SOFT_CLIP_THRESHOLD, -SOFT_CLIP_THRESHOLD] {
+            assert_eq!(soft_clip(x), x, "identity violated at the boundary {x}");
+        }
+        // `==` cannot see the sign of zero, so check it directly.
+        assert!(soft_clip(-0.0f32).is_sign_negative());
+        assert!(soft_clip(0.0f32).is_sign_positive());
+    }
+
+    #[test]
+    fn soft_clip_is_odd() {
+        for i in 0..=2000 {
+            let x = 3.0 * (i as f32 / 1000.0) - 1.5; // spans both regions, both signs
+            assert_eq!(soft_clip(-x), -soft_clip(x), "oddness violated at {x}");
+        }
+    }
+
+    #[test]
+    fn soft_clip_is_bounded_and_monotonic() {
+        let mut prev = f32::NEG_INFINITY;
+        for i in 0..=20_000 {
+            let x = 1e6 * (i as f32 / 10_000.0 - 1.0); // -1e6 ..= 1e6
+            let y = soft_clip(x);
+            assert!(
+                y.abs() <= SOFT_CLIP_CEILING,
+                "exceeded the ceiling at {x}: {y}"
+            );
+            assert!(y >= prev, "not monotonic at {x}: {y} < {prev}");
+            prev = y;
+        }
+        // Strictly inside the ceiling across everything the audio path can produce — the
+        // measured worst case out of the band bank is 7.45. Above roughly 8e4 the f32 result
+        // rounds to exactly 1.0, which the `<=` assertion above covers.
+        for i in 0..=10_000 {
+            let x = 1e4 * (i as f32 / 10_000.0);
+            assert!(soft_clip(x).abs() < SOFT_CLIP_CEILING, "not strict at {x}");
+        }
+        assert_eq!(soft_clip(f32::INFINITY), SOFT_CLIP_CEILING);
+        assert_eq!(soft_clip(f32::NEG_INFINITY), -SOFT_CLIP_CEILING);
+        // Pins the documented pre-existing behaviour; it is not an endorsement of it.
+        assert!(soft_clip(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn soft_clip_knee_is_continuous() {
+        // C0: just past the knee the shaper is still the identity, to within 1e-6. Note this
+        // compares against the identity continuation, not against f(T): |f(T+h) - f(T)| is ~h
+        // for any function whose slope is ~1, so asserting that is small tests nothing.
+        let h = 1e-4;
+        let past = soft_clip(SOFT_CLIP_THRESHOLD + h);
+        let identity = SOFT_CLIP_THRESHOLD + h;
+        assert!(
+            (past - identity).abs() < 1e-6,
+            "C0 broken at the knee: {past} vs identity {identity}"
+        );
+
+        // C1: the slope carries through as 1.0, so a signal crossing the threshold gets no
+        // edge. Tested as the *order* of the deviation rather than by finite difference: were
+        // the slope discontinuous, the deviation from the identity would grow linearly in h;
+        // because it is continuous it grows as h^2/W, so doubling h quadruples it.
+        //
+        // A direct finite-difference slope cannot settle this in f32. Truncation error is h/W
+        // and rounding error is ulp(0.95)/h, so the total floors near 2*sqrt(ulp/W) = 2.2e-3
+        // at the best h — a 1e-3 tolerance on the slope sits under that floor and cannot be
+        // met at any step size. The ratio below is immune to both.
+        let dev = |h: f32| ((SOFT_CLIP_THRESHOLD + h) - soft_clip(SOFT_CLIP_THRESHOLD + h)).abs();
+        let ratio = dev(2e-3) / dev(1e-3);
+        assert!(
+            (3.5..=4.5).contains(&ratio),
+            "C1 broken at the knee: dev(2h)/dev(h) = {ratio} (4 = continuous slope, 2 = a kink)"
+        );
+    }
+
+    #[test]
+    fn soft_clip_does_not_engage_at_broadcast_peak() {
+        // The product claim the threshold was chosen for: material sitting at the broadcast
+        // peak passes through untouched.
+        assert_eq!(soft_clip(0.95), 0.95);
+        assert_eq!(soft_clip(0.9499), 0.9499);
     }
 }
