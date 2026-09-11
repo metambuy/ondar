@@ -46,6 +46,14 @@ pub struct RingStats {
     pub underruns: AtomicU64,
     pub fill: AtomicUsize,
     pub capacity: usize,
+    /// Monotonic count of samples the decode thread has pushed. Advanced on the same 1024-
+    /// sample cadence as `fill`, at a point only reached *after* a successful push, so it
+    /// stops dead while that thread is blocked in a network read. The engine's watchdog
+    /// derives "no decode progress" from this rather than from `fill`, which is confounded:
+    /// the audio callback zeroes `fill` on underrun and the decode thread stops updating it
+    /// while blocked, so a stalled network and a momentarily starved but healthy ring look
+    /// identical through it.
+    pub pushed: AtomicU64,
 }
 
 pub struct RingHandle {
@@ -74,6 +82,7 @@ pub fn ring(sample_rate: SampleRate, channels: ChannelCount) -> (RingHandle, Rin
         underruns: AtomicU64::new(0),
         fill: AtomicUsize::new(0),
         capacity,
+        pushed: AtomicU64::new(0),
     });
     (
         RingHandle {

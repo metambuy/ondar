@@ -79,7 +79,7 @@ fn read_timeout() -> Duration {
     resolved_timeouts().0
 }
 
-fn retry_timeout() -> Duration {
+pub fn retry_timeout() -> Duration {
     resolved_timeouts().1
 }
 

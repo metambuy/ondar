@@ -203,6 +203,12 @@ struct Engine {
     /// rolling prune cannot shorten it mid-wait. `None` outside `Buffering`. See
     /// [`dwell_for_tick`].
     latched_dwell: Option<u32>,
+    /// `RingStats::pushed` as of the last tick, and how many consecutive ticks it has not
+    /// advanced. Drives the watchdog; see [`advance_progress`].
+    last_pushed: u64,
+    ticks_since_progress: u32,
+    /// Cached at construction — see [`watchdog_ticks`].
+    watchdog_ticks: u32,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -240,6 +246,9 @@ impl Engine {
             last_underruns: 0,
             ready_ticks: 0,
             latched_dwell: None,
+            last_pushed: 0,
+            ticks_since_progress: 0,
+            watchdog_ticks: watchdog_ticks(),
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -320,6 +329,8 @@ impl Engine {
             self.last_underruns = current_underruns;
             self.ready_ticks = 0;
             self.latched_dwell = None;
+            self.last_pushed = stats.pushed.load(Ordering::Relaxed);
+            self.ticks_since_progress = 0;
             self.underrun_ticks.clear();
         }
         let new_underrun = current_underruns > self.last_underruns;
@@ -349,6 +360,12 @@ impl Engine {
             .playing_since
             .is_some_and(|t| t.elapsed() >= STABLE_AFTER);
 
+        advance_progress(
+            &mut self.last_pushed,
+            &mut self.ticks_since_progress,
+            stats.pushed.load(Ordering::Relaxed),
+        );
+
         let dwell = dwell_for_tick(
             &mut self.latched_dwell,
             current == PlaybackState::Buffering,
@@ -365,6 +382,8 @@ impl Engine {
                 stable,
                 ready_ticks: self.ready_ticks,
                 dwell,
+                ticks_since_progress: self.ticks_since_progress,
+                watchdog_ticks: self.watchdog_ticks,
             },
         );
 
@@ -384,6 +403,22 @@ impl Engine {
             }
             Some(Transition::ResumePaused) => {
                 session.set_state(PlaybackState::Paused);
+            }
+            Some(Transition::FailSession) => {
+                log::warn!(
+                    "watchdog: {} ticks buffering with no decode progress; failing the session",
+                    self.ticks_since_progress
+                );
+                // Cancel in place, never `take()`. Whether this actually unblocks a read parked
+                // in `stream-download` is the one unverified link in the chain, and `take()`
+                // would remove the token that `SessionCtx::cancel` needs — so a watchdog that
+                // failed to work would also have removed the user's Stop as an escape hatch.
+                // `CancellationToken::cancel` takes `&self`; there is no reason to remove it.
+                if let Some(t) = session.download.lock().unwrap().as_ref() {
+                    t.cancel();
+                }
+                // Give the recovery a full window before firing again.
+                self.ticks_since_progress = 0;
             }
             None => {}
         }
@@ -632,6 +667,9 @@ fn run_session(
 
             let filled = ring.stats.capacity - ring.producer.slots();
             ring.stats.fill.store(filled, Ordering::Relaxed);
+            // Only reached after 1024 successful pushes, so it stops dead while this thread
+            // is blocked in a read — which is exactly the watchdog's signal.
+            ring.stats.pushed.fetch_add(1024, Ordering::Relaxed);
 
             if let Some(src) = source.take_if(|_| filled >= fill_target) {
                 player.clear();
@@ -706,6 +744,31 @@ fn is_refilled(fill: usize, capacity: usize) -> bool {
     fill * RESUME_FILL_DEN >= capacity * RESUME_FILL_NUM
 }
 
+/// How long `Buffering` may run with no decode progress before the session is failed and handed
+/// to the existing `Backoff`.
+///
+/// Derived from `stream::retry_timeout` rather than hardcoded, because that value is
+/// env-overridable (`ONDA_RETRY_TIMEOUT_SECS`) and a fixed constant would silently become wrong
+/// the moment it is raised. The bound to clear is the longest *legitimate* no-progress interval:
+/// bytes stop, `stream-download`'s idle reconnect fires after `retry_timeout`, and the new
+/// connection delivers. Measured at ~5.0 s with the 5 s default, so 3x plus a 15 s floor leaves
+/// ample margin over a recovery that would have succeeded on its own.
+fn watchdog_ticks() -> u32 {
+    let base = (stream::retry_timeout() * 3).max(Duration::from_secs(15));
+    (base.as_millis() / TICK_INTERVAL.as_millis()) as u32
+}
+
+/// Progress bookkeeping for the watchdog. Separated from `Engine::tick` so it is testable
+/// without a `Player`.
+fn advance_progress(last_pushed: &mut u64, ticks_since_progress: &mut u32, pushed: u64) {
+    if pushed != *last_pushed {
+        *last_pushed = pushed;
+        *ticks_since_progress = 0;
+    } else {
+        *ticks_since_progress = ticks_since_progress.saturating_add(1);
+    }
+}
+
 /// How long a connection with this many recent underruns must dwell before resuming. Selected
 /// once, on entry to `Buffering`, and then latched — see [`dwell_for_tick`].
 fn select_dwell(recent_underruns: u32) -> u32 {
@@ -749,6 +812,9 @@ enum Transition {
     PauseAndBuffer,
     ResumePlaying,
     ResumePaused,
+    /// Buffering has lasted too long with no decode progress. Fail the session so the
+    /// existing `Backoff` + a fresh `stream::open()` can recover it.
+    FailSession,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -784,6 +850,10 @@ struct TickInputs {
     ready_ticks: u32,
     /// Latched on entry to `Buffering` by [`dwell_for_tick`]; this function does not derive it.
     dwell: u32,
+    /// Consecutive ticks with no advance in `RingStats::pushed`.
+    ticks_since_progress: u32,
+    /// Threshold for the above; see [`watchdog_ticks`].
+    watchdog_ticks: u32,
 }
 
 fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
@@ -795,6 +865,8 @@ fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
         stable,
         ready_ticks,
         dwell,
+        ticks_since_progress,
+        watchdog_ticks,
     } = inputs;
     let mut out = TickOutcome {
         transition: None,
@@ -814,6 +886,15 @@ fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
         return out; // never pause and resume in the same tick
     }
 
+    // Watchdog. Exempt while user-paused: a paused session stops pulling, the ring fills, and
+    // the decode thread parks on a full ring, so "no bytes arriving" is normal there and a
+    // pause is unbounded in length. A longer threshold would only postpone a false positive,
+    // never remove one.
+    if !user_paused && ticks_since_progress >= watchdog_ticks {
+        out.transition = Some(Transition::FailSession);
+        return out;
+    }
+
     if is_refilled(fill, capacity) && !new_underrun && ready_ticks >= dwell {
         out.transition = Some(if user_paused {
             Transition::ResumePaused
@@ -831,6 +912,8 @@ mod tick_tests {
     const CAP: usize = 1000;
     // Comfortably above the 75% resume threshold at CAP = 1000.
     const REFILLED: usize = 800;
+    // Stand-in for watchdog_ticks(), which is 150 at the default retry_timeout.
+    const WD: u32 = 150;
 
     /// Baseline inputs: only `capacity` set. Each test overrides the two or three fields it
     /// actually cares about, which is the point of the struct.
@@ -838,6 +921,7 @@ mod tick_tests {
         TickInputs {
             capacity: CAP,
             dwell: DWELL_TICKS,
+            watchdog_ticks: WD,
             ..Default::default()
         }
     }
@@ -1052,5 +1136,92 @@ mod tick_tests {
         assert_eq!(latched, None);
         // A later, calmer wait gets its own selection rather than inheriting the old one.
         assert_eq!(dwell_for_tick(&mut latched, true, 0), DWELL_TICKS);
+    }
+
+    #[test]
+    fn no_progress_while_buffering_fails_session_at_threshold() {
+        let out = decide_tick(
+            &PlaybackState::Buffering,
+            TickInputs {
+                ticks_since_progress: WD,
+                ..ti()
+            },
+        );
+        assert_eq!(out.transition, Some(Transition::FailSession));
+    }
+
+    #[test]
+    fn no_progress_while_buffering_below_threshold_does_not_fail() {
+        let out = decide_tick(
+            &PlaybackState::Buffering,
+            TickInputs {
+                ticks_since_progress: WD - 1,
+                ..ti()
+            },
+        );
+        assert_eq!(out.transition, None);
+    }
+
+    #[test]
+    fn paused_with_full_ring_never_fails_session() {
+        // A paused session stops pulling, so the ring fills and the decode thread parks on a
+        // full ring: `pushed` stops advancing on a perfectly healthy connection. A pause is
+        // unbounded, so this must be an exemption, not a longer threshold.
+        let out = decide_tick(
+            &PlaybackState::Buffering,
+            TickInputs {
+                user_paused: true,
+                fill: CAP,
+                ticks_since_progress: WD * 10,
+                ..ti()
+            },
+        );
+        assert_ne!(out.transition, Some(Transition::FailSession));
+    }
+
+    #[test]
+    fn paused_and_buffering_still_resumes_paused() {
+        // The exemption must not cost the paused-and-buffering session its resume path.
+        let out = decide_tick(
+            &PlaybackState::Buffering,
+            TickInputs {
+                user_paused: true,
+                fill: REFILLED,
+                ready_ticks: DWELL_TICKS,
+                ticks_since_progress: WD * 10,
+                ..ti()
+            },
+        );
+        assert_eq!(out.transition, Some(Transition::ResumePaused));
+    }
+
+    #[test]
+    fn watchdog_does_not_fire_while_playing() {
+        // Only Buffering is watched. Playing with no progress underruns into Buffering first,
+        // so watching one state is sufficient.
+        let out = decide_tick(
+            &PlaybackState::Playing,
+            TickInputs {
+                ticks_since_progress: WD * 10,
+                ..ti()
+            },
+        );
+        assert_eq!(out.transition, None);
+    }
+
+    #[test]
+    fn progress_resets_the_watchdog() {
+        let (mut last, mut ticks) = (0u64, 0u32);
+        for _ in 0..5 {
+            advance_progress(&mut last, &mut ticks, 1024);
+        }
+        assert_eq!(
+            ticks, 4,
+            "first call observes the change, the rest are stalled ticks"
+        );
+        advance_progress(&mut last, &mut ticks, 2048);
+        assert_eq!(ticks, 0, "a push must reset the stall counter");
+        advance_progress(&mut last, &mut ticks, 2048);
+        assert_eq!(ticks, 1);
     }
 }
