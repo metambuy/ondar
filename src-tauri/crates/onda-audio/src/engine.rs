@@ -344,14 +344,16 @@ impl Engine {
             .is_some_and(|t| t.elapsed() >= STABLE_AFTER);
 
         let outcome = decide_tick(
-            new_underrun,
-            fill,
-            stats.capacity,
             &current,
-            user_paused,
-            stable,
-            self.ready_ticks,
-            recent_underruns,
+            TickInputs {
+                new_underrun,
+                fill,
+                capacity: stats.capacity,
+                user_paused,
+                stable,
+                ready_ticks: self.ready_ticks,
+                recent_underruns,
+            },
         );
 
         match outcome.transition {
@@ -721,17 +723,30 @@ struct TickOutcome {
 /// `retry_timeout` reconnect (default 5 s idle) fires on every stall — so without the
 /// early-return, a normal internal reconnect would flash `Buffering` then `Playing` back to
 /// back on every stall.
-#[allow(clippy::too_many_arguments)]
-fn decide_tick(
+/// Inputs to [`decide_tick`], as named fields rather than a positional list. The list had
+/// reached eight arguments — including two adjacent `bool`s and two adjacent `u32`s, where a
+/// transposition at any of the call sites would still compile and silently change behaviour.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TickInputs {
     new_underrun: bool,
     fill: usize,
     capacity: usize,
-    state: &PlaybackState,
     user_paused: bool,
     stable: bool,
     ready_ticks: u32,
     recent_underruns: u32,
-) -> TickOutcome {
+}
+
+fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
+    let TickInputs {
+        new_underrun,
+        fill,
+        capacity,
+        user_paused,
+        stable,
+        ready_ticks,
+        recent_underruns,
+    } = inputs;
     let mut out = TickOutcome {
         transition: None,
         reset_backoff: stable,
@@ -773,9 +788,18 @@ mod tick_tests {
     // Comfortably above the 75% resume threshold at CAP = 1000.
     const REFILLED: usize = 800;
 
+    /// Baseline inputs: only `capacity` set. Each test overrides the two or three fields it
+    /// actually cares about, which is the point of the struct.
+    fn ti() -> TickInputs {
+        TickInputs {
+            capacity: CAP,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn no_new_underrun_is_a_no_op() {
-        let out = decide_tick(false, 0, CAP, &PlaybackState::Playing, false, false, 0, 0);
+        let out = decide_tick(&PlaybackState::Playing, ti());
         assert_eq!(
             out,
             TickOutcome {
@@ -787,7 +811,14 @@ mod tick_tests {
 
     #[test]
     fn new_underrun_while_playing_pauses_and_buffers() {
-        let out = decide_tick(true, 100, CAP, &PlaybackState::Playing, false, false, 0, 0);
+        let out = decide_tick(
+            &PlaybackState::Playing,
+            TickInputs {
+                new_underrun: true,
+                fill: 100,
+                ..ti()
+            },
+        );
         assert_eq!(out.transition, Some(Transition::PauseAndBuffer));
     }
 
@@ -796,14 +827,13 @@ mod tick_tests {
         // Replaces the old both_conditions_can_fire_in_the_same_tick, which asserted the
         // opposite. See decide_tick's doc comment for why that behaviour was wrong.
         let out = decide_tick(
-            true,
-            CAP,
-            CAP,
             &PlaybackState::Playing,
-            false,
-            false,
-            100,
-            0,
+            TickInputs {
+                new_underrun: true,
+                fill: CAP,
+                ready_ticks: 100,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, Some(Transition::PauseAndBuffer));
     }
@@ -811,14 +841,12 @@ mod tick_tests {
     #[test]
     fn new_underrun_while_buffering_is_not_repeated() {
         let out = decide_tick(
-            true,
-            100,
-            CAP,
             &PlaybackState::Buffering,
-            false,
-            false,
-            0,
-            0,
+            TickInputs {
+                new_underrun: true,
+                fill: 100,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, None);
     }
@@ -826,14 +854,12 @@ mod tick_tests {
     #[test]
     fn buffering_refilled_and_dwelled_resumes_playing() {
         let out = decide_tick(
-            false,
-            REFILLED,
-            CAP,
             &PlaybackState::Buffering,
-            false,
-            false,
-            DWELL_TICKS,
-            0,
+            TickInputs {
+                fill: REFILLED,
+                ready_ticks: DWELL_TICKS,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, Some(Transition::ResumePlaying));
     }
@@ -841,14 +867,12 @@ mod tick_tests {
     #[test]
     fn buffering_refilled_but_not_dwelled_enough_stays_buffering() {
         let out = decide_tick(
-            false,
-            REFILLED,
-            CAP,
             &PlaybackState::Buffering,
-            false,
-            false,
-            DWELL_TICKS - 1,
-            0,
+            TickInputs {
+                fill: REFILLED,
+                ready_ticks: DWELL_TICKS - 1,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, None);
     }
@@ -856,14 +880,13 @@ mod tick_tests {
     #[test]
     fn buffering_refilled_and_dwelled_but_new_underrun_stays_buffering() {
         let out = decide_tick(
-            true,
-            REFILLED,
-            CAP,
             &PlaybackState::Buffering,
-            false,
-            false,
-            DWELL_TICKS,
-            0,
+            TickInputs {
+                new_underrun: true,
+                fill: REFILLED,
+                ready_ticks: DWELL_TICKS,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, None);
     }
@@ -871,58 +894,76 @@ mod tick_tests {
     #[test]
     fn buffering_refilled_and_dwelled_resumes_paused_if_user_paused() {
         let out = decide_tick(
-            false,
-            REFILLED,
-            CAP,
             &PlaybackState::Buffering,
-            true,
-            false,
-            DWELL_TICKS,
-            0,
+            TickInputs {
+                fill: REFILLED,
+                user_paused: true,
+                ready_ticks: DWELL_TICKS,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, Some(Transition::ResumePaused));
     }
 
     #[test]
     fn user_paused_while_playing_suppresses_pause_on_new_underrun() {
-        let out = decide_tick(true, 100, CAP, &PlaybackState::Playing, true, false, 0, 0);
+        let out = decide_tick(
+            &PlaybackState::Playing,
+            TickInputs {
+                new_underrun: true,
+                fill: 100,
+                user_paused: true,
+                ..ti()
+            },
+        );
         assert_eq!(out.transition, None);
     }
 
     #[test]
     fn unstable_connection_requires_longer_dwell() {
         let out = decide_tick(
-            false,
-            REFILLED,
-            CAP,
             &PlaybackState::Buffering,
-            false,
-            false,
-            DWELL_TICKS,
-            UNDERRUN_PANIC_COUNT,
+            TickInputs {
+                fill: REFILLED,
+                ready_ticks: DWELL_TICKS,
+                recent_underruns: UNDERRUN_PANIC_COUNT,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, None);
 
         let out = decide_tick(
-            false,
-            REFILLED,
-            CAP,
             &PlaybackState::Buffering,
-            false,
-            false,
-            DWELL_TICKS_UNSTABLE,
-            UNDERRUN_PANIC_COUNT,
+            TickInputs {
+                fill: REFILLED,
+                ready_ticks: DWELL_TICKS_UNSTABLE,
+                recent_underruns: UNDERRUN_PANIC_COUNT,
+                ..ti()
+            },
         );
         assert_eq!(out.transition, Some(Transition::ResumePlaying));
     }
 
     #[test]
     fn stability_resets_backoff_regardless_of_transition() {
-        let out = decide_tick(false, 0, CAP, &PlaybackState::Playing, false, true, 0, 0);
+        let out = decide_tick(
+            &PlaybackState::Playing,
+            TickInputs {
+                stable: true,
+                ..ti()
+            },
+        );
         assert!(out.reset_backoff);
         assert_eq!(out.transition, None);
 
-        let out = decide_tick(true, 0, CAP, &PlaybackState::Playing, false, true, 0, 0);
+        let out = decide_tick(
+            &PlaybackState::Playing,
+            TickInputs {
+                new_underrun: true,
+                stable: true,
+                ..ti()
+            },
+        );
         assert!(out.reset_backoff);
         assert_eq!(out.transition, Some(Transition::PauseAndBuffer));
     }
