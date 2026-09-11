@@ -1,7 +1,7 @@
 # Onda — project document
 
-*Last updated: 2026-09-08 (M1 stall/reconnect testing pass — see "Reconnect ownership
-and stream timeouts").*
+*Last updated: 2026-09-11 (Phase 1 block 2 — harness pacing fix, dwell latch, engine
+watchdog, prefetch knee, and a re-measured latency table).*
 
 ## What Onda is
 
@@ -76,7 +76,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Vibrancy | **`window-vibrancy`** (tauri-apps) + `transparent: true` | Applies `NSVisualEffectView` material to the panel |
 | Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
 | Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
-| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis (fill threshold in seconds of audio + dwell, longer dwell after repeated underruns): values TBD; `scripts/stall-server.py` now exists — tuning is its own pass. |
+| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
 | Station API | **Rust** `reqwest` client for radio-browser.info; **`hickory-resolver`** for the SRV lookup | `reqwest` cannot do SRV; a resolver crate is required |
@@ -262,31 +262,146 @@ full 2 s. So `IcyMetadata` lag (what the harness actually measures) is latency-t
 minus that occupancy, and adding `ring_occupancy` back to the measured `IcyMetadata`
 lag reconstructs the audible figure:
 
-| prefetch | burst | max(prefetch,burst) | ring_occupancy | measured `IcyMetadata` lag | audible (reconstructed) |
-|---|---|---|---|---|---|
-| 3.07 s | 0 | 3.07 s | 2.0 s | 1.26–1.46 s | 3.3–3.5 s |
-| 3.07 s | 4.10 s | 4.10 s | 2.0 s | 1.8–2.0 s | 3.8–4.0 s |
-| 3.07 s | 8.19 s | 8.19 s | 2.0 s | 6.2–6.3 s | 8.2–8.3 s |
-| 0.51 s | 0 | 0.51 s | 0.51 s | 0.49–0.50 s | ~1.0 s |
+| prefetch | burst | max() | ring_occupancy | predicted lag | **measured lag** | spread | TTFA |
+|---|---|---|---|---|---|---|---|
+| 0.51 s (8 KB) | 0 | 0.51 s | 0.51 s | 0.000 s | **+0.025 s** | 0.007 | 1.285 s |
+| 1.02 s (16 KB) | 0 | 1.02 s | 1.02 s | 0.000 s | **+0.026 s** | 0.004 | 1.281 s |
+| 2.05 s (32 KB) | 0 | 2.05 s | 2.00 s | 0.048 s | **+0.194 s** | 0.025 | 2.240 s |
+| 3.07 s (48 KB) | 0 | 3.07 s | 2.00 s | 1.072 s | **+1.214 s** | 0.025 | 3.247 s |
+| 2.05 s | 4.10 s | 4.10 s | 2.00 s | 2.096 s | **+2.202 s** | 0.032 | 0.136 s |
+| 3.07 s | 4.10 s | 4.10 s | 2.00 s | 2.096 s | **+2.196 s** | 0.029 | 0.117 s |
+| 3.07 s | 8.19 s | 8.19 s | 2.00 s | 6.192 s | **+6.309 s** | 0.031 | 0.150 s |
 
-The reconstructed audible figure tracks `max(prefetch_secs, burst_secs)` across all
-four points with no special case. The `IcyMetadata`-lag formula alone
-(`max(...) − ring_occupancy`) needs one: at the fourth point it floors at 0 against a
-measured 0.49–0.50 s — a 0.49 s miss, the same order as an earlier flat-floor reading's
-0.8 s miss on that same point, so this point alone doesn't cleanly favour either model.
-That the miss (0.49 s) is close to `prefetch_secs` itself (0.51 s) at that point is
-unexplained — not attributed to connect/decode-startup overhead or anything else here.
+Re-measured 2026-09-11 on the corrected harness, five samples per cell over 55 s, every
+figure a mean with its spread. The model fits to within 0.15 s at every point, with a
+consistent +0.10–0.15 s offset wherever the predicted lag is non-zero and +0.025 s where
+it is zero — a fixed overhead, not a scaling error. **The old special case is gone**: the
+small-prefetch point no longer misses by 0.49 s, and the previous "unexplained" residual
+there was an artefact of the harness, not of Onda.
 
-Harness resolution: `--icy-metaint 4000` at 16000 B/s quantises title-boundary timing
-to 0.25 s steps, and (measured − predicted) across the four `IcyMetadata`-lag points
-runs −0.3 s to +0.49 s. Nothing finer than ~0.5 s is resolvable with this harness as
-configured.
+**Time-to-first-audio is a separate quantity and does not follow `max(prefetch, burst)`.**
+It is the time until `fill_target` (1.0 s, half the ring) has been *decoded* into the ring,
+gated by whichever is slower — bytes arriving or decoding:
 
-Practical read: against a bursting Icecast (64 KB ≈ 4.1 s), the 48 KB prefetch (3.07 s)
-is free — the burst already dominates `max()`. Against a burst-less server, prefetch
-alone sets latency-to-live, making `prefetch_bytes` a direct dial there: 16 KB would
-buy back roughly 2 s in that case. Input for the hysteresis tuning pass, not a change
-now.
+- **Burst-less:** bytes arrive at 1×, so TTFA ≈ `max(prefetch_secs, 1.0 s) + ~0.25 s`.
+  It floors at ~1.28 s: below 16 KB, prefetch stops being the constraint and `fill_target`
+  takes over, which is why 8 KB and 16 KB give the same 1.28 s.
+- **With a burst:** the bytes are already present, so only decode time remains — 0.12–0.15 s
+  regardless of prefetch, against a `max()` of 4.10 s. A burst does not gate startup at all.
+
+Practical read: against a bursting Icecast (64 KB ≈ 4.1 s) the burst dominates `max()` and
+prefetch is free either way. Against a burst-less server prefetch alone sets latency-to-live,
+and the knee at `RING_SECONDS × byte_rate` ≈ 32 KB is where the head start exactly fills the
+ring — the largest prefetch that still costs nothing in freshness. See "The prefetch knee".
+
+### The harness paced 3.57% slow, and it invalidated the table above (found 2026-09-11)
+
+The previous version of that table could not be trusted, and the reason was not in Onda.
+`scripts/stall-server.py` paced at **15,429 B/s against a nominal 16,000** — 3.57% slow.
+The loop already compensated for `sendall`; the fault was that every deadline was computed
+from *"now"*, so `time.sleep` overshoot (1–3 ms on macOS) plus the uncompensated loop head
+accumulated against no fixed reference.
+
+The symptom was that measured freshness **decayed monotonically through every run**, ~0.3 s
+per 10 s — the client playing at true rate while the server under-delivered, eating the
+buffer. So every freshness figure depended on when in the run it was sampled, and the
+earlier four-point fit was fitting a moving target. Ruled out at the time: the engine is not
+outrunning real time — in steady state the ring sits at 97.2% mean fill with 73% of ticks
+at ≥99%, i.e. the decode thread is parked on a full ring as designed.
+
+Fixed by anchoring every deadline to an absolute schedule keyed on bytes sent. Measured
+after: **15,996.4 B/s, −0.022%**, and spread within a run fell from ~0.3 s per 10 s to
+±0.017 s over 40 s.
+
+### The prefetch knee (measured 2026-09-11)
+
+`prefetch_bytes` is 32 KB, chosen at the knee: `RING_SECONDS × byte_rate` is where the head
+start exactly fills the ring. Below it the whole head start fits and freshness floors at
+zero; above it the surplus becomes a standing offset behind live. At 128 kbit/s that is
+~31.25 KB, and 32 KB measures +0.194 s against 16 KB's +0.026 s and 48 KB's +1.214 s, while
+keeping twice the `fill_target` margin that made 16 KB thin (16 KB is 1.024 s of audio
+against a 1.0 s fill target).
+
+**The knee moves with bitrate and the constant does not.** 32 KB is 2.05 s at 128 kbit/s,
+0.82 s at 320 kbit/s — *below* `fill_target`, where prefetch stops doing anything — and
+4.1 s at 64 kbit/s, past the knee and paying lag for it. Correct at 128, degrading at both
+ends. **M3 refinement:** radio-browser's station record carries `bitrate`, making
+`prefetch_bytes = RING_SECONDS × bitrate / 8` computable before `open` and the knee
+reachable at every bitrate rather than one.
+
+### The unstable dwell was selected and then cancelled (found and fixed 2026-09-11)
+
+`DWELL_TICKS_UNSTABLE` never took effect. `decide_tick` derived the dwell from
+`recent_underruns` on every tick, and the underrun window prunes on a rolling basis, so an
+underrun ageing out of `UNDERRUN_WINDOW_TICKS` *midway through a wait* dropped the count
+below `UNDERRUN_PANIC_COUNT` and collapsed the dwell from 40 ticks to 10. `ready_ticks` had
+been accumulating throughout, so the resume fired immediately. Instrumented at a 13.3 s
+stall cadence:
+
+```
+t=316 Playing   recent=3 dwell=40 ready_ticks=0    <- underrun, 40 selected
+t=357 Buffering recent=3 dwell=40 ready_ticks=1    <- data back, dwell counting
+t=360 Buffering recent=3 dwell=40 ready_ticks=4
+t=361 Buffering recent=2 dwell=10 ready_ticks=5    <- prune. dwell collapses
+t=367 Playing   recent=2 dwell=10 ready_ticks=11   <- resumes at 11, not 40
+```
+
+Effective dwell 1.1 s against the 4.0 s chosen. At that cadence **every** eligible wait was
+cut short — the unstable path was 100% ineffective — and at ~5 s cadence it was intermittent
+*within a single run*, so the effective dwell was 10 or 40 by coincidence of where the
+window boundary fell. Fixed by latching the dwell on entry to `Buffering` and holding it for
+that wait (`dwell_for_tick`). `UNDERRUN_WINDOW_TICKS` stays 300 and `UNDERRUN_PANIC_COUNT`
+stays 3 — they were never the problem, and tuning them without the latch would only move the
+cadence at which the collapse appears. Verified after: resumes at the 3rd/4th/5th underruns
+take 4.63/4.86/4.93 s, previously 2.08/2.60/3.10 s.
+
+`RESUME_FILL_NUM/DEN` (3/4) is **observed, not optimised**: refilling to 75% cost 0.36–2.1 s
+depending on residual buffer. It is a `const` rather than env-overridable, so sweeping it
+needs a rebuild per value, and the cost of being slightly wrong is a marginally longer or
+shorter silence after recovery — a taste judgement, not a correctness one, with nothing
+downstream depending on the value. Not swept, deliberately.
+
+### The engine-level watchdog (added 2026-09-11)
+
+`Buffering` had no upper bound, and one reachable case never ended. Against `--range reject`
+— a 416 to a retried range request — `stream-download` swallows the error into an infinite
+retry and never returns it to the decode thread, so **nothing in Onda could fail the
+session**: measured 1,585,143 log lines / 382 MB in a 40 s run, 1,585,101 of them identical,
+stuck in `Buffering` for the whole run with no `Reconnecting` and no `Error`. The external
+`Backoff` was unreachable.
+
+The watchdog bounds time in `Buffering` with no decode progress, then fails the session into
+the existing `Backoff` + a fresh `stream::open()`. Progress is `RingStats::pushed`, advanced
+by the decode thread at a point only reached after a successful push — not `fill`, which the
+audio callback zeroes on underrun and the decode thread stops updating while blocked, making
+a stalled network and a healthy-but-starved ring indistinguishable.
+
+Threshold is `max(3 × retry_timeout, 15 s)`, derived at runtime because `retry_timeout` is
+env-overridable and a constant would silently become wrong when raised. The bound to clear is
+the longest *legitimate* no-progress interval — bytes stop, the idle reconnect fires after
+`retry_timeout`, the new connection delivers — measured at ~5.0 s.
+
+Paused sessions are **exempt outright**, not given a longer threshold: a paused session stops
+pulling, the ring fills, the decode thread parks on a full ring, and `pushed` stops advancing
+on a perfectly healthy connection. A pause is unbounded, so a longer threshold postpones a
+false positive without removing one.
+
+Verified on the identical scenario: **64 lines / 10 KB**, session failed at 15.0 s of no
+progress, `Reconnecting { attempt: 1 }`, recovery, cycle repeating under `Backoff`. The spin
+does not start at all, because the watchdog fires before the point at which it got going.
+That is better than the worst case rather than a guarantee of it — a spin that starts earlier
+is still bounded only by the window, ~15 s at ~39,600 lines/sec, five times over under
+`Backoff`.
+
+### `Buffering` fires before the buffer is exhausted (measured 2026-09-11)
+
+At the instant of underrun, **1.59 s and 1.63 s of already-delivered audio had not been
+played** (two configurations, repeatable to 0.04 s). The underrun is a *ring* event, not a
+pipeline-empty event: the decode thread is parked in a read while `stream-download` still
+holds data. So `Buffering` is more responsive than buffer arithmetic predicts, and the
+watchdog's progress signal must not be confused by it — which is why it counts pushes rather
+than inferring from `fill`.
+
 
 ### Bare `cargo test` runs nothing (found 2026-09-10)
 

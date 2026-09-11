@@ -14,12 +14,15 @@ use rtrb::{Consumer, Producer, RingBuffer};
 /// Seconds of audio the ring can hold. This does *not* bound latency-to-live. Two different
 /// figures matter, and they are driven by different things — neither of them this ring:
 ///
-/// - **First audible sample** tracks how long `prefetch_bytes` takes to *arrive*, and nothing
-///   else. Measured linear in prefetch with ~0.20 s of constant overhead (1.024 s → 1.211,
-///   2.048 → 2.264, 3.072 → 3.307), and 0.106 s against a 64 KB burst where
-///   `max(prefetch, burst)` is 4.10 s — a burst satisfies the prefetch immediately, so it does
-///   not gate startup at all. An earlier comment here claimed `≈ max(prefetch_secs,
-///   burst_secs)`; the burst case falsifies it by a factor of 39.
+/// - **First audible sample** is the time until `fill_target` (1.0 s, half this ring) has been
+///   *decoded* into it, gated by whichever is slower — bytes arriving or decoding. Burst-less,
+///   bytes arrive at 1×, so it is `max(prefetch_secs, 1.0 s) + ~0.25 s`: measured 1.285 /
+///   1.281 / 2.240 / 3.247 s at prefetch 0.51 / 1.02 / 2.05 / 3.07 s — note the floor, where
+///   below ~1 s of prefetch `fill_target` takes over as the constraint and 8 KB and 16 KB give
+///   the same figure. With a burst the bytes are already present, so only decode time remains:
+///   0.12–0.15 s regardless of prefetch, against a `max(prefetch, burst)` of 4.10 s. An
+///   earlier comment here claimed `≈ max(prefetch_secs, burst_secs)`; the burst case falsifies
+///   it by a factor of ~30.
 /// - **`IcyMetadata` freshness** ≈ `max(prefetch_secs, burst_secs) − ring_occupancy`, where
 ///   `ring_occupancy = min(RING_SECONDS, max(prefetch_secs, burst_secs))` — once decoding
 ///   starts, the decoder drains that head start faster than real time until the ring is full
