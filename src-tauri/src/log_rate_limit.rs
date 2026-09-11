@@ -107,8 +107,16 @@ mod tests {
         }
     }
 
+    /// Admits `BURST` events per window, then suppresses and counts the rest.
+    ///
+    /// **The name is deliberate and is doing a second job.** A bare `cargo test` runs only this
+    /// crate — `src-tauri/Cargo.toml` has a real `[package]` at the workspace root, so cargo
+    /// does not default to every member — which skips all 48 tests in `onda-audio` while
+    /// exiting 0. It used to report `0 passed`, which at least looked empty; since this crate
+    /// gained tests it reports `3 passed`, which reads like a successful run. The three names
+    /// are the only thing a bare run prints, so one of them says what happened. See CLAUDE.md.
     #[test]
-    fn allows_up_to_burst_then_suppresses() {
+    fn bare_cargo_test_runs_only_the_shell_crate_see_claude_md() {
         let now = Instant::now();
         let mut st = state(now);
         for i in 0..BURST {

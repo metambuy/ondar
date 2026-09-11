@@ -119,10 +119,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test --workspace       # 51 tests: 48 in the onda_audio binary and 3 in the shell's
                               # onda_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `onda` package (0 tests) and silently skips onda-audio; this
+                              # `onda` package (3 tests) and silently skips onda-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
-                              # Use `--workspace` or `-p onda-audio` explicitly.
+                              # Use `--workspace` or `-p onda-audio` explicitly. A bare run
+                              # prints only the shell's three test names, and one of them —
+                              # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
+                              # so. That name is the signal; it is a real test, and renaming it
+                              # makes the trap silent again.
 cargo run -p onda-audio --example stall_bench    # against scripts/stall-server.py
 ```
 

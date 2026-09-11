@@ -235,6 +235,12 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
   energy in that band, and because what exit criterion 3 requires is the bound — not the
   timbre of deliberate overdrive.
 
+  **By-ear check (subjective, not a measurement).** On 2026-09-11 Martín listened to a music
+  station with band 1 at +12 dB — the heavily-engaged case — and reported no audible issue.
+  Recorded because it is the *only* evidence covering the regime the residual metric cannot
+  see, and labelled as what it is: one person, one station, one sitting, no instrumentation.
+  It is not a substitute for a harmonic-order measurement, and it should not be cited as one.
+
   **Placement:** the stage is inside `Equalizer`, not a separate `Source` adapter, so the
   bound is a property of the EQ stage and cannot be bypassed by assembling the graph
   differently.
@@ -501,7 +507,13 @@ For that layout cargo's default scope is the root package alone, not all members
 
 It reports success either way, which is what made it survive this long — and as of block 2
 it is **more** dangerous, not less: the shell crate gained its own tests, so a bare run now
-prints a plausible-looking `3 passed` rather than an obviously-empty `0 passed`. **Implication worth
+prints a plausible-looking `3 passed` rather than an obviously-empty `0 passed`.
+
+**The mitigation is a test name.** A bare run prints nothing but the three shell test names, so
+one of them says what happened:
+`log_rate_limit::tests::bare_cargo_test_runs_only_the_shell_crate_see_claude_md`. It is a real
+test of the rate limiter's burst behaviour, not a placeholder — the name is carrying a second
+job. If that test is ever renamed or removed, the trap goes back to being silent. **Implication worth
 stating plainly: any "cargo test passes" claim made before 2026-09-10 needs re-reading against
 which invocation was used.** `README.md`'s instructions were fine — they have always said
 `cargo test --workspace` and `cargo test -p onda-audio`. The *verification ritual* in
