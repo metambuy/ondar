@@ -22,10 +22,26 @@ use crate::types::ErrorCode;
 
 pub type Reader = StreamDownload<BoundedStorageProvider<MemoryStorageProvider>>;
 
-/// Bytes to buffer before the decoder is allowed to start. At 128 kbit/s this is ~3 s.
+/// Bytes to buffer before the decoder is allowed to start — 2.05 s at 128 kbit/s.
+///
+/// Chosen at the knee rather than by taste. `RING_SECONDS * byte_rate` is the point where the
+/// head start exactly fills the ring: below it the whole head start fits, so nothing is left
+/// over as a standing offset behind the live edge and ICY freshness floors at zero; above it
+/// the surplus becomes exactly that offset. Measured at 128 kbit/s, burst-less: 32 KB gives
+/// +0.013 s freshness — statistically identical to 16 KB's +0.014 s — where 48 KB costs
+/// +0.71 s and 1.0 s more time-to-first-audio. 32 KB keeps twice the `fill_target` margin that
+/// made 16 KB thin: 16 KB is 1.024 s of audio against a 1.0 s fill target, ~20 ms of headroom.
+///
+/// The knee moves with bitrate and this constant does not. 32 KB is 2.05 s at 128 kbit/s, but
+/// 0.82 s at 320 kbit/s — *below* the 1.0 s fill target, so prefetch stops doing anything
+/// there — and 4.1 s at 64 kbit/s, well past the knee and paying lag for it. Correct at
+/// 128 kbit/s, degrading at both ends. M3 refinement: radio-browser's station record carries
+/// `bitrate`, which makes `prefetch_bytes = RING_SECONDS * bitrate / 8` computable before
+/// `open` and the knee reachable at every bitrate rather than one.
+///
 /// Overridable via `ONDA_PREFETCH_BYTES` (see [`prefetch_bytes`]) so stall testing can trade
 /// startup latency against burst-size realism without a rebuild.
-pub const PREFETCH_BYTES: u64 = 48 * 1024;
+pub const PREFETCH_BYTES: u64 = 32 * 1024;
 /// Size of the in-memory ring the HTTP body is written into (~16 s at 128 kbit/s; also the
 /// maximum look-back Symphonia can use while probing, which needs only a few KB).
 pub const BUFFER_BYTES: usize = 256 * 1024;

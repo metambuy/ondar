@@ -11,12 +11,15 @@ use std::time::Duration;
 use rodio::{ChannelCount, SampleRate, Source};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-/// Seconds of audio the ring can hold. This does *not* bound latency-to-live — two different
-/// figures, both driven by `max(prefetch_secs, burst_secs)` (whichever hands the decoder more
-/// audio up front), not this ring:
+/// Seconds of audio the ring can hold. This does *not* bound latency-to-live. Two different
+/// figures matter, and they are driven by different things — neither of them this ring:
 ///
-/// - **First audible sample** ≈ `max(prefetch_secs, burst_secs)` — how long until there's
-///   enough buffered to start decoding at all.
+/// - **First audible sample** tracks how long `prefetch_bytes` takes to *arrive*, and nothing
+///   else. Measured linear in prefetch with ~0.20 s of constant overhead (1.024 s → 1.211,
+///   2.048 → 2.264, 3.072 → 3.307), and 0.106 s against a 64 KB burst where
+///   `max(prefetch, burst)` is 4.10 s — a burst satisfies the prefetch immediately, so it does
+///   not gate startup at all. An earlier comment here claimed `≈ max(prefetch_secs,
+///   burst_secs)`; the burst case falsifies it by a factor of 39.
 /// - **`IcyMetadata` freshness** ≈ `max(prefetch_secs, burst_secs) − ring_occupancy`, where
 ///   `ring_occupancy = min(RING_SECONDS, max(prefetch_secs, burst_secs))` — once decoding
 ///   starts, the decoder drains that head start faster than real time until the ring is full
