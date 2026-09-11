@@ -199,6 +199,10 @@ struct Engine {
     /// 0 on any tick that fails either condition. Must reach the dwell threshold before
     /// `tick()` resumes output.
     ready_ticks: u32,
+    /// The dwell chosen when the current `Buffering` wait began, held for its duration so a
+    /// rolling prune cannot shorten it mid-wait. `None` outside `Buffering`. See
+    /// [`dwell_for_tick`].
+    latched_dwell: Option<u32>,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -235,6 +239,7 @@ impl Engine {
             current_ring: None,
             last_underruns: 0,
             ready_ticks: 0,
+            latched_dwell: None,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -314,6 +319,7 @@ impl Engine {
             self.current_ring = Some(stats.clone());
             self.last_underruns = current_underruns;
             self.ready_ticks = 0;
+            self.latched_dwell = None;
             self.underrun_ticks.clear();
         }
         let new_underrun = current_underruns > self.last_underruns;
@@ -343,6 +349,12 @@ impl Engine {
             .playing_since
             .is_some_and(|t| t.elapsed() >= STABLE_AFTER);
 
+        let dwell = dwell_for_tick(
+            &mut self.latched_dwell,
+            current == PlaybackState::Buffering,
+            recent_underruns,
+        );
+
         let outcome = decide_tick(
             &current,
             TickInputs {
@@ -352,7 +364,7 @@ impl Engine {
                 user_paused,
                 stable,
                 ready_ticks: self.ready_ticks,
-                recent_underruns,
+                dwell,
             },
         );
 
@@ -694,6 +706,42 @@ fn is_refilled(fill: usize, capacity: usize) -> bool {
     fill * RESUME_FILL_DEN >= capacity * RESUME_FILL_NUM
 }
 
+/// How long a connection with this many recent underruns must dwell before resuming. Selected
+/// once, on entry to `Buffering`, and then latched — see [`dwell_for_tick`].
+fn select_dwell(recent_underruns: u32) -> u32 {
+    if recent_underruns >= UNDERRUN_PANIC_COUNT {
+        DWELL_TICKS_UNSTABLE
+    } else {
+        DWELL_TICKS
+    }
+}
+
+/// The dwell latch. Returns the dwell to apply this tick, updating `latched`.
+///
+/// This exists because `recent_underruns` is recomputed from scratch every tick, and the
+/// window prunes on a rolling basis (`Engine::tick`) — so without latching, an underrun ageing
+/// out of `UNDERRUN_WINDOW_TICKS` *midway through a wait* drops the count below
+/// `UNDERRUN_PANIC_COUNT` and collapses the dwell from `DWELL_TICKS_UNSTABLE` back to
+/// `DWELL_TICKS`. Since `ready_ticks` has been accumulating the whole time, the resume then
+/// fires immediately. Measured before this fix: a wait that selected 40 ticks resumed at 11,
+/// and at a 13.3 s stall cadence *every* unstable wait was cut short this way, making the
+/// unstable path 100% ineffective. `UNDERRUN_WINDOW_TICKS` and `UNDERRUN_PANIC_COUNT` are
+/// unchanged; the latch is what makes them mean what their names say.
+///
+/// Latches on the first tick observed in `Buffering`, not in the `PauseAndBuffer` arm, which
+/// keeps it pure. That relies on no prune landing in the one-tick gap between the underrun
+/// registering (state still `Playing`) and the first `Buffering` tick — possible only if an
+/// underrun is exactly `UNDERRUN_WINDOW_TICKS` old at that instant. If a latched dwell ever
+/// looks wrong, that gap is the first place to look, and the fix is to latch in the
+/// `PauseAndBuffer` arm instead.
+fn dwell_for_tick(latched: &mut Option<u32>, is_buffering: bool, recent_underruns: u32) -> u32 {
+    if !is_buffering {
+        *latched = None;
+        return select_dwell(recent_underruns);
+    }
+    *latched.get_or_insert_with(|| select_dwell(recent_underruns))
+}
+
 /// What `Engine::tick()` should do, decided in isolation from the real `Player`/`SessionCtx`
 /// so this logic is unit-testable without a live audio device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -712,8 +760,8 @@ struct TickOutcome {
 /// Pure decision function behind [`Engine::tick`]. `state` is the state observed at the start
 /// of the tick (before the returned outcome is applied). `new_underrun` is whether the ring's
 /// underrun counter advanced since the previous tick (not raw "is silent right now" — see
-/// `RingStats::underruns`); `ready_ticks`/`recent_underruns` are the caller's running counts
-/// (consecutive good ticks, and underrun events within `UNDERRUN_WINDOW_TICKS`).
+/// `RingStats::underruns`); `ready_ticks` is the caller's count of consecutive good ticks, and
+/// `dwell` the latched threshold it must reach, chosen by [`dwell_for_tick`] rather than here.
 ///
 /// Pause and resume can never be emitted in the same tick: once a fresh underrun is seen while
 /// not already `Buffering`, this returns immediately with `PauseAndBuffer`, even if the ring
@@ -734,7 +782,8 @@ struct TickInputs {
     user_paused: bool,
     stable: bool,
     ready_ticks: u32,
-    recent_underruns: u32,
+    /// Latched on entry to `Buffering` by [`dwell_for_tick`]; this function does not derive it.
+    dwell: u32,
 }
 
 fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
@@ -745,7 +794,7 @@ fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
         user_paused,
         stable,
         ready_ticks,
-        recent_underruns,
+        dwell,
     } = inputs;
     let mut out = TickOutcome {
         transition: None,
@@ -765,11 +814,6 @@ fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
         return out; // never pause and resume in the same tick
     }
 
-    let dwell = if recent_underruns >= UNDERRUN_PANIC_COUNT {
-        DWELL_TICKS_UNSTABLE
-    } else {
-        DWELL_TICKS
-    };
     if is_refilled(fill, capacity) && !new_underrun && ready_ticks >= dwell {
         out.transition = Some(if user_paused {
             Transition::ResumePaused
@@ -793,6 +837,7 @@ mod tick_tests {
     fn ti() -> TickInputs {
         TickInputs {
             capacity: CAP,
+            dwell: DWELL_TICKS,
             ..Default::default()
         }
     }
@@ -926,7 +971,7 @@ mod tick_tests {
             TickInputs {
                 fill: REFILLED,
                 ready_ticks: DWELL_TICKS,
-                recent_underruns: UNDERRUN_PANIC_COUNT,
+                dwell: DWELL_TICKS_UNSTABLE,
                 ..ti()
             },
         );
@@ -937,7 +982,7 @@ mod tick_tests {
             TickInputs {
                 fill: REFILLED,
                 ready_ticks: DWELL_TICKS_UNSTABLE,
-                recent_underruns: UNDERRUN_PANIC_COUNT,
+                dwell: DWELL_TICKS_UNSTABLE,
                 ..ti()
             },
         );
@@ -966,5 +1011,46 @@ mod tick_tests {
         );
         assert!(out.reset_backoff);
         assert_eq!(out.transition, Some(Transition::PauseAndBuffer));
+    }
+
+    #[test]
+    fn select_dwell_at_panic_boundary() {
+        assert_eq!(select_dwell(0), DWELL_TICKS);
+        assert_eq!(select_dwell(UNDERRUN_PANIC_COUNT - 1), DWELL_TICKS);
+        assert_eq!(select_dwell(UNDERRUN_PANIC_COUNT), DWELL_TICKS_UNSTABLE);
+        assert_eq!(select_dwell(UNDERRUN_PANIC_COUNT + 1), DWELL_TICKS_UNSTABLE);
+    }
+
+    #[test]
+    fn latched_dwell_survives_prune_mid_wait() {
+        // The measured regression: a wait entered with 3 recent underruns selected 40 ticks,
+        // then an underrun aged out of the window mid-wait, recent_underruns fell to 2, and
+        // the dwell collapsed to 10 — resuming at ready_ticks 11 instead of 40.
+        let mut latched = None;
+        assert_eq!(
+            dwell_for_tick(&mut latched, true, UNDERRUN_PANIC_COUNT),
+            DWELL_TICKS_UNSTABLE
+        );
+        for _ in 0..50 {
+            assert_eq!(
+                dwell_for_tick(&mut latched, true, UNDERRUN_PANIC_COUNT - 1),
+                DWELL_TICKS_UNSTABLE,
+                "a prune mid-wait must not shorten the latched dwell"
+            );
+        }
+    }
+
+    #[test]
+    fn latch_clears_on_leaving_buffering() {
+        let mut latched = None;
+        assert_eq!(
+            dwell_for_tick(&mut latched, true, UNDERRUN_PANIC_COUNT),
+            DWELL_TICKS_UNSTABLE
+        );
+        // Resumed: not buffering, so the latch drops.
+        dwell_for_tick(&mut latched, false, UNDERRUN_PANIC_COUNT);
+        assert_eq!(latched, None);
+        // A later, calmer wait gets its own selection rather than inheriting the old one.
+        assert_eq!(dwell_for_tick(&mut latched, true, 0), DWELL_TICKS);
     }
 }
