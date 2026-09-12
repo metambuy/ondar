@@ -18,7 +18,10 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     window::{Effect, EffectState, EffectsBuilder},
 };
-use tauri_nspanel::{ManagerExt, PanelBuilder, PanelHandle, PanelLevel, tauri_panel};
+use tauri_nspanel::{
+    ManagerExt, PanelBuilder, PanelHandle, PanelLevel, objc2_app_kit::NSWindowOcclusionState,
+    tauri_panel,
+};
 
 /// Label of the popover window.
 ///
@@ -60,6 +63,13 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .level(PanelLevel::PopUpMenu)
         .floating(true)
         .no_activate(true)
+        // KNOWN DEFECT, left in place deliberately — the fix is M2 work, not a spike edit.
+        // With this `true`, the panel never composites: AppKit reports `isVisible == true`
+        // while `occlusionState` keeps the `Visible` bit (1<<1) clear, and nothing reaches
+        // the screen. Under an Accessory policy with a non-activating panel the app is never
+        // active, so "hides on deactivate" is permanently satisfied. Flipping it to `false`
+        // takes `occlusionState` from 8192 to 8194 and the panel renders. Bisected: the
+        // activation policy is *not* involved — `Regular` changes nothing.
         .hides_on_deactivate(true)
         .has_shadow(true)
         // Two different transparencies, and both are needed. This one is the NSWindow:
@@ -68,7 +78,23 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         // ...and this one is the webview. wry decides the WKWebView's own opacity when it
         // creates it, so the window-level call above cannot reach it retroactively. Without
         // it the page renders on an opaque layer that hides the NSVisualEffectView.
-        .with_window(|w| w.decorations(false).resizable(false).transparent(true))
+        .with_window(|w| {
+            w.decorations(false)
+                .resizable(false)
+                .transparent(true)
+                // Proof that the page actually loaded. A WKWebView with no loaded document
+                // paints nothing, exactly like a transparent one, so "the panel is blank"
+                // cannot be attributed to the window until this has fired.
+                // A `Finished` event here is the proof; a WKWebView console message would
+                // not be, since it goes to the web inspector rather than to stdout.
+                .on_page_load(|_webview, payload| {
+                    log::info!(
+                        "panel page load: event={:?} url={}",
+                        payload.event(),
+                        payload.url()
+                    );
+                })
+        })
         .build()?;
 
     // Hidden until the first tray click; `build()` leaves the window ordered in.
@@ -82,11 +108,10 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         EffectsBuilder::new()
             .effect(Effect::Popover)
             // `Active`, not `FollowsWindowActiveState`. Under an Accessory activation policy
-            // with a non-activating panel, the app is never active and the panel is never
-            // the key window, so "follows" resolves to permanently inactive — and an
-            // inactive NSVisualEffectView paints nothing at all. The view is inserted, sized
-            // correctly and reported present in the hierarchy, and the panel is still
-            // invisible: the third way this can fail while looking like success.
+            // with a non-activating panel the app is never active and the panel is never the
+            // key window, so "follows" resolves to permanently inactive — which is not what
+            // a menu bar popover should look like. (This is about the *material*. It was not
+            // the cause of the panel being invisible; that was `hides_on_deactivate`, below.)
             .state(EffectState::Active)
             .build(),
     )?;
@@ -181,14 +206,20 @@ fn watch<R: Runtime>(panel: PanelHandle<R>, window: WebviewWindow<R>) {
 /// unless its collection behaviour says it may. Must run on the main thread.
 fn describe_window<R: Runtime>(panel: &PanelHandle<R>) -> String {
     let w = panel.as_panel();
+    let occlusion = w.occlusionState();
+    // Print the decoded bit, not just the raw value. `NSWindowOcclusionStateVisible` is
+    // `1 << 1` (objc2-app-kit `NSWindow.rs`, `const Visible = 1<<1`), and the raw state also
+    // carries undocumented high bits — so a non-zero number reads as "visible" at a glance
+    // while the Visible bit is actually clear. That misread cost real time once already.
     format!(
-        "alpha={:.2} opaque={} key={} level={} on_active_space={} occlusion={:?}",
+        "alpha={:.2} opaque={} key={} level={} on_active_space={} occluded_visible_bit={} occlusion_raw={}",
         w.alphaValue(),
         w.isOpaque(),
         w.isKeyWindow(),
         w.level(),
         w.isOnActiveSpace(),
-        w.occlusionState()
+        occlusion.contains(NSWindowOcclusionState::Visible),
+        occlusion.0
     )
 }
 
