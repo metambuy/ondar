@@ -4,6 +4,7 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+mod panel;
 
 use std::thread;
 
@@ -45,8 +46,13 @@ pub fn run() {
     let (engine, engine_events) = AudioEngine::start(user_agent);
 
     tauri::Builder::default()
+        // Manages the panel store that `PanelBuilder::build()` registers into; without it
+        // the builder's internal `to_panel` panics on a missing state.
+        .plugin(tauri_nspanel::init())
         .manage(AppState { engine })
         .setup(move |app| {
+            panel::setup(app)?;
+
             let handle = app.handle().clone();
             thread::Builder::new()
                 .name("onda-events".into())

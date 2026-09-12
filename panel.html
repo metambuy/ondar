@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Onda popover (M2 spike)</title>
+    <!--
+      M2 spike only. Deliberately has no script, no IPC and no React: a page that invokes
+      nothing needs no capability, so `capabilities/default.json` stays scoped to the `main`
+      window. The real popover UI arrives at M2 proper.
+
+      The transparent background is load-bearing, not cosmetic. An opaque body paints over
+      the NSVisualEffectView that `set_effects` inserts, and `set_effects` still returns Ok —
+      so the vibrancy would look broken while every check passed. The label below is here so
+      the screenshot shows both that the page rendered and that you can see through it.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+      }
+      main {
+        height: 100%;
+        display: grid;
+        place-items: center;
+        font: 600 13px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        letter-spacing: 0.02em;
+        color: #fff;
+        text-shadow: 0 1px 2px rgb(0 0 0 / 55%);
+      }
+    </style>
+  </head>
+  <body>
+    <main>Onda — M2 spike</main>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist by the Tauri CLI at `tauri build`. The docs describe
+  this merge for `tauri build` only, and `tauri dev` runs a bare binary rather than a bundle,
+  so LSUIElement cannot be verified from dev — a bundled build is required.
+
+  ActivationPolicy::Accessory in lib.rs covers the running app; LSUIElement covers launch, so
+  no Dock icon appears even for the moment before setup() runs.
+-->
+<plist version="1.0">
+  <dict>
+    <key>LSUIElement</key>
+    <true/>
+  </dict>
+</plist>

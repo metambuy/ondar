@@ -22,7 +22,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = [] }
+tauri = { version = "2.11", features = ["macos-private-api", "tray-icon"] }
+# Subclasses the popover's NSWindow into a non-activating NSPanel — the only way to get a
+# menu bar popover that does not steal focus from the frontmost app. No crates.io release
+# tracks the v2.1 API, so it is pinned by rev; see ONDA.md.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }
 onda-audio = { path = "crates/onda-audio" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

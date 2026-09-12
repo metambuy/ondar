@@ -10,13 +10,15 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Onda — M1 dev harness",
         "width": 440,
         "height": 720,
-        "resizable": true
+        "resizable": true,
+        "visible": false
       }
     ],
     "security": {
