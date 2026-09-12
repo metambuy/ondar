@@ -72,8 +72,8 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Core language | **Rust** (edition 2024; MSRV 1.91 in `Cargo.toml`, matching `stream-download` 0.24.4's own declared requirement) | All logic: networking, cache, audio, DSP, tray, window |
 | UI | **Vite + React 18 + TypeScript** | Thin view layer only; keeps map work tractable |
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). |
-| Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** first; `tauri-plugin-positioner` 2.3.x (`tray-icon` feature) as fallback | Tauri 2 already gives the tray icon rect; positioner only if its Position enum saves real work. Decide at M2. |
-| Vibrancy | **`window-vibrancy`** (tauri-apps) + `transparent: true` | Applies `NSVisualEffectView` material to the panel |
+| Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. See the M2 spike. |
+| Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Verified applying to a subclassed panel window — see the M2 spike. |
 | Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
 | Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
 | Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
@@ -110,11 +110,42 @@ not crates.io lookups):
 **Not yet a dependency** (M2+; last-checked crates.io/GitHub state, *not* locked — re-verify
 before actually adding):
 
-- `tauri-nspanel`: branch `v2.1`, git only, no releases. Pinned commit rev not yet
-  researched — do this when M2 actually starts, not before (a rev pinned now would likely be
-  stale by then).
-- `tauri-plugin-positioner` 2.3.4, `hickory-resolver` 0.26.2
+- `tauri-plugin-positioner` — **not needed.** `TrayIconEvent::Click` carries `rect`, whose
+  `position` is already the tray icon's top-left corner in top-left-origin physical pixels
+  (`tray-icon` 0.24.2 `platform_impl/macos/mod.rs:515` `get_tray_rect` flips macOS's
+  bottom-left origin and subtracts the icon height before handing it over). That is the
+  convention Tauri's `PhysicalPosition` already uses, so no flip and no unit conversion are
+  required. The M2 fallback in the stack table is therefore not taken.
+- `hickory-resolver` 0.26.2
 - `tauri-specta` 2.0.0-rc.25 (not adopted)
+
+**`tauri-nspanel` — locked by the M2 spike (2026-09-12, branch `m2-spike`, not merged):**
+
+- `tauri-nspanel` **2.1.0**, git only, pinned
+  `rev = "c9ec2130422200f0863b23dfdad02b133a529b07"`. **Go/no-go: PASSED.** It builds against
+  `tauri` 2.11.5 with no patching, and the dependency graph unifies cleanly — single copies of
+  `objc2` 0.6.4, `objc2-app-kit` 0.3.2, `objc2-foundation` 0.3.2 (it asks for `^0.6.1`/`^0.3.1`).
+  It also enables `macos-private-api` on `tauri` itself. **The recorded fallback (borderless
+  always-on-top window) is not triggered.**
+- `window-vibrancy` stays **not a direct dependency.** Tauri provides `set_effects` on
+  `Window`/`WebviewWindow` itself and calls `window_vibrancy` internally, so nothing needs to
+  be added to `Cargo.toml` and the crates.io version of `window-vibrancy` is irrelevant to us.
+  The note above about re-verifying its version at M2 is resolved: there is nothing to add.
+- API shape confirmed against the pinned source: `PanelBuilder::<R, P>::new(&AppHandle, label)`
+  is generic over a panel class declared with the `tauri_panel!` macro, `build()` returns
+  `tauri::Result<Arc<dyn Panel<R>>>`, and `Panel` has **no** positioning or effects methods —
+  both are reached through `Panel::to_window() -> Option<WebviewWindow<R>>`. The `nspanel`
+  plugin must be registered (`.plugin(tauri_nspanel::init())`): `build()` calls `to_panel()`
+  internally, which `unwrap()`s on the plugin's managed state.
+- Ordering that is not optional: `ActivationPolicy` must be set **before**
+  `PanelBuilder::build()`. With `no_activate(true)` the builder forces
+  `NSApplicationActivationPolicy::Prohibited` around window creation and then restores the
+  policy that was in effect beforehand, so setting `Accessory` afterwards is undone.
+- Two separate transparencies are both required. `PanelBuilder::transparent(true)` acts on the
+  NSWindow (`backgroundColor = clearColor`, `opaque = false`); the webview's own opacity is
+  decided by wry when it creates the `WKWebView`, so it needs
+  `.with_window(|w| w.transparent(true))` as well. The window-level call cannot reach it
+  retroactively.
 
 **MSRV correction:** `Cargo.toml` declares `rust-version = "1.85"` at the workspace level, but
 `stream-download` 0.24.4's own manifest declares `rust-version = "1.91.0"`. So 1.85 has never
@@ -178,6 +209,16 @@ TypeScript, stop — it belongs in Rust.
 - **~30% of radio-browser stations have coordinates.** Map markers are therefore sparse;
   the country dropdown, not the map, is the primary navigation. The map is context and
   delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
+- **BLOCKER: `src-tauri/icons/icon.png` is a 1×1 placeholder and now blocks `tauri build`
+  outright.** Not a cosmetic gap any more. The bundler fails with `Failed to create app icon:
+  No matching IconType` and produces nothing, so **no bundle can be built at all** — which also
+  means `LSUIElement`, signing, notarisation and the DMG are all unreachable until it is
+  replaced. Confirmed 2026-09-12 during the M2 spike; the spike got a bundle only by passing an
+  out-of-tree `.icns` via `tauri build --config '{"bundle":{"icon":[...]}}'`, leaving the repo
+  untouched. **Owner: Martín** — it is an identity decision, not an engineering one (the app
+  name is still unsettled, and a committed icon would freeze it). Needed before M6 at the
+  latest, and before any bundle-dependent verification before then. The M2 spike's tray icon is
+  generated in Rust at runtime precisely so that it does not pre-empt this.
 - **Popover size limits.** Anything that wants a big canvas is the wrong feature for this app.
 - **Stream reliability varies.** Reconnect logic and honest error states are a first-class
   feature, not polish.
@@ -273,6 +314,90 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
   at the sink" is withdrawn as a description of an audible fault.
 - **Signing/notarisation** requires a paid Apple Developer ID certificate. Assumed yes;
   decision deferred to M6. Tauri's bundler handles it from env vars once the cert exists.
+
+### The M2 spike: vibrancy survives the subclassing, and the panel does not composite (2026-09-12)
+
+Branch `m2-spike`, **not merged** — it is a spike, and the recorded plan was to abandon rather
+than revert a dependency off `main` if it failed. It did not fail. Version pins from it are in
+"Verified versions" above; this section records what was measured.
+
+**The question it existed to answer.** Does `WebviewWindow::set_effects` still apply vibrancy
+after `tauri-nspanel` subclasses the NSWindow? The published docs cannot say, because
+`set_effects` → `crate::vibrancy::set_window_effects` → `macos::apply_effects` operates on the
+**NSView** (`window_vibrancy` 0.6.0 `lib.rs:218` passes `handle.ns_view`), while the conversion
+changes the **window** class. Prediction was yes; it needed proof.
+
+**Answer: yes, and it renders.** With the panel shown, the content view's tree is:
+
+```
+NSNextStepFrame @0,0 360x420
+  WryWebViewParent @0,0 360x420
+    [ NSVisualEffectViewTagged #tag=91376254 @0,0 360x420,
+      NSKVONotifying_WryWebView @0,0 360x420 ]
+```
+
+Tag 91376254 is `window_vibrancy`'s own `NS_VIEW_TAG_BLUR_VIEW`, so the view is unambiguously
+the one `apply_vibrancy` inserted — below the webview, sized to the content view. It also
+*paints*: both the window background (`clearColor`) and `panel.html` are transparent, so the
+dark translucent fill in the screenshot has no other possible source.
+
+`EffectState::Active`, not `FollowsWindowActiveState`: under an `Accessory` policy with a
+non-activating panel the app is never active and the panel never becomes key, so "follows"
+resolves to permanently inactive, which is the wrong appearance for a menu bar popover.
+
+**Two failure modes here look exactly like success.** `apply_effects` scans the effect list
+for a macOS `Effect` variant and returns with a bare `return` if it finds none — no error, no
+log. And an opaque page body paints over the `NSVisualEffectView` while `set_effects` still
+returns `Ok`. Neither can be caught by checking a return value; check the view tree.
+
+**`LSUIElement` works, and `tauri dev` cannot test it.** `src-tauri/Info.plist` is merged by
+the CLI at `tauri build`: `plutil -p` on the bundled `Info.plist` shows `"LSUIElement" => true`,
+and `lsappinfo info -only ApplicationType` on the running bundle reports `"UIElement"` — no
+Dock icon, confirmed without needing to look at the Dock. The docs describe this merge for
+`tauri build` only and dev runs a bare binary rather than a bundle, so the question cannot be
+answered from `tauri dev` at all. A bundled build is required.
+
+#### Open defect (M2 work, not a spike blocker): `hides_on_deactivate` keeps the panel off screen
+
+With `PanelBuilder::hides_on_deactivate(true)`, the panel **never composites**. AppKit reports
+`isVisible == true` while `occlusionState` keeps the `Visible` bit clear. Setting it to `false`
+flips `occlusionState` from `8192` to `8194` and the panel renders immediately.
+
+Under an `Accessory` policy with a non-activating panel the app is never active, so "hides on
+deactivate" is permanently satisfied. Bisected: the activation policy itself is **not**
+involved — `ActivationPolicy::Regular` changes nothing.
+
+The fix is a design decision, deliberately not taken in the spike: drop `hides_on_deactivate`
+and handle blur explicitly via the panel's window delegate. `Panel::set_event_handler` plus the
+`panel_event!` macro is the hook.
+
+What the measurements eliminated before the bisect found it, all from the instrumented log:
+
+| Ruled out | Evidence |
+|---|---|
+| Geometry | 720×840 physical at (1152, 562), inside the 3024×1964 main display |
+| Layout / effect sizing | every frame in the tree 360×420; not a zero-size effect view |
+| Alpha | `alphaValue == 1.00` |
+| Window level | 101 (`PanelLevel::PopUpMenu`) |
+| Spaces | `isOnActiveSpace == true` |
+| Process liveness | watch thread logged a stable state across 40 s |
+| Wrong display | no panel pixels on either display, by histogram, not by eye |
+| The page failing to load | `on_page_load` logs `Finished`, `tauri://localhost/panel.html` |
+| Vibrancy being the cause | a solid-colour opaque page is equally invisible |
+
+**`occlusionState` must be decoded, not read as a number.** `NSWindowOcclusionStateVisible` is
+`1 << 1` (`objc2-app-kit` 0.3.2, `generated/NSWindow.rs:251`, `const Visible = 1<<1`). The
+observed `8192` is `1 << 13`, an undocumented high bit, and `8192 & 2 == 0` — so the raw value
+is non-zero while the window is telling you it is *not* visible. Reading that as "AppKit says
+visible" manufactured a paradox that cost real time. The instrumentation now prints the decoded
+bit beside the raw value.
+
+**Multi-monitor caveat, untested.** `tray-icon`'s coordinate flip uses
+`CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
+display the tray icon is on (`mod.rs:610`). With the menu bar on a secondary display the anchor
+will be vertically wrong. Upstream, not ours. Still unverified: the tray-click path was never
+exercised, because driving a menu bar click needs Accessibility permission this environment does
+not have.
 
 ### Reconnect ownership and stream timeouts (measured 2026-09-08, M1)
 
@@ -541,7 +666,9 @@ Corollary: the count is itself worth pinning down, because 45 is the number you 
    commands; ICY title events; reconnect and error states; EQ biquad unit tests. Plain
    test window, no tray.
 2. **M2 — Tray + NSPanel popover.** `tauri-nspanel` pinned rev, vibrancy, template tray
-   icon, collapsed/expanded resize in place, positioning from tray rect.
+   icon, collapsed/expanded resize in place, positioning from tray rect. **Spiked
+   2026-09-12** on `m2-spike` (not merged): dependency and vibrancy both clear, and one open
+   defect to fix first — `hides_on_deactivate` keeps the panel off screen. See "The M2 spike".
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
    click endpoint, cache TTLs, favourites/recents.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
