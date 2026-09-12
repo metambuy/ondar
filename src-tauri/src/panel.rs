@@ -4,6 +4,12 @@
 //! question the published docs cannot — does `WebviewWindow::set_effects` still apply
 //! vibrancy after `tauri-nspanel` subclasses the NSWindow? — and is rewritten, not extended,
 //! at M2 proper.
+//!
+//! Vibrancy and tray positioning are independent questions, so they are testable
+//! independently. `ONDA_SPIKE_SHOW_PANEL=1` shows the panel at the centre of the main
+//! display at launch, with no tray click involved: same `PanelBuilder` config, same
+//! `to_window()` + `set_effects`, same `panel.html`. A broken anchor calculation then cannot
+//! masquerade as broken vibrancy.
 
 use tauri::{
     ActivationPolicy, App, AppHandle, LogicalSize, Manager, PhysicalPosition, Rect, Runtime, Size,
@@ -12,7 +18,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     window::{Effect, EffectState, EffectsBuilder},
 };
-use tauri_nspanel::{ManagerExt, PanelBuilder, PanelLevel, tauri_panel};
+use tauri_nspanel::{ManagerExt, PanelBuilder, PanelHandle, PanelLevel, tauri_panel};
 
 /// Label of the popover window.
 ///
@@ -25,6 +31,10 @@ const PANEL_SIZE: LogicalSize<f64> = LogicalSize::new(360.0, 420.0);
 
 /// Physical pixels between the bottom edge of the tray icon and the top edge of the panel.
 const TRAY_GAP: f64 = 6.0;
+
+/// Set to `1` to show the panel centred on the main display at launch, bypassing the tray
+/// entirely. The vibrancy screenshot is taken this way so that positioning cannot confound it.
+const SHOW_AT_LAUNCH: &str = "ONDA_SPIKE_SHOW_PANEL";
 
 tauri_panel! {
     panel!(OndaPanel {
@@ -71,7 +81,13 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     window.set_effects(
         EffectsBuilder::new()
             .effect(Effect::Popover)
-            .state(EffectState::FollowsWindowActiveState)
+            // `Active`, not `FollowsWindowActiveState`. Under an Accessory activation policy
+            // with a non-activating panel, the app is never active and the panel is never
+            // the key window, so "follows" resolves to permanently inactive — and an
+            // inactive NSVisualEffectView paints nothing at all. The view is inserted, sized
+            // correctly and reported present in the hierarchy, and the panel is still
+            // invisible: the third way this can fail while looking like success.
+            .state(EffectState::Active)
             .build(),
     )?;
 
@@ -83,18 +99,175 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .icon_as_template(true)
         .on_tray_icon_event(move |_tray, event| {
             if let TrayIconEvent::Click {
+                button,
+                button_state,
                 rect,
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
                 ..
             } = event
-                && let Err(e) = toggle(&handle, rect)
             {
-                log::warn!("tray click: {e}");
+                // Logged before the filter below, and on *every* `Click`, because the shape
+                // of this log is what separates the three ways this path can fail:
+                //   two lines per physical click  → press and release both arrived
+                //   one line, coords off-display  → the anchor maths is wrong
+                //   no line at all                → the handler is not on this event
+                log::info!(
+                    "tray click: button={button:?} state={button_state:?} rect.position={:?} rect.size={:?}",
+                    rect.position,
+                    rect.size
+                );
+
+                // `Click` fires on both press and release. Toggling on every one of them
+                // shows the panel on press and hides it again on release, so nothing is ever
+                // visible and there is no flicker to notice — a failure that looks like a
+                // handler that never ran. Deleting this filter silently resurrects it.
+                if button == MouseButton::Left
+                    && button_state == MouseButtonState::Up
+                    && let Err(e) = toggle(&handle, rect)
+                {
+                    log::warn!("tray toggle failed: {e}");
+                }
             }
         })
         .build(app)?;
 
+    if std::env::var(SHOW_AT_LAUNCH).is_ok_and(|v| v == "1") {
+        show_centred(&panel, &window)?;
+        watch(panel, window);
+    }
+
+    Ok(())
+}
+
+/// Re-log the panel's state every two seconds while the spike screenshot is being taken.
+///
+/// A single line at launch cannot distinguish "never rendered" from "rendered, then hidden
+/// again", and `hides_on_deactivate` makes the second one likely. This also reports the view
+/// tree, which is the spike's real question: `apply_effects` inserts an
+/// `NSVisualEffectViewTagged` tagged 91376254, so its presence or absence in the log answers
+/// "did vibrancy apply" without anyone having to look at a picture.
+fn watch<R: Runtime>(panel: PanelHandle<R>, window: WebviewWindow<R>) {
+    let spawned = std::thread::Builder::new()
+        .name("onda-spike-watch".into())
+        .spawn(move || {
+            for tick in 0..20u32 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let panel = panel.clone();
+                let win = window.clone();
+                let queued = window.run_on_main_thread(move || {
+                    let position = match win.outer_position() {
+                        Ok(p) => format!("{p:?}"),
+                        Err(e) => format!("err({e})"),
+                    };
+                    log::info!(
+                        "spike watch {tick}: visible={} position={position} {} views={}",
+                        panel.is_visible(),
+                        describe_window(&panel),
+                        describe_view_tree(&panel)
+                    );
+                });
+                if queued.is_err() {
+                    break;
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("spike watch thread not started: {e}");
+    }
+}
+
+/// The NSWindow-level state that decides whether a window that reports `isVisible == true`
+/// actually reaches the screen. `on_active_space` is the one that catches a panel stranded on
+/// the Space it was created on — a floating panel does not follow the user between Spaces
+/// unless its collection behaviour says it may. Must run on the main thread.
+fn describe_window<R: Runtime>(panel: &PanelHandle<R>) -> String {
+    let w = panel.as_panel();
+    format!(
+        "alpha={:.2} opaque={} key={} level={} on_active_space={} occlusion={:?}",
+        w.alphaValue(),
+        w.isOpaque(),
+        w.isKeyWindow(),
+        w.level(),
+        w.isOnActiveSpace(),
+        w.occlusionState()
+    )
+}
+
+/// The tag `window-vibrancy` stamps on the `NSVisualEffectView` it inserts
+/// (`window_vibrancy::macos::internal::NS_VIEW_TAG_BLUR_VIEW`). Finding it in the tree is
+/// proof the effect was applied to a subclassed panel window.
+const NS_VIEW_TAG_BLUR_VIEW: isize = 91_376_254;
+
+/// One-line dump of the panel content view, its siblings and its children: class names plus
+/// `tag` for each. Must run on the main thread.
+fn describe_view_tree<R: Runtime>(panel: &PanelHandle<R>) -> String {
+    use tauri_nspanel::objc2_app_kit::NSView;
+
+    fn describe(view: &NSView) -> String {
+        let tag = view.tag();
+        let name = view.class().name().to_string_lossy().into_owned();
+        // The frame matters as much as the presence: `apply_vibrancy` sizes the effect view
+        // from the host view's bounds *at the moment it is called*, so an effect applied
+        // before layout inserts a real view that paints nothing.
+        let f = view.frame();
+        let geom = format!(
+            "@{:.0},{:.0} {:.0}x{:.0}",
+            f.origin.x, f.origin.y, f.size.width, f.size.height
+        );
+        if tag == NS_VIEW_TAG_BLUR_VIEW {
+            format!("{name}#BLUR{geom}")
+        } else if tag == 0 {
+            format!("{name}{geom}")
+        } else {
+            format!("{name}#{tag}{geom}")
+        }
+    }
+
+    fn children(view: &NSView) -> String {
+        let subviews = view.subviews();
+        let listed: Vec<String> = subviews.iter().map(|v| describe(&v)).collect();
+        format!("{}[{}]", describe(view), listed.join(", "))
+    }
+
+    let content = panel.content_view();
+    // SAFETY: called inside `run_on_main_thread`, and `superview` only reads an AppKit
+    // pointer that the window owns for as long as `content` is retained.
+    match unsafe { content.superview() } {
+        Some(parent) => {
+            let siblings: Vec<String> = parent.subviews().iter().map(|v| children(&v)).collect();
+            format!("{}<{}>", describe(&parent), siblings.join(" | "))
+        }
+        None => children(&content),
+    }
+}
+
+/// Show the panel centred on the main display, with the tray out of the picture.
+fn show_centred<R: Runtime>(
+    panel: &PanelHandle<R>,
+    window: &WebviewWindow<R>,
+) -> tauri::Result<()> {
+    let panel_size = window.outer_size()?;
+    let monitor = window.primary_monitor()?;
+    let (origin, screen) = match &monitor {
+        Some(m) => (*m.position(), *m.size()),
+        None => (PhysicalPosition::new(0, 0), panel_size),
+    };
+
+    let position = PhysicalPosition::new(
+        f64::from(origin.x) + (f64::from(screen.width) - f64::from(panel_size.width)) / 2.0,
+        f64::from(origin.y) + (f64::from(screen.height) - f64::from(panel_size.height)) / 2.0,
+    );
+
+    window.set_position(position)?;
+    panel.show();
+    // `hides_on_deactivate` is still set, and the app is never activated under an Accessory
+    // policy, so order the panel in explicitly rather than trusting `show()` alone.
+    panel.order_front_regardless();
+
+    log::info!(
+        "spike: panel shown centred at {position:?}; panel={panel_size:?} \
+         main display origin={origin:?} size={screen:?} visible={}",
+        panel.is_visible()
+    );
     Ok(())
 }
 
@@ -104,6 +277,7 @@ fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) -> tauri::Result<()> {
         .map_err(|_| tauri::Error::WindowNotFound)?;
 
     if panel.is_visible() {
+        log::info!("tray toggle: panel was visible, hiding");
         panel.hide();
         return Ok(());
     }
@@ -111,12 +285,11 @@ fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) -> tauri::Result<()> {
     let window = panel_window(&panel)?;
     window.set_position(anchor(&window, rect)?)?;
     panel.show();
+    log::info!("tray toggle: shown, visible={}", panel.is_visible());
     Ok(())
 }
 
-fn panel_window<R: Runtime>(
-    panel: &tauri_nspanel::PanelHandle<R>,
-) -> tauri::Result<WebviewWindow<R>> {
+fn panel_window<R: Runtime>(panel: &PanelHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     // `Panel` exposes no positioning or effects of its own; both live on the Tauri window.
     panel.to_window().ok_or(tauri::Error::WindowNotFound)
 }
@@ -136,7 +309,8 @@ fn panel_window<R: Runtime>(
 /// Known upstream limitation: that flip uses `CGDisplayPixelsHigh(CGMainDisplayID())` — the
 /// *main* display's height, not the height of the display the tray icon is actually on. With
 /// the menu bar on a secondary display the result is vertically wrong. That is `tray-icon`'s
-/// to fix, not ours.
+/// to fix, not ours. The log line below prints the display bounds alongside the computed
+/// position precisely so one click tells you whether the result landed off-screen.
 fn anchor<R: Runtime>(
     window: &WebviewWindow<R>,
     rect: Rect,
@@ -153,10 +327,22 @@ fn anchor<R: Runtime>(
     // spike never resizes. That race is M2 proper's problem.)
     let panel_size = window.outer_size()?;
 
-    Ok(PhysicalPosition::new(
+    let position = PhysicalPosition::new(
         tray_pos.x + tray_size.width / 2.0 - f64::from(panel_size.width) / 2.0,
         tray_pos.y + tray_size.height + TRAY_GAP,
-    ))
+    );
+
+    let monitor = window.primary_monitor()?;
+    let (origin, screen) = match &monitor {
+        Some(m) => (format!("{:?}", m.position()), format!("{:?}", m.size())),
+        None => ("none".into(), "none".into()),
+    };
+    log::info!(
+        "tray anchor: scale={scale} tray_pos={tray_pos:?} tray_size={tray_size:?} \
+         panel={panel_size:?} -> position={position:?} | main display origin={origin} size={screen}"
+    );
+
+    Ok(position)
 }
 
 /// Spike-only tray icon: a plain filled circle, black with an alpha coverage mask, so
