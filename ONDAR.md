@@ -211,16 +211,12 @@ TypeScript, stop — it belongs in Rust.
 - **~30% of radio-browser stations have coordinates.** Map markers are therefore sparse;
   the country dropdown, not the map, is the primary navigation. The map is context and
   delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
-- **BLOCKER: `src-tauri/icons/icon.png` is a 1×1 placeholder and now blocks `tauri build`
-  outright.** Not a cosmetic gap any more. The bundler fails with `Failed to create app icon:
-  No matching IconType` and produces nothing, so **no bundle can be built at all** — which also
-  means `LSUIElement`, signing, notarisation and the DMG are all unreachable until it is
-  replaced. Confirmed 2026-09-12 during the M2 spike; the spike got a bundle only by passing an
-  out-of-tree `.icns` via `tauri build --config '{"bundle":{"icon":[...]}}'`, leaving the repo
-  untouched. **Owner: Martín** — it is an identity decision, not an engineering one (the app
-  name is still unsettled, and a committed icon would freeze it). Needed before M6 at the
-  latest, and before any bundle-dependent verification before then. The M2 spike's tray icon is
-  generated in Rust at runtime precisely so that it does not pre-empt this.
+- ~~**BLOCKER: `src-tauri/icons/icon.png` is a 1×1 placeholder.**~~ **Resolved 2026-09-13.**
+  It had stopped being cosmetic: the bundler failed with `Failed to create app icon: No
+  matching IconType` and produced nothing, so no bundle could be built at all and
+  `LSUIElement`, signing, notarisation and the DMG were all unreachable. The M2 spike worked
+  around it only by passing an out-of-tree `.icns` via `tauri build --config`. See "The app
+  icon and tray glyphs" below for what replaced it and how it was verified.
 - **Popover size limits.** Anything that wants a big canvas is the wrong feature for this app.
 - **Stream reliability varies.** Reconnect logic and honest error states are a first-class
   feature, not polish.
@@ -625,6 +621,53 @@ holds data. So `Buffering` is more responsive than buffer arithmetic predicts, a
 watchdog's progress signal must not be confused by it — which is why it counts pushes rather
 than inferring from `fill`.
 
+
+### The app icon and tray glyphs (2026-09-13)
+
+**`src-tauri/icons/ondar-icon-master.svg` is the source of truth.** Vector, 3.5 KB, and it
+regenerates any size. Every PNG in `src-tauri/icons/` **derives from it** — the 1024 px master
+was rendered from this SVG, and `pnpm tauri icon <master>.png` produced the rest. Verified, not
+assumed: `rsvg-convert` at 256 px against the 1024 px master downscaled to 256 px gives
+RMSE 0.0085, which is anti-aliasing and nothing else. Regenerate from the SVG rather than
+upscaling any PNG.
+
+> Rendering the SVG needs `rsvg-convert`. ImageMagick on this machine has **no `rsvg`
+> delegate**, so `magick file.svg` silently falls back to its internal MSVG parser, which
+> mangles the gradient — it reported RMSE 0.19 for an image that is actually identical. A
+> comparison made that way proves nothing.
+
+**The blocker is gone, proven the only way that counts:** `pnpm tauri build --debug` with **no
+`--config` override** completes, exit 0, no `No matching IconType`, and the bundle carries
+`Contents/Resources/icon.icns` with `CFBundleIconFile = icon.icns`.
+
+`tauri.conf.json`'s `bundle.icon` now lists the real set (`32x32.png`, `128x128.png`,
+`128x128@2x.png`, `icon.icns`, `icon.ico`) instead of the lone placeholder.
+
+#### Tray template glyphs
+
+Four in `src-tauri/icons/tray/`: `ondar-tray-{22,44}-{idle,playing}.png` — 22 px for @1x, 44 px
+for @2x. They replace the runtime-generated circle from the M2 spike when M2 proper lands.
+
+- **They are pure black on alpha — measured, max RGB channel value 0 across all four — so they
+  must be set with `icon_as_template(true)`.** macOS then reads shape from the alpha channel
+  alone and tints for light/dark menu bars and the highlight state. Setting them without that
+  flag renders them as flat black artwork that disappears on a dark menu bar.
+- **The playing state is a SHAPE change, never a colour change:** the cap dot above the stem is
+  *hollow* when idle and *filled* when playing. A template image has no colour to change — that
+  is the constraint the design is built around, not an accident of these files.
+
+**Known and accepted: the state difference is clear at @2x and marginal at @1x.** Measured
+between idle and playing:
+
+| Size | Pixels differing at all | Differing by >25% alpha |
+|---|---|---|
+| 22 px (@1x) | **16** of 484 | 4 |
+| 44 px (@2x) | 38 of 1936 | 16 |
+
+Sixteen pixels, only four of them strongly, is nearly invisible on a non-Retina display. This is
+**accepted, not a defect to be rediscovered** — the cap dot is ~3 px across at 22 px and a
+hollow centre cannot be more than a pixel. If it ever needs to read at @1x, the answer is a
+different idle/playing distinction at that size, not a bigger dot.
 
 ### Renamed from Onda to Ondar (2026-09-13)
 

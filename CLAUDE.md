@@ -64,7 +64,9 @@ onda/
     ├── Cargo.toml                workspace: ".", "crates/ondar-audio"
     ├── tauri.conf.json
     ├── capabilities/default.json
-    ├── icons/icon.png            PLACEHOLDER (70 bytes) — real set needed before any bundle
+    ├── icons/                    ondar-icon-master.svg is the source; the PNGs/icns derive
+    │                             from it. tray/ holds the 4 template glyphs (22/44 ×
+    │                             idle/playing) — pure black on alpha, icon_as_template(true)
     ├── src/                      Tauri shell only. No domain logic.
     │   ├── main.rs               calls ondar_lib::run()
     │   ├── lib.rs                AppState, `events` module, tracing init, event forwarder
