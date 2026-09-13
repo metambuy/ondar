@@ -341,6 +341,13 @@ the one `apply_vibrancy` inserted — below the webview, sized to the content vi
 *paints*: both the window background (`clearColor`) and `panel.html` are transparent, so the
 dark translucent fill in the screenshot has no other possible source.
 
+**The screenshot is weak evidence and the elimination argument is the strong one.** It was taken
+over a dark backdrop, which is the worst case for telling a translucent material apart from a
+flat fill — the two look nearly identical there. What actually establishes the claim is that a
+`clearColor` window plus a transparent page leaves nothing else that could paint those pixels.
+Anyone repeating this check should put a bright, colourful, high-frequency backdrop behind the
+panel, where blur is unmistakable.
+
 `EffectState::Active`, not `FollowsWindowActiveState`: under an `Accessory` policy with a
 non-activating panel the app is never active and the panel never becomes key, so "follows"
 resolves to permanently inactive, which is the wrong appearance for a menu bar popover.
