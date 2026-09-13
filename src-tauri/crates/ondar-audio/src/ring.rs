@@ -38,7 +38,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 /// that paced 3.57% slow, which made freshness decay ~0.3 s per 10 s through every run and
 /// produced an apparent 0.49 s miss at the smallest point that was recorded as "unexplained".
 /// It was the harness; with pacing fixed the residual is ~0.025 s there and the special case
-/// is gone. See ONDA.md's latency table.
+/// is gone. See ONDAR.md's latency table.
 pub const RING_SECONDS: usize = 2;
 
 /// Shared, cross-thread view of one ring's occupancy. The audio callback (consumer) advances

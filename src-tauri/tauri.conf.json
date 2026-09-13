@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Onda",
+  "productName": "Ondar",
   "version": "0.1.0",
-  "identifier": "dev.crabnebula.onda",
+  "identifier": "dev.crabnebula.ondar",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Onda — M1 dev harness",
+        "title": "Ondar — M1 dev harness",
         "width": 440,
         "height": 720,
         "resizable": true

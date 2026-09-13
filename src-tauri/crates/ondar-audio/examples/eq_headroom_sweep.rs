@@ -1,15 +1,15 @@
 //! Cross-checks the shipped soft-clip stage against the curve that chose its threshold, and
 //! reports what `Equalizer` actually bounds its output to.
 //!
-//! Usage: `cargo run -p onda-audio --example eq_headroom_sweep --release`
+//! Usage: `cargo run -p ondar-audio --example eq_headroom_sweep --release`
 //!
 //! **This is no longer the block A sweep.** That run — the t = [0.80, 0.85, 0.90, 0.95] tables
 //! over transparency cost and bound, which is what chose t = 0.95 — was taken at `9ad668f`,
-//! before the shaper existed, and is recorded in ONDA.md. It cannot be reproduced here any
+//! before the shaper existed, and is recorded in ONDAR.md. It cannot be reproduced here any
 //! more: `soft_clip` now lives inside `Equalizer`, so `through_eq` returns already-bounded
 //! output and re-shaping it would print numbers that look like measurements but are shaped
 //! twice. Those tables were removed rather than left with a caveat, because the trap is
-//! someone pasting them into ONDA.md later.
+//! someone pasting them into ONDAR.md later.
 //!
 //! What remains is the part that stays true: the example keeps its **own** implementation of
 //! the curve, written independently of `eq.rs`, and checks the two agree. That is the useful
@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use rodio::{ChannelCount, SampleRate, Source};
 
-use onda_audio::eq::{self, Equalizer};
-use onda_audio::{BAND_COUNT, EqGains};
+use ondar_audio::eq::{self, Equalizer};
+use ondar_audio::{BAND_COUNT, EqGains};
 
 const RATE: u32 = 44_100;
 /// 1 s per signal, matching `eq.rs`'s tests so Table 2's pre-shaper peaks are comparable to
@@ -189,7 +189,7 @@ fn main() {
     let mut worst_at = 0.0f32;
     for i in 0..=200_000 {
         let x = 20.0 * (i as f32 / 200_000.0) - 10.0; // -10 ..= 10
-        let d = (shape(x, T) - onda_audio::eq::soft_clip(x)).abs();
+        let d = (shape(x, T) - ondar_audio::eq::soft_clip(x)).abs();
         if d > worst {
             worst = d;
             worst_at = x;
@@ -208,7 +208,7 @@ fn main() {
     } else {
         println!(
             "  -> MISMATCH: the shipped stage has drifted from the swept curve. Re-run the \
-             block A sweep before trusting ONDA.md's threshold justification."
+             block A sweep before trusting ONDAR.md's threshold justification."
         );
     }
 

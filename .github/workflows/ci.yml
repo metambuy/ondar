@@ -21,7 +21,7 @@ on:
 # What this does NOT buy: per-commit verification. A push fires one run, against the head
 # commit only, so every earlier commit in a multi-commit push goes unverified — the
 # concurrency split above fixes cancellation, not batching. **A commit that has to stand on
-# its own has to be pushed on its own.** See ONDA.md, "CI verifies the head of each push, not
+# its own has to be pushed on its own.** See ONDAR.md, "CI verifies the head of each push, not
 # every commit".
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -33,7 +33,7 @@ env:
 jobs:
   check:
     # macOS only: the audio engine builds against CoreAudio, and this is the only
-    # platform Onda targets. No Linux/Windows matrix — see CLAUDE.md.
+    # platform Ondar targets. No Linux/Windows matrix — see CLAUDE.md.
     runs-on: macos-latest
 
     steps:
@@ -73,7 +73,7 @@ jobs:
 
       # --workspace is load-bearing: src-tauri/Cargo.toml has a real [package] at its
       # root, so a bare `cargo test` runs only that package — its own 3 tests — while
-      # silently skipping all 48 in onda-audio.
+      # silently skipping all 48 in ondar-audio.
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace

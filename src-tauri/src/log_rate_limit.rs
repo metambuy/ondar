@@ -8,7 +8,7 @@
 //! An `EnvFilter` directive cannot do this. A directive sets a target's *maximum* level, so
 //! the only setting that suppresses an ERROR flood is `off` — which also discards the first
 //! occurrence. That line matters: `stream-download` swallows the underlying error and never
-//! returns it to the decode thread, so Onda cannot report the cause itself. It is the only
+//! returns it to the decode thread, so Ondar cannot report the cause itself. It is the only
 //! evidence of *why* a stream died, and dropping it is a real loss.
 //!
 //! So: keep the first few per second, drop the rest, and say how many were dropped.
@@ -89,7 +89,7 @@ impl<S: Subscriber> Filter<S> for RateLimit {
             st.admit(Instant::now())
         };
         if let Some(n) = report {
-            tracing::warn!(target: "onda", "log rate limit: suppressed {n} `{TARGET}` events");
+            tracing::warn!(target: "ondar", "log rate limit: suppressed {n} `{TARGET}` events");
         }
         allow
     }
@@ -111,7 +111,7 @@ mod tests {
     ///
     /// **The name is deliberate and is doing a second job.** A bare `cargo test` runs only this
     /// crate — `src-tauri/Cargo.toml` has a real `[package]` at the workspace root, so cargo
-    /// does not default to every member — which skips all 48 tests in `onda-audio` while
+    /// does not default to every member — which skips all 48 tests in `ondar-audio` while
     /// exiting 0. It used to report `0 passed`, which at least looked empty; since this crate
     /// gained tests it reports `3 passed`, which reads like a successful run. The three names
     /// are the only thing a bare run prints, so one of them says what happened. See CLAUDE.md.

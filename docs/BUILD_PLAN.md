@@ -1,8 +1,8 @@
-# Onda — Build Plan
+# Ondar — Build Plan
 
-Sequence and milestone numbering follow **ONDA.md** (the tags follow it too — `m1-done` is
+Sequence and milestone numbering follow **ONDAR.md** (the tags follow it too — `m1-done` is
 M1, not M0). This file exists for exit criteria, the verification ritual, and open questions;
-decisions, versions, and findings live in ONDA.md — see that file first if the two disagree.
+decisions, versions, and findings live in ONDAR.md — see that file first if the two disagree.
 
 **Ordering logic:** shell + audio → tray/popover → station data → map → spectrum/EQ UI/polish
 → signing. Audio comes before the popover chrome deliberately: it is the hardest, most
@@ -25,7 +25,7 @@ error states; EQ biquad unit tests. Plain test window (`src/App.tsx`), no tray.
 2. ICY titles update on stations that send them.
 3. Pull the network: state goes `buffering` → `reconnecting (n)` → `playing` on recovery, or
    `error [network]` after 5 attempts (1/2/4/8/16 s).
-4. EQ sliders audibly change the sound; `cargo test -p onda-audio` passes.
+4. EQ sliders audibly change the sound; `cargo test -p ondar-audio` passes.
 5. Switching stations silences the old station immediately.
 
 CI (fmt/clippy/test/typecheck in GitHub Actions) was not part of this milestone and is not
@@ -54,9 +54,9 @@ no jump; nothing flickers on a second monitor.
 
 **Risk:** `tauri-nspanel` / `tauri-plugin-positioner` API drift — both are community crates
 that move faster than any doc here. Verify the current API on docs.rs/GitHub before writing
-against them and record what you find in ONDA.md's "Verified versions". If `tauri-nspanel` is
+against them and record what you find in ONDAR.md's "Verified versions". If `tauri-nspanel` is
 unusable against the pinned Tauri version, fall back to a borderless always-on-top window with
-manual blur handling and record the decision in ONDA.md.
+manual blur handling and record the decision in ONDAR.md.
 
 ---
 
@@ -66,7 +66,7 @@ manual blur handling and record the decision in ONDA.md.
 reach them from the popover.
 
 - [ ] `stations::client` — `reqwest`, SRV discovery of `_api._tcp.radio-browser.info` with
-      hardcoded fallback hosts, `User-Agent: Onda/<version>`, timeouts, 3 retries with backoff
+      hardcoded fallback hosts, `User-Agent: Ondar/<version>`, timeouts, 3 retries with backoff
       across *different* hosts
 - [ ] Endpoints: `/json/countries`, `/json/stations/bycountrycodeexact/{cc}`,
       `/json/url/{uuid}` (click), `/json/stations/search`
@@ -116,7 +116,7 @@ airplane mode still shows the last cached lists; favourites persist across resta
 
 **Exit:** pick Portugal → the country fills the frame at good resolution; pick Russia → you
 can pan across it at a readable zoom without losing the frame; the map never requests the
-network. Record the measured installed bundle size in ONDA.md.
+network. Record the measured installed bundle size in ONDAR.md.
 
 ---
 
@@ -132,7 +132,7 @@ edges from earlier milestones get finished.
 - [ ] Presets: Flat, Voice, Bass, Bright, Late Night; custom gains persisted per app (not per
       station, unless decided otherwise)
 - [ ] EQ headroom fix: makeup attenuation scaled to summed positive band gains, or a
-      soft-clip stage after the `Equalizer` adapter — see ONDA.md's M1 clipping finding
+      soft-clip stage after the `Equalizer` adapter — see ONDAR.md's M1 clipping finding
 - [ ] Tray animation: a small frame sequence swapped on a timer via `TrayIcon::set_icon`
       (there is no animated-template-image API)
 - [ ] Global keyboard shortcut to toggle the popover; `Space` play/pause when focused
@@ -170,31 +170,40 @@ Every milestone closes with the same ritual:
 
 1. From `src-tauri`: `cargo fmt --all --check && cargo clippy --all-targets -- -D warnings &&
    cargo test --workspace`. Plain `cargo test` (no `-p`/`--workspace`) only runs the root
-   `onda` package's tests — `onda-audio`'s tests (the ones that matter) need `--workspace` or
-   `-p onda-audio`; see CLAUDE.md.
+   `ondar` package's tests — `ondar-audio`'s tests (the ones that matter) need `--workspace` or
+   `-p ondar-audio`; see CLAUDE.md.
 2. From the repo root: `pnpm typecheck && pnpm lint`
 3. A manual smoke pass against that milestone's exit criteria, with the app actually running
-4. Update `ONDA.md` / `docs/` with anything learned that contradicts this plan
+4. Update `ONDAR.md` / `docs/` with anything learned that contradicts this plan
 5. Commit, and tag `m2-done`, `m3-done`, … following `m1-done`'s pattern
 
 ---
 
 ## Open questions
 
-1. **Name.** "Onda" is a placeholder. Decide before M6 (bundle identifier, signing).
-2. **Bundle identifier.** `dev.crabnebula.onda` (in `src-tauri/tauri.conf.json`) is a
-   placeholder — decide before the first signed artifact.
+1. ~~**Name.**~~ **Settled 2026-09-13: Ondar.** "Onda" collided with Onda Cero, a national
+   Spanish radio network; "Ondar" is Basque for sand, and no radio app or station was found
+   under it. See ONDAR.md, "Renamed from Onda to Ondar".
+2. **Bundle identifier.** `dev.crabnebula.ondar` (in `src-tauri/tauri.conf.json`) is a
+   placeholder — decide before the first signed artifact. Two deadlines, the second the one
+   that actually bites:
+   - **M3, soft.** Tauri derives the app data directory from the bundle identifier, so
+     changing it after the SQLite cache lands at M3 orphans that cache. Recoverable — it just
+     rebuilds. *(Reasoning recorded 2026-09-13, not a measurement: this has not been tested
+     against a real Tauri build.)*
+   - **M6, hard.** Once a signed artifact exists, macOS keys preferences, app support and
+     keychain items to the identifier, so a change loses user settings silently on upgrade.
 3. **Blue Marble month** — one fixed month, or all twelve switching with the calendar
    (twelve months multiplies the bundle; almost certainly one).
 4. **Night-lights dark mode** — worth the extra tile set, or a filter on the day imagery?
 5. **Deepest zoom level** — how much bundle size are you willing to spend? The single biggest
    lever on download size.
 6. **HLS streams** — support them (adds `hls` handling in Rust) or exclude them from results?
-   See ONDA.md's known risks for the current state (not yet measured how many stations this
+   See ONDAR.md's known risks for the current state (not yet measured how many stations this
    affects).
 
 ## Risk notes
 
 Per-milestone risks are called out inline above. For risks that aren't tied to one milestone
-(sparse station coordinates, general stream reliability, macOS-only build host), see ONDA.md's
+(sparse station coordinates, general stream reliability, macOS-only build host), see ONDAR.md's
 "Known risks" section — not restated here to avoid the two documents drifting apart.

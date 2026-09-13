@@ -4,7 +4,7 @@
 use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
-pub enum OndaError {
+pub enum OndarError {
     #[error("{0}")]
     InvalidArgument(String),
 }
@@ -15,10 +15,10 @@ struct Payload<'a> {
     message: &'a str,
 }
 
-impl Serialize for OndaError {
+impl Serialize for OndarError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let (code, message) = match self {
-            OndaError::InvalidArgument(m) => ("invalid_argument", m.as_str()),
+            OndarError::InvalidArgument(m) => ("invalid_argument", m.as_str()),
         };
         Payload { code, message }.serialize(serializer)
     }

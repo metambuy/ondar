@@ -72,7 +72,7 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 16, maxWidth: 420, fontSize: 13 }}>
-      <h2 style={{ margin: "0 0 12px" }}>Onda — audio engine bench</h2>
+      <h2 style={{ margin: "0 0 12px" }}>Ondar — audio engine bench</h2>
 
       <label style={{ display: "block", marginBottom: 6 }}>
         Preset{" "}

@@ -16,15 +16,15 @@
 
 use tauri::State;
 
-use onda_audio::{AudioCommand, BAND_COUNT, EqBand, MAX_GAIN_DB, PlaybackState};
+use ondar_audio::{AudioCommand, BAND_COUNT, EqBand, MAX_GAIN_DB, PlaybackState};
 
 use crate::AppState;
-use crate::error::OndaError;
+use crate::error::OndarError;
 
 #[tauri::command]
-pub fn play(state: State<'_, AppState>, url: String, station_id: String) -> Result<(), OndaError> {
+pub fn play(state: State<'_, AppState>, url: String, station_id: String) -> Result<(), OndarError> {
     if url.trim().is_empty() {
-        return Err(OndaError::InvalidArgument("url is empty".into()));
+        return Err(OndarError::InvalidArgument("url is empty".into()));
     }
     state.engine.send(AudioCommand::Play { url, station_id });
     Ok(())
@@ -47,9 +47,9 @@ pub fn stop(state: State<'_, AppState>) {
 
 /// `volume` is linear 0.0–1.0.
 #[tauri::command]
-pub fn set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), OndaError> {
+pub fn set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), OndarError> {
     if !(0.0..=1.0).contains(&volume) {
-        return Err(OndaError::InvalidArgument(
+        return Err(OndarError::InvalidArgument(
             "volume must be within 0.0..=1.0".into(),
         ));
     }
@@ -58,14 +58,14 @@ pub fn set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), OndaErr
 }
 
 #[tauri::command]
-pub fn set_eq_gain(state: State<'_, AppState>, band: u8, gain_db: f32) -> Result<(), OndaError> {
+pub fn set_eq_gain(state: State<'_, AppState>, band: u8, gain_db: f32) -> Result<(), OndarError> {
     if band as usize >= BAND_COUNT {
-        return Err(OndaError::InvalidArgument(format!(
+        return Err(OndarError::InvalidArgument(format!(
             "band must be < {BAND_COUNT}"
         )));
     }
     if !gain_db.is_finite() || gain_db.abs() > MAX_GAIN_DB {
-        return Err(OndaError::InvalidArgument(format!(
+        return Err(OndarError::InvalidArgument(format!(
             "gain_db must be within ±{MAX_GAIN_DB}"
         )));
     }

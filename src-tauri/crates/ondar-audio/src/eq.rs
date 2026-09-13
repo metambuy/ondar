@@ -47,7 +47,7 @@ pub const MAX_GAIN_DB: f32 = 12.0;
 /// saturates here too.
 pub const SOFT_CLIP_CEILING: f32 = 1.0;
 /// Below this magnitude the shaper is the identity, bit for bit. 0.95 because broadcast radio
-/// is limited to sit at roughly that peak — see ONDA.md for the sweep it came from.
+/// is limited to sit at roughly that peak — see ONDAR.md for the sweep it came from.
 pub const SOFT_CLIP_THRESHOLD: f32 = 0.95;
 
 /// Linear below [`SOFT_CLIP_THRESHOLD`], then a rational knee asymptotic to
@@ -380,7 +380,7 @@ mod tests {
     fn boost_near_full_scale_is_bounded() {
         // +12 dB is ×4 linear, and the band bank still produces a 2.787 peak internally — that
         // has not changed. `soft_clip` is what bounds it on the way out. 0.99868 is the t=0.95
-        // column of block A's sweep (ONDA.md), so this also pins the shipped threshold to the
+        // column of block A's sweep (ONDAR.md), so this also pins the shipped threshold to the
         // curve that was actually swept.
         let gains = EqGains::default();
         gains.set(1, 12.0); // 62.5 Hz band

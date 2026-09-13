@@ -8,7 +8,7 @@ import type { StreamInfo } from "./bindings/StreamInfo";
 
 export type { EqBand, IcyMetadata, PlaybackState, StreamInfo };
 
-export type OndaError = { code: string; message: string };
+export type OndarError = { code: string; message: string };
 
 export const audio = {
   play: (url: string, stationId: string) => invoke<void>("play", { url, stationId }),

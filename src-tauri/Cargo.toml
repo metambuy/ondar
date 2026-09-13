@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/onda-audio"]
+members = [".", "crates/ondar-audio"]
 resolver = "2"
 
 [workspace.package]
@@ -8,14 +8,14 @@ rust-version = "1.91"
 license = "MIT"
 
 [package]
-name = "onda"
+name = "ondar"
 version = "0.1.0"
-description = "Onda — macOS menu bar radio player"
+description = "Ondar — macOS menu bar radio player"
 edition.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "onda_lib"
+name = "ondar_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -23,7 +23,7 @@ tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
 tauri = { version = "2.11", features = [] }
-onda-audio = { path = "crates/onda-audio" }
+ondar-audio = { path = "crates/ondar-audio" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

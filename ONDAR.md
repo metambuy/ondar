@@ -1,9 +1,9 @@
-# Onda — project document
+# Ondar — project document
 
 *Last updated: 2026-09-11 (Phase 1 block 2 — harness pacing fix, dwell latch, engine
 watchdog, prefetch knee, and a re-measured latency table).*
 
-## What Onda is
+## What Ondar is
 
 A macOS **menu bar radio player**. It lives in the system tray, opens as a popover, and plays
 live internet radio streams from around the world. It is minimalist, native-feeling, and
@@ -95,13 +95,13 @@ not crates.io lookups):
   `rtrb` 0.4.0, `biquad` 0.6.0
 - `ts-rs` 12.0.1
 - `reqwest` 0.13.4 — **single version in the tree** (`cargo tree -d`, checked 2026-09-08):
-  used directly by `onda-audio` and pulled in identically by `stream-download`. No
+  used directly by `ondar-audio` and pulled in identically by `stream-download`. No
   duplicate-major bloat.
-- `thiserror` — two majors present: `2.0.20` (used directly by `onda`, `onda-audio`, `tauri`,
+- `thiserror` — two majors present: `2.0.20` (used directly by `ondar`, `ondar-audio`, `tauri`,
   `rodio`, `stream-download`, `ts-rs`) and `1.0.69` (transitive, via `json-patch` ←
   `tauri-utils`). Not a problem — 1.x/2.x coexist fine — noted for completeness.
 - `window-vibrancy` 0.6.0 — **already in the tree, transitively, via `tauri` itself.** Nothing
-  in Onda's own `Cargo.toml` depends on it yet. This list previously recorded `0.8.0` here,
+  in Ondar's own `Cargo.toml` depends on it yet. This list previously recorded `0.8.0` here,
   from a crates.io lookup never checked against a lockfile — when M2 adds it explicitly,
   re-verify the current crates.io version rather than trusting either number.
 - `tracing-subscriber` 0.3.23 (env-filter; replaces `env_logger` — its `init()` installs
@@ -166,7 +166,7 @@ TypeScript, stop — it belongs in Rust.
 
 ## Repo tooling
 
-- **Remote:** private GitHub repo `metambuy/onda` (created 2026-09-10, visibility `PRIVATE`,
+- **Remote:** private GitHub repo `metambuy/ondar` (created 2026-09-10, visibility `PRIVATE`,
   default branch `main`). `gh` 2.100.0 is installed on the build machine and authenticated as
   `metambuy` over HTTPS; git operations use the same credential. The `m1-done` tag is pushed
   and dereferences to `4b4ee3d`.
@@ -184,7 +184,7 @@ TypeScript, stop — it belongs in Rust.
   machine's majors (Node 26; pnpm from `package.json`'s `packageManager`, so the lockfile,
   local installs and CI cannot drift apart).
   **First run green** on `fba1133`, 5m6s cold-cache:
-  [run 34495743288](https://github.com/metambuy/onda/actions/runs/34495743288). Its
+  [run 34495743288](https://github.com/metambuy/ondar/actions/runs/34495743288). Its
   `cargo test` step logged `running 34 tests` / `34 passed` — the `--workspace` finding below
   is therefore confirmed on a machine other than the one that wrote it, not just locally.
 - **Formatting and MSRV are pinned, not toolchain-dependent:** `src-tauri/rustfmt.toml`
@@ -291,20 +291,20 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
   **Why a shaper was needed at all, and why it is now the only bound in the path.** Nothing
   downstream clamps: `Player::append` adds only `.amplify()` as a value transform (rodio
   `amplify.rs:63-65`, a pure multiply), and `biquad` 0.6's `DirectForm2Transposed` step
-  (`lib.rs:175-181`) is a pure IIR multiply-accumulate. Onda opens the sink without
+  (`lib.rs:175-181`) is a pure IIR multiply-accumulate. Ondar opens the sink without
   `.with_sample_format()` (`engine.rs:387`), which does **not** mean rodio defaults to `f32`:
   `from_device` calls `.with_supported_config()` (rodio `stream.rs:339-352`), taking whatever
   format CoreAudio reports. macOS's HAL is natively float32 so this is `f32` in practice, but
-  that is a runtime fact, not a guarantee in Onda's or rodio's source. If a device did report
+  that is a runtime fact, not a guarantee in Ondar's or rodio's source. If a device did report
   `I16`, the cast (rodio `stream.rs:531`) is the last step before the device callback, still
-  downstream of `.amplify()`. Onda's own code does no int cast either way. Two observations
+  downstream of `.amplify()`. Ondar's own code does no int cast either way. Two observations
   that still hold: the `Vol` slider is applied *after* the EQ and `set_volume` clamps to
   `0.0..=1.0` (`engine.rs:523`), so bounding the EQ output bounds the whole chain to the
   device; and clipping only ever required the boosted band to contain real energy — a
   high-passed talk stream has almost nothing at 63 Hz, so +12 dB there was near-inaudible on
   it while music at the same setting was not.
 
-- **The audible grit reported on 2026-09-08 was external to Onda** (resolved 2026-09-09).
+- **The audible grit reported on 2026-09-08 was external to Ondar** (resolved 2026-09-09).
   It was heard through a WiFi speaker, i.e. downstream of a 48→44.1 kHz resample, a
   float-to-16-bit conversion, and the speaker's own DSP and bass protection. Two
   independent results rule out the signal path. Arithmetic: the grit persisted at ¼
@@ -410,7 +410,7 @@ not have.
 
 ### Reconnect ownership and stream timeouts (measured 2026-09-08, M1)
 
-**Onda owns all reconnects.** `stream-download`'s internal reconnect is a file-download
+**Ondar owns all reconnects.** `stream-download`'s internal reconnect is a file-download
 feature: it decides Range-vs-plain-GET from the `Accept-Ranges` of the *first* response,
 cached at `HttpStream::new()`. A live Icecast mount doesn't send that header, so every
 internal reconnect is a bare GET whose byte 0 is spliced onto the writer's current
@@ -424,7 +424,7 @@ If `read_timeout` fires first, `reqwest`'s `ReadTimeoutBody` never clears its el
 sleep (`body.rs` ~336-360), so the body yields `Err(TimedOut)` on every poll forever;
 `stream-download`'s `handle_bytes` logs and returns `Continue` with no backoff, giving a
 CPU-bound spin (measured: 4.15M log lines in 40 s, stuck in `Buffering`, no recovery).
-Both values are env-overridable (`ONDA_READ_TIMEOUT_SECS`, `ONDA_RETRY_TIMEOUT_SECS`),
+Both values are env-overridable (`ONDAR_READ_TIMEOUT_SECS`, `ONDAR_RETRY_TIMEOUT_SECS`),
 so `stream.rs` clamps `read_timeout` to `retry_timeout * 2` and warns if the invariant
 is violated.
 
@@ -437,7 +437,7 @@ and leaves the loop polling a dead stream — a spin, measured at 125,253 log li
 0.13.4's `ReadTimeoutBody` not clearing its elapsed sleep on the error return
 (`async_impl/body.rs:351-353` skips the reset at `:358`) and `stream-download`'s
 `handle_bytes` returning `Continue` with no backoff on repeated `Err` — measured at
-4.15M log lines in 40 s. Neither is fixed in Onda. A post-M1 pass should add an
+4.15M log lines in 40 s. Neither is fixed in Ondar. A post-M1 pass should add an
 engine-level watchdog (max time in `Buffering` with no bytes arriving → fail the
 session → external reconnect), which covers both and anything upstream breaks next.
 
@@ -470,7 +470,7 @@ figure a mean with its spread. The model fits to within 0.15 s at every point, w
 fill_target-limited (8 and 16 KB) and ~0.10–0.15 s where it is prefetch-limited (32 KB and
 up). Describing both as one constant offset hides the split. **The old special case is gone**: the
 small-prefetch point no longer misses by 0.49 s, and the previous "unexplained" residual
-there was an artefact of the harness, not of Onda.
+there was an artefact of the harness, not of Ondar.
 
 **Time-to-first-audio is a separate quantity and does not follow `max(prefetch, burst)`.**
 It is the time until `fill_target` (1.0 s, half the ring) has been *decoded* into the ring,
@@ -490,7 +490,7 @@ knee" for why the lower bound is the binding one and why it is not ours to choos
 
 ### The harness paced 3.57% slow, and it invalidated the table above (found 2026-09-11)
 
-The previous version of that table could not be trusted, and the reason was not in Onda.
+The previous version of that table could not be trusted, and the reason was not in Ondar.
 `scripts/stall-server.py` paced at **15,429 B/s against a nominal 16,000** — 3.57% slow.
 The loop already compensated for `sendall`; the fault was that every deadline was computed
 from *"now"*, so `time.sleep` overshoot (1–3 ms on macOS) plus the uncompensated loop head
@@ -544,11 +544,11 @@ the maximum.
 `prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` computable before `open`.
 The `max` is load-bearing — the knee alone starves the decoder at 64 kbit/s.
 
-**The first term is pinned to a dependency's internal behaviour.** `onda-audio` never
+**The first term is pinned to a dependency's internal behaviour.** `ondar-audio` never
 constructs a `MediaSourceStream`; rodio 0.22.2 does it internally over symphonia-core 0.5.5 and
 chooses the 32768 B read size. It is not a property of decoding and not ours to set, so it
 **must be re-verified on any rodio or symphonia bump**. A bump that raises it reintroduces the
-spontaneous underruns above, silently. `crates/onda-audio/src/icy.rs` records the largest
+spontaneous underruns above, silently. `crates/ondar-audio/src/icy.rs` records the largest
 observed read (`MAX_OBSERVED_READ`) and `examples/stall_bench.rs` fails loudly when it exceeds
 the effective prefetch — verified to fire at 16 KB and stay quiet at 32 KB.
 
@@ -588,7 +588,7 @@ downstream depending on the value. Not swept, deliberately.
 
 `Buffering` had no upper bound, and one reachable case never ended. Against `--range reject`
 — a 416 to a retried range request — `stream-download` swallows the error into an infinite
-retry and never returns it to the decode thread, so **nothing in Onda could fail the
+retry and never returns it to the decode thread, so **nothing in Ondar could fail the
 session**: measured 1,585,143 log lines / 382 MB in a 40 s run, 1,585,101 of them identical,
 stuck in `Buffering` for the whole run with no `Reconnecting` and no `Error`. The external
 `Backoff` was unreachable.
@@ -626,6 +626,43 @@ watchdog's progress signal must not be confused by it — which is why it counts
 than inferring from `fill`.
 
 
+### Renamed from Onda to Ondar (2026-09-13)
+
+**Old name:** Onda. **New name:** Ondar — Basque for sand.
+
+**Why:** "Onda" collides with [Onda Cero](https://www.ondacero.es/), a national Spanish radio
+network. For an internet radio player that is not a distant collision, it is the same product
+category in a market the app will be used in. No radio app or station was found under "Ondar".
+
+Done as one mechanical commit: a tree half-renamed between commits is worse than either state
+and useless to bisect.
+
+**How to read an "Onda" you find in this repo.** The rule applied was: does the string *name the
+thing as it is now*, or does it *reproduce something literally emitted or recorded at a past
+moment*? Reproduced literals are quotations and were kept verbatim — command output such as
+`running 34 tests` / `34 passed`, log lines, commit messages, tag and commit SHAs. Everything
+else referring to the product was renamed, **including inside dated findings above**: those are
+load-bearing present-tense engineering claims that merely carry a date, and freezing them would
+make this document read as though it described a different program.
+
+So an "Onda" in this repo is one of exactly three things:
+
+| Where | Why it survived |
+|---|---|
+| A reproduced literal | It is a quotation of something recorded before 2026-09-13. |
+| `~/Developer/Onda` | The working directory is deliberately **not** renamed: it would break the working directory and the folder grant Martín's Claude session uses, and buys only tidiness. This is why CLAUDE.md's layout diagram still has an `onda/` root. |
+| A miss | Report it. |
+
+**Follow-ups Martín owns.** The GitHub repository is being renamed `metambuy/onda` →
+`metambuy/ondar` in the GitHub UI, after this commit lands, followed by `git remote set-url`.
+The docs in this commit already say `metambuy/ondar`, including the Actions run link in "Repo
+tooling" — so between this commit and that rename those URLs are ahead of reality. They are
+live pointers, not records, which is why they were renamed rather than frozen; left alone they
+would survive only on GitHub's redirect and rot quietly.
+
+**Not renamed at all:** branch `m2-spike`, which stays at `3f923cb` as a reference
+implementation for M2 proper and still uses the old name throughout.
+
 ### CI verifies the head of each push, not every commit (found 2026-09-12)
 
 A GitHub Actions `push` trigger fires **once per push**, and the run checks out that push's head
@@ -662,9 +699,9 @@ For that layout cargo's default scope is the root package alone, not all members
 
 | Invocation | What actually runs |
 |---|---|
-| `cargo test` | the `onda` package only — its own 3 tests, exit 0, no warning |
-| `cargo test --workspace` | 51 tests — 48 in `onda-audio`, 3 in the shell |
-| `cargo test -p onda-audio` | the 48 that matter for the engine |
+| `cargo test` | the `ondar` package only — its own 3 tests, exit 0, no warning |
+| `cargo test --workspace` | 51 tests — 48 in `ondar-audio`, 3 in the shell |
+| `cargo test -p ondar-audio` | the 48 that matter for the engine |
 
 It reports success either way, which is what made it survive this long — and as of block 2
 it is **more** dangerous, not less: the shell crate gained its own tests, so a bare run now
@@ -677,7 +714,7 @@ test of the rate limiter's burst behaviour, not a placeholder — the name is ca
 job. If that test is ever renamed or removed, the trap goes back to being silent. **Implication worth
 stating plainly: any "cargo test passes" claim made before 2026-09-10 needs re-reading against
 which invocation was used.** `README.md`'s instructions were fine — they have always said
-`cargo test --workspace` and `cargo test -p onda-audio`. The *verification ritual* in
+`cargo test --workspace` and `cargo test -p ondar-audio`. The *verification ritual* in
 `CLAUDE.md` and `docs/BUILD_PLAN.md` was not: it said bare `cargo test`, so any milestone
 check that followed the ritual as written — M1's included — proved nothing about the audio
 engine. Both files are corrected as of 2026-09-10 and CI uses `--workspace`.
@@ -685,11 +722,11 @@ engine. Both files are corrected as of 2026-09-10 and CI uses `--workspace`.
 Corollary: the count is itself worth pinning down, because 45 is the number you get counting
 `#[test]` in source against a reported 51. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
 `export_bindings_<type>` test per exported type, which is the mechanism that writes
-`src/bindings/`. `cargo test -p onda-audio -- --list` is the authority.
+`src/bindings/`. `cargo test -p ondar-audio -- --list` is the authority.
 
 ## API etiquette (non-negotiable)
 
-- Send a descriptive `User-Agent` (`Onda/<version>`) on every radio-browser request.
+- Send a descriptive `User-Agent` (`Ondar/<version>`) on every radio-browser request.
 - Discover servers via the `_api._tcp.radio-browser.info` SRV record (`hickory-resolver`),
   with hardcoded fallbacks; do not hammer a single host.
 - Call the station-click endpoint when playback actually starts, once per play.

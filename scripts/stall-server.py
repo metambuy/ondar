@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic stall / reconnect test server for Onda's audio pipeline.
+"""Deterministic stall / reconnect test server for Ondar's audio pipeline.
 
 Loops an MP3 file at real-time rate over a raw socket (not http.server — we need control of
 the status line, headers, and half-open/reset/hang behaviour that http.server hides). See

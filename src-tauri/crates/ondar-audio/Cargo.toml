@@ -1,7 +1,7 @@
 [package]
-name = "onda-audio"
+name = "ondar-audio"
 version = "0.1.0"
-description = "Onda audio engine: HTTP stream → decode → EQ → output. No Tauri dependency."
+description = "Ondar audio engine: HTTP stream → decode → EQ → output. No Tauri dependency."
 edition.workspace = true
 rust-version.workspace = true
 

@@ -1,5 +1,5 @@
-//! Tauri shell for Onda. Owns the audio engine and forwards its events to the webview.
-//! No business logic lives here or in the webview; see `crates/onda-audio`.
+//! Tauri shell for Ondar. Owns the audio engine and forwards its events to the webview.
+//! No business logic lives here or in the webview; see `crates/ondar-audio`.
 
 mod commands;
 mod error;
@@ -9,7 +9,7 @@ use std::thread;
 
 use tauri::Emitter;
 
-use onda_audio::{AudioEngine, EngineEvent};
+use ondar_audio::{AudioEngine, EngineEvent};
 
 pub struct AppState {
     pub engine: AudioEngine,
@@ -26,13 +26,13 @@ pub mod events {
 pub fn run() {
     // `stream-download` logs via `tracing`, not `log`; `tracing_subscriber::fmt`'s `init()`
     // installs a `LogTracer` itself (its default `tracing-log` feature), which is what lets
-    // `onda_audio`'s own `log::` call sites still show up here too — one `RUST_LOG` drives
+    // `ondar_audio`'s own `log::` call sites still show up here too — one `RUST_LOG` drives
     // both. Same default filter `env_logger` used, so behaviour when `RUST_LOG` is unset is
     // unchanged.
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::prelude::*;
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,onda_audio=debug"));
+        .unwrap_or_else(|_| EnvFilter::new("info,ondar_audio=debug"));
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
@@ -41,7 +41,7 @@ pub fn run() {
         )
         .init();
 
-    let user_agent = format!("Onda/{}", env!("CARGO_PKG_VERSION"));
+    let user_agent = format!("Ondar/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent);
 
     tauri::Builder::default()
@@ -49,7 +49,7 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             thread::Builder::new()
-                .name("onda-events".into())
+                .name("ondar-events".into())
                 .spawn(move || {
                     for ev in engine_events {
                         let result = match ev {
@@ -77,5 +77,5 @@ pub fn run() {
             commands::audio::get_playback_state,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Onda");
+        .expect("error while running Ondar");
 }

@@ -1,4 +1,4 @@
-//! Onda audio engine.
+//! Ondar audio engine.
 //!
 //! ```text
 //! HTTP (stream-download, bounded ring)

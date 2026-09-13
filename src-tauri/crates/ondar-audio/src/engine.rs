@@ -2,11 +2,11 @@
 //!
 //! Threads:
 //!
-//! * **engine thread** (`onda-audio`): owns the output device (`MixerDeviceSink`), the
+//! * **engine thread** (`ondar-audio`): owns the output device (`MixerDeviceSink`), the
 //!   `Player`, and the Tokio runtime that `stream-download` needs. It receives
 //!   [`AudioCommand`]s over a channel, polling on a short timeout so it can also supervise
 //!   ring buffering (see [`Engine::tick`]) — it never blocks on network or decoding itself.
-//! * **one decode thread per session** (`onda-decode`): opens the HTTP stream, probes it with
+//! * **one decode thread per session** (`ondar-decode`): opens the HTTP stream, probes it with
 //!   Symphonia, decodes into the ring buffer, and exits when its session is cancelled. It no
 //!   longer drives buffering/reconnect *state* — it only reports ring occupancy — because it
 //!   can be blocked for many seconds inside a network read (see `stream::build_client`'s
@@ -56,7 +56,7 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    /// Spawn the engine thread. `user_agent` goes on every HTTP request (`Onda/<version>`).
+    /// Spawn the engine thread. `user_agent` goes on every HTTP request (`Ondar/<version>`).
     pub fn start(user_agent: String) -> (AudioEngine, Receiver<EngineEvent>) {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (ev_tx, ev_rx) = mpsc::channel();
@@ -68,7 +68,7 @@ impl AudioEngine {
         };
         let engine_shared = shared.clone();
         thread::Builder::new()
-            .name("onda-audio".into())
+            .name("ondar-audio".into())
             .spawn(move || Engine::new(engine_shared, user_agent).run(cmd_rx))
             .expect("spawn audio engine thread");
         (AudioEngine { tx: cmd_tx, shared }, ev_rx)
@@ -228,7 +228,7 @@ impl Engine {
     fn new(shared: Shared, user_agent: String) -> Self {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .thread_name("onda-net")
+            .thread_name("ondar-net")
             .enable_all()
             .build()
             .expect("tokio runtime");
@@ -485,7 +485,7 @@ impl Engine {
         let client = self.client.clone();
         let handle = self.rt.handle().clone();
         thread::Builder::new()
-            .name(format!("onda-decode:{station_id}"))
+            .name(format!("ondar-decode:{station_id}"))
             .spawn(move || run_session(ctx, url, client, handle, player))
             .expect("spawn decode thread");
     }
@@ -748,7 +748,7 @@ fn is_refilled(fill: usize, capacity: usize) -> bool {
 /// to the existing `Backoff`.
 ///
 /// Derived from `stream::retry_timeout` rather than hardcoded, because that value is
-/// env-overridable (`ONDA_RETRY_TIMEOUT_SECS`) and a fixed constant would silently become wrong
+/// env-overridable (`ONDAR_RETRY_TIMEOUT_SECS`) and a fixed constant would silently become wrong
 /// the moment it is raised. The bound to clear is the longest *legitimate* no-progress interval:
 /// bytes stop, `stream-download`'s idle reconnect fires after `retry_timeout`, and the new
 /// connection delivers. Measured at ~5.0 s with the 5 s default, so 3x plus a 15 s floor leaves

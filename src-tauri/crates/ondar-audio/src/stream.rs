@@ -57,7 +57,7 @@ pub type Reader = StreamDownload<BoundedStorageProvider<MemoryStorageProvider>>;
 /// first term is pinned to a dependency's internal behaviour and **must be re-verified on any
 /// rodio or symphonia bump**.
 ///
-/// Overridable via `ONDA_PREFETCH_BYTES` (see [`prefetch_bytes`]) so stall testing can trade
+/// Overridable via `ONDAR_PREFETCH_BYTES` (see [`prefetch_bytes`]) so stall testing can trade
 /// startup latency against burst-size realism without a rebuild.
 pub const PREFETCH_BYTES: u64 = 32 * 1024;
 /// Size of the in-memory ring the HTTP body is written into (~16 s at 128 kbit/s; also the
@@ -65,11 +65,11 @@ pub const PREFETCH_BYTES: u64 = 32 * 1024;
 pub const BUFFER_BYTES: usize = 256 * 1024;
 /// `reqwest`'s per-read timeout — also covers the wait for a first connect's response headers
 /// (see `PendingRequest::poll` in `reqwest`), not just body reads. A backstop for a reconnect
-/// that connects and then never delivers a byte. Overridable via `ONDA_READ_TIMEOUT_SECS`.
+/// that connects and then never delivers a byte. Overridable via `ONDAR_READ_TIMEOUT_SECS`.
 const READ_TIMEOUT_SECS: u64 = 20;
 /// `stream-download`'s own idle-reconnect timeout: no new data for this long triggers an
 /// internal reconnect (see `Settings::retry_timeout`). Overridable via
-/// `ONDA_RETRY_TIMEOUT_SECS`.
+/// `ONDAR_RETRY_TIMEOUT_SECS`.
 const RETRY_TIMEOUT_SECS: u64 = 5;
 
 fn env_duration_secs(var: &str, default_secs: u64) -> Duration {
@@ -93,8 +93,8 @@ fn env_duration_secs(var: &str, default_secs: u64) -> Duration {
 fn resolved_timeouts() -> (Duration, Duration) {
     static TIMEOUTS: OnceLock<(Duration, Duration)> = OnceLock::new();
     *TIMEOUTS.get_or_init(|| {
-        let read = env_duration_secs("ONDA_READ_TIMEOUT_SECS", READ_TIMEOUT_SECS);
-        let retry = env_duration_secs("ONDA_RETRY_TIMEOUT_SECS", RETRY_TIMEOUT_SECS);
+        let read = env_duration_secs("ONDAR_READ_TIMEOUT_SECS", READ_TIMEOUT_SECS);
+        let retry = env_duration_secs("ONDAR_RETRY_TIMEOUT_SECS", RETRY_TIMEOUT_SECS);
         if read <= retry {
             let clamped = retry * 2;
             log::warn!(
@@ -118,7 +118,7 @@ pub fn retry_timeout() -> Duration {
 }
 
 pub fn prefetch_bytes() -> u64 {
-    std::env::var("ONDA_PREFETCH_BYTES")
+    std::env::var("ONDAR_PREFETCH_BYTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(PREFETCH_BYTES)
