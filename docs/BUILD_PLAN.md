@@ -28,8 +28,11 @@ error states; EQ biquad unit tests. Plain test window (`src/App.tsx`), no tray.
 4. EQ sliders audibly change the sound; `cargo test -p ondar-audio` passes.
 5. Switching stations silences the old station immediately.
 
-CI (fmt/clippy/test/typecheck in GitHub Actions) was not part of this milestone and is not
-yet set up — a separate, later piece of work, not a gap in M1 itself.
+CI (fmt/clippy/test/typecheck in GitHub Actions) was not part of this milestone — a separate,
+later piece of work, not a gap in M1 itself. It was set up on 2026-09-11, after M1 closed; this
+paragraph said "is not yet set up" until 2026-09-13. It gates every *push*, verifying that
+push's head commit, not every commit — see ONDAR.md, "CI verifies the head of each push, not
+every commit".
 
 ---
 
