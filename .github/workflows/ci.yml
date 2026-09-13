@@ -13,10 +13,16 @@ on:
 # cancel each other. That happened — a commit's run was cancelled by the next push, and the
 # re-run of the older commit then cancelled HEAD's run — leaving commits on main that were
 # never actually verified while the branch looked green. Superseding a run is fine on a branch,
-# where only the tip matters; on main every commit has to stand on its own.
+# where only the tip matters.
 #
 # `cancel-in-progress` accepts an expression, not just a literal (GitHub Actions workflow
 # syntax, "Using concurrency"), which is what makes the split expressible in one group.
+#
+# What this does NOT buy: per-commit verification. A push fires one run, against the head
+# commit only, so every earlier commit in a multi-commit push goes unverified — the
+# concurrency split above fixes cancellation, not batching. **A commit that has to stand on
+# its own has to be pushed on its own.** See ONDA.md, "CI verifies the head of each push, not
+# every commit".
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -66,8 +72,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       # --workspace is load-bearing: src-tauri/Cargo.toml has a real [package] at its
-      # root, so a bare `cargo test` runs only that package and reports 0 tests while
-      # silently skipping all 34 in onda-audio.
+      # root, so a bare `cargo test` runs only that package — its own 3 tests — while
+      # silently skipping all 48 in onda-audio.
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace

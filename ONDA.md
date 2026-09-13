@@ -171,7 +171,9 @@ TypeScript, stop — it belongs in Rust.
   `metambuy` over HTTPS; git operations use the same credential. The `m1-done` tag is pushed
   and dereferences to `4b4ee3d`.
 - **CI:** `.github/workflows/ci.yml`, on push and pull_request, `macos-latest` only (CoreAudio
-  is a hard dependency; there is no Linux/Windows path to test). It runs, in order:
+  is a hard dependency; there is no Linux/Windows path to test). **It gates every *push*,
+  verifying that push's head commit — not every commit**; see "CI verifies the head of each
+  push, not every commit" below. It runs, in order:
   `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
   `cargo clippy --all-targets -- -D warnings`; `cargo test --workspace`;
   `git diff --exit-code src/bindings`; `pnpm typecheck`; `pnpm lint`; `cargo build`.
@@ -623,6 +625,33 @@ holds data. So `Buffering` is more responsive than buffer arithmetic predicts, a
 watchdog's progress signal must not be confused by it — which is why it counts pushes rather
 than inferring from `fill`.
 
+
+### CI verifies the head of each push, not every commit (found 2026-09-12)
+
+A GitHub Actions `push` trigger fires **once per push**, and the run checks out that push's head
+commit. Every earlier commit in a multi-commit push is never built. The workflow's
+`cancel-in-progress` split (added 2026-09-11) fixes a different problem — runs cancelling each
+other on `main` — and says nothing about batching.
+
+So the standing rule in `CLAUDE.md`, "small commits, each building and passing checks on its
+own", is an **authoring** rule that CI does not enforce. The consequence, stated plainly:
+
+> **A commit that has to stand on its own has to be pushed on its own.**
+
+Found the hard way on 2026-09-12, twice in one session:
+
+| Commit | What happened |
+|---|---|
+| `f7f04c3` | Pushed batched behind `3f923cb` on `m2-spike`. No run. Its state was established only by pushing it to a throwaway branch (`ci-check-f7f04c3`, since deleted) to force one — it passed. |
+| `38c6410` | Pushed batched behind `0927e6c` on `main`. No run. Argued green instead of measured: its code tree is byte-identical to `c45c02f`, which was green, and the only delta is a Markdown file. Sound, but an argument is not a run. |
+
+The `m1-done` tag and every "CI green on X" claim in this document predating 2026-09-12 should be
+read against this: green means *that push's head* was green. Where a claim names a commit that was
+not a push head, it rests on the same kind of argument as `38c6410`.
+
+**No fix is recorded here on purpose.** Making CI verify every commit is a real change with real
+costs — a matrix over `${{ github.event.commits }}`, or a merge-queue, or a pre-push hook — and
+it is a separate decision, not something to slip in under a documentation correction.
 
 ### Bare `cargo test` skips the engine (found 2026-09-10)
 

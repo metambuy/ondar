@@ -279,6 +279,10 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 - **Plan first.** Anything beyond a one-file fix: propose the plan and wait.
 - **Small commits**, conventional style (`feat(audio):`, `fix(map):`, `docs:`), each building
   and passing checks on its own. Docs commits stay separate from code commits.
+- **CI gates every *push*, verifying that push's head commit — not every commit.** The rule
+  above is yours to keep, not something CI enforces: a multi-commit push leaves every commit
+  but the last unverified. **So a commit that has to stand on its own has to be pushed on its
+  own.** See ONDA.md, "CI verifies the head of each push, not every commit".
 - When a decision is made or reversed, it goes into **ONDA.md**, not just the chat.
 - If a documented approach turns out to be wrong, stop and say so before improvising.
 - Verify crate claims against docs.rs or the source before writing code against them.
