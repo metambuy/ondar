@@ -792,6 +792,47 @@ Corollary: the count is itself worth pinning down, because 45 is the number you 
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
+## Principle: verify the instrument before trusting a surprising measurement
+
+When a measurement is surprising, **check the measuring tool before you start explaining the
+result.** This project has now hit the same failure three times, in three unrelated tools, and
+each time the instrument was wrong rather than the thing being measured.
+
+| Instrument | What it reported | What was actually true |
+|---|---|---|
+| `cargo test` (bare, no `--workspace`) | `3 passed`, exit 0 | It ran only the shell crate and silently skipped all 48 engine tests. A plausible small number reads as success; `0 passed` would have looked obviously empty. |
+| `NSWindowOcclusionState` read as a boolean | `8192`, non-zero, "so the window is visible" | `Visible` is `1 << 1`, and `8192 & 2 == 0`. The window was reporting that it does **not** reach the screen. The non-zero value was undocumented high bits. |
+| `magick file.svg` | RMSE **0.19** against the PNG master — a real mismatch | ImageMagick had no `rsvg` delegate and fell back to its internal MSVG parser, which mangled the gradient. With `rsvg-convert`: RMSE **0.0085**. The images were identical. |
+
+**The common shape: a tool that degrades quietly instead of erroring.** None of the three
+failed loudly. Each returned a well-formed, plausible answer — a passing test count, a non-zero
+integer, a rendered image — with no warning that it had silently narrowed its scope, changed
+units, or swapped implementations. That is exactly the class of failure that survives review,
+because nothing in the output looks wrong.
+
+**The transferable part: in all three the fix was to check the measuring tool, not the thing
+measured.** The occlusion case is the clearest — a day went into explaining a paradox ("AppKit
+says visible but nothing is on screen") that did not exist, because the instrument was never
+questioned. The `magick` case was nearly written into this document as a genuine SVG/PNG
+mismatch.
+
+In practice, before reasoning from a surprising number:
+
+- **Decode it.** A non-zero integer is not a boolean; a bitfield needs its named constant, read
+  from the source. Print the decoded field beside the raw value in any log that will be read
+  later.
+- **Confirm the scope.** Did the command run over what you think it did? `cargo test` vs
+  `cargo test --workspace` differ by 48 tests and both exit 0.
+- **Confirm the implementation.** Which backend actually serviced the call? Optional delegates,
+  feature flags and fallbacks change the answer without changing the command.
+- **Get a second instrument.** Agreement between two independent tools is cheap; a long
+  explanation of one tool's output is not.
+
+Related findings, each an instance of this: "Bare `cargo test` skips the engine", "The M2 spike"
+(occlusion), "The app icon and tray glyphs" (`rsvg`). The harness-pacing error in "The harness
+paced 3.57% slow" is a fourth of the same family — the measuring harness, not the engine, was
+wrong, and it invalidated a whole table.
+
 ## How to work in this project
 
 - **Plan before code.** For anything larger than a bug fix, produce a short plan and wait for

@@ -4,3 +4,8 @@ src-tauri/target
 src-tauri/gen/schemas
 .DS_Store
 _handover/
+# Scratch drop-boxes for files handed over from a chat session. Two patterns on purpose:
+# gitignore matches whole path components, so `outputs/` does NOT cover `Claude outputs/`,
+# which is the directory that actually exists today.
+outputs/
+Claude outputs/
