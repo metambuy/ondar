@@ -71,16 +71,21 @@ onda/
     │   ├── main.rs               calls ondar_lib::run()
     │   ├── lib.rs                AppState, `events` module, tracing init, event forwarder
     │   ├── error.rs              OndarError → `{ code, message }`
+    │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
+    │   │                         flood; holds the shell's 3 tests, including the
+    │   │                         bare-`cargo test` tripwire (see Commands)
     │   └── commands/audio.rs     8 thin commands; validate args, send, return
     └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
         ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
         ├── stream.rs             stream-download open, ICY headers, timeout invariant
         ├── icy.rs                in-band ICY title stripping
         ├── ring.rs               rtrb ring → rodio Source (never blocks the audio callback)
-        ├── eq.rs                 10-band biquad peaking EQ as a rodio Source adapter
+        ├── eq.rs                 10-band biquad peaking EQ + soft-clip, as a rodio Source adapter
         ├── reconnect.rs          Backoff: 1/2/4/8/16 s, 5 attempts, reset after 30 s stable
         ├── types.rs              IPC types (ts-rs `#[ts(export)]`)
-        └── examples/stall_bench.rs
+        └── examples/
+            ├── stall_bench.rs
+            └── eq_headroom_sweep.rs  cross-checks the shipped soft-clip against the swept curve
 ```
 
 That root `onda/` is **not** a missed rename. The project is Ondar, but the working directory
@@ -177,9 +182,17 @@ committing the generated `.ts`.
 
 ## Rust conventions
 
-- **No `unwrap()` / `expect()` / `panic!` in any code reachable from a command or the audio
-  thread.** `expect()` is acceptable only in `lib.rs::run` setup where failure means the app
-  genuinely cannot start.
+- **No `unwrap()` / `expect()` / `panic!` on *fallible runtime operations* in code reachable
+  from a command or the audio thread.** Two exemptions, each with the reason it cannot fire:
+  `Mutex::lock().unwrap()` (poison propagation only — a poisoned mutex means another thread
+  already panicked, and the audio callback takes no locks), and `expect()` on thread spawn and
+  on constructing the tokio runtime and `reqwest` client, where failure means the OS refused a
+  thread or a static configuration is invalid and the app cannot run at all. Spawns are not
+  all at startup: the decode thread is spawned per session, from `play`. An `expect()` on a
+  value that is infallible by construction (`NonZeroUsize::new(BUFFER_BYTES)` in `stream.rs`)
+  is not a fallible operation. The per-sample DSP path (`ring.rs`, `eq.rs`) has none of any
+  kind outside `#[cfg(test)]` and must stay that way. Nothing enforces this — `clippy.toml`
+  sets only `msrv`.
 - One shell error type, `OndarError` (`thiserror`), serialised as `{ code, message }` with a
   stable `code` discriminant so the UI branches on it without parsing strings. Engine-side
   failure reasons are `types::ErrorCode` (`network`, `http`, `unsupported_format`, `decode`,
@@ -234,9 +247,11 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 6. ICY metadata absence is normal, not an error.
 7. EQ: 10 ISO-266 octave bands, Q = 1.414, ±12 dB. Gains are atomics read at frame boundaries
    every 64 frames; changed bands get new coefficients while **filter state is preserved** —
-   that is what avoids the click. There is no gain ramp or interpolation, and (until the
-   Phase-1 headroom fix lands) **no makeup gain or limiter**: +12 dB on a band with real
-   energy pushes broadcast-level content past ±1.0.
+   that is what avoids the click. There is no makeup gain, and no gain ramp or interpolation
+   — but the adapter bounds its own output with a soft-clip stage, identity bit-for-bit below
+   `SOFT_CLIP_THRESHOLD` = 0.95 and asymptotic to `SOFT_CLIP_CEILING` = 1.0, applied inside
+   `Equalizer` as the last operation on every sample so it cannot be bypassed. See ONDAR.md,
+   "EQ output is bounded by a soft-clip stage".
 8. Call the radio-browser click endpoint exactly once, when playback actually starts (M3).
 
 ## macOS specifics (M2 — none of this exists yet)
@@ -245,16 +260,22 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 - The popover is a non-activating `NSPanel` via `tauri-nspanel` (git dep, branch `v2.1`, pin
   the commit rev in both `Cargo.toml` and ONDAR.md). The `v2.1` API is `PanelBuilder` +
   `tauri_panel!`; the older `v2` branch's `to_panel()` API is not what we target.
-- Position from Tauri's own `TrayIconEvent::Click { rect }` first. `tauri-plugin-positioner`
-  only if that proves insufficient.
-- Vibrancy needs **`macos-private-api`**, which is *not enabled yet*: `Cargo.toml` currently
-  has `tauri = { version = "2.11", features = [] }` and `tauri.conf.json` has no
-  `macOSPrivateApi`. Enable both, plus `transparent: true`, before expecting vibrancy to work.
+- Position from Tauri's own `TrayIconEvent::Click { rect }` — `rect.position` is already
+  top-left-origin physical pixels. `tauri-plugin-positioner` is **not needed** (decided
+  2026-09-12, ONDAR.md "Verified versions").
+- Vibrancy is Tauri's own `set_effects` (`EffectState::Active`) plus
+  `PanelBuilder::transparent(true)` *and* `with_window(|w| w.transparent(true))`.
+  `window-vibrancy` is **not** a direct dependency — Tauri wraps it. Verified on the
+  subclassed panel by the M2 spike (2026-09-12). It needs **`macos-private-api`**, not enabled
+  on `main` yet: `Cargo.toml` has `tauri = { version = "2.11", features = [] }` and
+  `tauri.conf.json` has no `macOSPrivateApi`. `tauri-nspanel` enables the feature on `tauri`
+  when it is added.
 - Tray icon must be a template image (`set_icon_as_template(true)`).
 - Expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
-- Fallback recorded in advance: if `tauri-nspanel` v2.1 is unusable against the pinned Tauri
-  version, use a borderless always-on-top window with manual blur handling and record the
-  decision in ONDAR.md.
+- `tauri-nspanel` v2.1 passed its go/no-go against Tauri 2.11.5 in the M2 spike (2026-09-12),
+  pinned rev in ONDAR.md. The borderless always-on-top fallback is **not taken**.
+- Open M2 defect from the spike: `hides_on_deactivate(true)` keeps the panel off screen. See
+  ONDAR.md, "The M2 spike".
 
 ## Map invariants (M4 — none of this exists yet)
 
@@ -270,8 +291,8 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 
 ## Known risks — check these before trusting this file
 
-1. **`tauri-nspanel` / `tauri-plugin-positioner` API drift.** Verify against docs.rs/GitHub
-   before writing code, and record what you find in ONDAR.md's "Verified versions".
+1. **`tauri-nspanel` API drift.** It is a git dependency with no releases. Verify against the
+   pinned rev before writing code, and record what you find in ONDAR.md's "Verified versions".
 2. **HLS and redirect chains.** `stream-download` handles plain HTTP/Icecast, not `.m3u8`.
    Detect and surface `unsupported_format` rather than hanging. Also: Shoutcast v1 servers
    (`ICY 200 OK` status line) are rejected by hyper and surface as `http`.

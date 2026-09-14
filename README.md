@@ -22,8 +22,8 @@ cd src-tauri && cargo test --workspace      # runs EQ/ICY/ring tests AND regener
 cd .. && pnpm tauri dev
 ```
 
-`src-tauri/icons/icon.png` is a 1×1 placeholder. Before the first `tauri build`, generate a
-real set with `pnpm tauri icon path/to/1024.png`.
+Icons are generated from `src-tauri/icons/ondar-icon-master.svg` — regenerate with
+`pnpm tauri icon <master>.png` rather than upscaling a PNG.
 
 ## M1 exit criteria
 
@@ -65,8 +65,6 @@ manual testing.
 - `Backoff::next` collides with clippy's `should_implement_trait` lint (it isn't an
   `Iterator`); allowed rather than renamed, since it isn't meant to be one and renaming would
   touch two call sites for no benefit.
-- This scaffold's `package.json` has no `typecheck`/`lint` scripts — only `dev`/`build`/
-  `preview`/`tauri`. `tsc --noEmit` was run directly instead.
 
 **Design fix — buffering supervision moved off the decode thread:**
 

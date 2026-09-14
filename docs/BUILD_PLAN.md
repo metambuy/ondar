@@ -43,11 +43,12 @@ every commit".
 - [ ] `ActivationPolicy::Accessory` + `LSUIElement` — no Dock icon
 - [ ] Tray icon as a **template image**, light/dark correct
 - [ ] `tauri-nspanel`: convert the main window to a non-activating `NSPanel`
-- [ ] `tauri-plugin-positioner` (`TrayCenter`), or Tauri's own `TrayIconEvent::Click { rect }`
-      — popover anchors under the tray item, correct on multi-monitor and with the notch
+- [ ] Position from Tauri's own `TrayIconEvent::Click { rect }` (`tauri-plugin-positioner` not
+      needed — ONDAR.md, 2026-09-12) — popover anchors under the tray item, correct on
+      multi-monitor and with the notch
 - [ ] Hide on resign-key / `Esc`; toggle on tray click; right-click tray → quit/preferences
-- [ ] Vibrancy background (`macos-private-api`, `window-vibrancy`), rounded corners, no window
-      chrome
+- [ ] Vibrancy background (`macos-private-api`, Tauri's own `set_effects` — `window-vibrancy`
+      is not a direct dependency), rounded corners, no window chrome
 - [ ] Collapsed/expanded height states with a smooth resize + reposition (empty panes for now)
 - [ ] `tauri-plugin-single-instance`
 - [ ] Design tokens (`styles/tokens.css`) for both appearances
@@ -55,11 +56,11 @@ every commit".
 **Exit:** popover opens and closes like Bartender/Fantastical; expand/collapse animates with
 no jump; nothing flickers on a second monitor.
 
-**Risk:** `tauri-nspanel` / `tauri-plugin-positioner` API drift — both are community crates
-that move faster than any doc here. Verify the current API on docs.rs/GitHub before writing
-against them and record what you find in ONDAR.md's "Verified versions". If `tauri-nspanel` is
-unusable against the pinned Tauri version, fall back to a borderless always-on-top window with
-manual blur handling and record the decision in ONDAR.md.
+**Risk:** `tauri-nspanel` API drift — a git-only community crate that moves faster than any
+doc here. Verify against the pinned rev before writing code and record what you find in
+ONDAR.md's "Verified versions". The M2 spike (2026-09-12) passed the go/no-go against Tauri
+2.11.5, so the borderless always-on-top fallback is not taken. Open defect to fix first:
+`hides_on_deactivate(true)` keeps the panel off screen — see ONDAR.md, "The M2 spike".
 
 ---
 
@@ -134,8 +135,10 @@ edges from earlier milestones get finished.
       biquad DSP and its unit tests already exist from M1 — this is the UI + presets)
 - [ ] Presets: Flat, Voice, Bass, Bright, Late Night; custom gains persisted per app (not per
       station, unless decided otherwise)
-- [ ] EQ headroom fix: makeup attenuation scaled to summed positive band gains, or a
-      soft-clip stage after the `Equalizer` adapter — see ONDAR.md's M1 clipping finding
+- [x] EQ headroom fix — **done at M1** (`1e4d237`, 2026-09-11): a soft-clip stage *inside*
+      `Equalizer`, the last operation on every sample, so the bound cannot be bypassed by
+      assembling the graph differently. Not a separate adapter after it, and no makeup
+      attenuation. See ONDAR.md, "EQ output is bounded by a soft-clip stage"
 - [ ] Tray animation: a small frame sequence swapped on a timer via `TrayIcon::set_icon`
       (there is no animated-template-image API)
 - [ ] Global keyboard shortcut to toggle the popover; `Space` play/pause when focused
@@ -155,8 +158,10 @@ music; CPU stays low (single digits) while playing; the tray icon animates while
 
 **Goal:** ship it.
 
-- [ ] App icon set, DMG background, `tauri.conf.json` bundle metadata (replace the placeholder
-      bundle identifier — see open questions)
+- [x] App icon set — landed early (`90236fd`, 2026-09-13), generated from
+      `src-tauri/icons/ondar-icon-master.svg`; see ONDAR.md, "The app icon and tray glyphs"
+- [ ] DMG background, `tauri.conf.json` bundle metadata (replace the placeholder bundle
+      identifier — see open questions)
 - [ ] Apple Developer ID signing + **notarisation** in CI (`APPLE_*` secrets)
 - [ ] Universal binary (aarch64 + x86_64)
 - [ ] `tauri-plugin-updater` with a signed update feed

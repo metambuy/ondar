@@ -147,13 +147,13 @@ before actually adding):
   `.with_window(|w| w.transparent(true))` as well. The window-level call cannot reach it
   retroactively.
 
-**MSRV correction:** `Cargo.toml` declares `rust-version = "1.85"` at the workspace level, but
-`stream-download` 0.24.4's own manifest declares `rust-version = "1.91.0"`. So 1.85 has never
-actually been buildable since `stream-download` was added — it only went unnoticed because the
-toolchain here is 1.98. `Cargo.toml` itself is unchanged in this pass (docs-only commit); the
-workspace `rust-version` should be bumped (or the constraint reconsidered) before anyone tries
-to build with an older toolchain. `README.md`'s "Rust ≥ 1.85" prerequisite line has the same
-issue and needs the same correction.
+**MSRV correction (found and closed 2026-09-10, `7bbe332`):** the workspace `Cargo.toml` used
+to declare `rust-version = "1.85"`, but `stream-download` 0.24.4's own manifest declares
+`rust-version = "1.91.0"`, so 1.85 had never been buildable since `stream-download` was added —
+it went unnoticed because the toolchain here is 1.98. `7bbe332` bumped the workspace
+`rust-version` to 1.91 and dropped `README.md`'s caveat that `Cargo.toml` still said 1.85, so
+its "Rust ≥ 1.91" prerequisite now stands alone; `clippy.toml`'s `msrv` matches. Nothing
+outstanding.
 
 Re-verify at the start of each milestone that touches these; update this list.
 
@@ -288,8 +288,8 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
   downstream clamps: `Player::append` adds only `.amplify()` as a value transform (rodio
   `amplify.rs:63-65`, a pure multiply), and `biquad` 0.6's `DirectForm2Transposed` step
   (`lib.rs:175-181`) is a pure IIR multiply-accumulate. Ondar opens the sink without
-  `.with_sample_format()` (`engine.rs:387`), which does **not** mean rodio defaults to `f32`:
-  `from_device` calls `.with_supported_config()` (rodio `stream.rs:339-352`), taking whatever
+  `.with_sample_format()` (`engine.rs`, `DeviceSinkBuilder::open_default_sink()`), which does
+  **not** mean rodio defaults to `f32`: `from_device` calls `.with_supported_config()` (rodio `stream.rs:339-352`), taking whatever
   format CoreAudio reports. macOS's HAL is natively float32 so this is `f32` in practice, but
   that is a runtime fact, not a guarantee in Ondar's or rodio's source. If a device did report
   `I16`, the cast (rodio `stream.rs:531`) is the last step before the device callback, still
