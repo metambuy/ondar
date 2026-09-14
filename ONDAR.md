@@ -843,6 +843,59 @@ Related findings, each an instance of this: "Bare `cargo test` skips the engine"
 paced 3.57% slow" is a fourth of the same family — the measuring harness, not the engine, was
 wrong, and it invalidated a whole table.
 
+## Principle: an assertion must be able to fail on the quantity it pins (2026-09-14)
+
+**State what an assertion would have to see to fail, and check that it would.** A tolerance is
+a claim about sensitivity. When a test observes the quantity it cares about *through* a
+transform, its real sensitivity is the transform's slope at that point, not the number written.
+
+This is a different class from "verify the instrument", and from the rule that a measurement
+contradicting a recorded justification reopens the decision. Both of those need a trigger — a
+surprising result, or a contradiction. An assertion pointed at the wrong quantity produces
+neither: it stays green, nothing disagrees with anything, and it is wrong the whole time.
+
+**The case.** From `1e4d237` (2026-09-11) to `73e0803` (2026-09-14), the soft-clip bound tests
+compared the post-shaper output peak against a five-decimal literal with a round `5e-4`
+tolerance. The shaper is nearly flat near its ceiling, so in the quantity that matters — the
+EQ's own pre-shaper peak — those windows were:
+
+| Case | Asserted | Pre-shaper window it admitted | True pre-shaper peak |
+|---|---|---|---|
+| 1 | 0.99868 ± 5e-4 | 2.27–3.95 (−18 % / +42 %) | 2.78707 |
+| 2 | 0.99587 ± 5e-4 | 1.44–1.59 (−4.4 % / +5.5 %) | 1.50583 |
+| 3 | *hypothetical* 0.99962 ± 5e-4 — it was unasserted until `97caf3c`, which used 5e-6 | 3.74 upward (−49.8 % / unbounded) | 7.45484 |
+
+Windows are centred on the asserted literal, not the measured value, because that is what the
+shipped assertion compared against. Case 3's lower edge is 50.2 % of the true peak: a gain loss
+of just under half would have passed. (Exactly half, 3.727, would have failed by 0.014 —
+`97caf3c`'s own comment said "half its gain", which overstated it.) The literals also carried
+rounding error the size of a useful tolerance: case 1 measures 0.998675168, on the edge of
+rounding to 0.99868, so even `5e-6` would have left it 1.7e-7 from failing, with a lopsided
+window.
+
+**The fix (`73e0803`).** Stop asserting on the post-shaper literal. `implied_pre_shaper`, the
+algebraic inverse of `soft_clip` in f64, turns each measured peak back into the band bank's peak,
+asserted within `PRE_SHAPER_TOLERANCE` = ±0.1 % of the sweep's pre-shaper column. The inverse is
+itself round-trip tested against the shipped curve (within one f32 output step scaled by
+`(1+s)^2`; worst measured 0.56 of a step). Measured drift: −0.0014 % / +0.0002 % / −0.0029 %.
+The conversion is **executed**, not described: a comment saying "derived from a pre-shaper
+allowance" could drift from the number beside it, and the helper cannot. Same reasoning as the
+test named `bare_cargo_test_runs_only_the_shell_crate_see_claude_md`.
+
+**How it was found — the detail that matters most.** Not by a failing test; none failed. Twice
+it surfaced while *writing a justification*: choosing a tolerance for case 3 and saying why
+exposed that `5e-4` was weak, and declining to write a comment the code did not implement ("the
+tolerance is chosen in pre-shaper terms and converted") exposed the rounding edge. So the next
+one is most likely hiding wherever a tolerance, threshold or margin has no written reason — or a
+reason nobody has checked against the arithmetic. Writing the sentence "this would fail if…" and
+then checking it is the search method.
+
+**Not covered by the weekly drift audit.** The audit checks whether a documented figure matches
+the code. It cannot judge whether a tolerance is appropriate for what it pins: that needs the
+transform's slope, the arithmetic, and the intent of the test, none of which a figure-vs-code
+comparison sees. Every test above would have passed that audit throughout. This gap is recorded
+rather than assumed closed.
+
 ## How to work in this project
 
 - **Plan before code.** For anything larger than a bug fix, produce a short plan and wait for

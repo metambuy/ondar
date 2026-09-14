@@ -222,6 +222,22 @@ committing the generated `.ts`.
 - Never add a dependency without saying what it does and why std or an existing crate is not
   enough.
 
+## Testing conventions
+
+- **State what an assertion would have to see to fail, and check that it would.** A tolerance
+  is a claim about sensitivity, not a round number. When a test measures the thing it cares
+  about *through* a transform, its real sensitivity is the transform's slope at that point, not
+  the tolerance written. Assert on the quantity of interest, inverting the transform if
+  necessary. (`eq.rs`: `implied_pre_shaper` + `PRE_SHAPER_TOLERANCE`.)
+- **Prefer a justification the code executes to one written beside it.** A comment saying a
+  tolerance was derived from a pre-shaper allowance can drift out of agreement with the number;
+  a helper that performs the conversion cannot. Same reasoning as the test named
+  `bare_cargo_test_runs_only_the_shell_crate_see_claude_md` — an explanation that is
+  load-bearing cannot rot silently.
+
+See ONDAR.md, "Principle: an assertion must be able to fail on the quantity it pins". The
+weekly drift audit does not cover this class.
+
 ## TypeScript conventions
 
 - Strict mode. No `any`. Import IPC types from `src/bindings/`.
