@@ -73,7 +73,7 @@ jobs:
 
       # --workspace is load-bearing: src-tauri/Cargo.toml has a real [package] at its
       # root, so a bare `cargo test` runs only that package — its own 3 tests — while
-      # silently skipping all 48 in ondar-audio.
+      # silently skipping every test in ondar-audio.
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace

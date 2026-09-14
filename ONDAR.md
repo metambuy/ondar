@@ -743,8 +743,8 @@ For that layout cargo's default scope is the root package alone, not all members
 | Invocation | What actually runs |
 |---|---|
 | `cargo test` | the `ondar` package only — its own 3 tests, exit 0, no warning |
-| `cargo test --workspace` | 51 tests — 48 in `ondar-audio`, 3 in the shell |
-| `cargo test -p ondar-audio` | the 48 that matter for the engine |
+| `cargo test --workspace` | 52 tests — 49 in `ondar-audio`, 3 in the shell |
+| `cargo test -p ondar-audio` | the 49 that matter for the engine |
 
 It reports success either way, which is what made it survive this long — and as of block 2
 it is **more** dangerous, not less: the shell crate gained its own tests, so a bare run now
@@ -762,8 +762,8 @@ which invocation was used.** `README.md`'s instructions were fine — they have 
 check that followed the ritual as written — M1's included — proved nothing about the audio
 engine. Both files are corrected as of 2026-09-10 and CI uses `--workspace`.
 
-Corollary: the count is itself worth pinning down, because 45 is the number you get counting
-`#[test]` in source against a reported 51. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
+Corollary: the count is itself worth pinning down, because 46 is the number you get counting
+`#[test]` in source against a reported 52. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
 `export_bindings_<type>` test per exported type, which is the mechanism that writes
 `src/bindings/`. `cargo test -p ondar-audio -- --list` is the authority.
 
@@ -822,7 +822,7 @@ In practice, before reasoning from a surprising number:
   from the source. Print the decoded field beside the raw value in any log that will be read
   later.
 - **Confirm the scope.** Did the command run over what you think it did? `cargo test` vs
-  `cargo test --workspace` differ by 48 tests and both exit 0.
+  `cargo test --workspace` differ by every engine test and both exit 0.
 - **Confirm the implementation.** Which backend actually serviced the call? Optional delegates,
   feature flags and fallbacks change the answer without changing the command.
 - **Get a second instrument.** Agreement between two independent tools is cheap; a long

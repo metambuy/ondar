@@ -418,6 +418,54 @@ mod tests {
     }
 
     #[test]
+    fn all_bands_boosted_multi_tone_is_bounded() {
+        // Block A's case 3 and the worst of the three: five equal sines (62.5 Hz – 8 kHz)
+        // normalised to a 0.95 peak, every band at +12 dB. The band bank reaches 7.45
+        // internally; 0.99962 is the t=0.95 figure. Built the same way as
+        // `examples/eq_headroom_sweep.rs`, so the two measure the same signal.
+        //
+        // Tolerance is the figure's own 5-decimal rounding, not the 5e-4 used above. This close
+        // to the asymptote the shaper is nearly flat: 5e-4 would accept any pre-shaper peak
+        // above ~3.74, so it could not notice the band bank losing half its gain. 5e-6 holds
+        // the pre-shaper peak to 7.39..7.57.
+        const TONES_HZ: [f32; 5] = [62.5, 250.0, 1000.0, 4000.0, 8000.0];
+        let mut signal: Vec<f32> = (0..LEN)
+            .map(|i| {
+                let t = i as f32 / RATE as f32;
+                TONES_HZ
+                    .iter()
+                    .map(|f| (2.0 * std::f32::consts::PI * f * t).sin())
+                    .sum()
+            })
+            .collect();
+        let raw_peak = signal.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        for s in &mut signal {
+            *s *= 0.95 / raw_peak;
+        }
+
+        let gains = EqGains::default();
+        for band in 0..BAND_COUNT {
+            gains.set(band, 12.0);
+        }
+        let source = rodio::buffer::SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(RATE).unwrap(),
+            signal,
+        );
+        let out: Vec<f32> = Equalizer::new(source, gains).collect();
+        let tail = &out[out.len() / 2..];
+        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(
+            peak < SOFT_CLIP_CEILING,
+            "expected the output to stay under the ceiling, got peak {peak:.5}"
+        );
+        assert!(
+            (peak - 0.99962).abs() < 5e-6,
+            "expected block A's t=0.95 figure 0.99962, got {peak:.8}"
+        );
+    }
+
+    #[test]
     fn already_above_unity_input_is_bounded() {
         // mp3 and AAC decoders legitimately emit samples past ±1.0 on hot masters — intersample
         // peaks survive the encode and come back out above full scale. Those are bounded even
