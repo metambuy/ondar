@@ -843,14 +843,30 @@ Related findings, each an instance of this: "Bare `cargo test` skips the engine"
 paced 3.57% slow" is a fourth of the same family — the measuring harness, not the engine, was
 wrong, and it invalidated a whole table.
 
+## Principle: a measurement that contradicts a recorded justification reopens the decision (recorded 2026-09-14)
+
+**A measurement that contradicts a recorded justification reopens the decision, not just the
+comment.** Never re-word the justification to fit the number; re-derive it, and if the number
+turns out to be right for a different reason, say so. A recorded reason a constant *cannot* be
+measured is a valid answer; a fabricated measurement is not. Applied since M1 but, until this
+entry, written down only in the Claude Project's instructions field. Two instances, both
+2026-09-11: `043e289` — the floor-versus-knee analysis contradicted 32 KB's recorded
+justification (freshness parity with 16 KB, margin over `fill_target`), and re-deriving it
+showed 32 KB correct by coincidence, because the one-decoder-read floor and the
+`RING_SECONDS × byte_rate` ceiling coincide at 128 kbit/s ("The prefetch knee"); and `4f088b3`
+— pruning out of `UNDERRUN_WINDOW_TICKS` mid-wait collapsed the recorded 40-tick unstable dwell
+to 10, so the constants stayed and the mechanism was fixed by latching the dwell ("The unstable
+dwell was selected and then cancelled").
+
 ## Principle: an assertion must be able to fail on the quantity it pins (2026-09-14)
 
 **State what an assertion would have to see to fail, and check that it would.** A tolerance is
 a claim about sensitivity. When a test observes the quantity it cares about *through* a
 transform, its real sensitivity is the transform's slope at that point, not the number written.
 
-This is a different class from "verify the instrument", and from the rule that a measurement
-contradicting a recorded justification reopens the decision. Both of those need a trigger — a
+This is a different class from "Principle: verify the instrument before trusting a surprising
+measurement" and "Principle: a measurement that contradicts a recorded justification reopens
+the decision", both above. Both of those need a trigger — a
 surprising result, or a contradiction. An assertion pointed at the wrong quantity produces
 neither: it stays green, nothing disagrees with anything, and it is wrong the whole time.
 
