@@ -186,13 +186,21 @@ committing the generated `.ts`.
   from a command or the audio thread.** Two exemptions, each with the reason it cannot fire:
   `Mutex::lock().unwrap()` (poison propagation only — a poisoned mutex means another thread
   already panicked, and the audio callback takes no locks), and `expect()` on thread spawn and
-  on constructing the tokio runtime and `reqwest` client, where failure means the OS refused a
-  thread or a static configuration is invalid and the app cannot run at all. Spawns are not
-  all at startup: the decode thread is spawned per session, from `play`. An `expect()` on a
-  value that is infallible by construction (`NonZeroUsize::new(BUFFER_BYTES)` in `stream.rs`)
-  is not a fallible operation. The per-sample DSP path (`ring.rs`, `eq.rs`) has none of any
-  kind outside `#[cfg(test)]` and must stay that way. Nothing enforces this — `clippy.toml`
-  sets only `msrv`.
+  tokio runtime construction, where failure means the OS refused a thread and the app cannot
+  run at all. Spawns are not all at startup: the decode thread is spawned per session, from
+  `play`. The per-sample DSP path (`ring.rs`, `eq.rs`) has none of any kind outside
+  `#[cfg(test)]` and must stay that way. Nothing enforces this — `clippy.toml` sets only
+  `msrv`.
+
+  **Two sites sit outside both exemptions, by decision (2026-09-14):**
+  - `stream.rs::build_client`'s `.build().expect(..)`, called once from `Engine::new`. It
+    fails only if the native-tls connector (Security.framework) cannot initialise or the
+    user-agent is not a valid header value.
+  - `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `stream.rs`, reached from `play` on every
+    open. `BUFFER_BYTES` is a non-zero `const`, so it cannot fire.
+
+  The documented resolution is to *describe* them here rather than change them. Converting
+  both to real error handling is an open option nobody has taken.
 - One shell error type, `OndarError` (`thiserror`), serialised as `{ code, message }` with a
   stable `code` discriminant so the UI branches on it without parsing strings. Engine-side
   failure reasons are `types::ErrorCode` (`network`, `http`, `unsupported_format`, `decode`,

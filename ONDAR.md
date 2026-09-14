@@ -102,8 +102,8 @@ not crates.io lookups):
   `tauri-utils`). Not a problem — 1.x/2.x coexist fine — noted for completeness.
 - `window-vibrancy` 0.6.0 — **already in the tree, transitively, via `tauri` itself.** Nothing
   in Ondar's own `Cargo.toml` depends on it yet. This list previously recorded `0.8.0` here,
-  from a crates.io lookup never checked against a lockfile — when M2 adds it explicitly,
-  re-verify the current crates.io version rather than trusting either number.
+  from a crates.io lookup never checked against a lockfile. M2 does not add it — Tauri's
+  `set_effects` wraps it; see the `tauri-nspanel` spike note below.
 - `tracing-subscriber` 0.3.23 (env-filter; replaces `env_logger` — its `init()` installs
   a `LogTracer` itself, so `tracing-log` is not a direct dependency)
 
