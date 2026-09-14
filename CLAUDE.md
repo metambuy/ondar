@@ -99,20 +99,20 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 52 tests `cargo test --workspace`
-reports break down as **46 hand-written + 6 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 53 tests `cargo test --workspace`
+reports break down as **47 hand-written + 6 ts-rs-generated**:
 
 | | |
 |---|---|
 | `engine::tick_tests` | 20 |
-| `eq::tests` | 16 |
+| `eq::tests` | 17 |
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
 
-Counting `#[test]` attributes in source gives 46 and will not reconcile with the runner's 52
+Counting `#[test]` attributes in source gives 47 and will not reconcile with the runner's 53
 until those 6 are accounted for. `cargo test -p ondar-audio -- --list` is the authority.
 
 ## Commands
@@ -128,7 +128,7 @@ pnpm gen:bindings            # alias for `cargo test -p ondar-audio` (ts-rs writ
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 52 tests: 49 in the ondar_audio binary and 3 in the shell's
+cargo test --workspace       # 53 tests: 50 in the ondar_audio binary and 3 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (3 tests) and silently skips ondar-audio; this

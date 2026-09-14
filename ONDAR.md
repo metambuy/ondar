@@ -263,9 +263,19 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
 
   At 0.95 the `-inf` rows are literal: material sitting at the broadcast peak passes through
   **bit-exact**, which is the point of putting the threshold there rather than lower. The
-  bound holds at 0.99868 / 0.99587 / 0.99962 for the three overdriven cases, and
-  `eq.rs`'s tests assert those figures, so the shipped constant stays pinned to the swept
-  curve.
+  bound holds at 0.99868 / 0.99587 / 0.99962 for the three overdriven cases.
+
+  **What the tests pin is the pre-shaper column, not those figures** (2026-09-14). `eq.rs`'s
+  tests invert each measured output peak through `soft_clip`'s algebraic inverse
+  (`implied_pre_shaper`, itself round-trip tested against the shipped curve) and assert the
+  implied peak is within `PRE_SHAPER_TOLERANCE` = ±0.1 % of 2.78707 / 1.50583 / 7.45484. The
+  post-shaper figures above are **informative, not load-bearing**: they are rounded to five
+  decimals, and near the ceiling the curve is so flat that the rounding is as large as any
+  useful tolerance — case 1 measures 0.998675, on the rounding edge of 0.99868 — while a
+  post-shaper tolerance that looks tight is loose in gain terms (5e-4 on case 1 admitted a
+  pre-shaper peak anywhere in 2.27–3.95). Measured drift at the time of writing: −0.0014 % /
+  +0.0002 % / −0.0029 %. The floor under the tolerance is one f32 output step through the
+  knee's inverse slope, ~0.014 % at case 3.
 
   **Limitation of the measurement, not of the code:** the residual column is total error
   energy and cannot distinguish harmonic order, so it under-reports how harsh a narrow knee
@@ -743,8 +753,8 @@ For that layout cargo's default scope is the root package alone, not all members
 | Invocation | What actually runs |
 |---|---|
 | `cargo test` | the `ondar` package only — its own 3 tests, exit 0, no warning |
-| `cargo test --workspace` | 52 tests — 49 in `ondar-audio`, 3 in the shell |
-| `cargo test -p ondar-audio` | the 49 that matter for the engine |
+| `cargo test --workspace` | 53 tests — 50 in `ondar-audio`, 3 in the shell |
+| `cargo test -p ondar-audio` | the 50 that matter for the engine |
 
 It reports success either way, which is what made it survive this long — and as of block 2
 it is **more** dangerous, not less: the shell crate gained its own tests, so a bare run now
@@ -762,8 +772,8 @@ which invocation was used.** `README.md`'s instructions were fine — they have 
 check that followed the ritual as written — M1's included — proved nothing about the audio
 engine. Both files are corrected as of 2026-09-10 and CI uses `--workspace`.
 
-Corollary: the count is itself worth pinning down, because 46 is the number you get counting
-`#[test]` in source against a reported 52. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
+Corollary: the count is itself worth pinning down, because 47 is the number you get counting
+`#[test]` in source against a reported 53. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
 `export_bindings_<type>` test per exported type, which is the mechanism that writes
 `src/bindings/`. `cargo test -p ondar-audio -- --list` is the authority.
 

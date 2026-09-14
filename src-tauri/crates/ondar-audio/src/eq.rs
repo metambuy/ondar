@@ -327,6 +327,90 @@ mod tests {
         20.0 * (settled_rms(out) / settled_rms(reference)).log10()
     }
 
+    /// How far the EQ's own peak may drift from a recorded value before a bound test fails,
+    /// as a fraction of that value — **in pre-shaper terms**.
+    ///
+    /// The bound tests do not compare the post-shaper peak against a literal. Near the ceiling
+    /// the shaper is nearly flat, so a post-shaper tolerance that looks tight is not: 5e-4 on
+    /// case 1's 0.99868 admitted any pre-shaper peak from 2.27 to 3.95, and on case 3 anything
+    /// above 3.74. And the rounded post-shaper figures carry rounding error as large as any
+    /// useful tolerance (case 1 measures 0.998675, on the edge of rounding to 0.99868). The
+    /// quantity of interest is the EQ's gain, so each test inverts the measured peak through
+    /// [`implied_pre_shaper`] and compares that against the sweep's pre-shaper column.
+    ///
+    /// Floor under any value here: the output is f32, so the inverse resolves the pre-shaper
+    /// peak only to one output step times the knee's inverse slope, `ulp * (1+s)^2` — about
+    /// 1.4e-4 relative at case 3's 7.45, the coarsest of the cases. ±0.1 % sits about seven
+    /// output steps above that floor, and is ±0.009 dB of EQ gain.
+    const PRE_SHAPER_TOLERANCE: f64 = 0.001;
+
+    /// The algebraic inverse of [`soft_clip`], `y -> x`: the pre-shaper magnitude that produced
+    /// a given output. Identity at or below the threshold; above it, `u = (|y|-T)/W` undoes
+    /// `1 - 1/(1+s)` as `s = u/(1-u)`. Computed in f64 so the inverse adds no rounding of its
+    /// own — the only error left is the f32 quantization of `y`. Undefined at the ceiling,
+    /// where the forward curve saturates; the tests assert `peak < SOFT_CLIP_CEILING` first.
+    fn implied_pre_shaper(y: f32) -> f64 {
+        let t = SOFT_CLIP_THRESHOLD as f64;
+        // The f32 subtraction, then widened: the same `W` `soft_clip` itself uses.
+        let w = (SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD) as f64;
+        let a = y.abs() as f64;
+        if a <= t {
+            return y as f64;
+        }
+        let u = (a - t) / w;
+        (t + w * (u / (1.0 - u))).copysign(y as f64)
+    }
+
+    /// Settled-tail peak of `out`, asserted under the ceiling, then inverted and asserted within
+    /// [`PRE_SHAPER_TOLERANCE`] of `recorded_pre_shaper`.
+    fn assert_pre_shaper_peak(out: &[f32], recorded_pre_shaper: f64) {
+        let tail = &out[out.len() / 2..];
+        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(
+            peak < SOFT_CLIP_CEILING,
+            "expected the output to stay under the ceiling, got peak {peak:.9}"
+        );
+        let implied = implied_pre_shaper(peak);
+        let drift = implied / recorded_pre_shaper - 1.0;
+        assert!(
+            drift.abs() <= PRE_SHAPER_TOLERANCE,
+            "implied pre-shaper peak {implied:.5} is {:+.4} % from the recorded \
+             {recorded_pre_shaper} (tolerance ±{:.4} %; output peak {peak:.9})",
+            drift * 100.0,
+            PRE_SHAPER_TOLERANCE * 100.0
+        );
+    }
+
+    #[test]
+    fn implied_pre_shaper_inverts_soft_clip() {
+        // The bound tests rest on this inverse agreeing with the shipped curve, so it is
+        // verified rather than assumed. Grid: ±16 in 1e-4 steps, past case 3's 7.45 and both
+        // sides of the knee.
+        //
+        // Bound: below the knee, exact. Above it, one f32 output step — `f32::EPSILON / 2` is
+        // the ulp for values in [0.5, 1) — scaled by the inverse slope `(1+s)^2`, which is how
+        // far an output rounded by one step can move the implied input. Anything larger means
+        // one of the two forms is wrong, not that f32 is imprecise.
+        let t = SOFT_CLIP_THRESHOLD as f64;
+        let w = (SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD) as f64;
+        let ulp = f32::EPSILON as f64 / 2.0;
+        for i in -160_000..=160_000 {
+            let x = i as f32 * 1e-4;
+            let back = implied_pre_shaper(soft_clip(x));
+            let err = (back - x as f64).abs();
+            if x.abs() <= SOFT_CLIP_THRESHOLD {
+                assert_eq!(back, x as f64, "not the identity below the knee at {x}");
+            } else {
+                let s = (x.abs() as f64 - t) / w;
+                let step = ulp * (1.0 + s).powi(2);
+                assert!(
+                    err <= step,
+                    "round trip off by {err:e} at {x}, more than one output step ({step:e})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn flat_eq_is_transparent() {
         // At broadcast peak level the shaper never engages (0.95 is the threshold, and the
@@ -378,56 +462,32 @@ mod tests {
 
     #[test]
     fn boost_near_full_scale_is_bounded() {
-        // +12 dB is ×4 linear, and the band bank still produces a 2.787 peak internally — that
-        // has not changed. `soft_clip` is what bounds it on the way out. 0.99868 is the t=0.95
-        // column of block A's sweep (ONDAR.md), so this also pins the shipped threshold to the
-        // curve that was actually swept.
+        // Block A's case 1. +12 dB is ×4 linear, and the band bank produces a 2.78707 peak
+        // internally (ONDAR.md's pre-shaper column); `soft_clip` is what bounds it on the way
+        // out. Asserted in pre-shaper terms — see `PRE_SHAPER_TOLERANCE`.
         let gains = EqGains::default();
         gains.set(1, 12.0); // 62.5 Hz band
         let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 0.7), gains).collect();
-        let tail = &out[out.len() / 2..];
-        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        assert!(
-            peak < SOFT_CLIP_CEILING,
-            "expected the output to stay under the ceiling, got peak {peak:.5}"
-        );
-        assert!(
-            (peak - 0.99868).abs() < 5e-4,
-            "expected block A's t=0.95 figure 0.99868, got {peak:.5}"
-        );
+        assert_pre_shaper_peak(&out, 2.78707);
     }
 
     #[test]
     fn boost_at_broadcast_realistic_level_is_bounded() {
-        // 0.95 peak (broadcast content, heavily limited to sit near full scale) with a more
-        // moderate +4 dB boost — not the +12 dB extreme. The EQ stage still reaches 1.5058
-        // internally; 0.99587 is block A's t=0.95 figure for it.
+        // Block A's case 2. 0.95 peak (broadcast content, heavily limited to sit near full
+        // scale) with a more moderate +4 dB boost — not the +12 dB extreme. The EQ stage still
+        // reaches 1.50583 internally.
         let gains = EqGains::default();
         gains.set(1, 4.0); // 62.5 Hz band
         let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 0.95), gains).collect();
-        let tail = &out[out.len() / 2..];
-        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        assert!(
-            peak < SOFT_CLIP_CEILING,
-            "expected the output to stay under the ceiling, got peak {peak:.5}"
-        );
-        assert!(
-            (peak - 0.99587).abs() < 5e-4,
-            "expected block A's t=0.95 figure 0.99587, got {peak:.5}"
-        );
+        assert_pre_shaper_peak(&out, 1.50583);
     }
 
     #[test]
     fn all_bands_boosted_multi_tone_is_bounded() {
         // Block A's case 3 and the worst of the three: five equal sines (62.5 Hz – 8 kHz)
-        // normalised to a 0.95 peak, every band at +12 dB. The band bank reaches 7.45
-        // internally; 0.99962 is the t=0.95 figure. Built the same way as
-        // `examples/eq_headroom_sweep.rs`, so the two measure the same signal.
-        //
-        // Tolerance is the figure's own 5-decimal rounding, not the 5e-4 used above. This close
-        // to the asymptote the shaper is nearly flat: 5e-4 would accept any pre-shaper peak
-        // above ~3.74, so it could not notice the band bank losing half its gain. 5e-6 holds
-        // the pre-shaper peak to 7.39..7.57.
+        // normalised to a 0.95 peak, every band at +12 dB. The band bank reaches 7.45484
+        // internally. Built the same way as `examples/eq_headroom_sweep.rs`, so the two
+        // measure the same signal.
         const TONES_HZ: [f32; 5] = [62.5, 250.0, 1000.0, 4000.0, 8000.0];
         let mut signal: Vec<f32> = (0..LEN)
             .map(|i| {
@@ -453,16 +513,7 @@ mod tests {
             signal,
         );
         let out: Vec<f32> = Equalizer::new(source, gains).collect();
-        let tail = &out[out.len() / 2..];
-        let peak = tail.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        assert!(
-            peak < SOFT_CLIP_CEILING,
-            "expected the output to stay under the ceiling, got peak {peak:.5}"
-        );
-        assert!(
-            (peak - 0.99962).abs() < 5e-6,
-            "expected block A's t=0.95 figure 0.99962, got {peak:.8}"
-        );
+        assert_pre_shaper_peak(&out, 7.45484);
     }
 
     #[test]
@@ -470,17 +521,9 @@ mod tests {
         // mp3 and AAC decoders legitimately emit samples past ±1.0 on hot masters — intersample
         // peaks survive the encode and come back out above full scale. Those are bounded even
         // with a flat EQ, which is why the shaper is unconditional rather than bypassed when no
-        // band is boosted.
+        // band is boosted. With a flat EQ the pre-shaper peak is the input's own 1.5.
         let out: Vec<f32> = Equalizer::new(sine_peak(62.5, 1.5), EqGains::default()).collect();
-        let peak = out.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        assert!(
-            peak < SOFT_CLIP_CEILING,
-            "expected a 1.5-peak input to be bounded, got {peak:.5}"
-        );
-        assert!(
-            (peak - 0.99583).abs() < 5e-4,
-            "expected soft_clip(1.5) = 0.99583, got {peak:.5}"
-        );
+        assert_pre_shaper_peak(&out, 1.5);
     }
 
     #[test]
