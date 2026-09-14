@@ -4,6 +4,8 @@
 > This file describes **the repo as it is**. Decisions, versions and milestone numbering live
 > in `ONDAR.md`; per-milestone exit criteria and open questions live in `docs/BUILD_PLAN.md`.
 > If this file and the code disagree, the code is right — fix this file in the same commit.
+> **`_handover/OPEN.md` is the pending ledger** — what is outstanding, who owns it, what state
+> it is in. Update it when an item's state changes. (`_handover/` is gitignored.)
 
 ## What this repo is
 
@@ -337,5 +339,21 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   own.** See ONDAR.md, "CI verifies the head of each push, not every commit".
 - When a decision is made or reversed, it goes into **ONDAR.md**, not just the chat.
 - If a documented approach turns out to be wrong, stop and say so before improvising.
+- **The author of a block is frequently wrong about the code — verify before applying, and say
+  so rather than improvising.** On 2026-09-14 a dictated replacement for this file's unwrap
+  rule was wrong in four places: the decode thread spawns on every `play` rather than at
+  startup, `.lock().unwrap()` carries no message, `NonZeroUsize::new(CONST)` is outside the
+  rule rather than an exemption to it, and the non-test site count was 20, not 19. All four
+  were caught by checking the source before applying. A later item was stopped outright: it
+  rested on measured values being "exact to five decimals", case 1 was not, and the comment it
+  asked for would have been false. Declining to write a justification you cannot stand behind
+  is the cheapest defect-finding mechanism this project has.
+- **End a task by writing the report to `_handover/last-report-<YYYY-MM-DD>.md` as well as to
+  the terminal** — same content: what changed, the commits, the checks, the measured figures,
+  and anything you disagreed with. The planning chat reads that file instead of a hand-copied
+  paste: on 2026-09-14 four pastes truncated in transit (a mangled word, a table cut mid-row,
+  a figure clipped from 0.99962 to 0.99), each a chance to misread a number in a project where
+  numbers are the point. If the file already exists for the day, append a new dated section
+  rather than overwrite it.
 - Verify crate claims against docs.rs or the source before writing code against them.
 - Martín prefers concise, factual answers with sources. Skip the preamble.
