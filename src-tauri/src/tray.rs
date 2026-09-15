@@ -1,11 +1,14 @@
-//! The menu bar tray icon: template glyphs, click logging, and the idle/playing swap.
+//! The menu bar tray icon: template glyphs, the click that toggles the popover, and the
+//! idle/playing swap.
 
 use tauri::{
     App, AppHandle, Runtime,
     image::Image,
     include_image,
-    tray::{TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+
+use crate::panel;
 
 const TRAY_ID: &str = "ondar-tray";
 
@@ -19,8 +22,9 @@ const TRAY_ID: &str = "ondar-tray";
 const IDLE: Image<'static> = include_image!("icons/tray/ondar-tray-44-idle.png");
 const PLAYING: Image<'static> = include_image!("icons/tray/ondar-tray-44-playing.png");
 
-/// Build the tray icon. Call from `setup`.
+/// Build the tray icon. Call from `setup`, after `panel::setup`.
 pub fn setup(app: &mut App) -> tauri::Result<()> {
+    let handle = app.handle().clone();
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(IDLE)
         // The glyphs are pure black on alpha. As a template image macOS reads shape from alpha
@@ -35,14 +39,26 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                // Logged on every `Click`, press and release both: the popover toggle that
-                // arrives with the panel filters these, and this line is the evidence of what
-                // arrived before any filtering.
+                // Logged before the filter, on every `Click`, because the shape of this log
+                // separates the ways the tray path fails:
+                //   two lines per physical click → press and release both arrived
+                //   no line at all              → the handler is not on this event
+                //   click lines, no anchor line → toggle bailed before positioning
                 log::info!(
                     "tray click button={button:?} state={button_state:?} rect.position={:?} rect.size={:?}",
                     rect.position,
                     rect.size
                 );
+
+                // `Click` fires on both press and release. Toggling on both shows the panel on
+                // press and hides it on release, so nothing is ever visible — a failure that
+                // looks like a handler that never ran. This filter is load-bearing.
+                if button == MouseButton::Left
+                    && button_state == MouseButtonState::Up
+                    && let Err(e) = panel::toggle(&handle, rect)
+                {
+                    log::warn!("tray toggle failed: {e}");
+                }
             }
         })
         .build(app)?;

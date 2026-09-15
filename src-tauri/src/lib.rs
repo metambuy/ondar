@@ -4,6 +4,7 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+mod panel;
 mod tray;
 
 use std::thread;
@@ -46,8 +47,12 @@ pub fn run() {
     let (engine, engine_events) = AudioEngine::start(user_agent);
 
     tauri::Builder::default()
+        // Manages the panel store `PanelBuilder::build()` registers into; without it the
+        // builder's internal `to_panel` panics on missing state.
+        .plugin(tauri_nspanel::init())
         .manage(AppState { engine })
         .setup(move |app| {
+            panel::setup(app)?;
             tray::setup(app)?;
 
             let handle = app.handle().clone();
