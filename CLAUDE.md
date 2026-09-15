@@ -314,12 +314,15 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   `window-vibrancy` is **not** a direct dependency. On the real panel it is measured by view tree
   only — **no visual confirmation** (ONDAR.md, "The spike measured a reverted `TaoWindow`").
 - Tray icon: template image, 44 px glyphs via `include_image!`. `tray-icon`'s `set_icon` resets
-  template mode, so every swap re-asserts it.
+  template mode, so the swap uses `set_icon_with_as_template` (one main-thread task), and only
+  on an idle/playing flip.
 - Occlusion: decode `NSWindowOcclusionState::Visible`, never read the raw number, and never read it
   synchronously after show — it lagged up to 35 ms when measured. The log reads it 100 ms after.
 - Known and open: showing the popover during `setup()` makes it resign key by itself while the M1
   bench window is created visible (mechanism unidentified; ONDAR.md, "M2a: the tray path,
-  measured"). Multi-monitor is untested.
+  measured"). Multi-monitor is untested, but testable here: three displays are attached, including
+  a 1× beside the 2× built-in, and `anchor` mixes the tray display's scale with the panel window's
+  (ONDAR.md, "Multi-monitor caveat").
 - M2b: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
 
 ## Map invariants (M4 — none of this exists yet)

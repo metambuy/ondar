@@ -221,9 +221,15 @@ fn log_settled_occlusion<R: Runtime>(handle: &AppHandle<R>, panel: &PanelHandle<
 /// conversion. Measured once, 2026-09-12: `(1932, 0)` `48x66` on a 3024x1964 display.
 ///
 /// Known upstream limitation: that flip uses the *main* display's height, not the height of the
-/// display the icon is on, so with the menu bar on a secondary display `y` is wrong before it
-/// reaches us. The log line prints the chosen display's work area beside the result so one click
-/// shows whether it landed off-screen.
+/// display the icon is on, so for a status item on a non-main display that is not top-aligned
+/// with the main one, `y` is wrong before it reaches us.
+///
+/// Known limitation of ours, untested: `rect` is "physical" at the *status item's* display scale,
+/// but everything below uses the *panel window's* scale — the point lookup for
+/// `monitor_from_point`, and `set_position`'s conversion back — while `work_area` is at the chosen
+/// monitor's scale. Invisible when all agree. This machine has a 1x display beside the 2x
+/// built-in, where they would not (ONDAR.md, "Multi-monitor caveat"). The log line prints the
+/// chosen display's work area beside the result so one click shows where it landed.
 fn anchor<R: Runtime>(
     window: &WebviewWindow<R>,
     rect: Rect,

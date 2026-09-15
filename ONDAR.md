@@ -175,7 +175,11 @@ before actually adding):
     `lib.rs:522-524`). **Measured end to end on the bundled build**, not only read.
   - `tray-icon` 0.24.2 builds the status item image from **one** PNG — one representation — and
     forces 18 pt height (`platform_impl/macos/mod.rs:283-311`); its `set_icon` hard-codes
-    `is_template = false` (`mod.rs:115-123`), so template mode must be re-asserted after each swap.
+    `is_template = false` (`mod.rs:115-123`). Swap with `TrayIcon::set_icon_with_as_template`
+    (tauri 2.11.5 `tray/mod.rs:569-591`), one main-thread task; `set_icon` then
+    `set_icon_as_template` is two, and can draw a flat black glyph in between. **Measured on the
+    bundled build** (temporary probe, 2026-09-15): after the atomic swap the button image reads
+    `isTemplate=true` at 18×18 pt; a plain `set_icon`, as negative control, reads `false`.
   - `tauri::include_image!` decodes PNGs at compile time (tauri-codegen `image.rs`), so no
     `image-png` feature is needed.
   - `Monitor::work_area()` is `NSScreen.visibleFrame` in top-left-origin physical pixels
@@ -458,10 +462,42 @@ is non-zero while the window is telling you it is *not* visible. Reading that as
 visible" manufactured a paradox that cost real time. The instrumentation now prints the decoded
 bit beside the raw value.
 
-**Multi-monitor caveat, untested.** `tray-icon`'s coordinate flip uses
-`CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
-display the tray icon is on (`mod.rs:610`). With the menu bar on a secondary display the anchor
-will be vertically wrong. Upstream, not ours. Still untested: only one display is available.
+**Multi-monitor caveat, untested — and testable on this machine.** `tray-icon`'s coordinate flip
+uses `CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
+display the tray icon is on (`mod.rs:610-612`). For a status item on a non-main display whose top
+edge is not aligned with the main display's, the anchor will be vertically wrong. Upstream, not
+ours.
+
+**Correction (2026-09-15): "only one display is available" was never measured.** It was inherited —
+from the brief and the pending ledger — and repeated here without a check. Nothing had called
+`available_monitors()`, and `primary_monitor()` / `monitor_from_point()` cannot reveal a second
+display. The record already hinted otherwise: the spike's elimination table above says "no panel
+pixels on **either** display". Measured 2026-09-15 with `system_profiler SPDisplaysDataType` and
+`available_monitors()` from the bundled app (temporary probe):
+
+| Display | Primary | Position (physical) | Size (physical) | Scale | Work area | In points |
+|---|---|---|---|---|---|---|
+| Built-in Liquid Retina XDR | yes | (0, 0) | 3024×1964 | **2** | (0,66) 3024×1770 | 1512×982 at (0,0) |
+| BenQ GW2470 | no | (−243, −1080) | 1920×1080 | **1** | full frame | 1920×1080 at (−243,−1080) |
+| ANMITE | no | (3354, −1280) | 1920×1280 | **2** | full frame | 960×640 at (1677,−640) |
+
+tao reports each monitor's position as its point origin × *that monitor's* scale, so the "physical"
+positions are not one pixel space (ANMITE's 3354 is 1677 pt). Both externals' work areas equal their
+full frames, consistent with the menu bar and Dock being on the built-in only (setting not read).
+
+**Mixed-scale positioning error (pre-merge `/code-review`, finding 2) — the case exists on this
+machine and is untested.** `tray-icon`'s `get_tray_rect` (`mod.rs:515-528`) makes the rect
+"physical" with the **status item's** display scale. `panel::anchor` treats it with the **panel
+window's** scale: it divides by that scale for `monitor_from_point` (which tests `CGDisplayBounds`
+in points, tao `monitor.rs:163-170`), and `set_position` converts back with it again (tao
+`window.rs:728-734`). `work_area` is converted with the chosen monitor's own scale (tauri-runtime-wry
+`monitor/macos.rs:16-27`), so up to three scales meet in one clamp. On one scale this is invisible.
+Read from the source, not observed: with the tray on the BenQ (1×) and the panel window at 2×, the
+monitor lookup would get the wrong point and the panel would land on the wrong display. This is independent of the upstream `y` flip: a
+top-aligned 1× display would get `y` right and `x` wrong. Not fixed at M2a. It changes the
+anchor/scale logic and belongs to the multi-monitor pass, measured on these displays. Open
+question for that pass: moving the menu bar in Displays → Arrange makes that display *main*, which
+may mask the `y` bug; whether a status item can be clicked on a non-main menu bar needs measuring.
 
 **Correction (2026-09-15): the tray-click path *was* exercised on 2026-09-12, and failed on every
 click.** `_handover/m2-spike-app.log` lines 22-27: each left click logs `Down` and `Up`, each `Up` is
@@ -579,6 +615,13 @@ Events, `-1743`). Two sequences — open/close/open/close, then open/close/open/
 - Click-away: `panel resigned key -> hide visible_before=true`.
 - **No resign between a `Down` and its `Up`**, so the feared re-open race did not occur and the
   pre-agreed timestamp guard was not added.
+
+**Pre-merge `/code-review` (2026-09-15): two low-severity findings, both confirmed against source.**
+Verified line by line in `_handover/m2a-review-findings.md`. (1) The tray swap was `set_icon` +
+`set_icon_as_template`, two main-thread tasks with a possible flat-black frame between, repeated on
+every state change — fixed in `ede2dd1` (atomic `set_icon_with_as_template`, swap only on an
+idle/playing flip). (2) Mixed-scale positioning — recorded under "Multi-monitor caveat" above, not
+fixed at M2a.
 - `lsappinfo` on the running bundle: `"ApplicationType"="UIElement"`.
 
 ### Reconnect ownership and stream timeouts (measured 2026-09-08, M1)
@@ -834,7 +877,8 @@ x 4–39, y 6–41), so it draws at about 29 px at @2x.
   must be set with `icon_as_template(true)`.** macOS then reads shape from the alpha channel
   alone and tints for light/dark menu bars and the highlight state. Setting them without that
   flag renders them as flat black artwork that disappears on a dark menu bar. `tray-icon`'s
-  `set_icon` resets template mode, so the playing swap re-asserts it every time.
+  `set_icon` resets template mode, so the playing swap uses `set_icon_with_as_template`, and only
+  on an idle/playing flip (`ede2dd1`).
 - **The playing state is a SHAPE change, never a colour change:** the cap dot above the stem is
   *hollow* when idle and *filled* when playing. A template image has no colour to change — that
   is the constraint the design is built around, not an accident of these files.
