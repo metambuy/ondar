@@ -1,4 +1,5 @@
-//! The popover: a non-activating `NSPanel` anchored under the tray icon.
+//! The popover: a non-activating `NSPanel` anchored under the tray icon, dismissed when it
+//! resigns key.
 //!
 //! Two traps in `tauri-nspanel` shape this file (verified against rev c9ec213, ONDAR.md):
 //! - `Panel::to_window()` is a *conversion back*: it removes the panel from the plugin store,
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use tauri::{
     ActivationPolicy, App, AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect,
-    Runtime, Size, WebviewUrl, WebviewWindow,
+    Runtime, Size, WebviewUrl, WebviewWindow, WindowEvent,
     window::{Effect, EffectState, EffectsBuilder},
 };
 use tauri_nspanel::{
@@ -78,7 +79,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         // Keeps window *creation* from activating the app. Not what makes it non-activating.
         .no_activate(true)
         // No `hides_on_deactivate`: the app is never active, so it is permanently satisfied and
-        // the panel never composites.
+        // the panel never composites. Dismissal is explicit, on resign-key.
         .has_shadow(true)
         // Two transparencies, both needed. This one is the NSWindow (`clearColor`, not opaque)…
         .transparent(true)
@@ -120,6 +121,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
             .state(EffectState::Active)
             .build(),
     )?;
+
+    // Dismissal. tao's own window delegate turns `windowDidResignKey:` into
+    // `WindowEvent::Focused(false)`, so this is the resign-key hook without replacing that
+    // delegate. `Panel::set_event_handler` would replace it — it keeps the original only to
+    // restore it when the handler is set back to `None`, and forwards nothing while installed —
+    // silencing tao's Resized/Moved/Focused/ScaleFactorChanged for this window. See ONDAR.md.
+    let on_event = panel.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::Focused(false) = event {
+            log::info!(
+                "panel resigned key -> hide visible_before={}",
+                on_event.is_visible()
+            );
+            on_event.hide();
+        }
+    });
 
     Ok(())
 }
