@@ -111,10 +111,11 @@ mod tests {
     ///
     /// **The name is deliberate and is doing a second job.** A bare `cargo test` runs only this
     /// crate — `src-tauri/Cargo.toml` has a real `[package]` at the workspace root, so cargo
-    /// does not default to every member — which skips all 48 tests in `ondar-audio` while
-    /// exiting 0. It used to report `0 passed`, which at least looked empty; since this crate
-    /// gained tests it reports `3 passed`, which reads like a successful run. The three names
-    /// are the only thing a bare run prints, so one of them says what happened. See CLAUDE.md.
+    /// does not default to every member — which skips every test in `ondar-audio` (50 by
+    /// `--list` at M2a) while exiting 0. It used to report `0 passed`, which at least looked
+    /// empty; since this crate gained tests it reports the shell's own count (9 at M2a), which
+    /// reads like a successful run. The shell's test names are the only thing a bare run
+    /// prints, so one of them says what happened. See CLAUDE.md.
     #[test]
     fn bare_cargo_test_runs_only_the_shell_crate_see_claude_md() {
         let now = Instant::now();

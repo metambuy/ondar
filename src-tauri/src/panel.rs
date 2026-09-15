@@ -116,8 +116,9 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     window.set_effects(
         EffectsBuilder::new()
             .effect(Effect::Popover)
-            // `Active`, not `FollowsWindowActiveState`: the app is never active, so "follows"
-            // would resolve to permanently inactive.
+            // `Active`, not `FollowsWindowActiveState`. Whether AppKit draws a key
+            // non-activating panel in an inactive app as "active" was never measured, and the
+            // popover should look active whenever it is on screen either way.
             .state(EffectState::Active)
             .build(),
     )?;
