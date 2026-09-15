@@ -59,10 +59,17 @@ pub fn run() {
             thread::Builder::new()
                 .name("ondar-events".into())
                 .spawn(move || {
+                    // The glyph currently shown; `tray::setup` starts on idle. State events are
+                    // emitted on every change, and most changes (Connecting → Buffering, each
+                    // Reconnecting attempt) are not an idle/playing flip, so only a flip swaps.
+                    let mut tray_playing = false;
                     for ev in engine_events {
                         let result = match ev {
                             EngineEvent::State(s) => {
-                                tray::set_playing(&handle, matches!(s, PlaybackState::Playing));
+                                let playing = matches!(s, PlaybackState::Playing);
+                                if playing != tray_playing && tray::set_playing(&handle, playing) {
+                                    tray_playing = playing;
+                                }
                                 handle.emit(events::STATE, s)
                             }
                             EngineEvent::StreamInfo(i) => handle.emit(events::STREAM_INFO, i),

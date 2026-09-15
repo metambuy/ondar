@@ -66,19 +66,24 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
 }
 
 /// Swap between the idle and playing glyphs. The difference is a shape (hollow vs filled cap
-/// dot), never a colour — a template image discards colour.
-pub fn set_playing<R: Runtime>(handle: &AppHandle<R>, playing: bool) {
+/// dot), never a colour — a template image discards colour. Returns whether the swap happened,
+/// so the caller can retry on the next event instead of believing a failed swap.
+pub fn set_playing<R: Runtime>(handle: &AppHandle<R>, playing: bool) -> bool {
     let Some(tray) = handle.tray_by_id(TRAY_ID) else {
         log::warn!("tray icon {TRAY_ID} not found; playing={playing} not shown");
-        return;
+        return false;
     };
     let icon = if playing { PLAYING } else { IDLE };
-    // `set_icon` rebuilds the NSImage with `is_template = false` hard-coded (tray-icon 0.24.2
-    // `platform_impl/macos/mod.rs:115-123`), so template mode must be re-asserted every time.
-    let result = tray
-        .set_icon(Some(icon))
-        .and_then(|()| tray.set_icon_as_template(true));
-    if let Err(e) = result {
-        log::warn!("tray icon swap failed (playing={playing}): {e}");
+    // One call, not `set_icon` + `set_icon_as_template`. `set_icon` rebuilds the NSImage with
+    // `is_template = false` hard-coded (tray-icon 0.24.2 `platform_impl/macos/mod.rs:115-123`),
+    // and the two calls are separate main-thread tasks, so a flat black glyph can be drawn in
+    // between. `set_icon_with_as_template` sets both in one task (tauri 2.11.5
+    // `tray/mod.rs:569-591`, whose doc comment names this flicker).
+    match tray.set_icon_with_as_template(Some(icon), true) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("tray icon swap failed (playing={playing}): {e}");
+            false
+        }
     }
 }
