@@ -4,12 +4,13 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+mod tray;
 
 use std::thread;
 
 use tauri::Emitter;
 
-use ondar_audio::{AudioEngine, EngineEvent};
+use ondar_audio::{AudioEngine, EngineEvent, PlaybackState};
 
 pub struct AppState {
     pub engine: AudioEngine,
@@ -47,13 +48,18 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState { engine })
         .setup(move |app| {
+            tray::setup(app)?;
+
             let handle = app.handle().clone();
             thread::Builder::new()
                 .name("ondar-events".into())
                 .spawn(move || {
                     for ev in engine_events {
                         let result = match ev {
-                            EngineEvent::State(s) => handle.emit(events::STATE, s),
+                            EngineEvent::State(s) => {
+                                tray::set_playing(&handle, matches!(s, PlaybackState::Playing));
+                                handle.emit(events::STATE, s)
+                            }
                             EngineEvent::StreamInfo(i) => handle.emit(events::STREAM_INFO, i),
                             EngineEvent::Metadata(m) => handle.emit(events::METADATA, m),
                             EngineEvent::Reconnect(r) => handle.emit(events::RECONNECT, r),
