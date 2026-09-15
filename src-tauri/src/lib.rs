@@ -4,12 +4,14 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+mod panel;
+mod tray;
 
 use std::thread;
 
 use tauri::Emitter;
 
-use ondar_audio::{AudioEngine, EngineEvent};
+use ondar_audio::{AudioEngine, EngineEvent, PlaybackState};
 
 pub struct AppState {
     pub engine: AudioEngine,
@@ -45,15 +47,31 @@ pub fn run() {
     let (engine, engine_events) = AudioEngine::start(user_agent);
 
     tauri::Builder::default()
+        // Manages the panel store `PanelBuilder::build()` registers into; without it the
+        // builder's internal `to_panel` panics on missing state.
+        .plugin(tauri_nspanel::init())
         .manage(AppState { engine })
         .setup(move |app| {
+            panel::setup(app)?;
+            tray::setup(app)?;
+
             let handle = app.handle().clone();
             thread::Builder::new()
                 .name("ondar-events".into())
                 .spawn(move || {
+                    // The glyph currently shown; `tray::setup` starts on idle. State events are
+                    // emitted on every change, and most changes (Connecting → Buffering, each
+                    // Reconnecting attempt) are not an idle/playing flip, so only a flip swaps.
+                    let mut tray_playing = false;
                     for ev in engine_events {
                         let result = match ev {
-                            EngineEvent::State(s) => handle.emit(events::STATE, s),
+                            EngineEvent::State(s) => {
+                                let playing = matches!(s, PlaybackState::Playing);
+                                if playing != tray_playing && tray::set_playing(&handle, playing) {
+                                    tray_playing = playing;
+                                }
+                                handle.emit(events::STATE, s)
+                            }
                             EngineEvent::StreamInfo(i) => handle.emit(events::STREAM_INFO, i),
                             EngineEvent::Metadata(m) => handle.emit(events::METADATA, m),
                             EngineEvent::Reconnect(r) => handle.emit(events::RECONNECT, r),

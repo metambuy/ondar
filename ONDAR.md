@@ -68,12 +68,12 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 
 | Layer | Choice | Rationale / notes |
 |---|---|---|
-| Shell | **Tauri v2** (2.11.x) | The point of the exercise. `macos-private-api` (needed for transparency/vibrancy) is **to enable at M2** — as of 2026-09-10 `Cargo.toml` has `features = []` and `tauri.conf.json` has no `macOSPrivateApi` key. |
+| Shell | **Tauri v2** (2.11.x) | The point of the exercise. `macos-private-api` (needed for transparency/vibrancy) and `tray-icon` **enabled at M2a** (2026-09-15, `36d50b8`), with `"macOSPrivateApi": true` in `tauri.conf.json` — tauri-build requires the key to match the feature. |
 | Core language | **Rust** (edition 2024; MSRV 1.91 in `Cargo.toml`, matching `stream-download` 0.24.4's own declared requirement) | All logic: networking, cache, audio, DSP, tray, window |
 | UI | **Vite + React 18 + TypeScript** | Thin view layer only; keeps map work tractable |
-| Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). |
-| Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. See the M2 spike. |
-| Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Verified applying to a subclassed panel window — see the M2 spike. |
+| Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). Pinned `rev = c9ec213…` since M2a; see "Verified versions". |
+| Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. Since M2a the centred position is clamped into the work area (`NSScreen.visibleFrame`) of the display under the icon. See "M2a: the tray path, measured". |
+| Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; no visual confirmation.** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
 | Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
 | Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
 | Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
@@ -119,10 +119,14 @@ before actually adding):
 - `hickory-resolver` 0.26.2
 - `tauri-specta` 2.0.0-rc.25 (not adopted)
 
-**`tauri-nspanel` — locked by the M2 spike (2026-09-12, branch `m2-spike`, not merged):**
+**`tauri-nspanel` — pinned by the M2 spike (2026-09-12), in the tree since M2a (2026-09-15, `36d50b8` on branch `m2`):**
 
 - `tauri-nspanel` **2.1.0**, git only, pinned
-  `rev = "c9ec2130422200f0863b23dfdad02b133a529b07"`. **Go/no-go: PASSED.** It builds against
+  `rev = "c9ec2130422200f0863b23dfdad02b133a529b07"`. **Go/no-go: the dependency half PASSED; the
+  vibrancy half was not actually measured until 2026-09-15.** The spike measured vibrancy on a
+  window `Panel::to_window()` had already converted back to a `TaoWindow` (see "The spike measured
+  a reverted `TaoWindow`"). Step 0 of M2a re-measured it on the real `OndarPanel` — **by view tree
+  only, with no visual confirmation**, the same kind of evidence as before. It builds against
   `tauri` 2.11.5 with no patching, and the dependency graph unifies cleanly — single copies of
   `objc2` 0.6.4, `objc2-app-kit` 0.3.2, `objc2-foundation` 0.3.2 (it asks for `^0.6.1`/`^0.3.1`).
   It also enables `macos-private-api` on `tauri` itself. **The recorded fallback (borderless
@@ -134,7 +138,12 @@ before actually adding):
 - API shape confirmed against the pinned source: `PanelBuilder::<R, P>::new(&AppHandle, label)`
   is generic over a panel class declared with the `tauri_panel!` macro, `build()` returns
   `tauri::Result<Arc<dyn Panel<R>>>`, and `Panel` has **no** positioning or effects methods —
-  both are reached through `Panel::to_window() -> Option<WebviewWindow<R>>`. The `nspanel`
+  both are reached through the Tauri window, `app.get_webview_window(label)`.
+  **Correction (2026-09-15): not through `Panel::to_window()`**, as this entry previously said.
+  `to_window()` is a conversion *back* (`panel.rs:255-287`, doc comment "Convert panel back to a
+  regular Tauri window"): it removes the panel from the plugin store, clears the delegate, sets
+  `releasedWhenClosed`, and `object_setClass`es the NSWindow back to `TaoWindow`. Upstream calls it
+  only right before `close()`. The `nspanel`
   plugin must be registered (`.plugin(tauri_nspanel::init())`): `build()` calls `to_panel()`
   internally, which `unwrap()`s on the plugin's managed state.
 - Ordering that is not optional: `ActivationPolicy` must be set **before**
@@ -146,6 +155,36 @@ before actually adding):
   decided by wry when it creates the `WKWebView`, so it needs
   `.with_window(|w| w.transparent(true))` as well. The window-level call cannot reach it
   retroactively.
+- **Verified at M2a (2026-09-15), against the pinned source and the bundled build:**
+  - `no_activate(true)` does **not** make the panel non-activating. It only sets the activation
+    policy to `Prohibited` around window creation (`builder.rs:815-926`). Non-activating is the
+    style mask `NSWindowStyleMask::NonactivatingPanel`. `PanelBuilder::style_mask` / `set_style_mask`
+    *replace* the mask; Ondar ORs the bit onto tao's (measured `0x8004` → `0x8084`).
+  - `Panel::show()` is `orderFrontRegardless` alone (`panel.rs:242-246`) and never makes the panel
+    key, so it can never resign key. Ondar calls `make_key_window()` after it — not
+    `show_and_make_key()` (`panel.rs:409-418`), which also makes the content view
+    (`WryWebViewParent`) first responder.
+  - `Panel::set_event_handler` + `panel_event!` exist as recorded (`event.rs`, `panel.rs:303-335`),
+    with two details the earlier note left out: `panel_event!` must be invoked inside
+    `tauri_panel!`, which emits the imports it needs (`common.rs:19-30`); and `set_event_handler`
+    **replaces** the NSWindow delegate. It stores the original delegate but restores it only when
+    the handler is set back to `None` — nothing forwards to it while a handler is installed — so
+    it silences tao's window events for that window. Not used; see "M2a: the tray path, measured".
+  - tao's own delegate turns `windowDidResignKey:` into `WindowEvent::Focused(false)` (tao 0.35.3
+    `window_delegate.rs:384-411`), passed through unchanged on macOS (tauri-runtime-wry 2.11.4
+    `lib.rs:522-524`). **Measured end to end on the bundled build**, not only read.
+  - `tray-icon` 0.24.2 builds the status item image from **one** PNG — one representation — and
+    forces 18 pt height (`platform_impl/macos/mod.rs:283-311`); its `set_icon` hard-codes
+    `is_template = false` (`mod.rs:115-123`). Swap with `TrayIcon::set_icon_with_as_template`
+    (tauri 2.11.5 `tray/mod.rs:569-591`), one main-thread task; `set_icon` then
+    `set_icon_as_template` is two, and can draw a flat black glyph in between. **Measured on the
+    bundled build** (temporary probe, 2026-09-15): after the atomic swap the button image reads
+    `isTemplate=true` at 18×18 pt; a plain `set_icon`, as negative control, reads `false`.
+  - `tauri::include_image!` decodes PNGs at compile time (tauri-codegen `image.rs`), so no
+    `image-png` feature is needed.
+  - `Monitor::work_area()` is `NSScreen.visibleFrame` in top-left-origin physical pixels
+    (tauri-runtime-wry `src/monitor/macos.rs:8-28`). `monitor_from_point` tests against
+    `CGDisplayBounds`, which is in **points** (tao `platform_impl/macos/monitor.rs:163-170`).
 
 **MSRV correction (found and closed 2026-09-10, `7bbe332`):** the workspace `Cargo.toml` used
 to declare `rust-version = "1.85"`, but `stream-download` 0.24.4's own manifest declares
@@ -323,7 +362,12 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
 - **Signing/notarisation** requires a paid Apple Developer ID certificate. Assumed yes;
   decision deferred to M6. Tauri's bundler handles it from env vars once the cert exists.
 
-### The M2 spike: vibrancy survives the subclassing, and the panel does not composite (2026-09-12)
+### The M2 spike: vibrancy applies and the panel does not composite — measured on a `TaoWindow` (2026-09-12)
+
+> **Read "The spike measured a reverted `TaoWindow`" (below) before relying on this section.**
+> Every measurement here was taken after `Panel::to_window()` had turned the panel back into a
+> `TaoWindow`. The results stand as measurements of that window; they were not measurements of an
+> NSPanel, and the vibrancy claim is still view-tree evidence only.
 
 Branch `m2-spike`, **not merged** — it is a spike, and the recorded plan was to abandon rather
 than revert a dependency off `main` if it failed. It did not fail. Version pins from it are in
@@ -335,7 +379,8 @@ after `tauri-nspanel` subclasses the NSWindow? The published docs cannot say, be
 **NSView** (`window_vibrancy` 0.6.0 `lib.rs:218` passes `handle.ns_view`), while the conversion
 changes the **window** class. Prediction was yes; it needed proof.
 
-**Answer: yes, and it renders.** With the panel shown, the content view's tree is:
+**Answer as recorded: yes, and it renders** — on the reverted `TaoWindow`, not the subclassed
+panel. With the window shown, the content view's tree is:
 
 ```
 NSNextStepFrame @0,0 360x420
@@ -356,9 +401,12 @@ flat fill — the two look nearly identical there. What actually establishes the
 Anyone repeating this check should put a bright, colourful, high-frequency backdrop behind the
 panel, where blur is unmistakable.
 
-`EffectState::Active`, not `FollowsWindowActiveState`: under an `Accessory` policy with a
-non-activating panel the app is never active and the panel never becomes key, so "follows"
-resolves to permanently inactive, which is the wrong appearance for a menu bar popover.
+`EffectState::Active`, not `FollowsWindowActiveState`. **Reason re-derived 2026-09-15:** the
+recorded reason — "the panel never becomes key, so 'follows' resolves to permanently inactive" —
+is contradicted: with `make_key_window()` the panel *is* key while shown (measured, M2a). Whether
+AppKit renders a key non-activating panel in an inactive app as "active" was never measured.
+`Active` stays because the popover should look active whenever it is on screen, and `Active`
+guarantees that without depending on the unmeasured answer.
 
 **Two failure modes here look exactly like success.** `apply_effects` scans the effect list
 for a macOS `Effect` variant and returns with a bare `return` if it finds none — no error, no
@@ -372,19 +420,26 @@ Dock icon, confirmed without needing to look at the Dock. The docs describe this
 `tauri build` only and dev runs a bare binary rather than a bundle, so the question cannot be
 answered from `tauri dev` at all. A bundled build is required.
 
-#### Open defect (M2 work, not a spike blocker): `hides_on_deactivate` keeps the panel off screen
+#### Defect, resolved at M2a by dropping it: `hides_on_deactivate` keeps the panel off screen
 
 With `PanelBuilder::hides_on_deactivate(true)`, the panel **never composites**. AppKit reports
 `isVisible == true` while `occlusionState` keeps the `Visible` bit clear. Setting it to `false`
 flips `occlusionState` from `8192` to `8194` and the panel renders immediately.
 
-Under an `Accessory` policy with a non-activating panel the app is never active, so "hides on
-deactivate" is permanently satisfied. Bisected: the activation policy itself is **not**
+The app was never active — nothing activated it: an `Accessory` app launched from a terminal,
+never clicked — so "hides on deactivate" was permanently satisfied. (Recorded originally as "a
+non-activating panel"; the window was neither a panel nor non-activating, see below. The
+mechanism does not depend on the class.) Bisected: the activation policy itself is **not**
 involved — `ActivationPolicy::Regular` changes nothing.
 
-The fix is a design decision, deliberately not taken in the spike: drop `hides_on_deactivate`
-and handle blur explicitly via the panel's window delegate. `Panel::set_event_handler` plus the
-`panel_event!` macro is the hook.
+**Re-measured on the real `OndarPanel`, 2026-09-15** (M2a Step 0): with
+`hides_on_deactivate(true)`, `key=true visible=true` but the `Visible` bit stayed clear (raw 8192)
+at +60, +319 and +1322 ms; the control run with it `false` and the same frontmost app had the bit
+set (8194) by +50 ms. The defect holds on the right class.
+
+**Decided 2026-09-15:** `hides_on_deactivate` is dropped; the popover hides when it resigns key.
+The hook is `WindowEvent::Focused(false)`, not `Panel::set_event_handler` + `panel_event!` as
+first recorded here — see "M2a: the tray path, measured".
 
 What the measurements eliminated before the bisect found it, all from the instrumented log:
 
@@ -407,12 +462,167 @@ is non-zero while the window is telling you it is *not* visible. Reading that as
 visible" manufactured a paradox that cost real time. The instrumentation now prints the decoded
 bit beside the raw value.
 
-**Multi-monitor caveat, untested.** `tray-icon`'s coordinate flip uses
-`CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
-display the tray icon is on (`mod.rs:610`). With the menu bar on a secondary display the anchor
-will be vertically wrong. Upstream, not ours. Still unverified: the tray-click path was never
-exercised, because driving a menu bar click needs Accessibility permission this environment does
-not have.
+**Multi-monitor caveat, untested — and testable on this machine.** `tray-icon`'s coordinate flip
+uses `CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
+display the tray icon is on (`mod.rs:610-612`). For a status item on a non-main display whose top
+edge is not aligned with the main display's, the anchor will be vertically wrong. Upstream, not
+ours.
+
+**Correction (2026-09-15): "only one display is available" was never measured.** It was inherited —
+from the brief and the pending ledger — and repeated here without a check. Nothing had called
+`available_monitors()`, and `primary_monitor()` / `monitor_from_point()` cannot reveal a second
+display. The record already hinted otherwise: the spike's elimination table above says "no panel
+pixels on **either** display". Measured 2026-09-15 with `system_profiler SPDisplaysDataType` and
+`available_monitors()` from the bundled app (temporary probe):
+
+| Display | Primary | Position (physical) | Size (physical) | Scale | Work area | In points |
+|---|---|---|---|---|---|---|
+| Built-in Liquid Retina XDR | yes | (0, 0) | 3024×1964 | **2** | (0,66) 3024×1770 | 1512×982 at (0,0) |
+| BenQ GW2470 | no | (−243, −1080) | 1920×1080 | **1** | full frame | 1920×1080 at (−243,−1080) |
+| ANMITE | no | (3354, −1280) | 1920×1280 | **2** | full frame | 960×640 at (1677,−640) |
+
+tao reports each monitor's position as its point origin × *that monitor's* scale, so the "physical"
+positions are not one pixel space (ANMITE's 3354 is 1677 pt). Both externals' work areas equal their
+full frames, consistent with the menu bar and Dock being on the built-in only (setting not read).
+
+**Mixed-scale positioning error (pre-merge `/code-review`, finding 2) — the case exists on this
+machine and is untested.** `tray-icon`'s `get_tray_rect` (`mod.rs:515-528`) makes the rect
+"physical" with the **status item's** display scale. `panel::anchor` treats it with the **panel
+window's** scale: it divides by that scale for `monitor_from_point` (which tests `CGDisplayBounds`
+in points, tao `monitor.rs:163-170`), and `set_position` converts back with it again (tao
+`window.rs:728-734`). `work_area` is converted with the chosen monitor's own scale (tauri-runtime-wry
+`monitor/macos.rs:16-27`), so up to three scales meet in one clamp. On one scale this is invisible.
+Read from the source, not observed: with the tray on the BenQ (1×) and the panel window at 2×, the
+monitor lookup would get the wrong point and the panel would land on the wrong display. This is independent of the upstream `y` flip: a
+top-aligned 1× display would get `y` right and `x` wrong. Not fixed at M2a. It changes the
+anchor/scale logic and belongs to the multi-monitor pass, measured on these displays. Open
+question for that pass: moving the menu bar in Displays → Arrange makes that display *main*, which
+may mask the `y` bug; whether a status item can be clicked on a non-main menu bar needs measuring.
+
+**Correction (2026-09-15): the tray-click path *was* exercised on 2026-09-12, and failed on every
+click.** `_handover/m2-spike-app.log` lines 22-27: each left click logs `Down` and `Up`, each `Up` is
+followed within 2 ms by `WARN tray toggle failed: window not found`, and no `tray anchor:` line
+ever appears. It was recorded as "never exercised". It first worked, and was verified from the
+log, at M2a — see "M2a: the tray path, measured".
+
+### The spike measured a reverted `TaoWindow` (found 2026-09-15)
+
+`Panel::to_window()` (`tauri-nspanel` `panel.rs:255-287` at the pinned rev) removes the panel from
+the plugin store, clears the delegate, sets `releasedWhenClosed`, and `object_setClass`es the
+NSWindow back to the class it had before conversion — `TaoWindow`, a plain `NSWindow` subclass
+(tao 0.35.3 `window.rs:408-427`). The spike's `setup()` ran `build()` → `hide()` →
+`panel_window()` (= `to_window()`) → `set_effects` → tray → optional show and watch; the same order
+is already in `7134215`, whose log format matches the recorded log. From `panel_window()` onward
+the window was a `TaoWindow` and the store was empty. The retained `PanelHandle` still pointed at
+the same object, so every `msg_send` kept working, and no log line printed the class. Instance
+state set before the revert survived (level 101, `hidesOnDeactivate`, shadow, `opaque = false`,
+`clearColor`); the `tauri_panel!` class overrides did not, and `NonactivatingPanel` was never set.
+
+What that does to the recorded conclusions:
+
+- **Vibrancy.** The view-tree result is real, but of a `TaoWindow`, so the spike did not answer
+  its own question. The mechanism argument (vibrancy acts on the NSView; `object_setClass` does not
+  touch views) predicted it would carry over. Step 0 measured it on the real `OndarPanel`:
+  `NSVisualEffectViewTagged@360x420` (tag 91376254) inside `WryWebViewParent`, frame view still
+  `NSNextStepFrame` after the style-mask change, `opaque=false`. **View tree only; no visual
+  confirmation.**
+- **`hides_on_deactivate`.** A one-variable bisect on the reverted window, with the revert constant
+  across both arms, so it held for that window; re-measured on the real panel (above) and it holds
+  there too. The recorded *explanation* needed rewording, not reversing.
+- **The dead tray click.** `to_window()` alone explains it: `toggle()` called
+  `get_webview_panel` first, and the store had been emptied in `setup()`. Both `?` sites in the
+  spike's `toggle()` produced the same message, so the log could not say which fired — source order
+  does. Had the `setup()` call not been there, the path would still have failed: `toggle()` itself
+  called `to_window()` before positioning (reverting on the first click), `hides_on_deactivate`
+  was still set, and `show()` never made the panel key.
+
+M2a's `panel shown` log line prints `class=`, so a revert cannot go unnoticed again.
+
+### M2a: the tray path, measured (2026-09-15)
+
+Branch `m2`: `36d50b8` (dependency), `e1f252f` (tray icon), `9f29edf` (panel, anchor, clamp),
+`791fd66` (resign-key dismissal). Each pushed alone; CI green on each.
+
+**Decision: the resign-key hook is `WindowEvent::Focused(false)`, not a `panel_event!` delegate.**
+Decision 1's substance — the popover hides when it resigns key, replacing `hides_on_deactivate` —
+is unchanged; only the hook moves. tao's window delegate already emits `Focused(false)` from
+`windowDidResignKey:`, so listening on the panel's `WebviewWindow` gets the same AppKit callback
+with no new `unsafe`. `Panel::set_event_handler` would replace tao's delegate: it stores the
+original but restores it only when the handler is set back to `None`, and forwards nothing while
+installed, which silences tao's `Resized`, `Moved`, `Focused`, `ScaleFactorChanged`, `ThemeChanged`
+and `Destroyed` for the panel window — events M2b's resize-in-place work needs.
+
+**Step 0 — the gate (probe, never committed).** The panel was shown without a tray click, from an
+env-driven hook calling the same show path, on the bundled debug build.
+
+| Question | Result |
+|---|---|
+| Real subclass | `class=OndarPanel` in every run |
+| Becomes key | `key=true` straight after `make_key_window()`; still `true` at +1323 ms when shown after launch |
+| Steals focus | No: `lsappinfo front` unchanged across show (Finder; TextEdit; Firefox in later runs) |
+| `Focused(false)` fires | 33 ms after `open -a TextEdit`; again on `open -a Finder` |
+| Vibrancy on the real panel | effect view present, 360×420, by view tree; no visual confirmation |
+| `hides_on_deactivate(true)` on the real panel | `Visible` bit clear at +60/+319/+1322 ms; control with it `false`: set by +50 ms |
+
+**A synchronous occlusion read after show is stale.** The `Visible` bit read straight after
+`orderFrontRegardless` + `makeKeyWindow` was clear (raw 8192) in 14 of 14 probe runs; in the 13
+without `hides_on_deactivate` it was set at the first later sample. Sampled every 10 ms in 6 runs,
+the bit flipped within (12, 24], (12, 27], (14, 30], (15, 23], (21, 34] and (23, 35] ms. The
+product reads it 100 ms after show (~2.9× the worst upper bound, 35 ms) and logs the elapsed time
+actually observed.
+
+**Showing the popover during `setup()` makes it resign key by itself — bisected to the M1 bench
+window, mechanism unidentified.** Shown from inside `setup()`, the panel was key at show and had
+lost key by the first sample (+51 to +107 ms), with no focus change and never regained it:
+
+| `main` (M1 bench) window | Runs | Panel kept key |
+|---|---|---|
+| created visible (as on `main`) | 3 | no, 3 of 3 |
+| created visible, `hide()` inside `setup()` | 1 | no |
+| `"visible": false` in `tauri.conf.json` (temporary build) | **1 — n = 1, not repeated** | **yes** |
+
+- `main` itself was **never key** in any run, so this is not another window taking key. What
+  removes the effect is `main` never being ordered in; hiding it after creation does not. **Why
+  that clears the panel's key status is not identified.** The 4-vs-1 comparison rests on a single
+  run for the `visible: false` arm and is recorded as suggestive, not settled.
+- The "became key" and "resigned key" lines logged ~20 µs apart at +51/+56 ms are event delivery,
+  not a hand-off: `setup()` holds the main thread, so `Focused(true)` is queued and delivered with
+  `Focused(false)` once the loop runs. Shown 3 s after launch, `became key` logs at show.
+- Every loss was within ~100 ms of launch; shown later with `main` visible, the panel kept key for
+  >1.3 s until another app was activated. No tray click can arrive during `setup()`.
+- **Prediction, untested:** clicking the bench window while the popover is open would activate
+  Ondar, make `main` key, and dismiss the popover. It lives until M2b retires `main`.
+
+**Positioning.** `centred_below(tray_pos, tray_size, panel_size)` and `clamp_into` are pure and
+unit-tested (shell tests 3 → 9; workspace 53 → 59). Fixture: the 2026-09-12 rect `(1932, 0)`
+`48x66`, panel 360×420 logical at scale 2 → `(1596, 72)`. Near the right edge the centred panel
+runs off screen (3024 px display, 720 px panel: past icon x ≈ 2640); **clamp chosen over flipping
+to right-aligned**, so the panel stays centred whenever it fits and slides only as far as needed,
+6 px from the work area's edge. Each test was mutated to confirm it fails: `y` height-term sign,
+`tray_pos.y` sign (caught only by the `y = 100` case — the measured rect has `y = 0`), centring
+dropped, icon half-width dropped, clamp removed, margin dropped.
+
+**Manual tray check, bundled build `791fd66`** (Martín's clicks; this shell cannot post Apple
+Events, `-1743`). Two sequences — open/close/open/close, then open/close/open/click another app:
+
+- 7 physical clicks → 14 `tray click` lines, one `Down` and one `Up` each.
+- Tray rect `(1816, 0)` `48x66` — a different x from 2026-09-12's 1932, because the menu bar's
+  other items differ. Anchor `(1480, 72)`; work area `(0, 66)` `3024x1770`; clamp a no-op.
+- 4 shows: all `class=OndarPanel key=true`, all `settled_visible=true settled_raw=8194` at
+  105–106 ms.
+- 3 tray closes: `panel toggle -> hide`, then ~6 ms later `panel resigned key -> hide
+  visible_before=false` — ordering out the key window resigns key; the second hide is a no-op.
+- Click-away: `panel resigned key -> hide visible_before=true`.
+- **No resign between a `Down` and its `Up`**, so the feared re-open race did not occur and the
+  pre-agreed timestamp guard was not added.
+
+**Pre-merge `/code-review` (2026-09-15): two low-severity findings, both confirmed against source.**
+Verified line by line in `_handover/m2a-review-findings.md`. (1) The tray swap was `set_icon` +
+`set_icon_as_template`, two main-thread tasks with a possible flat-black frame between, repeated on
+every state change — fixed in `ede2dd1` (atomic `set_icon_with_as_template`, swap only on an
+idle/playing flip). (2) Mixed-scale positioning — recorded under "Multi-monitor caveat" above, not
+fixed at M2a.
+- `lsappinfo` on the running bundle: `"ApplicationType"="UIElement"`.
 
 ### Reconnect ownership and stream timeouts (measured 2026-09-08, M1)
 
@@ -655,29 +865,63 @@ upscaling any PNG.
 
 #### Tray template glyphs
 
-Four in `src-tauri/icons/tray/`: `ondar-tray-{22,44}-{idle,playing}.png` — 22 px for @1x, 44 px
-for @2x. They replace the runtime-generated circle from the M2 spike when M2 proper lands.
+Four in `src-tauri/icons/tray/`: `ondar-tray-{22,44}-{idle,playing}.png`, authored as 22 px for
+@1x and 44 px for @2x. **Only the 44 px pair is used, and the 22 px pair can never render** (found
+2026-09-15): `tray-icon` builds the status item's `NSImage` from one PNG — one representation, no
+way to supply a second — and forces its height to 18 pt (tray-icon 0.24.2
+`platform_impl/macos/mod.rs:283-311`). So the shipped glyph is the 44 px file resampled by AppKit
+to **36 px at @2x and 18 px at @1x**. The glyph sits on a 22 pt canvas (alpha bounding box at 44 px:
+x 4–39, y 6–41), so it draws at about 29 px at @2x.
 
 - **They are pure black on alpha — measured, max RGB channel value 0 across all four — so they
   must be set with `icon_as_template(true)`.** macOS then reads shape from the alpha channel
   alone and tints for light/dark menu bars and the highlight state. Setting them without that
-  flag renders them as flat black artwork that disappears on a dark menu bar.
+  flag renders them as flat black artwork that disappears on a dark menu bar. `tray-icon`'s
+  `set_icon` resets template mode, so the playing swap uses `set_icon_with_as_template`, and only
+  on an idle/playing flip (`ede2dd1`).
 - **The playing state is a SHAPE change, never a colour change:** the cap dot above the stem is
   *hollow* when idle and *filled* when playing. A template image has no colour to change — that
   is the constraint the design is built around, not an accident of these files.
 
-**Known and accepted: the state difference is clear at @2x and marginal at @1x.** Measured
-between idle and playing:
+**The state difference, measured on what renders (re-derived 2026-09-15).** The earlier table
+measured the source files — a 22 px file that is never drawn, and a 44 px source rather than its
+36 px result — so it described neither shipped size and was withdrawn, not annotated.
 
-| Size | Pixels differing at all | Differing by >25% alpha |
-|---|---|---|
-| 22 px (@1x) | **16** of 484 | 4 |
-| 44 px (@2x) | 38 of 1936 | 16 |
+*What is measured, and why, written before the numbers were taken.* The quantity is the alpha
+difference between the idle and playing renders at the backing sizes the menu bar draws, 36 px and
+18 px, using the earlier table's two thresholds (any difference; more than 25 %). Alpha, because a
+template image is tinted through its alpha as a mask, so coverage is what reaches the screen. The
+instrument is AppKit's own path: `NSImage(data:)` from the 44 px PNG, `size` set to 18 pt, drawn into
+a bitmap at 1× and 2×. The status bar button's interpolation setting is not visible from outside, so
+every `NSImageInterpolation` level is reported as a range. Second instrument: `sips -z` (ImageIO).
+Calibration: the same counting code on the source files must reproduce the earlier 16/4 and 38/16 —
+it does, exactly.
 
-Sixteen pixels, only four of them strongly, is nearly invisible on a non-Retina display. This is
-**accepted, not a defect to be rediscovered** — the cap dot is ~3 px across at 22 px and a
-hollow centre cannot be more than a pixel. If it ever needs to read at @1x, the answer is a
-different idle/playing distinction at that size, not a bigger dot.
+| Render (from the 44 px file) | Pixels differing at all | Differing by >25 % | Σ\|Δα\| (post hoc) | max \|Δα\| |
+|---|---|---|---|---|
+| 36 px (@2x), AppKit, 5 interpolation levels | 26–42 of 1296 | 10–12 | 2084–2511 | 247–255 |
+| 36 px, `sips` | 42 | 10 | 2163 | 255 |
+| 18 px (@1x), AppKit, 5 interpolation levels | 11–17 of 324 | 4 | 348–533 | 84–159 |
+| 18 px, `sips` | 17 | 4 | 498 | 148 |
+| *reference: 44 px source file* | *38 of 1936* | *16* | *3120* | *255* |
+| *reference: 22 px source file (never drawn)* | *16 of 484* | *4* | *944* | *178* |
+
+`sips` agrees exactly with AppKit's `default`/`high` interpolation on every column.
+
+**Σ|Δα| was added after seeing the counts, and is labelled so.** The two count thresholds alone make
+@1x look no worse than the authored 22 px file (4 strong pixels either way). They cannot distinguish
+a crisp change from a blurred one, which is exactly what a 44 → 18 px downsample of a hollow dot
+produces. Total alpha change shows it: **the @1x render carries 37–56 % of the contrast the 22 px
+file would have** (348–533 against 944), and its strongest pixel changes by at most 84–159 of 255.
+At @2x it carries 67–80 % of the 44 px source's contrast, with a full-strength (255) pixel still
+present.
+
+**Known and accepted, re-derived:** the state difference is clear at @2x and marginal at @1x — and
+at @1x it is worse than the earlier table said, because the shipped render is a blurred downsample
+rather than the authored 22 px glyph. Not a defect to be fixed by tweaking the dot. The two real
+options are a two-representation `NSImage` set directly on the status item (bypassing `tray-icon`'s
+`set_icon`), which would let the 22 px glyph render at @1x, or a different idle/playing distinction
+at that size. Neither is taken; it is an open decision.
 
 ### Renamed from Onda to Ondar (2026-09-13)
 
@@ -777,6 +1021,21 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 `export_bindings_<type>` test per exported type, which is the mechanism that writes
 `src/bindings/`. `cargo test -p ondar-audio -- --list` is the authority.
 
+### Loose ends
+
+- **One `pnpm tauri build --debug` failure, not reproducible (2026-09-15).** On branch `m2`
+  with the M2a code uncommitted, the build produced `Ondar.app` and then failed at the DMG step:
+  `` failed to bundle project: error running bundle_dmg.sh: `failed to run /Users/mv/Developer/Onda/src-tauri/target/debug/bundle/dmg/bundle_dmg.sh` ``
+  (verbatim; the CLI printed it twice, the second time prefixed `Error`). Then 3 of 3
+  passes on identical code (`--bundles dmg -v` once, the full `pnpm tauri build --debug -v`
+  twice), and the acceptance build at `791fd66` passed too. **Cause unknown.** The failing run was
+  not verbose. No stale Ondar volume was mounted (`/Volumes` held only two unrelated user
+  installers). The unified log could not help: `log show` returned 0 lines from that shell even
+  for a 10 s window in which a build was certainly running, so it was unreadable, not empty. The
+  2026-09-13 claim that the build completes unaided stands; this is recorded because an
+  unexplained intermittent in the release path should not live only in a chat. Run release-path
+  builds with `-v` so a recurrence leaves detail.
+
 ## API etiquette (non-negotiable)
 
 - Send a descriptive `User-Agent` (`Ondar/<version>`) on every radio-browser request.
@@ -793,8 +1052,10 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    test window, no tray.
 2. **M2 — Tray + NSPanel popover.** `tauri-nspanel` pinned rev, vibrancy, template tray
    icon, collapsed/expanded resize in place, positioning from tray rect. **Spiked
-   2026-09-12** on `m2-spike` (not merged): dependency and vibrancy both clear, and one open
-   defect to fix first — `hides_on_deactivate` keeps the panel off screen. See "The M2 spike".
+   2026-09-12** on `m2-spike` (not merged; its measurements were of a reverted `TaoWindow`).
+   **M2a done 2026-09-15** on branch `m2`: tray, non-activating panel, clamped positioning,
+   resign-key dismissal — see "M2a: the tray path, measured". M2b (resize in place, retiring the
+   M1 bench window) is next.
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
    click endpoint, cache TTLs, favourites/recents.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
@@ -842,6 +1103,13 @@ Related findings, each an instance of this: "Bare `cargo test` skips the engine"
 (occlusion), "The app icon and tray glyphs" (`rsvg`). The harness-pacing error in "The harness
 paced 3.57% slow" is a fourth of the same family — the measuring harness, not the engine, was
 wrong, and it invalidated a whole table.
+
+Three more, 2026-09-15, all in M2a: `Panel::to_window()` silently changed the class of the window
+the spike was measuring, with nothing in the log to show it ("The spike measured a reverted
+`TaoWindow`"); a synchronous occlusion read after `show` reports "not visible" for a panel that is
+on screen ~35 ms later ("M2a: the tray path, measured"); and `log show` returned 0 lines from this
+shell even for a window in which a build was certainly running — the unified log was unreadable,
+not empty ("Loose ends").
 
 ## Principle: a measurement that contradicts a recorded justification reopens the decision (recorded 2026-09-14)
 

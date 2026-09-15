@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ondar popover</title>
+    <!--
+      Placeholder until the popover UI exists. Deliberately has no script and no IPC: a page that
+      invokes nothing needs no capability, so `capabilities/default.json` stays scoped to `main`.
+
+      The transparent background is load-bearing. An opaque body paints over the
+      NSVisualEffectView that `set_effects` inserts while `set_effects` still returns Ok, so the
+      vibrancy would look broken while every check passed.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+      }
+      main {
+        height: 100%;
+        display: grid;
+        place-items: center;
+        font: 600 13px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        color: #fff;
+        text-shadow: 0 1px 2px rgb(0 0 0 / 55%);
+      }
+    </style>
+  </head>
+  <body>
+    <main>Ondar</main>
+  </body>
+</html>

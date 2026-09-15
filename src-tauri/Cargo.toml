@@ -22,7 +22,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = [] }
+tauri = { version = "2.11", features = ["macos-private-api", "tray-icon"] }
+# Subclasses the popover's NSWindow into a non-activating NSPanel — the only way to get a menu
+# bar popover that takes key without activating the app or stealing focus from the frontmost
+# one. Neither Tauri nor any crate already in the tree does this. Git-only with no release
+# tracking the v2.1 API, so it is pinned by `rev`, never by branch; see ONDAR.md.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }
 ondar-audio = { path = "crates/ondar-audio" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
