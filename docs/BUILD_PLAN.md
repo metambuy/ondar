@@ -40,15 +40,21 @@ every commit".
 
 **Goal:** it behaves like a real macOS menu bar app before it does anything useful.
 
-- [ ] `ActivationPolicy::Accessory` + `LSUIElement` — no Dock icon
-- [ ] Tray icon as a **template image**, light/dark correct
-- [ ] `tauri-nspanel`: convert the main window to a non-activating `NSPanel`
+- [x] `ActivationPolicy::Accessory` + `LSUIElement` — no Dock icon (M2a; `lsappinfo` →
+      `UIElement` on the bundled build)
+- [ ] Tray icon as a **template image**, light/dark correct — template image set (M2a);
+      light/dark appearance **not yet checked by eye**
+- [x] `tauri-nspanel`: a non-activating `NSPanel` — a separate `panel` window, not the main
+      window converted (M2a; the M1 bench window is retired at M2b)
 - [ ] Position from Tauri's own `TrayIconEvent::Click { rect }` (`tauri-plugin-positioner` not
       needed — ONDAR.md, 2026-09-12) — popover anchors under the tray item, correct on
-      multi-monitor and with the notch
-- [ ] Hide on resign-key / `Esc`; toggle on tray click; right-click tray → quit/preferences
+      multi-monitor and with the notch — **anchoring and edge clamping done and logged (M2a);
+      multi-monitor untested**
+- [ ] Hide on resign-key / `Esc`; toggle on tray click; right-click tray → quit/preferences —
+      **resign-key and tray toggle done (M2a)**; `Esc` and the right-click menu not started
 - [ ] Vibrancy background (`macos-private-api`, Tauri's own `set_effects` — `window-vibrancy`
-      is not a direct dependency), rounded corners, no window chrome
+      is not a direct dependency), rounded corners, no window chrome — **vibrancy and no chrome
+      done (M2a; vibrancy by view tree, no visual confirmation)**; rounded corners not started
 - [ ] Collapsed/expanded height states with a smooth resize + reposition (empty panes for now)
 - [ ] `tauri-plugin-single-instance`
 - [ ] Design tokens (`styles/tokens.css`) for both appearances
@@ -58,9 +64,11 @@ no jump; nothing flickers on a second monitor.
 
 **Risk:** `tauri-nspanel` API drift — a git-only community crate that moves faster than any
 doc here. Verify against the pinned rev before writing code and record what you find in
-ONDAR.md's "Verified versions". The M2 spike (2026-09-12) passed the go/no-go against Tauri
-2.11.5, so the borderless always-on-top fallback is not taken. Open defect to fix first:
-`hides_on_deactivate(true)` keeps the panel off screen — see ONDAR.md, "The M2 spike".
+ONDAR.md's "Verified versions". The M2 spike (2026-09-12) passed the dependency half of its
+go/no-go against Tauri 2.11.5, so the borderless always-on-top fallback is not taken; its vibrancy
+measurement was of a reverted `TaoWindow`, re-measured on the real panel at M2a by view tree only. The spike's `hides_on_deactivate`
+defect was resolved at M2a by dropping it and dismissing on resign-key — see ONDAR.md, "M2a: the
+tray path, measured".
 
 ---
 
