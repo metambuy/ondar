@@ -35,7 +35,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 | | | |
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
-| M2 | Tray + NSPanel popover | **in progress** — M2a (tray, panel, positioning, dismissal) done on branch `m2`, 2026-09-15; M2b (resize in place, retire the M1 bench window) next |
+| M2 | Tray + NSPanel popover | **in progress** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) on branch `m2b`, 2026-09-16; M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) and M2d (collapsed/expanded resize) next |
 | M3 | Station API + SQLite cache + country/station UI | |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
@@ -288,7 +288,7 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    "EQ output is bounded by a soft-clip stage".
 8. Call the radio-browser click endpoint exactly once, when playback actually starts (M3).
 
-## macOS specifics (M2a — as built on branch `m2`)
+## macOS specifics (as built through M2b)
 
 - Activation policy `Accessory` (set in `panel::setup`, **before** `PanelBuilder::build()`) +
   `LSUIElement` in `src-tauri/Info.plist` — no Dock icon, no menu bar menus. Only a bundled
@@ -327,7 +327,7 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   monitor's own scale. Convert at the boundary, never divide by the panel window's scale — that is
   the scale of whatever display the panel is sitting on. `TRAY_GAP`/`EDGE_MARGIN` are points, since
   a visual spacing has to be. See ONDAR.md, "M2b: coordinates are logical points".
-- M2b: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
+- M2d: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
 
 ## Map invariants (M4 — none of this exists yet)
 

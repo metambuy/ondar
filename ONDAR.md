@@ -1112,6 +1112,20 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
   unexplained intermittent in the release path should not live only in a chat. Run release-path
   builds with `-v` so a recurrence leaves detail.
 
+  **Narrowed 2026-09-16, by the leftover scratch image.** The failed run left
+  `rw.17605.Ondar_0.1.0_aarch64.dmg` (80,779,776 bytes) in `bundle/macos/` — mtime 12:40 local,
+  the same instant as the 11:40 UTC in that day's report; this entry is UTC, a file listing is
+  local. `bundle_dmg.sh` names that scratch image at line 317, creates it at 382-386, then
+  **resizes** (410-416), **attaches** (431), runs the Finder AppleScript, blesses, detaches,
+  **converts** to the final image (555-559), and removes the scratch file only at line 561. Its
+  survival therefore places the failure **after creation and before line 561** — creation, resize,
+  attach, AppleScript, bless, detach or convert. It rules out "at the start", and no more than
+  that: the failing run was not verbose, and `/Volumes` being clean two hours later is consistent
+  with either "never attached" or "the script's own detach trap (line 52) ran". `DMG_DIR` is
+  `bundle/macos/`, not `bundle/dmg/` — the bundler runs the script there and moves the finished
+  image afterwards, which is why the leftover and the `rw.*` images from later successful runs all
+  appeared there. The leftover was deleted 2026-09-16.
+
 ## API etiquette (non-negotiable)
 
 - Send a descriptive `User-Agent` (`Ondar/<version>`) on every radio-browser request.
@@ -1129,9 +1143,11 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 2. **M2 — Tray + NSPanel popover.** `tauri-nspanel` pinned rev, vibrancy, template tray
    icon, collapsed/expanded resize in place, positioning from tray rect. **Spiked
    2026-09-12** on `m2-spike` (not merged; its measurements were of a reverted `TaoWindow`).
-   **M2a done 2026-09-15** on branch `m2`: tray, non-activating panel, clamped positioning,
-   resign-key dismissal — see "M2a: the tray path, measured". M2b (resize in place, retiring the
-   M1 bench window) is next.
+   **M2a done and merged 2026-09-15** (`b553737`, tagged `m2a-done`): tray, non-activating panel,
+   clamped positioning, resign-key dismissal — see "M2a: the tray path, measured". **M2b
+   (coordinates: multi-monitor, mixed scale, the notch) done 2026-09-16** — see "M2b: coordinates
+   are logical points". M2c (Esc, tray menu, rounded corners, single-instance, tokens, retiring the
+   M1 bench window) and M2d (collapsed/expanded resize) remain.
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
    click endpoint, cache TTLs, favourites/recents.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
