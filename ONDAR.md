@@ -462,11 +462,29 @@ is non-zero while the window is telling you it is *not* visible. Reading that as
 visible" manufactured a paradox that cost real time. The instrumentation now prints the decoded
 bit beside the raw value.
 
-**Multi-monitor caveat, untested — and testable on this machine.** `tray-icon`'s coordinate flip
-uses `CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
-display the tray icon is on (`mod.rs:610-612`). For a status item on a non-main display whose top
-edge is not aligned with the main display's, the anchor will be vertically wrong. Upstream, not
-ours.
+**`tray-icon`'s `y` flip: proven correct and unreachable, not untested (measured 2026-09-16, M2b
+Step 0).** This entry has carried it as an open risk since 2026-09-12: the flip uses
+`CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
+display the tray icon is on (`mod.rs:610-612`) — so a status item on a non-main display whose top
+edge is not aligned with the main display's would be vertically wrong.
+
+**That configuration cannot arise here.** `NSScreen::screensHaveSeparateSpaces()` is `false`, so
+there is exactly one menu bar and macOS puts it on the main display; the status item lives on that
+bar. The flip is therefore always handed the height of the display the icon is on. Measured in three
+arrangements (menu bar on the BenQ, then the built-in, then the BenQ again), each time against two
+independent instruments — the status item's own NSWindow frame in Cocoa points, and Tauri's `rect`:
+
+| Menu bar on | Status item frame (Cocoa pt) | Main height (pt) | Flip → | Tauri `rect.position.y` |
+|---|---|---|---|---|
+| BenQ (1×) | `[1216,1050 24×30]` | 1080 | 1080 − 1050 − 30 = 0 | 0 ✓ |
+| Built-in (2×) | `[880,949 24×33]` | 982 | 982 − 949 − 33 = 0 | 0 ✓ |
+| BenQ (1×) | `[1286,1050 24×30]` | 1080 | 1080 − 1050 − 30 = 0 | 0 ✓ |
+
+Two further notes from the same measurements. `CGDisplayPixelsHigh` returns the mode's **point**
+height, not pixels: the built-in arm only reconciles with 982, not 1964. And the risk would return if
+"Displays have separate Spaces" were ever on *and* macOS placed a status item on a non-main bar —
+neither observed. So: upstream defect, real in principle, **unreachable in this configuration**, and
+no longer something M2b has to work around.
 
 **Correction (2026-09-15): "only one display is available" was never measured.** It was inherited —
 from the brief and the pending ledger — and repeated here without a check. Nothing had called
@@ -1110,6 +1128,14 @@ the spike was measuring, with nothing in the log to show it ("The spike measured
 on screen ~35 ms later ("M2a: the tray path, measured"); and `log show` returned 0 lines from this
 shell even for a window in which a build was certainly running — the unified log was unreadable,
 not empty ("Loose ends").
+
+A fifth instrument, 2026-09-16 (M2b Step 0): **`NSScreen::mainScreen` is not the menu-bar display.**
+It is the screen with the key window, and it read `Some("BenQ GW2470")` while the menu bar was
+measurably on the built-in (`screens()[0]` = "Built-in Retina Display", and the status item's own
+window was on the built-in). The menu-bar display is `screens()[0]`, or `CGMainDisplayID()`, which is
+what `tray-icon` uses. The name is the trap: "main screen" and "main display" are different things in
+AppKit, and a positioning fix built on `mainScreen` would be wrong only on multi-monitor setups where
+focus is on another display — silently, and in exactly the configuration it was written for.
 
 ## Principle: a measurement that contradicts a recorded justification reopens the decision (recorded 2026-09-14)
 
