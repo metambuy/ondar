@@ -305,9 +305,10 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 - Dismissal: hide on `WindowEvent::Focused(false)` (tao's `windowDidResignKey:`). **Not**
   `Panel::set_event_handler`, which replaces tao's delegate and silences its window events.
   `hides_on_deactivate` is not set — it keeps the panel off screen.
-- Position from Tauri's own `TrayIconEvent::Click { rect }` (already top-left-origin physical
-  pixels), centred under the icon and clamped into the display's work area (`panel.rs`,
-  `centred_below` / `clamp_into`, unit-tested). `tauri-plugin-positioner` is **not needed**.
+- Position from Tauri's own `TrayIconEvent::Click { rect }` (physical at the *status item
+  display's* scale), converted to points, centred under the icon and clamped into that display's
+  work area (`panel.rs`, `anchor_points` / `centred_below` / `clamp_into`, unit-tested against
+  measured fixtures). `tauri-plugin-positioner` is **not needed**.
 - Vibrancy is Tauri's own `set_effects` (`Effect::Popover`, `EffectState::Active`) plus
   `PanelBuilder::transparent(true)` *and* `with_window(|w| w.transparent(true))`, with
   `macos-private-api` enabled (`Cargo.toml` feature + `"macOSPrivateApi": true`).
@@ -320,9 +321,12 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   synchronously after show — it lagged up to 35 ms when measured. The log reads it 100 ms after.
 - Known and open: showing the popover during `setup()` makes it resign key by itself while the M1
   bench window is created visible (mechanism unidentified; ONDAR.md, "M2a: the tray path,
-  measured"). Multi-monitor is untested, but testable here: three displays are attached, including
-  a 1× beside the 2× built-in, and `anchor` mixes the tray display's scale with the panel window's
-  (ONDAR.md, "Multi-monitor caveat").
+  measured").
+- **Coordinates are global logical points, top-left origin** (`panel.rs`, M2b): there is no common
+  physical space on a mixed-scale layout, because Tauri gives each monitor's values in that
+  monitor's own scale. Convert at the boundary, never divide by the panel window's scale — that is
+  the scale of whatever display the panel is sitting on. `TRAY_GAP`/`EDGE_MARGIN` are points, since
+  a visual spacing has to be. See ONDAR.md, "M2b: coordinates are logical points".
 - M2b: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
 
 ## Map invariants (M4 — none of this exists yet)

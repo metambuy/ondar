@@ -556,6 +556,64 @@ What that does to the recorded conclusions:
 
 M2a's `panel shown` log line prints `class=`, so a revert cannot go unnoticed again.
 
+### M2b: coordinates are logical points (decided and measured 2026-09-16)
+
+Branch `m2b`. `4f14213` recorded the Step 0 instrument findings; `0331ace` is the fix.
+
+**Decision: route B — global logical points throughout, top-left origin.** The reason is measured,
+not aesthetic. Tauri reports each monitor's `position`, `size` and `work_area` as global points
+multiplied by **that monitor's own** scale (tao `monitor.rs:225-231`; tauri-runtime-wry
+`monitor/macos.rs:16-27`), verified against the Cocoa frames in both arrangements, 6 of 6 exact. So
+on a mixed-scale layout **there is no common physical space**: two monitors' values are not
+comparable, and a tray rect (physical at the *status item display's* scale, tray-icon
+`mod.rs:515-528`) cannot be compared with a work area built at another monitor's scale. Route A —
+resolve the monitor, keep working in physical — has to convert to points to compare anything, so it
+is route B applied per comparison. Points are also what `monitor_from_point` and
+`set_outer_position` already want.
+
+**What the defect actually was.** `anchor()` divided by `window.scale_factor()` — the panel
+window's own scale, which is the scale of whichever display the panel happens to be **sitting on**
+(`NSWindow::backingScaleFactor`, tao `window.rs:885-887`). That is a better description than the
+`/code-review` finding's: the finding said the panel would land on the *wrong display*. Measured
+2026-09-16 with the panel forced onto the 2× built-in and the icon on the 1× BenQ, it landed on the
+**right** display, 649 pt left of the icon and 12 pt inside the menu bar band — so a
+display-identity assertion would have passed it. The tests assert the panel lies inside the chosen
+display's work area instead.
+
+**Why the tray path had never shown it.** Three arrangements, three correct landings, for three
+different geometric reasons (measured, `_handover/m2b-step0-logs/`): the panel is only ever shown
+under the tray icon, the tray is on the menu-bar display, the menu-bar display is at the Cocoa
+origin, and a hidden window keeps its numeric Cocoa frame while the displays move around it — so
+the panel is dragged onto whichever display becomes the new menu-bar display, and the two scales
+agree by geometry. Forcing the panel onto a chosen display with `setFrameOrigin` is what produced
+the failure on demand. **Latent but reachable**: M2d's resize-and-reposition will move a panel that
+is already showing on another display.
+
+**How point space is entered, and why that way.** The rect does not carry its own scale, so it is
+recovered by dividing the icon's centre by each monitor's scale and keeping the monitors whose point
+bounds then contain it. The alternative was the status item's own `NSWindow.screen()` through
+`tray-icon`'s internals — exact, but it needs a live AppKit window and the main thread, which would
+put the whole decision outside unit tests, and the bounds test is needed for clamping anyway.
+`PointRect::contains` is half-open so a display seam belongs to exactly one display; more than one
+acceptor, or none, is **logged** rather than silently resolved.
+
+**Same-class defect fixed with it: `TRAY_GAP` and `EDGE_MARGIN` were physical pixels.** The same
+constant was 3 pt of visible gap on the 2× built-in and 6 pt on the 1× BenQ (measured both ways).
+They are points now, at 6 pt — the value the 1× display has been showing, and in the range macOS's
+own status item menus leave. That number is a judgement; the unit is not.
+
+**Verified against the case that failed** (2026-09-16, `probe-05-fix-verified-mixed-scale.log`):
+panel forced onto the 2× built-in (`panel_scale=2` at the click), icon on the 1× BenQ, rect
+`(1314,0) 24×30` → `display=Some(0) accepted=[0] position_points=(1146,36)`, landed
+`[1146,624 360×420]` on the BenQ, `inside_visible_frame=true`. Before the fix the same case gave
+`(469,18)` and `inside_visible_frame=false`. The panel's own scale still read 2 and no longer
+changed the result.
+
+**The notch needs nothing.** The built-in reports `safeAreaInsets.top = 32` and an
+`auxiliaryTopLeftArea` of `[·,−32 663×32]` whether or not it hosts the menu bar, and its
+`work_area` already excludes that band; the panel hangs below the icon and is clamped to the work
+area, and at 360 pt wide on a 1512 pt display it cannot reach either side of the notch.
+
 ### M2a: the tray path, measured (2026-09-15)
 
 Branch `m2`: `36d50b8` (dependency), `e1f252f` (tray icon), `9f29edf` (panel, anchor, clamp),
