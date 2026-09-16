@@ -372,6 +372,15 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   rested on measured values being "exact to five decimals", case 1 was not, and the comment it
   asked for would have been false. Declining to write a justification you cannot stand behind
   is the cheapest defect-finding mechanism this project has.
+- **A plan goes to `_handover/<task>-plan.md` before it is reviewed.** Plan mode blocks writes to
+  every file but its own plan file, so present the plan in the terminal as usual, and on approval
+  write it to that file **first** and stop — the planning chat reviews the file, not the paste.
+  Same mechanism as the report rule below, and the same failure at the other end of the task: on
+  2026-09-15 the M2a plan existed only in the terminal, and the paste into the planning chat
+  truncated mid-sentence inside its first pushback item — the one questioning whether a recorded
+  spike conclusion still stood. A plan that lives only in a terminal is one paste away from being
+  reviewed in part. The same applies to `/code-review` findings, which hit this failure on
+  2026-09-15.
 - **End a task by writing the report to `_handover/last-report-<YYYY-MM-DD>.md` as well as to
   the terminal** — same content: what changed, the commits, the checks, the measured figures,
   and anything you disagreed with. The planning chat reads that file instead of a hand-copied
