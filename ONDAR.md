@@ -462,11 +462,29 @@ is non-zero while the window is telling you it is *not* visible. Reading that as
 visible" manufactured a paradox that cost real time. The instrumentation now prints the decoded
 bit beside the raw value.
 
-**Multi-monitor caveat, untested — and testable on this machine.** `tray-icon`'s coordinate flip
-uses `CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
-display the tray icon is on (`mod.rs:610-612`). For a status item on a non-main display whose top
-edge is not aligned with the main display's, the anchor will be vertically wrong. Upstream, not
-ours.
+**`tray-icon`'s `y` flip: proven correct and unreachable, not untested (measured 2026-09-16, M2b
+Step 0).** This entry has carried it as an open risk since 2026-09-12: the flip uses
+`CGDisplayPixelsHigh(CGMainDisplayID())` — the *main* display's height, not the height of the
+display the tray icon is on (`mod.rs:610-612`) — so a status item on a non-main display whose top
+edge is not aligned with the main display's would be vertically wrong.
+
+**That configuration cannot arise here.** `NSScreen::screensHaveSeparateSpaces()` is `false`, so
+there is exactly one menu bar and macOS puts it on the main display; the status item lives on that
+bar. The flip is therefore always handed the height of the display the icon is on. Measured in three
+arrangements (menu bar on the BenQ, then the built-in, then the BenQ again), each time against two
+independent instruments — the status item's own NSWindow frame in Cocoa points, and Tauri's `rect`:
+
+| Menu bar on | Status item frame (Cocoa pt) | Main height (pt) | Flip → | Tauri `rect.position.y` |
+|---|---|---|---|---|
+| BenQ (1×) | `[1216,1050 24×30]` | 1080 | 1080 − 1050 − 30 = 0 | 0 ✓ |
+| Built-in (2×) | `[880,949 24×33]` | 982 | 982 − 949 − 33 = 0 | 0 ✓ |
+| BenQ (1×) | `[1286,1050 24×30]` | 1080 | 1080 − 1050 − 30 = 0 | 0 ✓ |
+
+Two further notes from the same measurements. `CGDisplayPixelsHigh` returns the mode's **point**
+height, not pixels: the built-in arm only reconciles with 982, not 1964. And the risk would return if
+"Displays have separate Spaces" were ever on *and* macOS placed a status item on a non-main bar —
+neither observed. So: upstream defect, real in principle, **unreachable in this configuration**, and
+no longer something M2b has to work around.
 
 **Correction (2026-09-15): "only one display is available" was never measured.** It was inherited —
 from the brief and the pending ledger — and repeated here without a check. Nothing had called
@@ -537,6 +555,92 @@ What that does to the recorded conclusions:
   was still set, and `show()` never made the panel key.
 
 M2a's `panel shown` log line prints `class=`, so a revert cannot go unnoticed again.
+
+### M2b: coordinates are logical points (decided and measured 2026-09-16)
+
+Branch `m2b`. `4f14213` recorded the Step 0 instrument findings; `0331ace` is the fix.
+
+**Decision: route B — global logical points throughout, top-left origin.** The reason is measured,
+not aesthetic. Tauri reports each monitor's `position`, `size` and `work_area` as global points
+multiplied by **that monitor's own** scale (tao `monitor.rs:225-231`; tauri-runtime-wry
+`monitor/macos.rs:16-27`), verified against the Cocoa frames in both arrangements, 6 of 6 exact. So
+on a mixed-scale layout **there is no common physical space**: two monitors' values are not
+comparable, and a tray rect (physical at the *status item display's* scale, tray-icon
+`mod.rs:515-528`) cannot be compared with a work area built at another monitor's scale. Route A —
+resolve the monitor, keep working in physical — has to convert to points to compare anything, so it
+is route B applied per comparison. Points are also what `monitor_from_point` and
+`set_outer_position` already want.
+
+**What the defect actually was.** `anchor()` divided by `window.scale_factor()` — the panel
+window's own scale, which is the scale of whichever display the panel happens to be **sitting on**
+(`NSWindow::backingScaleFactor`, tao `window.rs:885-887`). That is a better description than the
+`/code-review` finding's: the finding said the panel would land on the *wrong display*. Measured
+2026-09-16 with the panel forced onto the 2× built-in and the icon on the 1× BenQ, it landed on the
+**right** display, 649 pt left of the icon and 12 pt inside the menu bar band — so a
+display-identity assertion would have passed it. The tests assert the panel lies inside the chosen
+display's work area instead.
+
+**Why the tray path had never shown it.** Three arrangements, three correct landings, for three
+different geometric reasons (measured, `_handover/m2b-step0-logs/`): the panel is only ever shown
+under the tray icon, the tray is on the menu-bar display, the menu-bar display is at the Cocoa
+origin, and a hidden window keeps its numeric Cocoa frame while the displays move around it — so
+the panel is dragged onto whichever display becomes the new menu-bar display, and the two scales
+agree by geometry. Forcing the panel onto a chosen display with `setFrameOrigin` is what produced
+the failure on demand. **Latent but reachable**: M2d's resize-and-reposition will move a panel that
+is already showing on another display.
+
+**How point space is entered, and why that way.** The rect does not carry its own scale, so it is
+recovered by dividing the icon's centre by each monitor's scale and keeping the monitors whose point
+bounds then contain it. The alternative was the status item's own `NSWindow.screen()` through
+`tray-icon`'s internals — exact, but it needs a live AppKit window and the main thread, which would
+put the whole decision outside unit tests, and the bounds test is needed for clamping anyway.
+`PointRect::contains` is half-open so a display seam belongs to exactly one display; more than one
+acceptor, or none, is **logged** rather than silently resolved.
+
+**Same-class defect fixed with it: `TRAY_GAP` and `EDGE_MARGIN` were physical pixels.** The same
+constant was 3 pt of visible gap on the 2× built-in and 6 pt on the 1× BenQ (measured both ways).
+They are points now, at 6 pt — the value the 1× display has been showing, and in the range macOS's
+own status item menus leave. That number is a judgement; the unit is not.
+
+**Verified against the case that failed** (2026-09-16, `probe-05-fix-verified-mixed-scale.log`):
+panel forced onto the 2× built-in (`panel_scale=2` at the click), icon on the 1× BenQ, rect
+`(1314,0) 24×30` → `display=Some(0) accepted=[0] position_points=(1146,36)`, landed
+`[1146,624 360×420]` on the BenQ, `inside_visible_frame=true`. Before the fix the same case gave
+`(469,18)` and `inside_visible_frame=false`. The panel's own scale still read 2 and no longer
+changed the result.
+
+**Post-review fixes (`7ce7869`, `/code-review` on `main...734eb9b`, all five findings confirmed
+against the source before changing anything; `_handover/m2b-review-findings.md`).**
+
+- **Ambiguous acceptance is resolved towards the primary display, not towards list order.** Two
+  displays of different scale can both accept one rect — a 2× primary with a 1× display to its right
+  does so for essentially every icon position — and `accepted.first()` meant trusting
+  `CGGetActiveDisplayList`'s order, which nothing here relies on deliberately. In all six measured
+  runs the primary was index 0, so this had never shown; that is an inherited assumption, not a
+  measurement.
+- **"The status item is on the main display" is a user setting, and the code no longer assumes it.**
+  It holds here because `NSScreen::screensHaveSeparateSpaces()` measured **false** — and that is
+  System Settings → Desktop & Dock → "Displays have separate Spaces", which gives *every* display
+  its own menu bar when on, and then a status item can sit on a non-primary display. On this Mac
+  `defaults read com.apple.spaces spans-displays` returns `1`, and the key's presence means someone
+  turned the setting off explicitly; the shipped default is the setting **on** (inherited, not
+  verified here — Apple's documentation was not available offline). So the primary is a *preference*
+  among the acceptors: when it is not among them, `anchor_points` falls back to the first acceptor,
+  still clamped, and logs `AmbiguousWithoutPrimary`. Same class of error as "one display here":
+  an environment-dependent fact treated as a property of the platform.
+- **The no-acceptor fallback clamps again.** It had reinterpreted a physical rect as points and
+  skipped clamping — off screen on a 2× display, and worse than the `primary_monitor()` fallback it
+  replaced. It now uses the primary's scale and work area, clamped, and only assumes points when
+  there is no primary at all.
+- **The panel-scale division moved into the pure function**, because in `anchor()` no test could
+  reach it — see the principle candidate below.
+- A fixture figure was corrected: the built-in's arrangement-1 work area is **950 pt**
+  (`3024x1900` in the log), not 949; the 32 pt inset there is the notch band, not a menu bar.
+
+**The notch needs nothing.** The built-in reports `safeAreaInsets.top = 32` and an
+`auxiliaryTopLeftArea` of `[·,−32 663×32]` whether or not it hosts the menu bar, and its
+`work_area` already excludes that band; the panel hangs below the icon and is clamped to the work
+area, and at 360 pt wide on a 1512 pt display it cannot reach either side of the notch.
 
 ### M2a: the tray path, measured (2026-09-15)
 
@@ -1036,6 +1140,20 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
   unexplained intermittent in the release path should not live only in a chat. Run release-path
   builds with `-v` so a recurrence leaves detail.
 
+  **Narrowed 2026-09-16, by the leftover scratch image.** The failed run left
+  `rw.17605.Ondar_0.1.0_aarch64.dmg` (80,779,776 bytes) in `bundle/macos/` — mtime 12:40 local,
+  the same instant as the 11:40 UTC in that day's report; this entry is UTC, a file listing is
+  local. `bundle_dmg.sh` names that scratch image at line 317, creates it at 382-386, then
+  **resizes** (410-416), **attaches** (431), runs the Finder AppleScript, blesses, detaches,
+  **converts** to the final image (555-559), and removes the scratch file only at line 561. Its
+  survival therefore places the failure **after creation and before line 561** — creation, resize,
+  attach, AppleScript, bless, detach or convert. It rules out "at the start", and no more than
+  that: the failing run was not verbose, and `/Volumes` being clean two hours later is consistent
+  with either "never attached" or "the script's own detach trap (line 52) ran". `DMG_DIR` is
+  `bundle/macos/`, not `bundle/dmg/` — the bundler runs the script there and moves the finished
+  image afterwards, which is why the leftover and the `rw.*` images from later successful runs all
+  appeared there. The leftover was deleted 2026-09-16.
+
 ## API etiquette (non-negotiable)
 
 - Send a descriptive `User-Agent` (`Ondar/<version>`) on every radio-browser request.
@@ -1053,9 +1171,11 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 2. **M2 — Tray + NSPanel popover.** `tauri-nspanel` pinned rev, vibrancy, template tray
    icon, collapsed/expanded resize in place, positioning from tray rect. **Spiked
    2026-09-12** on `m2-spike` (not merged; its measurements were of a reverted `TaoWindow`).
-   **M2a done 2026-09-15** on branch `m2`: tray, non-activating panel, clamped positioning,
-   resign-key dismissal — see "M2a: the tray path, measured". M2b (resize in place, retiring the
-   M1 bench window) is next.
+   **M2a done and merged 2026-09-15** (`b553737`, tagged `m2a-done`): tray, non-activating panel,
+   clamped positioning, resign-key dismissal — see "M2a: the tray path, measured". **M2b
+   (coordinates: multi-monitor, mixed scale, the notch) done 2026-09-16** — see "M2b: coordinates
+   are logical points". M2c (Esc, tray menu, rounded corners, single-instance, tokens, retiring the
+   M1 bench window) and M2d (collapsed/expanded resize) remain.
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
    click endpoint, cache TTLs, favourites/recents.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
@@ -1110,6 +1230,41 @@ the spike was measuring, with nothing in the log to show it ("The spike measured
 on screen ~35 ms later ("M2a: the tray path, measured"); and `log show` returned 0 lines from this
 shell even for a window in which a build was certainly running — the unified log was unreadable,
 not empty ("Loose ends").
+
+A fifth instrument, 2026-09-16 (M2b Step 0): **`NSScreen::mainScreen` is not the menu-bar display.**
+It is the screen with the key window, and it read `Some("BenQ GW2470")` while the menu bar was
+measurably on the built-in (`screens()[0]` = "Built-in Retina Display", and the status item's own
+window was on the built-in). The menu-bar display is `screens()[0]`, or `CGMainDisplayID()`, which is
+what `tray-icon` uses. The name is the trap: "main screen" and "main display" are different things in
+AppKit, and a positioning fix built on `mainScreen` would be wrong only on multi-monitor setups where
+focus is on another display — silently, and in exactly the configuration it was written for.
+
+## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
+
+**A surviving mutation says a test is missing; a mutation you never thought to write says nothing at
+all. Mutation testing measures the tests you have against the code they already touch.**
+
+The instance is `/code-review` finding 3 on M2b. The M2b fix moved every coordinate into points, and
+the one quantity the whole change was about — dividing the panel window's `outer_size` by that
+window's own scale — sat in `anchor()`, which needs a live `WebviewWindow` and so has no test. The
+pure function next to it had twelve. The mutation pass covered the pure function, ten mutations, nine
+caught, one fixed by adding a test — and reported a clean bill while the central division was
+untestable and unmutated. `mixed_scale_does_not_change_the_answer` claimed to pin exactly that
+property and had inputs identical to its neighbour, so it could not fail on its own.
+
+The fix was structural, not more tests: give the pure function the physical size *and* the scale, do
+the division there, and the same mutation pass then kills it (dropping the division fails 7 tests,
+multiplying instead of dividing fails the same 7). Two working rules:
+
+- **Ask what the change is about, then ask whether a test can reach it** — before trusting a
+  mutation score. A quantity in glue code that only integration can exercise needs moving, not
+  covering.
+- **A test whose inputs match its neighbour's pins nothing extra.** If two tests differ only in
+  their prose, one of them is decoration.
+
+A third, from running the pass itself: two of the five mutations silently failed to apply, because
+`rustfmt` had reflowed the line the patch matched on, and both runs reported a **passing** suite —
+"verify the instrument" applied to the mutation harness. The patch now asserts its own match count.
 
 ## Principle: a measurement that contradicts a recorded justification reopens the decision (recorded 2026-09-14)
 

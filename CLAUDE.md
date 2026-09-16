@@ -35,7 +35,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 | | | |
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
-| M2 | Tray + NSPanel popover | **in progress** — M2a (tray, panel, positioning, dismissal) done on branch `m2`, 2026-09-15; M2b (resize in place, retire the M1 bench window) next |
+| M2 | Tray + NSPanel popover | **in progress** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) on branch `m2b`, 2026-09-16; M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) and M2d (collapsed/expanded resize) next |
 | M3 | Station API + SQLite cache + country/station UI | |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
@@ -108,8 +108,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 59 tests `cargo test --workspace`
-reports break down as **53 hand-written + 6 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 68 tests `cargo test --workspace`
+reports break down as **62 hand-written + 6 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -120,9 +120,9 @@ reports break down as **53 hand-written + 6 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 6 — in the **shell** crate |
+| `panel::tests` | 15 — in the **shell** crate |
 
-Counting `#[test]` attributes in source gives 53 and will not reconcile with the runner's 59
+Counting `#[test]` attributes in source gives 62 and will not reconcile with the runner's 68
 until those 6 are accounted for. `cargo test --workspace -- --list` is the authority.
 
 ## Commands
@@ -138,14 +138,14 @@ pnpm gen:bindings            # alias for `cargo test -p ondar-audio` (ts-rs writ
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 59 tests: 50 in the ondar_audio binary and 9 in the shell's
+cargo test --workspace       # 68 tests: 50 in the ondar_audio binary and 18 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (9 tests) and silently skips ondar-audio; this
+                              # `ondar` package (18 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's nine test names, and one of them —
+                              # prints only the shell's eighteen test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -288,7 +288,7 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    "EQ output is bounded by a soft-clip stage".
 8. Call the radio-browser click endpoint exactly once, when playback actually starts (M3).
 
-## macOS specifics (M2a — as built on branch `m2`)
+## macOS specifics (as built through M2b)
 
 - Activation policy `Accessory` (set in `panel::setup`, **before** `PanelBuilder::build()`) +
   `LSUIElement` in `src-tauri/Info.plist` — no Dock icon, no menu bar menus. Only a bundled
@@ -305,9 +305,10 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 - Dismissal: hide on `WindowEvent::Focused(false)` (tao's `windowDidResignKey:`). **Not**
   `Panel::set_event_handler`, which replaces tao's delegate and silences its window events.
   `hides_on_deactivate` is not set — it keeps the panel off screen.
-- Position from Tauri's own `TrayIconEvent::Click { rect }` (already top-left-origin physical
-  pixels), centred under the icon and clamped into the display's work area (`panel.rs`,
-  `centred_below` / `clamp_into`, unit-tested). `tauri-plugin-positioner` is **not needed**.
+- Position from Tauri's own `TrayIconEvent::Click { rect }` (physical at the *status item
+  display's* scale), converted to points, centred under the icon and clamped into that display's
+  work area (`panel.rs`, `anchor_points` / `centred_below` / `clamp_into`, unit-tested against
+  measured fixtures). `tauri-plugin-positioner` is **not needed**.
 - Vibrancy is Tauri's own `set_effects` (`Effect::Popover`, `EffectState::Active`) plus
   `PanelBuilder::transparent(true)` *and* `with_window(|w| w.transparent(true))`, with
   `macos-private-api` enabled (`Cargo.toml` feature + `"macOSPrivateApi": true`).
@@ -320,10 +321,13 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   synchronously after show — it lagged up to 35 ms when measured. The log reads it 100 ms after.
 - Known and open: showing the popover during `setup()` makes it resign key by itself while the M1
   bench window is created visible (mechanism unidentified; ONDAR.md, "M2a: the tray path,
-  measured"). Multi-monitor is untested, but testable here: three displays are attached, including
-  a 1× beside the 2× built-in, and `anchor` mixes the tray display's scale with the panel window's
-  (ONDAR.md, "Multi-monitor caveat").
-- M2b: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
+  measured").
+- **Coordinates are global logical points, top-left origin** (`panel.rs`, M2b): there is no common
+  physical space on a mixed-scale layout, because Tauri gives each monitor's values in that
+  monitor's own scale. Convert at the boundary, never divide by the panel window's scale — that is
+  the scale of whatever display the panel is sitting on. `TRAY_GAP`/`EDGE_MARGIN` are points, since
+  a visual spacing has to be. See ONDAR.md, "M2b: coordinates are logical points".
+- M2d: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
 
 ## Map invariants (M4 — none of this exists yet)
 
