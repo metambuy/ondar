@@ -108,8 +108,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 59 tests `cargo test --workspace`
-reports break down as **53 hand-written + 6 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 68 tests `cargo test --workspace`
+reports break down as **62 hand-written + 6 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -120,9 +120,9 @@ reports break down as **53 hand-written + 6 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 6 — in the **shell** crate |
+| `panel::tests` | 15 — in the **shell** crate |
 
-Counting `#[test]` attributes in source gives 53 and will not reconcile with the runner's 59
+Counting `#[test]` attributes in source gives 62 and will not reconcile with the runner's 68
 until those 6 are accounted for. `cargo test --workspace -- --list` is the authority.
 
 ## Commands
@@ -138,14 +138,14 @@ pnpm gen:bindings            # alias for `cargo test -p ondar-audio` (ts-rs writ
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 59 tests: 50 in the ondar_audio binary and 9 in the shell's
+cargo test --workspace       # 68 tests: 50 in the ondar_audio binary and 18 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (9 tests) and silently skips ondar-audio; this
+                              # `ondar` package (18 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's nine test names, and one of them —
+                              # prints only the shell's eighteen test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.

@@ -252,13 +252,35 @@ struct Display {
     scale: f64,
 }
 
-/// The result of anchoring: where the panel goes, in points, which display was chosen, and every
-/// display that accepted the tray rect. More than one means the candidate was ambiguous.
+/// The result of anchoring: where the panel goes, in points, which display was chosen, every
+/// display that accepted the tray rect, and how the choice was reached.
 #[derive(Debug, PartialEq)]
 struct Anchored {
     position: (f64, f64),
     display: Option<usize>,
     accepted: Vec<usize>,
+    resolution: Resolution,
+}
+
+/// How `Anchored::display` was arrived at. The caller logs it; the last three are the paths that
+/// used to be silent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Resolution {
+    /// Exactly one display accepted the rect.
+    Unambiguous,
+    /// Several accepted and the primary is among them. With a single menu bar the status item is on
+    /// the primary display, so that is the one — rather than whichever display the list happened to
+    /// return first.
+    PrimaryAmongAcceptors,
+    /// Several accepted and the primary is not among them: genuinely ambiguous. The first acceptor
+    /// is used, clamped, and the caller warns.
+    AmbiguousWithoutPrimary,
+    /// Nothing accepted. The primary display's scale and work area are used, clamped, because a
+    /// rect that fits nowhere is still a rect from a menu bar.
+    PrimaryFallback,
+    /// Nothing accepted and no primary known. The rect is assumed to be points and nothing is
+    /// clamped — last resort, and the caller warns.
+    Unresolved,
 }
 
 /// Where the panel goes for a tray click: centred under the icon, then pushed inside the work area
@@ -266,7 +288,10 @@ struct Anchored {
 ///
 /// `tray` arrives exactly as `TrayIconEvent::Click` gives it: global points multiplied by the
 /// *status item display's* scale (tray-icon 0.24.2 `platform_impl/macos/mod.rs:515-528`), top-left
-/// origin. `panel` is the panel's size in points.
+/// origin. `panel_physical` is the panel window's `outer_size` and `panel_scale` its own
+/// `scale_factor`, and **the division that turns them into points happens here**: that division is
+/// the quantity this whole change is about, and while it lived in the caller no test could reach it
+/// (`/code-review` finding 3, 2026-09-16).
 ///
 /// **Why points, decided 2026-09-16 (route B).** Tauri reports each monitor's
 /// `position`/`size`/`work_area` as global points multiplied by *that monitor's own* scale
@@ -282,9 +307,35 @@ struct Anchored {
 /// point bounds then contain it. The alternative was to read the status item's own
 /// `NSWindow.screen()` through `tray-icon`'s internals: exact, but it needs a live AppKit window
 /// and the main thread, which would move this decision out of unit tests entirely, and the bounds
-/// test is needed for clamping anyway. Ambiguity is reported rather than hidden — the caller logs
-/// it — because a silently wrong display is the defect class this change removes.
-fn anchor_points(tray: PointRect, panel: (f64, f64), displays: &[Display]) -> Anchored {
+/// test is needed for clamping anyway. `PointRect::contains` is half-open, so a display seam
+/// belongs to exactly one display.
+///
+/// **Ties are broken towards the primary display, not towards list order** (`/code-review`
+/// finding 1, 2026-09-16). Two displays of different scale can both accept the same rect — a 2x
+/// primary with a 1x display to its right does so for essentially every icon position — and taking
+/// `accepted.first()` meant taking whatever `CGGetActiveDisplayList` returned first, an ordering
+/// nothing here relies on deliberately. The status item sits on the display that owns the menu bar,
+/// which with a single menu bar is the primary display — the same display `tray-icon`'s own y-flip
+/// measures against (`CGMainDisplayID`, `mod.rs:610-612`).
+///
+/// **That invariant is a user setting, not a property of macOS.** With "Displays have separate
+/// Spaces" on (System Settings → Desktop & Dock) every display gets its own menu bar, and a status
+/// item can then sit on a non-primary display. So the primary is a *preference* among the
+/// acceptors, never an assumption: when it is not among them, the first acceptor is used and
+/// clamped, and the caller warns. See ONDAR.md, "M2b: coordinates are logical points".
+fn anchor_points(
+    tray: PointRect,
+    panel_physical: (f64, f64),
+    panel_scale: f64,
+    displays: &[Display],
+    primary: Option<usize>,
+) -> Anchored {
+    // Points, from the panel window's own scale — correct for its own size, and for nothing else.
+    let panel = (
+        panel_physical.0 / panel_scale,
+        panel_physical.1 / panel_scale,
+    );
+
     let accepted: Vec<usize> = displays
         .iter()
         .enumerate()
@@ -296,10 +347,22 @@ fn anchor_points(tray: PointRect, panel: (f64, f64), displays: &[Display]) -> An
         .map(|(i, _)| i)
         .collect();
 
-    // No display accepting means the rect cannot be placed — a layout change between the click and
-    // this call, or a display list that disagrees with it. Fall through at scale 1 and unclamped so
-    // the panel still appears somewhere, and let the caller log it.
-    let display = accepted.first().copied();
+    let primary = primary.filter(|i| *i < displays.len());
+    let (display, resolution) = match accepted.as_slice() {
+        // Nothing accepted: a layout change between the click and this call, or a display list that
+        // disagrees with it. The primary display's scale and work area are the best guess available
+        // and clamping to it keeps the panel on screen — assuming points and skipping the clamp put
+        // it off screen entirely on a 2x display (`/code-review` finding 2).
+        [] => match primary {
+            Some(i) => (Some(i), Resolution::PrimaryFallback),
+            None => (None, Resolution::Unresolved),
+        },
+        [one] => (Some(*one), Resolution::Unambiguous),
+        many => match primary {
+            Some(i) if many.contains(&i) => (Some(i), Resolution::PrimaryAmongAcceptors),
+            _ => (Some(many[0]), Resolution::AmbiguousWithoutPrimary),
+        },
+    };
     let scale = display.map_or(1.0, |i| displays[i].scale);
     let tray = PointRect::new(
         tray.x / scale,
@@ -318,6 +381,7 @@ fn anchor_points(tray: PointRect, panel: (f64, f64), displays: &[Display]) -> An
         position,
         display,
         accepted,
+        resolution,
     }
 }
 
@@ -385,14 +449,11 @@ fn anchor<R: Runtime>(
         }
     };
 
-    // The panel's own size in its own points. `outer_size` is physical at the panel window's
-    // current scale, which is the one quantity that scale is right for.
+    // Handed to `anchor_points` unconverted: the division into points happens there, where a test
+    // can reach it.
     let panel_scale = window.scale_factor()?;
     let outer = window.outer_size()?;
-    let panel = (
-        f64::from(outer.width) / panel_scale,
-        f64::from(outer.height) / panel_scale,
-    );
+    let panel_physical = (f64::from(outer.width), f64::from(outer.height));
 
     // Each monitor converted by its *own* scale, which is the only conversion that is correct for
     // it (see `anchor_points`).
@@ -422,31 +483,49 @@ fn anchor<R: Runtime>(
         })
         .collect();
 
-    let anchored = anchor_points(tray, panel, &displays);
+    // Which entry is the primary display. `primary_monitor()` is `CGDisplay::main()` (tao
+    // `monitor.rs:158-160`) — the same display `tray-icon` flips its rect against — but it comes
+    // back as a `Monitor`, not an index, so it is matched by name and position. `None` here is
+    // survivable: `anchor_points` then treats ambiguity as ambiguity.
+    let primary = window.primary_monitor()?.and_then(|p| {
+        window
+            .available_monitors()
+            .ok()?
+            .iter()
+            .position(|m| m.name() == p.name() && m.position() == p.position())
+    });
 
-    if anchored.accepted.len() > 1 {
-        log::warn!(
-            "panel anchor: {} displays accepted the tray rect {:?}, using {:?}; \
-             candidates={:?} displays={:?}",
+    let anchored = anchor_points(tray, panel_physical, panel_scale, &displays, primary);
+
+    match anchored.resolution {
+        Resolution::AmbiguousWithoutPrimary => log::warn!(
+            "panel anchor: {} displays accepted the tray rect {tray:?} and the primary ({primary:?}) \
+             is not among them; using {:?}. accepted={:?} displays={:?}",
             anchored.accepted.len(),
-            tray,
             anchored.display,
             anchored.accepted,
             displays
-        );
-    } else if anchored.accepted.is_empty() {
-        log::warn!(
-            "panel anchor: no display accepted the tray rect {tray:?}; \
-             placing unclamped at scale 1. displays={displays:?}"
-        );
+        ),
+        Resolution::PrimaryFallback => log::warn!(
+            "panel anchor: no display accepted the tray rect {tray:?}; falling back to the primary \
+             display {:?} and clamping. displays={displays:?}",
+            anchored.display
+        ),
+        Resolution::Unresolved => log::warn!(
+            "panel anchor: no display accepted the tray rect {tray:?} and no primary display is \
+             known; assuming points and not clamping. displays={displays:?}"
+        ),
+        Resolution::Unambiguous | Resolution::PrimaryAmongAcceptors => {}
     }
 
     let chosen = anchored.display.map(|i| displays[i]);
     log::info!(
-        "panel anchor tray_physical={tray:?} panel_points={panel:?} panel_scale={panel_scale} \
-         display={:?} accepted={:?} position_points={:?} work_area={:?}",
+        "panel anchor tray_physical={tray:?} panel_physical={panel_physical:?} \
+         panel_scale={panel_scale} display={:?} primary={primary:?} accepted={:?} \
+         resolution={:?} position_points={:?} work_area={:?}",
         anchored.display,
         anchored.accepted,
+        anchored.resolution,
         anchored.position,
         chosen.map(|d| d.work_area)
     );
@@ -464,7 +543,10 @@ mod tests {
     /// The three displays as measured on 2026-09-16 with the menu bar on the BenQ, converted to
     /// points by each monitor's own scale (`_handover/m2b-step0-logs/`):
     ///   BenQ    Tauri (0,0) 1920x1080 scale 1, work_area (0,30) 1920x1050
-    ///   built-in      (486,2160) 3024x1964 scale 2, work_area (486,2224) 3024x1898
+    ///   built-in      (486,2160) 3024x1964 scale 2, work_area (486,2224) 3024x1900
+    /// The built-in's 32 pt inset there is the **notch band**, not a menu bar — it did not host the
+    /// menu bar in that arrangement. 2224 + 1900 = 2160 + 1964 reconciles exactly. (An earlier
+    /// draft wrote 1898/949, which are the arrangement-2 figures: `/code-review` finding 4.)
     ///   ANMITE        (3840,880) 1920x1280 scale 2, work_area = full frame
     fn menubar_on_benq() -> Vec<Display> {
         vec![
@@ -475,7 +557,7 @@ mod tests {
             },
             Display {
                 bounds: PointRect::new(243.0, 1080.0, 1512.0, 982.0),
-                work_area: PointRect::new(243.0, 1112.0, 1512.0, 949.0),
+                work_area: PointRect::new(243.0, 1112.0, 1512.0, 950.0),
                 scale: 2.0,
             },
             Display {
@@ -496,8 +578,32 @@ mod tests {
         }]
     }
 
+    /// The panel's logical size, and the same size as `outer_size` would report it on a display of
+    /// the given scale — the pair `anchor_points` now takes, so the division into points is under
+    /// test.
+    /// `/code-review` finding 1's layout, with the 1x display listed first: a 1x display to the
+    /// right of a 2x primary that hosts the menu bar. Artificial only in its ordering.
+    fn ambiguous_pair() -> Vec<Display> {
+        vec![
+            Display {
+                bounds: PointRect::new(1512.0, 0.0, 1920.0, 1080.0),
+                work_area: PointRect::new(1512.0, 0.0, 1920.0, 1080.0),
+                scale: 1.0,
+            },
+            Display {
+                bounds: PointRect::new(0.0, 0.0, 1512.0, 982.0),
+                work_area: PointRect::new(0.0, 33.0, 1512.0, 949.0),
+                scale: 2.0,
+            },
+        ]
+    }
+
     fn panel() -> (f64, f64) {
         (PANEL_SIZE.width, PANEL_SIZE.height)
+    }
+
+    fn panel_physical(scale: f64) -> (f64, f64) {
+        (PANEL_SIZE.width * scale, PANEL_SIZE.height * scale)
     }
 
     /// The assertion the M2b gate settled on: the panel rect must lie inside the work area of the
@@ -527,7 +633,13 @@ mod tests {
     #[test]
     fn measured_1x_tray_rect_matches_the_observed_landing() {
         let displays = menubar_on_benq();
-        let got = anchor_points(PointRect::new(1286.0, 0.0, 24.0, 30.0), panel(), &displays);
+        let got = anchor_points(
+            PointRect::new(1286.0, 0.0, 24.0, 30.0),
+            panel_physical(1.0),
+            1.0,
+            &displays,
+            Some(0),
+        );
         assert_eq!(got.position, (1118.0, 36.0));
         assert_eq!(got.display, Some(0));
         assert_eq!(got.accepted, vec![0]);
@@ -535,21 +647,27 @@ mod tests {
     }
 
     /// The forced mixed-scale case, measured 2026-09-16: icon on the 1x BenQ, panel window on the
-    /// 2x built-in. The panel's size in points is 360x420 whichever display it sits on, so the
-    /// answer must be identical to the 1x case above — (1118,36), not the (469,18) the old
-    /// physical-space code produced, which was 649 pt left of the icon and 12 pt inside the menu
-    /// bar. The 2x displays must not accept the rect: (1286+12)/2 = 649 is inside neither.
+    /// 2x built-in — so `outer_size` reports **720x840** and the window's own scale is 2, while the
+    /// rect is 1x. The panel is 360x420 points either way, so the answer must be the same
+    /// (1118,36) as the 1x test above, and not the (469,18) the old physical-space code produced
+    /// (649 pt left of the icon, 12 pt inside the menu bar band).
+    ///
+    /// **This is the test that pins the panel-scale division**, which is why it takes the physical
+    /// size and the scale separately: dropping the division gives (938,36) and multiplying instead
+    /// of dividing gives (398,36). Until `/code-review` finding 3, the division lived in `anchor`
+    /// and this test had inputs identical to the 1x one — it could not fail on its own.
     #[test]
     fn mixed_scale_does_not_change_the_answer() {
         let displays = menubar_on_benq();
-        let got = anchor_points(PointRect::new(1286.0, 0.0, 24.0, 30.0), panel(), &displays);
+        let got = anchor_points(
+            PointRect::new(1286.0, 0.0, 24.0, 30.0),
+            panel_physical(2.0),
+            2.0,
+            &displays,
+            Some(0),
+        );
         assert_eq!(got.accepted, vec![0], "only the 1x display hosts this icon");
         assert_eq!(got.position, (1118.0, 36.0));
-        assert_ne!(
-            got.position,
-            (469.0, 18.0),
-            "the pre-M2b physical-space result"
-        );
         assert_inside_work_area(&got, &displays);
     }
 
@@ -559,7 +677,13 @@ mod tests {
     #[test]
     fn measured_2x_tray_rect_is_converted_by_its_own_display_scale() {
         let displays = menubar_on_builtin();
-        let got = anchor_points(PointRect::new(1760.0, 0.0, 48.0, 66.0), panel(), &displays);
+        let got = anchor_points(
+            PointRect::new(1760.0, 0.0, 48.0, 66.0),
+            panel_physical(2.0),
+            2.0,
+            &displays,
+            Some(0),
+        );
         assert_eq!(got.position, (712.0, 39.0));
         assert_inside_work_area(&got, &displays);
     }
@@ -569,7 +693,13 @@ mod tests {
     #[test]
     fn the_2026_09_12_rect_still_centres_under_the_icon() {
         let displays = menubar_on_builtin();
-        let got = anchor_points(PointRect::new(1932.0, 0.0, 48.0, 66.0), panel(), &displays);
+        let got = anchor_points(
+            PointRect::new(1932.0, 0.0, 48.0, 66.0),
+            panel_physical(2.0),
+            2.0,
+            &displays,
+            Some(0),
+        );
         assert_eq!(got.position, (798.0, 39.0));
         assert_eq!(got.position.0 + panel().0 / 2.0, 966.0 + 12.0);
     }
@@ -589,8 +719,10 @@ mod tests {
         }];
         let got = anchor_points(
             PointRect::new(100.0, -1080.0, 24.0, 30.0),
-            panel(),
+            panel_physical(1.0),
+            1.0,
             &displays,
+            Some(0),
         );
         assert_eq!(got.position, (-68.0, -1044.0));
         assert_inside_work_area(&got, &displays);
@@ -610,8 +742,10 @@ mod tests {
         }];
         let got = anchor_points(
             PointRect::new(1600.0, -1080.0, 24.0, 30.0),
-            panel(),
+            panel_physical(1.0),
+            1.0,
             &displays,
+            Some(0),
         );
         assert_eq!(got.accepted, vec![0]);
         assert_eq!(got.position.0, 1311.0);
@@ -630,8 +764,10 @@ mod tests {
         // Physical at that display's scale 2: (5720, 880) 48x60 = (2860, 440) 24x30 in points.
         let got = anchor_points(
             PointRect::new(5720.0, 880.0, 48.0, 60.0),
-            panel(),
+            panel_physical(2.0),
+            2.0,
             &displays,
+            Some(0),
         );
         assert_eq!(got.position, (2514.0, 476.0));
         assert_inside_work_area(&got, &displays);
@@ -656,7 +792,13 @@ mod tests {
                 scale: 1.0,
             },
         ];
-        let got = anchor_points(PointRect::new(988.0, 0.0, 24.0, 30.0), panel(), &displays);
+        let got = anchor_points(
+            PointRect::new(988.0, 0.0, 24.0, 30.0),
+            panel_physical(1.0),
+            1.0,
+            &displays,
+            None,
+        );
         assert_eq!(got.accepted, vec![1], "the seam is the right display's");
     }
 
@@ -671,10 +813,13 @@ mod tests {
         }];
         let got = anchor_points(
             PointRect::new(1880.0, -1080.0, 24.0, 30.0),
-            panel(),
+            panel_physical(1.0),
+            1.0,
             &displays,
+            None,
         );
         assert_eq!(got.display, None);
+        assert_eq!(got.resolution, Resolution::Unresolved);
         assert_eq!(got.position, (1712.0, -1044.0));
     }
 
@@ -694,18 +839,107 @@ mod tests {
                 scale: 2.0,
             },
         ];
-        let got = anchor_points(PointRect::new(600.0, 0.0, 20.0, 20.0), panel(), &displays);
+        let got = anchor_points(
+            PointRect::new(600.0, 0.0, 20.0, 20.0),
+            panel_physical(1.0),
+            1.0,
+            &displays,
+            None,
+        );
         assert_eq!(got.accepted, vec![0, 1]);
         assert_eq!(got.display, Some(0), "the first acceptor is used");
     }
 
-    /// No display accepting is survivable: unclamped, scale 1, and the caller warns.
+    /// No display accepting **and no primary known**: the last resort — the rect is assumed to be
+    /// points and nothing is clamped, with `Unresolved` for the caller to warn about. With a
+    /// primary known the fallback clamps instead (test above).
     #[test]
     fn no_display_accepting_still_yields_a_position() {
-        let got = anchor_points(PointRect::new(1286.0, 0.0, 24.0, 30.0), panel(), &[]);
+        let got = anchor_points(
+            PointRect::new(1286.0, 0.0, 24.0, 30.0),
+            panel_physical(1.0),
+            1.0,
+            &[],
+            None,
+        );
         assert_eq!(got.display, None);
         assert_eq!(got.accepted, Vec::<usize>::new());
+        assert_eq!(got.resolution, Resolution::Unresolved);
         assert_eq!(got.position, (1118.0, 36.0));
+    }
+
+    /// `/code-review` finding 1's layout: a 2x primary hosting the menu bar, point bounds
+    /// (0,0,1512,982), and a 1x display to its right, (1512,0,1920,1080) — **listed first**, as
+    /// `CGGetActiveDisplayList` may. An icon at point x 1400 arrives as physical (2800,0,48,66);
+    /// the centre is (2824,33), which lands inside the 2x display when divided by 2 (1412,16.5)
+    /// *and* inside the 1x one when divided by 1. Both accept.
+    ///
+    /// Preferring the primary gives (1146,39): centred would be 1400 + 12 − 180 = 1232, but the
+    /// panel would then end at 1592 on a 1512 pt display, so the clamp pulls it to
+    /// 1512 − 360 − 6 = 1146; y = 33 + 6. (The review's write-up, and my first draft of this test,
+    /// both stopped at 1232 and forgot the clamp — the code was right and the expectation was
+    /// wrong.) Taking the first acceptor instead gives (2644,72): the wrong display, ~1244 pt from
+    /// the icon, which is what the test below pins.
+    #[test]
+    fn ambiguity_prefers_the_primary_display() {
+        let displays = ambiguous_pair();
+        let got = anchor_points(
+            PointRect::new(2800.0, 0.0, 48.0, 66.0),
+            panel_physical(2.0),
+            2.0,
+            &displays,
+            Some(1),
+        );
+        assert_eq!(got.accepted, vec![0, 1], "both displays accept this rect");
+        assert_eq!(got.display, Some(1), "the primary, not the first acceptor");
+        assert_eq!(got.resolution, Resolution::PrimaryAmongAcceptors);
+        assert_eq!(got.position, (1146.0, 39.0));
+        assert_inside_work_area(&got, &displays);
+    }
+
+    /// The same layout with no primary known — which is what a per-display menu bar ("Displays have
+    /// separate Spaces") or a failed `primary_monitor()` looks like. The first acceptor is used and
+    /// still clamped, and the resolution says so, so the caller can warn: this is the pre-fix
+    /// answer, kept as a pinned regression rather than a claim that it is right.
+    #[test]
+    fn ambiguity_without_a_primary_is_reported_and_still_clamped() {
+        let displays = ambiguous_pair();
+        let got = anchor_points(
+            PointRect::new(2800.0, 0.0, 48.0, 66.0),
+            panel_physical(2.0),
+            2.0,
+            &displays,
+            None,
+        );
+        assert_eq!(got.display, Some(0));
+        assert_eq!(got.resolution, Resolution::AmbiguousWithoutPrimary);
+        assert_eq!(got.position, (2644.0, 72.0));
+        assert_inside_work_area(&got, &displays);
+    }
+
+    /// `/code-review` finding 2: nothing accepts, because the display list changed between the
+    /// click and the anchor — here a 2x primary narrowed to 1280 pt while a rect at physical
+    /// x 2800 was in flight, so (2800+24)/2 = 1412 > 1280 is rejected. The primary's scale and work
+    /// area are used and the panel is clamped: 1400 + 12 − 180 = 1232, clamped to
+    /// 1280 − 360 − 6 = 914. Assuming points and skipping the clamp gave (2644,72) — off screen.
+    #[test]
+    fn no_acceptor_falls_back_to_the_primary_and_clamps() {
+        let displays = vec![Display {
+            bounds: PointRect::new(0.0, 0.0, 1280.0, 982.0),
+            work_area: PointRect::new(0.0, 33.0, 1280.0, 949.0),
+            scale: 2.0,
+        }];
+        let got = anchor_points(
+            PointRect::new(2800.0, 0.0, 48.0, 66.0),
+            panel_physical(2.0),
+            2.0,
+            &displays,
+            Some(0),
+        );
+        assert_eq!(got.accepted, Vec::<usize>::new());
+        assert_eq!(got.resolution, Resolution::PrimaryFallback);
+        assert_eq!(got.position, (914.0, 39.0));
+        assert_inside_work_area(&got, &displays);
     }
 
     /// A panel wider than the work area pins to the left margin instead of panicking, which
