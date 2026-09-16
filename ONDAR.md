@@ -609,6 +609,34 @@ panel forced onto the 2× built-in (`panel_scale=2` at the click), icon on the 1
 `(469,18)` and `inside_visible_frame=false`. The panel's own scale still read 2 and no longer
 changed the result.
 
+**Post-review fixes (`7ce7869`, `/code-review` on `main...734eb9b`, all five findings confirmed
+against the source before changing anything; `_handover/m2b-review-findings.md`).**
+
+- **Ambiguous acceptance is resolved towards the primary display, not towards list order.** Two
+  displays of different scale can both accept one rect — a 2× primary with a 1× display to its right
+  does so for essentially every icon position — and `accepted.first()` meant trusting
+  `CGGetActiveDisplayList`'s order, which nothing here relies on deliberately. In all six measured
+  runs the primary was index 0, so this had never shown; that is an inherited assumption, not a
+  measurement.
+- **"The status item is on the main display" is a user setting, and the code no longer assumes it.**
+  It holds here because `NSScreen::screensHaveSeparateSpaces()` measured **false** — and that is
+  System Settings → Desktop & Dock → "Displays have separate Spaces", which gives *every* display
+  its own menu bar when on, and then a status item can sit on a non-primary display. On this Mac
+  `defaults read com.apple.spaces spans-displays` returns `1`, and the key's presence means someone
+  turned the setting off explicitly; the shipped default is the setting **on** (inherited, not
+  verified here — Apple's documentation was not available offline). So the primary is a *preference*
+  among the acceptors: when it is not among them, `anchor_points` falls back to the first acceptor,
+  still clamped, and logs `AmbiguousWithoutPrimary`. Same class of error as "one display here":
+  an environment-dependent fact treated as a property of the platform.
+- **The no-acceptor fallback clamps again.** It had reinterpreted a physical rect as points and
+  skipped clamping — off screen on a 2× display, and worse than the `primary_monitor()` fallback it
+  replaced. It now uses the primary's scale and work area, clamped, and only assumes points when
+  there is no primary at all.
+- **The panel-scale division moved into the pure function**, because in `anchor()` no test could
+  reach it — see the principle candidate below.
+- A fixture figure was corrected: the built-in's arrangement-1 work area is **950 pt**
+  (`3024x1900` in the log), not 949; the 32 pt inset there is the notch band, not a menu bar.
+
 **The notch needs nothing.** The built-in reports `safeAreaInsets.top = 32` and an
 `auxiliaryTopLeftArea` of `[·,−32 663×32]` whether or not it hosts the menu bar, and its
 `work_area` already excludes that band; the panel hangs below the icon and is clamped to the work
@@ -1210,6 +1238,33 @@ window was on the built-in). The menu-bar display is `screens()[0]`, or `CGMainD
 what `tray-icon` uses. The name is the trap: "main screen" and "main display" are different things in
 AppKit, and a positioning fix built on `mainScreen` would be wrong only on multi-monitor setups where
 focus is on another display — silently, and in exactly the configuration it was written for.
+
+## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
+
+**A surviving mutation says a test is missing; a mutation you never thought to write says nothing at
+all. Mutation testing measures the tests you have against the code they already touch.**
+
+The instance is `/code-review` finding 3 on M2b. The M2b fix moved every coordinate into points, and
+the one quantity the whole change was about — dividing the panel window's `outer_size` by that
+window's own scale — sat in `anchor()`, which needs a live `WebviewWindow` and so has no test. The
+pure function next to it had twelve. The mutation pass covered the pure function, ten mutations, nine
+caught, one fixed by adding a test — and reported a clean bill while the central division was
+untestable and unmutated. `mixed_scale_does_not_change_the_answer` claimed to pin exactly that
+property and had inputs identical to its neighbour, so it could not fail on its own.
+
+The fix was structural, not more tests: give the pure function the physical size *and* the scale, do
+the division there, and the same mutation pass then kills it (dropping the division fails 7 tests,
+multiplying instead of dividing fails the same 7). Two working rules:
+
+- **Ask what the change is about, then ask whether a test can reach it** — before trusting a
+  mutation score. A quantity in glue code that only integration can exercise needs moving, not
+  covering.
+- **A test whose inputs match its neighbour's pins nothing extra.** If two tests differ only in
+  their prose, one of them is decoration.
+
+A third, from running the pass itself: two of the five mutations silently failed to apply, because
+`rustfmt` had reflowed the line the patch matched on, and both runs reported a **passing** suite —
+"verify the instrument" applied to the mutation harness. The patch now asserts its own match count.
 
 ## Principle: a measurement that contradicts a recorded justification reopens the decision (recorded 2026-09-14)
 
