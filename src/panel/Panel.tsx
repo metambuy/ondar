@@ -35,9 +35,15 @@ export default function Panel() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // The transport stays mounted while About is up (`hidden`, not unmounted): its stream info,
+  // title, volume and selected preset are event-driven or local state with no Rust getter, and
+  // unmounting it reset them on every return (`/code-review` finding 1, 2026-09-17).
   return (
     <main className={styles.panel}>
-      {view === "about" ? <About onBack={() => setView("transport")} /> : <Transport />}
+      <div hidden={view === "about"}>
+        <Transport />
+      </div>
+      {view === "about" && <About onBack={() => setView("transport")} />}
     </main>
   );
 }
