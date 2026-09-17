@@ -4,10 +4,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { EqBand } from "./bindings/EqBand";
 import type { IcyMetadata } from "./bindings/IcyMetadata";
+import type { PanelView } from "./bindings/PanelView";
 import type { PlaybackState } from "./bindings/PlaybackState";
 import type { StreamInfo } from "./bindings/StreamInfo";
 
-export type { EqBand, IcyMetadata, PlaybackState, StreamInfo };
+export type { EqBand, IcyMetadata, PanelView, PlaybackState, StreamInfo };
 
 export type OndarError = { code: string; message: string };
 
@@ -22,14 +23,14 @@ export const audio = {
   getPlaybackState: () => invoke<PlaybackState>("get_playback_state"),
 };
 
-// The popover itself. `escape` reports a key; what it means is decided in Rust.
+// The popover itself. `escape` reports a key; what it means is decided in Rust. `getView` is
+// the pane the popover last showed — the value `onPanelView` delivers on every effective show —
+// for the page to mirror on mount, as `getPlaybackState` is for `onState`.
 export const panel = {
   escape: () => invoke<void>("panel_escape"),
+  getView: () => invoke<PanelView>("get_panel_view"),
 };
 
-// Which pane the popover shows. Emitted by Rust on every show, from the show reason; the page
-// mirrors it and never decides it.
-export type PanelView = "about" | "transport";
 export const onPanelView = (cb: (v: PanelView) => void): Promise<UnlistenFn> =>
   listen<PanelView>("panel:view", (e) => cb(e.payload));
 

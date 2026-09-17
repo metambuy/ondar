@@ -147,7 +147,8 @@ pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.de
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm lint                    # eslint
-pnpm gen:bindings            # alias for `cargo test -p ondar-audio` (ts-rs writes src/bindings/)
+pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
+                              # both crates: the engine's IPC types and the shell's PanelView)
 
 cd src-tauri
 cargo fmt --all
@@ -176,8 +177,10 @@ Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 `play(url, stationId)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
 `set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus one **panel** command,
 `panel_escape()` (`commands/panel.rs`, wrapped as `panel.escape()`): the page reports an Escape
-`keydown` and Rust hides the popover through `panel::hide` with `reason=esc`. It is outside the
-three groups below — it never touches the engine.
+`keydown` and Rust hides the popover through `panel::hide` with `reason=esc`. And one panel
+getter, `get_panel_view()` (`panel.getView()`), the counterpart of the `panel:view` event as
+`get_playback_state` is of `playback:state`. Both are outside the three groups below — they never
+touch the engine.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`, and
@@ -204,10 +207,12 @@ Practical consequence: EQ changes are **not** ordered against `play`/`stop`. A `
 issued just before a `play` applies to the new session immediately, because gains live on the
 engine handle and outlive any one session — they are not part of the command stream.
 
-Types crossing the boundary live in `crates/ondar-audio/src/types.rs` and derive
-`Serialize, Deserialize, TS` with `#[ts(export)]`. Adding one means adding it there, running
-`cargo test -p ondar-audio` (plain `cargo test` won't touch this package — see above), and
-committing the generated `.ts`.
+Types crossing the boundary derive `Serialize, Deserialize, TS` with `#[ts(export)]`: the
+engine's in `crates/ondar-audio/src/types.rs`, the shell's beside the module that owns them
+(`panel.rs`'s `PanelView` is the one so far). Adding one means adding it there, running
+`cargo test --workspace` (plain `cargo test` skips the engine — see above; `pnpm gen:bindings`
+is the alias), and committing the generated `.ts`. No boundary type is typed by hand on the TS
+side.
 
 ## Rust conventions
 

@@ -15,6 +15,8 @@ export default function Panel() {
 
   useEffect(() => {
     const unlisten = onPanelView(setView);
+    // An emit before this listener existed was dropped by Tauri, so ask for the current pane.
+    panel.getView().then(setView);
     return () => {
       unlisten.then((un) => un());
     };

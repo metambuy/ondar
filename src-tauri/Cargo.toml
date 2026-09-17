@@ -37,6 +37,11 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec21
 tauri-plugin-single-instance = "2.4.4"
 ondar-audio = { path = "crates/ondar-audio" }
 serde = { version = "1", features = ["derive"] }
+# Generates the TypeScript for the shell's own boundary types (`PanelView`), the same way
+# `ondar-audio` generates its IPC types: `#[ts(export)]` expands to a test that writes
+# `src/bindings/*.ts` when `cargo test --workspace` runs. Same version and feature as the engine
+# crate so one `TS_RS_EXPORT_DIR` serves both.
+ts-rs = { version = "12", features = ["serde-compat"] }
 serde_json = "1"
 thiserror = "2"
 log = "0.4"

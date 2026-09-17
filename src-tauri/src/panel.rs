@@ -8,8 +8,10 @@
 //! - `PanelBuilder::no_activate(true)` does not make the panel non-activating; it only swaps
 //!   the activation policy around window creation. That is the style mask's job.
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tauri::{
     ActivationPolicy, App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position,
     Rect, Runtime, Size, WebviewUrl, WebviewWindow, WindowEvent,
@@ -25,6 +27,7 @@ use tauri_nspanel::{
     objc2_app_kit::{NSWindowOcclusionState, NSWindowStyleMask},
     tauri_panel,
 };
+use ts_rs::TS;
 
 /// Label of the popover window — the only window, and the one `capabilities/default.json` is
 /// scoped to since the M1 bench window retired (M2c). The page invokes, so the capability is a
@@ -94,6 +97,9 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     // `Prohibited` around window creation and afterwards restores whatever the policy was
     // *before* — so setting Accessory later would be undone and the Dock icon would return.
     app.set_activation_policy(ActivationPolicy::Accessory);
+    app.manage(PanelState {
+        view: Mutex::new(PanelView::Transport),
+    });
 
     let panel = PanelBuilder::<_, OndarPanel<_>>::new(app.handle(), PANEL_LABEL)
         .url(WebviewUrl::App("panel.html".into()))
@@ -200,8 +206,37 @@ impl HideReason {
     }
 }
 
+/// Which pane the popover shows. Crosses the boundary twice — as the `panel:view` event on
+/// every effective show and as the `get_panel_view` command's answer — so it is a generated
+/// type, not a string agreed on by hand on both sides (`/code-review` finding 7, 2026-09-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelView {
+    /// The dev transport (M2c) — the M3 country/station UI later.
+    Transport,
+    /// The About pane, from the tray menu.
+    About,
+}
+
+/// The pane the popover last showed, held in Tauri state so the page can ask for it on mount:
+/// an emit with no JS listener registered yet is dropped by Tauri with `Ok(())`, so without a
+/// getter a show before `listen` resolved — or after a webview reload — rendered the wrong pane
+/// while the log claimed the right one (`/code-review` finding 3, 2026-09-17). Mirrors
+/// `get_playback_state` for the engine.
+pub struct PanelState {
+    view: Mutex<PanelView>,
+}
+
+impl PanelState {
+    /// `Mutex::lock().unwrap()`: poison propagation only (CLAUDE.md's exemption).
+    pub fn view(&self) -> PanelView {
+        *self.view.lock().unwrap()
+    }
+}
+
 /// Why the popover is being shown. Logged like [`HideReason`], and **the quantity the page's
-/// view is derived from**: every show emits `panel:view` with [`ShowReason::view`], so which
+/// view is derived from**: every effective show stores and emits [`ShowReason::view`], so which
 /// pane is showing is decided here and only mirrored by the webview (decided 2026-09-17; an
 /// earlier draft let the About pane survive a hide, which put the next tray click on About).
 #[derive(Clone, Copy, Debug)]
@@ -232,12 +267,11 @@ impl ShowReason {
         }
     }
 
-    /// The `panel:view` payload for this show: the About pane for [`Self::About`], the transport
-    /// for everything else.
-    fn view(self) -> &'static str {
+    /// The pane this show lands on: About for [`Self::About`], the transport for everything else.
+    fn view(self) -> PanelView {
         match self {
-            Self::About => "about",
-            Self::Toggle | Self::Reopen | Self::SecondInstance => "transport",
+            Self::About => PanelView::About,
+            Self::Toggle | Self::Reopen | Self::SecondInstance => PanelView::Transport,
         }
     }
 }
@@ -313,18 +347,6 @@ fn show_on_main<R: Runtime>(
         return Err(tauri::Error::WindowNotFound);
     };
 
-    // The view is asserted on every show, effective or not, so a second request while the
-    // popover is up still lands the pane the request asked for.
-    let view = reason.view();
-    if let Err(e) = handle.emit(crate::events::PANEL_VIEW, view) {
-        log::warn!(
-            "panel view={view} reason={} not emitted: {e}",
-            reason.as_str()
-        );
-    } else {
-        log::info!("panel view={view} reason={}", reason.as_str());
-    }
-
     if panel.is_visible() {
         log::info!(
             "panel show reason={} effective=false thread={:?}",
@@ -332,6 +354,22 @@ fn show_on_main<R: Runtime>(
             std::thread::current().name()
         );
         return Ok(());
+    }
+
+    // The view changes only on an effective show. Emitting on the no-op too read as "a second
+    // request while the popover is up lands the pane it asked for", but no mouse route reaches
+    // About with the popover visible (right-`Down` hides first), and the only live effect was
+    // the reverse: a re-launch while About was up kicked the user back to the transport with no
+    // gesture on the popover (`/code-review` finding 6, 2026-09-17).
+    let view = reason.view();
+    *handle.state::<PanelState>().view.lock().unwrap() = view;
+    if let Err(e) = handle.emit(crate::events::PANEL_VIEW, view) {
+        log::warn!(
+            "panel view={view:?} reason={} not emitted: {e}",
+            reason.as_str()
+        );
+    } else {
+        log::info!("panel view={view:?} reason={}", reason.as_str());
     }
 
     window.set_position(anchor(&window, rect)?)?;

@@ -23,8 +23,9 @@ pub mod events {
     pub const STREAM_INFO: &str = "playback:stream_info";
     pub const METADATA: &str = "playback:metadata";
     pub const RECONNECT: &str = "playback:reconnect";
-    /// Which pane the popover shows, `"about"` or `"transport"`; emitted by `panel::show_at`
-    /// from the show reason on every show, so the page mirrors it and never decides it.
+    /// Which pane the popover shows (`panel::PanelView`); emitted by `panel::show_at` from the
+    /// show reason on every effective show, so the page mirrors it and never decides it. The
+    /// page asks `get_panel_view` on mount for the same value.
     pub const PANEL_VIEW: &str = "panel:view";
 }
 
@@ -119,6 +120,7 @@ pub fn run() {
             commands::audio::get_eq,
             commands::audio::get_playback_state,
             commands::panel::panel_escape,
+            commands::panel::get_panel_view,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ondar");
