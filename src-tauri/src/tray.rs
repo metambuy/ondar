@@ -43,7 +43,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 // separates the ways the tray path fails:
                 //   two lines per physical click → press and release both arrived
                 //   no line at all              → the handler is not on this event
-                //   click lines, no anchor line → toggle bailed before positioning
+                //   click lines, no `panel show`/`panel hide` line → toggle bailed before ordering
                 log::info!(
                     "tray click button={button:?} state={button_state:?} rect.position={:?} rect.size={:?}",
                     rect.position,
@@ -53,11 +53,8 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 // `Click` fires on both press and release. Toggling on both shows the panel on
                 // press and hides it on release, so nothing is ever visible — a failure that
                 // looks like a handler that never ran. This filter is load-bearing.
-                if button == MouseButton::Left
-                    && button_state == MouseButtonState::Up
-                    && let Err(e) = panel::toggle(&handle, rect)
-                {
-                    log::warn!("tray toggle failed: {e}");
+                if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                    panel::toggle(&handle, rect);
                 }
             }
         })

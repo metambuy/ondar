@@ -135,22 +135,116 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     // delegate. `Panel::set_event_handler` would replace it — it keeps the original only to
     // restore it when the handler is set back to `None`, and forwards nothing while installed —
     // silencing tao's Resized/Moved/Focused/ScaleFactorChanged for this window. See ONDAR.md.
-    let on_event = panel.clone();
+    let on_resign = app.handle().clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
-            log::info!(
-                "panel resigned key -> hide visible_before={}",
-                on_event.is_visible()
-            );
-            on_event.hide();
+            hide(&on_resign, HideReason::ResignKey);
         }
     });
 
     Ok(())
 }
 
-/// Tray click: hide if shown, otherwise anchor under the tray icon and show as key.
-pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) -> tauri::Result<()> {
+/// Why the popover is being hidden. Logged on every hide, so the log can show that one close is
+/// one *effective* hide whatever else fires: every close measured so far fires two hides — the
+/// toggle's, then the resign-key one 2.2–3.7 ms later (2026-09-15, re-measured 2026-09-16) — and
+/// that stays harmless only while the log can show it is a double.
+///
+/// Variants are added with their callers, because under `-D warnings` an unused variant is a
+/// `dead_code` error rather than a placeholder.
+#[derive(Clone, Copy, Debug)]
+pub enum HideReason {
+    /// The tray icon was clicked while the popover was showing.
+    Toggle,
+    /// The panel resigned key (`WindowEvent::Focused(false)`): a click elsewhere, or being
+    /// ordered out by another hide.
+    ResignKey,
+}
+
+impl HideReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::ResignKey => "resign_key",
+        }
+    }
+}
+
+/// Why the popover is being shown. Logged like [`HideReason`].
+#[derive(Clone, Copy, Debug)]
+pub enum ShowReason {
+    /// The tray icon was clicked while the popover was hidden.
+    Toggle,
+}
+
+impl ShowReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+        }
+    }
+}
+
+/// **The one hide path.** Every close goes through here — the tray toggle and resign-key today,
+/// and whatever M2c adds — so that when a hide gains side effects (M2d collapses the expanded
+/// state) they run once per close, not once per caller.
+///
+/// Always executed on the main thread. `PanelHandle` is `Send`, but its methods are bare
+/// `msg_send!` with no dispatch of their own (tauri-nspanel c9ec213 `panel.rs:14-17`: "all actual
+/// panel operations must be performed on the main thread"). `run_on_main_thread` runs the closure
+/// inline when already on main (tauri-runtime-wry 2.11.4 `lib.rs:235-255`) and posts it otherwise,
+/// so every caller gets the same path, and the log line records which thread it ran on.
+///
+/// Hiding an already-hidden panel is a logged no-op — `effective=false` — never silence.
+pub fn hide<R: Runtime>(handle: &AppHandle<R>, reason: HideReason) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        let Ok(panel) = on_main.get_webview_panel(PANEL_LABEL) else {
+            log::warn!(
+                "panel hide reason={} panel not in the tauri-nspanel store",
+                reason.as_str()
+            );
+            return;
+        };
+        let effective = panel.is_visible();
+        // `orderOut:` on a window that is already out is itself a no-op, so this is called
+        // unconditionally: the log line is what distinguishes the two cases, not a branch.
+        panel.hide();
+        log::info!(
+            "panel hide reason={} effective={effective} thread={:?}",
+            reason.as_str(),
+            std::thread::current().name()
+        );
+    });
+    if let Err(e) = queued {
+        log::warn!("panel hide reason={} not queued: {e}", reason.as_str());
+    }
+}
+
+/// **The one show path.** Anchors the panel under `rect` (a tray rect in the units
+/// `TrayIconEvent::Click` uses), orders it in and makes it key. Showing an already-visible panel
+/// is a logged no-op: a second request while the popover is up leaves it up (decided 2026-09-17)
+/// rather than toggling it away.
+///
+/// Main-thread discipline and logging as in [`hide`]. Failures are logged here rather than
+/// returned, so a caller on any thread can fire and forget.
+pub fn show_at<R: Runtime>(handle: &AppHandle<R>, rect: Rect, reason: ShowReason) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        if let Err(e) = show_on_main(&on_main, rect, reason) {
+            log::warn!("panel show reason={} failed: {e}", reason.as_str());
+        }
+    });
+    if let Err(e) = queued {
+        log::warn!("panel show reason={} not queued: {e}", reason.as_str());
+    }
+}
+
+fn show_on_main<R: Runtime>(
+    handle: &AppHandle<R>,
+    rect: Rect,
+    reason: ShowReason,
+) -> tauri::Result<()> {
     // Two distinct messages: the spike logged one `window not found` for two different failure
     // sites and the log could not say which had fired.
     let Ok(panel) = handle.get_webview_panel(PANEL_LABEL) else {
@@ -163,8 +257,11 @@ pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) -> tauri::Result<()
     };
 
     if panel.is_visible() {
-        log::info!("panel toggle -> hide");
-        panel.hide();
+        log::info!(
+            "panel show reason={} effective=false thread={:?}",
+            reason.as_str(),
+            std::thread::current().name()
+        );
         return Ok(());
     }
 
@@ -172,17 +269,39 @@ pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) -> tauri::Result<()
     panel.show();
     // `show()` is `orderFrontRegardless` alone, and a panel that is never key can never resign
     // key. Not `show_and_make_key()`: that also makes the content view (`WryWebViewParent`)
-    // first responder, taking it from the WKWebView.
+    // first responder, taking it from the WKWebView — measured 2026-09-16: after plain
+    // `make_key_window()` the first responder is the `WryWebView` at t+0 in every run.
     panel.make_key_window();
 
     let ns = panel.as_panel();
     log::info!(
-        "panel shown class={} key={}",
+        "panel show reason={} effective=true class={} key={} thread={:?}",
+        reason.as_str(),
         ns.class().name().to_string_lossy(),
-        ns.isKeyWindow()
+        ns.isKeyWindow(),
+        std::thread::current().name()
     );
     log_settled_occlusion(handle, &panel);
     Ok(())
+}
+
+/// Tray click: hide if shown, otherwise show under the icon. Decides only; the ordering in and
+/// out is [`hide`] and [`show_at`], so a tray close is one effective hide like every other close.
+pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        let visible = on_main
+            .get_webview_panel(PANEL_LABEL)
+            .is_ok_and(|p| p.is_visible());
+        if visible {
+            hide(&on_main, HideReason::Toggle);
+        } else {
+            show_at(&on_main, rect, ShowReason::Toggle);
+        }
+    });
+    if let Err(e) = queued {
+        log::warn!("panel toggle not queued: {e}");
+    }
 }
 
 /// Log the decoded occlusion state `OCCLUSION_SETTLE` after show.
