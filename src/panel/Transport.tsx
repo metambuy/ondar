@@ -88,11 +88,11 @@ export default function Transport() {
       <h1 className={styles.heading}>Now Playing</h1>
       <p className={styles.line}>{stationName}</p>
       <p className={styles.line}>{title ?? "—"}</p>
-      <p className={styles.muted}>
+      <p className={`${styles.muted} ${styles.clamp}`}>
         {describe(state)} · {describeStream(info)}
       </p>
       {lastError && (
-        <p className={styles.muted} role="alert">
+        <p className={`${styles.muted} ${styles.clamp}`} role="alert">
           {lastError}
         </p>
       )}

@@ -36,6 +36,19 @@
   color: var(--color-label-secondary);
 }
 
+/* Status and error text is bounded to three lines. The panel is a fixed 360x420 with
+   `overflow: hidden`, and an `error [http]` message can be an entire HTTP response body
+   (stream-download formats non-2xx errors as `{source}: {body}`), which would push the
+   controls off the panel with no scrollbar (`/code-review` finding 2, 2026-09-17). The full
+   text is in Rust's log. */
+.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 .section {
   display: flex;
   flex-direction: column;
