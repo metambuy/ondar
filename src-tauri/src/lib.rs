@@ -140,3 +140,37 @@ pub fn run() {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    /// `pnpm tauri:dev` merges `tauri.dev.conf.json` over `tauri.conf.json` so the dev instance
+    /// gets its own identifier — its own single-instance socket, and from M3 its own data dir —
+    /// and can run beside a bundled build (M2c Step 0, case (f): with one identifier the dev
+    /// instance handed off and exited). The overlay is a literal, so this executes the rule it
+    /// stands for: the dev identifier is the real identifier plus `.dev`, and nothing else is
+    /// overlaid. Renaming the real identifier (OPEN.md's row) without the overlay fails here.
+    #[test]
+    fn dev_identifier_is_the_real_identifier_plus_dev() {
+        let real: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        let dev: serde_json::Value = serde_json::from_str(include_str!("../tauri.dev.conf.json"))
+            .expect("tauri.dev.conf.json parses");
+        let real_id = real["identifier"]
+            .as_str()
+            .expect("tauri.conf.json has a string identifier");
+        let dev_id = dev["identifier"]
+            .as_str()
+            .expect("tauri.dev.conf.json has a string identifier");
+        assert_eq!(
+            dev_id,
+            format!("{real_id}.dev"),
+            "the dev identifier must be the real one plus `.dev`"
+        );
+        assert_eq!(
+            dev.as_object().map(|o| o.len()),
+            Some(1),
+            "the dev overlay carries the identifier and nothing else, so dev cannot silently \
+             diverge from the real config"
+        );
+    }
+}

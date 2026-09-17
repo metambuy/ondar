@@ -71,6 +71,8 @@ onda/
 └── src-tauri/
     ├── Cargo.toml                workspace: ".", "crates/ondar-audio"
     ├── tauri.conf.json
+    ├── tauri.dev.conf.json       dev-only overlay: identifier `<id>.dev`; a shell test pins the
+    │                             derivation, so renaming the real id without it fails the build
     ├── Info.plist                merged at `tauri build`: LSUIElement (dev cannot test it)
     ├── capabilities/default.json scoped to `panel`, the only window; `core:default` only
     ├── icons/                    ondar-icon-master.svg is the source; the PNGs/icns derive
@@ -136,7 +138,12 @@ until those 6 are accounted for. `cargo test --workspace -- --list` is the autho
 
 ```bash
 pnpm install                 # frontend deps (pnpm only — do not use npm)
-pnpm tauri dev               # the dev loop
+pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.dev.conf.json merged,
+                              # which gives the dev instance the identifier `<id>.dev` — its own
+                              # single-instance socket (and, from M3, its own data dir), so it runs
+                              # beside a bundled build. Bare `pnpm tauri dev` still works but shares
+                              # the real identifier and hands off to a running bundle (M2c, case f).
+                              # `pnpm tauri build` never merges the overlay: bundles keep the real id.
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm lint                    # eslint
