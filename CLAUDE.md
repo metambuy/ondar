@@ -172,7 +172,9 @@ Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 three groups below — it never touches the engine.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
-`playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`.
+`playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`, and
+`panel:view` (`"about"` | `"transport"`, emitted by `panel::show_at` from the show reason on every
+show — the page mirrors which pane is up and never decides it).
 
 "Every command is a message to the engine" is **not** true here. The eight audio commands fall into
 three groups, and which group a command is in determines what its return value means:
@@ -327,6 +329,18 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 - Tray icon: template image, 44 px glyphs via `include_image!`. `tray-icon`'s `set_icon` resets
   template mode, so the swap uses `set_icon_with_as_template` (one main-thread task), and only
   on an idle/playing flip.
+- Tray menu (M2c): About + Quit. **`show_menu_on_left_click(false)` is required** — with
+  `tray-icon`'s default the left click opens the menu, whose tracking loop swallows `mouseUp:`,
+  and the toggle (keyed off `Up`) is dead: measured 7 clicks → 7 `Down`, 0 `Up`, 0 toggles. The
+  same loop swallows the right `mouseUp:`, so **right-click logic keys off `Down`**; on
+  `Click{Right, Down}` the popover hides first (`reason=menu`), measured to land before the menu.
+  About is a pane inside the popover (the standard About panel opens behind the frontmost app in
+  an `Accessory` app); Quit is `PredefinedMenuItem::quit` = `terminate:`, which ends the process
+  without shutting the engine down — measured clean with audio playing.
+- One hide path, one show path (`panel::hide` / `panel::show_at`, M2c): every caller logs a
+  `reason=` and an `effective=`, so the measured double-hide on every close (toggle, then
+  resign-key 2–4 ms later) reads as one effective hide and one no-op. Both hop to the main
+  thread themselves — `PanelHandle` is `Send` but its methods are bare `msg_send!`.
 - Occlusion: decode `NSWindowOcclusionState::Visible`, never read the raw number, and never read it
   synchronously after show — it lagged up to 35 ms when measured. The log reads it 100 ms after.
 - The setup-time self-resign seen at M2a (the popover resigned key by itself while the M1 bench

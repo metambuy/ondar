@@ -23,6 +23,9 @@ pub mod events {
     pub const STREAM_INFO: &str = "playback:stream_info";
     pub const METADATA: &str = "playback:metadata";
     pub const RECONNECT: &str = "playback:reconnect";
+    /// Which pane the popover shows, `"about"` or `"transport"`; emitted by `panel::show_at`
+    /// from the show reason on every show, so the page mirrors it and never decides it.
+    pub const PANEL_VIEW: &str = "panel:view";
 }
 
 pub fn run() {
@@ -51,6 +54,9 @@ pub fn run() {
         // builder's internal `to_panel` panics on missing state.
         .plugin(tauri_nspanel::init())
         .manage(AppState { engine })
+        // Tray menu items. Listeners run in the event loop, on the main thread
+        // (tauri 2.11.5 `app.rs:2588-2598`).
+        .on_menu_event(tray::on_menu_event)
         .setup(move |app| {
             panel::setup(app)?;
             tray::setup(app)?;

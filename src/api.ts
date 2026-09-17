@@ -1,4 +1,5 @@
 // The only file that talks to Rust. Everything else is rendering.
+import { getName, getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { EqBand } from "./bindings/EqBand";
@@ -24,6 +25,20 @@ export const audio = {
 // The popover itself. `escape` reports a key; what it means is decided in Rust.
 export const panel = {
   escape: () => invoke<void>("panel_escape"),
+};
+
+// Which pane the popover shows. Emitted by Rust on every show, from the show reason; the page
+// mirrors it and never decides it.
+export type PanelView = "about" | "transport";
+export const onPanelView = (cb: (v: PanelView) => void): Promise<UnlistenFn> =>
+  listen<PanelView>("panel:view", (e) => cb(e.payload));
+
+// Name and version from the bundle (`core:app:default` grants both).
+export const app = {
+  info: async (): Promise<{ name: string; version: string }> => {
+    const [name, version] = await Promise.all([getName(), getVersion()]);
+    return { name, version };
+  },
 };
 
 export const onState = (cb: (s: PlaybackState) => void): Promise<UnlistenFn> =>

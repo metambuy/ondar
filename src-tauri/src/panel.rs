@@ -11,8 +11,8 @@
 use std::time::{Duration, Instant};
 
 use tauri::{
-    ActivationPolicy, App, AppHandle, LogicalPosition, LogicalSize, Manager, Position, Rect,
-    Runtime, Size, WebviewUrl, WebviewWindow, WindowEvent,
+    ActivationPolicy, App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position,
+    Rect, Runtime, Size, WebviewUrl, WebviewWindow, WindowEvent,
     window::{Effect, EffectState, EffectsBuilder},
 };
 use tauri_nspanel::{
@@ -181,6 +181,12 @@ pub enum HideReason {
     /// the webview's JS in both phases — before and after a click inside the panel — with the
     /// WKWebView first responder from the moment the panel is shown (M2c Step 0, item 1).
     Esc,
+    /// The tray icon was right-clicked, so the menu is about to open. Decided 2026-09-16: a
+    /// menu over a live popover is not wanted, and opening the menu does not resign the panel's
+    /// key status (Step 0, item 2), so nothing else would hide it. Keyed off `Click{Right, Down}`
+    /// — the only right-click event that arrives — and measured to land visually before the
+    /// menu (R5: 5.6 ms on main).
+    Menu,
 }
 
 impl HideReason {
@@ -189,21 +195,39 @@ impl HideReason {
             Self::Toggle => "toggle",
             Self::ResignKey => "resign_key",
             Self::Esc => "esc",
+            Self::Menu => "menu",
         }
     }
 }
 
-/// Why the popover is being shown. Logged like [`HideReason`].
+/// Why the popover is being shown. Logged like [`HideReason`], and **the quantity the page's
+/// view is derived from**: every show emits `panel:view` with [`ShowReason::view`], so which
+/// pane is showing is decided here and only mirrored by the webview (decided 2026-09-17; an
+/// earlier draft let the About pane survive a hide, which put the next tray click on About).
 #[derive(Clone, Copy, Debug)]
 pub enum ShowReason {
     /// The tray icon was clicked while the popover was hidden.
     Toggle,
+    /// The tray menu's About item. Decided 2026-09-16: About lives inside the popover, not in
+    /// the standard About panel, which an `Accessory` app opens at `NSNormalWindowLevel` behind
+    /// the frontmost app (Step 0, item 3).
+    About,
 }
 
 impl ShowReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::Toggle => "toggle",
+            Self::About => "about",
+        }
+    }
+
+    /// The `panel:view` payload for this show: the About pane for [`Self::About`], the transport
+    /// for everything else.
+    fn view(self) -> &'static str {
+        match self {
+            Self::About => "about",
+            Self::Toggle => "transport",
         }
     }
 }
@@ -278,6 +302,18 @@ fn show_on_main<R: Runtime>(
         log::warn!("panel has no tauri webview window");
         return Err(tauri::Error::WindowNotFound);
     };
+
+    // The view is asserted on every show, effective or not, so a second request while the
+    // popover is up still lands the pane the request asked for.
+    let view = reason.view();
+    if let Err(e) = handle.emit(crate::events::PANEL_VIEW, view) {
+        log::warn!(
+            "panel view={view} reason={} not emitted: {e}",
+            reason.as_str()
+        );
+    } else {
+        log::info!("panel view={view} reason={}", reason.as_str());
+    }
 
     if panel.is_visible() {
         log::info!(

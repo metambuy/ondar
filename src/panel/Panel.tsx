@@ -1,11 +1,25 @@
-// The popover's root view. Holds the only state shared across panes — at M2c that is nothing
-// yet — renders the dev transport, and reports Escape to Rust.
-import { useEffect } from "react";
-import { panel } from "../api";
+// The popover's root view. Holds the one piece of state shared across panes — which pane is
+// showing, mirrored from Rust's `panel:view` — and reports Escape to Rust.
+import { useEffect, useState } from "react";
+import { onPanelView, panel } from "../api";
+import type { PanelView } from "../api";
+import About from "./About";
 import styles from "./panel.module.css";
 import Transport from "./Transport";
 
 export default function Panel() {
+  // Rust asserts the view on every show (About for the tray menu's About item, the transport
+  // for everything else), so About never outlives a hide. Back is the one local transition: a
+  // choice made inside an already-shown popover, re-asserted by Rust on the next show anyway.
+  const [view, setView] = useState<PanelView>("transport");
+
+  useEffect(() => {
+    const unlisten = onPanelView(setView);
+    return () => {
+      unlisten.then((un) => un());
+    };
+  }, []);
+
   useEffect(() => {
     // Escape → Rust, which hides the popover (`reason=esc`). `preventDefault()` because the key
     // is handled: left to its default it continues as `cancelOperation:` up the responder
@@ -23,7 +37,7 @@ export default function Panel() {
 
   return (
     <main className={styles.panel}>
-      <Transport />
+      {view === "about" ? <About onBack={() => setView("transport")} /> : <Transport />}
     </main>
   );
 }
