@@ -1,0 +1,73 @@
+/*
+  Design tokens for the popover — the only file in the renderer allowed to contain a colour,
+  size or spacing literal. `scripts/check-tokens.sh` (run by `pnpm lint`) fails the build on a
+  literal anywhere else under `src/` or in `panel.html`.
+
+  Units. CSS `px` inside the WKWebView are points: the webview scales them by the display's
+  backing factor, so `13px` here is the 13 pt the system draws next to this panel on a 1x or a
+  2x display alike. Every value below is therefore written in the unit the measurement was
+  taken in.
+
+  Provenance. Every type size, line height and colour was MEASURED on this Mac — macOS 26.6.2
+  (build 25G83), 2026-09-17T18:18:44Z — by resolving `NSFont.preferredFont(forTextStyle:)` and
+  the semantic `NSColor`s in sRGB under both appearances (`_handover/m2c-step0-logs/
+  measure-tokens.swift`, raw stdout in `tokens-measured.txt` beside it). They coincide with
+  Apple's published values, which is what a correct measurement of a system value looks like;
+  re-measure if the OS major version changes. The two values that are NOT measurements are
+  marked as decisions.
+*/
+
+:root {
+  /* `-apple-system` resolves to `.AppleSystemUIFont` — SF Pro — on this Mac (measured). */
+  --font-system: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  /* macOS text styles: size / line height, measured. `headline` is the only one with a weight
+     trait (0.4 = semibold). `body` is `NSFont.systemFontSize`, `subheadline` is
+     `smallSystemFontSize`. */
+  --text-title2: 400 17px/22px var(--font-system);
+  --text-title3: 400 15px/20px var(--font-system);
+  --text-headline: 600 13px/16px var(--font-system);
+  --text-body: 400 13px/16px var(--font-system);
+  --text-callout: 400 12px/15px var(--font-system);
+  --text-subheadline: 400 11px/14px var(--font-system);
+  --text-footnote: 400 10px/13px var(--font-system);
+
+  /* Semantic label colours, light appearance (NSAppearanceNameAqua), measured. */
+  --color-label: rgb(0 0 0 / 0.847);
+  --color-label-secondary: rgb(0 0 0 / 0.498);
+  --color-label-tertiary: rgb(0 0 0 / 0.259);
+  --color-label-quaternary: rgb(0 0 0 / 0.098);
+  --color-separator: rgb(0 0 0 / 0.098);
+  /* `controlAccentColor` — follows the user's accent setting; re-measure if it changes. */
+  --color-accent: rgb(0 122 255);
+
+  /* DECISION, not a measurement: the 8 pt spacing rhythm from the M2c brief (2026-09-16), with
+     a 4 pt half step. The macOS HIG prescribes no grid; do not cite it for these. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  /* DECISION: separators are one CSS px (= 1 pt), the thinnest line the webview draws crisply
+     at 1x; the system's own separators read the same. */
+  --hairline: 1px;
+
+  /* Panel corner radius: Control Center's, measured 2026-09-17 (7.6–8.3 pt across two methods;
+     report R9). The same number is `PANEL_CORNER_RADIUS` in `src-tauri/src/panel.rs`, and a
+     shell test reads this file and fails if the two disagree. */
+  --radius-panel: 8px;
+}
+
+/* Dark appearance (NSAppearanceNameDarkAqua), measured in the same run. Defined in the same
+   file as the light values on purpose: the pair is one measurement, not two files that can
+   drift apart. The webview follows the system appearance live (checked by eye at M2c
+   acceptance). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-label: rgb(255 255 255 / 0.847);
+    --color-label-secondary: rgb(255 255 255 / 0.549);
+    --color-label-tertiary: rgb(255 255 255 / 0.247);
+    --color-label-quaternary: rgb(255 255 255 / 0.098);
+    --color-separator: rgb(255 255 255 / 0.098);
+    --color-accent: rgb(0 122 255);
+  }
+}
