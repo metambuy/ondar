@@ -36,6 +36,22 @@ const PANEL_LABEL: &str = "panel";
 
 const PANEL_SIZE: LogicalSize<f64> = LogicalSize::new(360.0, 420.0);
 
+/// Corner radius of the popover, in **points**: Control Center's, measured on macOS 26.6.2
+/// (25G83) on 2026-09-17 — 7.6 pt by a calibrated threshold fit and 8.3 pt by a differential
+/// match, the spread being backdrop-contrast dependent (M2c Step 0, R9). Re-measure if the OS
+/// major version changes; system radii move between releases.
+///
+/// The same number is `--radius-panel` in `src/styles/tokens.css`, and
+/// `tokens_css_panel_radius_matches_the_effects_radius` fails if the two ever disagree.
+///
+/// Applied through `EffectsBuilder::radius`, which reaches window-vibrancy 0.6.0's
+/// `setCornerRadius:` on the effect view — a selector that crate's own source calls possibly
+/// private ("not listed in Apple documentation, might be private, but it works",
+/// `ns_visual_effect_view_tagged.rs:92-99`). Ondar does not call it; Tauri does. Recorded in
+/// ONDAR.md as a dependency risk: a Tauri or window-vibrancy bump could drop it. Measured
+/// 2026-09-17: it rounds the material, and the window shadow follows the corners (R8).
+pub const PANEL_CORNER_RADIUS: f64 = 8.0;
+
 /// Logical **points** between the bottom edge of the tray icon and the top edge of the panel.
 ///
 /// Points, not physical pixels. As pixels it was two different gaps: measured 2026-09-16, the
@@ -124,6 +140,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     window.set_effects(
         EffectsBuilder::new()
             .effect(Effect::Popover)
+            .radius(PANEL_CORNER_RADIUS)
             // `Active`, not `FollowsWindowActiveState`. Whether AppKit draws a key
             // non-activating panel in an inactive app as "active" was never measured, and the
             // popover should look active whenever it is on screen either way.
@@ -1074,5 +1091,36 @@ mod tests {
         let area = PointRect::new(0.0, 30.0, 300.0, 900.0);
         let got = clamp_into((100.0, 36.0), panel(), area);
         assert_eq!(got.0, EDGE_MARGIN);
+    }
+
+    /// The radius the effect view is rounded to and the radius the page clips itself to are the
+    /// same measurement written in two places — `PANEL_CORNER_RADIUS` here and `--radius-panel`
+    /// in `tokens.css` (CSS px are points inside the webview). Read the stylesheet at test time
+    /// so the agreement is executed rather than asserted in a comment: change either number
+    /// alone and this fails. (`include_str!` also makes the stylesheet a compile-time input of
+    /// this crate, which is the intended coupling.)
+    #[test]
+    fn tokens_css_panel_radius_matches_the_effects_radius() {
+        const TOKENS: &str = include_str!("../../src/styles/tokens.css");
+        let declaration = TOKENS
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("--radius-panel:"))
+            .expect("tokens.css declares --radius-panel");
+        let value = declaration
+            .trim_start_matches("--radius-panel:")
+            .trim()
+            .trim_end_matches(';')
+            .trim();
+        let px = value
+            .strip_suffix("px")
+            .unwrap_or_else(|| panic!("--radius-panel should be in px, found `{value}`"));
+        let token: f64 = px
+            .parse()
+            .unwrap_or_else(|_| panic!("--radius-panel should be a number, found `{value}`"));
+        assert_eq!(
+            token, PANEL_CORNER_RADIUS,
+            "tokens.css --radius-panel is {value} but PANEL_CORNER_RADIUS is {PANEL_CORNER_RADIUS}"
+        );
     }
 }

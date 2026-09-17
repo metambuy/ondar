@@ -5,6 +5,11 @@
 .panel {
   height: 100%;
   box-sizing: border-box;
+  /* The page is transparent, so nothing here needs clipping today; content that later paints
+     near a corner is clipped to the same shape the effect view is rounded to (`panel.rs`,
+     `PANEL_CORNER_RADIUS`, pinned to `--radius-panel` by a shell test). */
+  border-radius: var(--radius-panel);
+  overflow: hidden;
   padding: var(--space-3);
   font: var(--text-body);
   color: var(--color-label);
