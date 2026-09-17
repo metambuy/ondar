@@ -583,7 +583,9 @@ What that does to the recorded conclusions:
   called `to_window()` before positioning (reverting on the first click), `hides_on_deactivate`
   was still set, and `show()` never made the panel key.
 
-M2a's `panel shown` log line prints `class=`, so a revert cannot go unnoticed again.
+M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
+the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
+field, whatever the line is called).
 
 ### M2c: chrome and input, measured (2026-09-16/17)
 

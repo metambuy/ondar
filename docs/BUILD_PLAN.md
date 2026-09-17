@@ -17,7 +17,8 @@ exit criteria pass.
 
 Tauri + Vite/React/TS scaffold; Rust audio module (`stream-download` → rodio/Symphonia decode
 → EQ adapter → output); play/pause/stop/volume/EQ commands; ICY title events; reconnect and
-error states; EQ biquad unit tests. Plain test window (`src/App.tsx`), no tray.
+error states; EQ biquad unit tests. Plain test window (`src/App.tsx`, retired into the popover
+at M2c), no tray.
 
 **Exit criteria (met):**
 
