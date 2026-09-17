@@ -160,6 +160,10 @@ pub enum HideReason {
     /// The panel resigned key (`WindowEvent::Focused(false)`): a click elsewhere, or being
     /// ordered out by another hide.
     ResignKey,
+    /// The page reported an Escape `keydown` (`commands::panel::panel_escape`). Escape reaches
+    /// the webview's JS in both phases — before and after a click inside the panel — with the
+    /// WKWebView first responder from the moment the panel is shown (M2c Step 0, item 1).
+    Esc,
 }
 
 impl HideReason {
@@ -167,6 +171,7 @@ impl HideReason {
         match self {
             Self::Toggle => "toggle",
             Self::ResignKey => "resign_key",
+            Self::Esc => "esc",
         }
     }
 }

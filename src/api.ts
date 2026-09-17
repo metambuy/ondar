@@ -21,6 +21,11 @@ export const audio = {
   getPlaybackState: () => invoke<PlaybackState>("get_playback_state"),
 };
 
+// The popover itself. `escape` reports a key; what it means is decided in Rust.
+export const panel = {
+  escape: () => invoke<void>("panel_escape"),
+};
+
 export const onState = (cb: (s: PlaybackState) => void): Promise<UnlistenFn> =>
   listen<PlaybackState>("playback:state", (e) => cb(e.payload));
 export const onStreamInfo = (cb: (i: StreamInfo) => void): Promise<UnlistenFn> =>

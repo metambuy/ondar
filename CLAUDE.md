@@ -88,7 +88,8 @@ onda/
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
     │   │                         flood; holds 3 of the shell's 9 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
-    │   └── commands/audio.rs     8 thin commands; validate args, send, return
+    │   ├── commands/audio.rs     8 thin commands; validate args, send, return
+│   └── commands/panel.rs     panel_escape: the page reports Esc, Rust hides (reason=esc)
     └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
         ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
         ├── stream.rs             stream-download open, ICY headers, timeout invariant
@@ -165,12 +166,15 @@ error.
 
 Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 `play(url, stationId)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
-`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`.
+`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus one **panel** command,
+`panel_escape()` (`commands/panel.rs`, wrapped as `panel.escape()`): the page reports an Escape
+`keydown` and Rust hides the popover through `panel::hide` with `reason=esc`. It is outside the
+three groups below — it never touches the engine.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`.
 
-"Every command is a message to the engine" is **not** true here. The eight commands fall into
+"Every command is a message to the engine" is **not** true here. The eight audio commands fall into
 three groups, and which group a command is in determines what its return value means:
 
 | Group | Commands | Mechanism |

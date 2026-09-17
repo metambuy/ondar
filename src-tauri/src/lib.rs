@@ -93,6 +93,7 @@ pub fn run() {
             commands::audio::set_eq_gain,
             commands::audio::get_eq,
             commands::audio::get_playback_state,
+            commands::panel::panel_escape,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ondar");
