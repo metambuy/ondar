@@ -28,6 +28,13 @@ tauri = { version = "2.11", features = ["macos-private-api", "tray-icon"] }
 # one. Neither Tauri nor any crate already in the tree does this. Git-only with no release
 # tracking the v2.1 API, so it is pinned by `rev`, never by branch; see ONDAR.md.
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }
+# One running Ondar. LaunchServices refuses a second `open Ondar.app`, but it does NOT dedupe
+# by identifier across paths: a copy of the bundle at another path starts a real second process
+# (measured 2026-09-16, M2c Step 0 case (e)) — two tray icons and two audio engines without this.
+# macOS mechanism is a Unix socket named after the identifier; 2.4.4 is the current 2.x
+# (3.0.0-alpha.0 exists and is not taken). No feature flags: `semver` would add the version to
+# the socket name, and Ondar wants one instance across versions.
+tauri-plugin-single-instance = "2.4.4"
 ondar-audio = { path = "crates/ondar-audio" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

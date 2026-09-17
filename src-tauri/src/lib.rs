@@ -49,7 +49,26 @@ pub fn run() {
     let user_agent = format!("Ondar/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // Registered first, as the plugin's own docs require: its setup is where a second
+        // process notifies the first and exits, before anything else is built. The callback
+        // runs on a tokio worker (`async_runtime::spawn`, plugin 2.4.4 `macos.rs:100`), and
+        // everything it does to the panel or tray hops to the main thread — `PanelHandle` is
+        // `Send`, but its operations are not safe off main (M2c Step 0, R6).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            log::info!(
+                "single-instance callback thread={:?} argv={argv:?} cwd={cwd:?}",
+                std::thread::current().name()
+            );
+            let on_main = app.clone();
+            if let Err(e) = app.run_on_main_thread(move || {
+                if let Some(rect) = tray::rect(&on_main) {
+                    panel::show_at(&on_main, rect, panel::ShowReason::SecondInstance);
+                }
+            }) {
+                log::warn!("single-instance: main-thread hop failed: {e}");
+            }
+        }))
         // Manages the panel store `PanelBuilder::build()` registers into; without it the
         // builder's internal `to_panel` panics on missing state.
         .plugin(tauri_nspanel::init())
@@ -101,6 +120,23 @@ pub fn run() {
             commands::audio::get_playback_state,
             commands::panel::panel_escape,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Ondar");
+        .build(tauri::generate_context!())
+        .expect("error while building Ondar");
+
+    // `.run(callback)` rather than `.run(context)`: `RunEvent::Reopen` is the only way to see
+    // `open Ondar.app` or a Finder double-click against the running app — LaunchServices
+    // starts no second process for either, so the single-instance plugin cannot — and
+    // `.run(context)` discards it. Delivered on the main thread (measured, Step 0 item 5).
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = event
+        {
+            log::info!("reopen has_visible_windows={has_visible_windows}");
+            if let Some(rect) = tray::rect(handle) {
+                panel::show_at(handle, rect, panel::ShowReason::Reopen);
+            }
+        }
+    });
 }

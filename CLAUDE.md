@@ -80,7 +80,8 @@ onda/
     ├── src/                      Tauri shell only. No domain logic.
     │   ├── main.rs               calls ondar_lib::run()
     │   ├── lib.rs                AppState, `events` module, tracing init, event forwarder
-    │   │                         (also drives the tray's idle/playing glyph)
+    │   │                         (also drives the tray's idle/playing glyph); single-instance
+    │   │                         callback and `RunEvent::Reopen` → the panel's show path
     │   ├── panel.rs              the NSPanel popover: build, toggle, anchor + clamp (pure,
     │   │                         6 tests), resign-key dismissal, occlusion logging
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
@@ -337,6 +338,15 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   About is a pane inside the popover (the standard About panel opens behind the frontmost app in
   an `Accessory` app); Quit is `PredefinedMenuItem::quit` = `terminate:`, which ends the process
   without shutting the engine down — measured clean with audio playing.
+- Single instance (M2c): `tauri-plugin-single-instance` 2.4.4, registered **first**. Its macOS
+  mechanism is a Unix socket, `/tmp/<identifier with `.` and `-` → `_`>_si.sock`: a second
+  process connects, writes cwd + argv and exits during plugin setup; the first gets the callback
+  on a tokio worker and hops to main. It covers `open -n`, the inner binary and **a copy of the
+  bundle at another path** (LaunchServices does not dedupe by identifier across paths —
+  measured). It cannot see `open Ondar.app` or a Finder double-click against the running app:
+  those start no process and arrive as `RunEvent::Reopen`, which `lib.rs` handles by running
+  `.build()` then `.run(|handle, event| …)`. Both feed `panel::show_at` (`reason=second_instance`
+  / `reopen`); a popover that is already up stays up (logged no-op).
 - One hide path, one show path (`panel::hide` / `panel::show_at`, M2c): every caller logs a
   `reason=` and an `effective=`, so the measured double-hide on every close (toggle, then
   resign-key 2–4 ms later) reads as one effective hide and one no-op. Both hop to the main

@@ -212,6 +212,14 @@ pub enum ShowReason {
     /// the standard About panel, which an `Accessory` app opens at `NSNormalWindowLevel` behind
     /// the frontmost app (Step 0, item 3).
     About,
+    /// `RunEvent::Reopen`: `open Ondar.app` or a Finder double-click against a running app.
+    /// LaunchServices starts no second process for those, so the single-instance plugin cannot
+    /// see them; they arrive as `applicationShouldHandleReopen:` (Step 0, item 5, cases (a)
+    /// and (d) — the latter fires twice, the second show is the logged no-op).
+    Reopen,
+    /// The single-instance plugin's callback: a real second process started (`open -n`, the
+    /// inner binary, a copy of the bundle at another path) and handed off to this one.
+    SecondInstance,
 }
 
 impl ShowReason {
@@ -219,6 +227,8 @@ impl ShowReason {
         match self {
             Self::Toggle => "toggle",
             Self::About => "about",
+            Self::Reopen => "reopen",
+            Self::SecondInstance => "second_instance",
         }
     }
 
@@ -227,7 +237,7 @@ impl ShowReason {
     fn view(self) -> &'static str {
         match self {
             Self::About => "about",
-            Self::Toggle => "transport",
+            Self::Toggle | Self::Reopen | Self::SecondInstance => "transport",
         }
     }
 }
