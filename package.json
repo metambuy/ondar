@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "eslint . && sh scripts/check-tokens.sh",
     "gen:bindings": "cd src-tauri && cargo test -p ondar-audio"
   },
   "dependencies": {

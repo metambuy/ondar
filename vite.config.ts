@@ -5,12 +5,12 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
-  // Two entry points. Without the explicit input map Vite emits only index.html, so the bundle
-  // ships no panel.html and `WebviewUrl::App("panel.html")` 404s in a bundle while working in
-  // dev off the dev server.
+  // One entry point, and it is not index.html. Without the explicit input map Vite looks for
+  // index.html, emits nothing for panel.html, and `WebviewUrl::App("panel.html")` 404s in a
+  // bundle while working in dev off the dev server (measured at M2a, when there were two).
   build: {
     rollupOptions: {
-      input: { main: "index.html", panel: "panel.html" },
+      input: { panel: "panel.html" },
     },
   },
   server: {

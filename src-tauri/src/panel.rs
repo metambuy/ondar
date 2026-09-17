@@ -26,11 +26,12 @@ use tauri_nspanel::{
     tauri_panel,
 };
 
-/// Label of the popover window.
-///
-/// Deliberately absent from `capabilities/default.json` (which, being JSON, cannot say so
-/// itself): `panel.html` invokes nothing, so it needs no permissions. Widening the capability
-/// to this window is a real permission decision for when the popover gains commands.
+/// Label of the popover window — the only window, and the one `capabilities/default.json` is
+/// scoped to since the M1 bench window retired (M2c). The page invokes, so the capability is a
+/// real permission decision: `core:default` (events, app name/version) and nothing else.
+/// App-defined commands need no ACL entry from a local page (tauri 2.11.5
+/// `webview/mod.rs:1823`: the ACL gates plugin commands, a declared app manifest, and remote
+/// origins).
 const PANEL_LABEL: &str = "panel";
 
 const PANEL_SIZE: LogicalSize<f64> = LogicalSize::new(360.0, 420.0);
