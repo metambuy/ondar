@@ -39,6 +39,10 @@ function describeStream(i: StreamInfo | null): string {
 
 export default function Transport() {
   const [url, setUrl] = useState(PRESETS[0].url);
+  // The URL handed to `play`, kept apart from the dropdown: the dropdown can change without a
+  // Play, and the Now Playing name must describe what is audible, not what is selected
+  // (`/code-review` finding 4, 2026-09-17).
+  const [playingUrl, setPlayingUrl] = useState<string | null>(null);
   const [state, setState] = useState<PlaybackState>({ kind: "idle" });
   const [info, setInfo] = useState<StreamInfo | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -66,9 +70,18 @@ export default function Transport() {
   // A command's rejection is argument validation only (CLAUDE.md, IPC contract); playback
   // outcomes arrive as `playback:state` events.
   const report = (what: string) => (e: unknown) => setLastError(`${what}: ${JSON.stringify(e)}`);
-  const play = () => audio.play(url, "manual").catch(report("play"));
+  const play = () => {
+    setPlayingUrl(url);
+    return audio.play(url, "manual").catch(report("play"));
+  };
 
-  const stationName = info?.station_name ?? PRESETS.find((p) => p.url === url)?.name ?? url;
+  // `icy-name` when the server sends one (its absence is normal); otherwise the preset that was
+  // actually played; otherwise nothing is playing.
+  const stationName =
+    info?.station_name ??
+    (playingUrl === null
+      ? "nothing playing"
+      : (PRESETS.find((p) => p.url === playingUrl)?.name ?? playingUrl));
 
   return (
     <section aria-label="Dev transport" className={styles.stack}>
