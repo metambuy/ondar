@@ -90,11 +90,13 @@ onda/
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 22 tests, including the
+    │   │                         flood; holds 3 of the shell's 29 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
-    │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc) and
-    │                             get_panel_view (the pane last shown, for the page to mirror on mount)
+    │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
+    │                             panel_set_expanded (the page reports a click on the expand control;
+    │                             Rust lays out, applies or refuses) and get_panel_layout (the layout
+    │                             last emitted, for the page to mirror on mount)
     └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
         ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
         ├── stream.rs             stream-download open, ICY headers, timeout invariant
@@ -119,8 +121,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 72 tests `cargo test --workspace`
-reports break down as **65 hand-written + 7 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 79 tests `cargo test --workspace`
+reports break down as **70 hand-written + 9 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -131,12 +133,12 @@ reports break down as **65 hand-written + 7 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 17 — in the **shell** crate; one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames. (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
-| `panel::export_bindings_panelview` | 1 — generated, in the **shell** crate |
+| `panel::tests` | 22 — in the **shell** crate; one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
+| `panel::export_bindings_*` | 3 — generated, in the **shell** crate: `panelview`, `panelheight`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 
-Counting `#[test]` attributes in source gives 65 and will not reconcile with the runner's 72
-until those 7 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
+Counting `#[test]` attributes in source gives 70 and will not reconcile with the runner's 79
+until those 9 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 ## Commands
@@ -158,14 +160,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 72 tests: 50 in the ondar_audio binary and 22 in the shell's
+cargo test --workspace       # 79 tests: 50 in the ondar_audio binary and 29 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (22 tests) and silently skips ondar-audio; this
+                              # `ondar` package (29 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's twenty-two test names, and one of them —
+                              # prints only the shell's twenty-nine test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -181,17 +183,21 @@ error.
 
 Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 `play(url, stationId)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
-`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus one **panel** command,
-`panel_escape()` (`commands/panel.rs`, wrapped as `panel.escape()`): the page reports an Escape
-`keydown` and Rust hides the popover through `panel::hide` with `reason=esc`. And one panel
-getter, `get_panel_view()` (`panel.getView()`), the counterpart of the `panel:view` event as
-`get_playback_state` is of `playback:state`. Both are outside the three groups below — they never
-touch the engine.
+`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus two **panel** commands
+(`commands/panel.rs`): `panel_escape()` (`panel.escape()`) — the page reports an Escape `keydown`
+and Rust hides the popover through `panel::hide` with `reason=esc`; and `panel_set_expanded(expanded)`
+(`panel.setExpanded()`) — the page reports a click on the expand control and Rust lays the panel
+out for the new height against a fresh tray rect, applies it, or refuses it (D1's floor), logging
+which. And one panel getter, `get_panel_layout()` (`panel.getLayout()`), the counterpart of the
+`panel:layout` event as `get_playback_state` is of `playback:state`. All three are outside the
+three groups below — they never touch the engine.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`, and
-`panel:view` (`"about"` | `"transport"`, emitted by `panel::show_at` from the show reason on every
-show — the page mirrors which pane is up and never decides it).
+`panel:layout` (a `PanelLayout`: `view` `"about"` | `"transport"`, `state` `"collapsed"` |
+`"expanded"`, `width`/`height` in points, `expandable`; emitted on every effective show — the view
+from the show reason — and on every resize. The page mirrors it and decides none of it: it is told
+its height, never computes it. Superseded M2c's `panel:view`).
 
 "Every command is a message to the engine" is **not** true here. The eight audio commands fall into
 three groups, and which group a command is in determines what its return value means:
@@ -215,7 +221,7 @@ engine handle and outlive any one session — they are not part of the command s
 
 Types crossing the boundary derive `Serialize, Deserialize, TS` with `#[ts(export)]`: the
 engine's in `crates/ondar-audio/src/types.rs`, the shell's beside the module that owns them
-(`panel.rs`'s `PanelView` is the one so far). Adding one means adding it there, running
+(`panel.rs`'s `PanelView`, `PanelHeight` and `PanelLayout`). Adding one means adding it there, running
 `cargo test --workspace` (plain `cargo test` skips the engine — see above; `pnpm gen:bindings`
 is the alias), and committing the generated `.ts`. No boundary type is typed by hand on the TS
 side.

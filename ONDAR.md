@@ -707,11 +707,21 @@ window ever returns, re-check"); a recurrence with hands off is a defect.
 ### M2d: the expanded height is capped to the work area (decided 2026-09-18)
 
 **Decision D1, Martín, 2026-09-18.** The expanded popover's height is
-`min(NOMINAL_EXPANDED, usable work-area height)`, where `NOMINAL_EXPANDED` is the ~720 pt of the
-product shape above and the usable height is what the existing M2b point-space code can give a
-panel anchored under the tray icon: the work-area height of the display the icon is on, minus
-`TRAY_GAP` and `EDGE_MARGIN` (6 pt each, `panel.rs`). No second positioning path: the cap feeds
-the same `anchor_points` / `clamp_into` that places the collapsed panel.
+`min(NOMINAL_EXPANDED, usable height)`, where `NOMINAL_EXPANDED` is the ~720 pt of the product
+shape above and the usable height is what the existing M2b point-space code can give a panel
+anchored under the tray icon. **As implemented (`panel.rs`, `layout`, gate 2 push-back 3, review
+finding 1):** the height between the panel's top edge — `TRAY_GAP` below the icon's bottom edge,
+where `centred_below` puts it — and `EDGE_MARGIN` above the bottom of the work area of the display
+the icon is on: `usable = (work_area.bottom − EDGE_MARGIN) − (icon_bottom + TRAY_GAP)`, 6 pt each.
+This **reduces to the form first recorded here** — the work-area height minus `TRAY_GAP` and
+`EDGE_MARGIN` — whenever the icon's bottom edge coincides with the work-area top, which is true on
+every arrangement measured (ANMITE: tray rect 60 px / 2 = 30 pt = `work_area.y` 30; built-in:
+66 / 2 = 33 = 33), so the number is the same, 598 on the ANMITE. The general form was preferred
+because the panel hangs from the *icon*, not from the work-area top: should the two ever differ,
+the recorded form plus `clamp_into` gives a panel pulled up to gap 0 — the readout that means "the
+clamp fired" — where this one gives a shorter panel with the clamp idle by construction. The
+decision is unchanged; only its expression is. No second positioning path: the cap feeds the same
+`anchor_points` / `clamp_into` that places the collapsed panel.
 
 **Floor: expansion is refused only when the capped height would not exceed the collapsed height**
 (420 pt today). That is the only bound justifiable now, and it is recorded as **PROVISIONAL**. The

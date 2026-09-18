@@ -4,7 +4,7 @@
 
 use tauri::{AppHandle, State};
 
-use crate::panel::{self, HideReason, PanelState, PanelView};
+use crate::panel::{self, HideReason, PanelLayout, PanelState};
 
 /// The page saw an Escape `keydown`. Rust hides the popover through the single hide path, so the
 /// close reads in the log as `reason=esc effective=true` followed by the resign-key no-op.
@@ -15,9 +15,18 @@ pub fn panel_escape(app: AppHandle) {
     panel::hide(&app, HideReason::Esc);
 }
 
-/// The pane the popover last showed, for the page to mirror on mount — the counterpart of the
-/// `panel:view` event, exactly as `get_playback_state` is the counterpart of `playback:state`.
+/// The layout the popover last emitted — pane, height state, size, expandable — for the page to
+/// mirror on mount: the counterpart of the `panel:layout` event, exactly as `get_playback_state`
+/// is the counterpart of `playback:state`.
 #[tauri::command]
-pub fn get_panel_view(state: State<'_, PanelState>) -> PanelView {
-    state.view()
+pub fn get_panel_layout(state: State<'_, PanelState>) -> PanelLayout {
+    state.layout()
+}
+
+/// The page's expand/collapse control was clicked. Rust decides what that means — a layout for
+/// the new height against a fresh tray rect, or a logged refusal (decision D1's floor) — and the
+/// page learns the outcome from `panel:layout`, never from this call's return.
+#[tauri::command]
+pub fn panel_set_expanded(app: AppHandle, expanded: bool) {
+    panel::set_expanded(&app, expanded);
 }

@@ -40,7 +40,20 @@ use ts_rs::TS;
 /// origins).
 const PANEL_LABEL: &str = "panel";
 
-const PANEL_SIZE: LogicalSize<f64> = LogicalSize::new(360.0, 420.0);
+/// Width of the popover in points — one width for both height states (ONDAR.md product shape).
+const PANEL_WIDTH: f64 = 360.0;
+
+/// The collapsed height in points (ONDAR.md product shape, ~360×420). Also decision D1's
+/// **provisional** floor: expansion is refused when the capped expanded height would not exceed
+/// this. The real floor is M4's, derived from the map's minimum legible pane; M2d must not invent
+/// one (ONDAR.md, "M2d: the expanded height is capped to the work area").
+const COLLAPSED_HEIGHT: f64 = 420.0;
+
+/// The expanded height in points **before** the D1 cap (ONDAR.md product shape, ~360×720). The
+/// height the panel actually gets is `min(this, what fits under the icon)` — 598 pt measured on
+/// the ANMITE while it hosted the menu bar (M2d Step 0 P4) — so "expanded" is a function of the
+/// display, not a constant, and the page is told the height rather than computing it.
+const EXPANDED_HEIGHT_NOMINAL: f64 = 720.0;
 
 /// Corner radius of the popover, in **points**: Control Center's, measured on macOS 26.6.2
 /// (25G83) on 2026-09-17 — 7.6 pt by a calibrated threshold fit and 8.3 pt by a differential
@@ -100,13 +113,14 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     // `Prohibited` around window creation and afterwards restores whatever the policy was
     // *before* — so setting Accessory later would be undone and the Dock icon would return.
     app.set_activation_policy(ActivationPolicy::Accessory);
-    app.manage(PanelState {
-        view: Mutex::new(PanelView::Transport),
-    });
+    app.manage(PanelState::default());
 
     let panel = PanelBuilder::<_, OndarPanel<_>>::new(app.handle(), PANEL_LABEL)
         .url(WebviewUrl::App("panel.html".into()))
-        .size(Size::Logical(PANEL_SIZE))
+        .size(Size::Logical(LogicalSize::new(
+            PANEL_WIDTH,
+            COLLAPSED_HEIGHT,
+        )))
         .level(PanelLevel::PopUpMenu)
         .floating(true)
         // Keeps window *creation* from activating the app. Not what makes it non-activating.
@@ -222,19 +236,98 @@ pub enum PanelView {
     About,
 }
 
-/// The pane the popover last showed, held in Tauri state so the page can ask for it on mount:
-/// an emit with no JS listener registered yet is dropped by Tauri with `Ok(())`, so without a
-/// getter a show before `listen` resolved — or after a webview reload — rendered the wrong pane
-/// while the log claimed the right one (`/code-review` finding 3, 2026-09-17). Mirrors
-/// `get_playback_state` for the engine.
+/// Which of the two heights the popover is at, or is asked for. Crosses the boundary inside
+/// [`PanelLayout`], so it is a generated type, not a string agreed on by hand on both sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelHeight {
+    Collapsed,
+    Expanded,
+}
+
+/// What the page renders: the pane, the height state, the size in points, and whether expansion
+/// is available on the display the icon is on (decision D1's floor; decision D4 shows the control
+/// disabled when it is not). Emitted as `panel:layout` on every effective show and every resize,
+/// and answered by `get_panel_layout` on mount. **The page is told the height; it never computes
+/// it** (D1's consequence; CLAUDE.md, "The one rule"). Supersedes M2c's `panel:view` event and
+/// `get_panel_view`, whose value is the `view` field.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PanelLayout {
+    pub view: PanelView,
+    pub state: PanelHeight,
+    pub width: f64,
+    pub height: f64,
+    pub expandable: bool,
+}
+
+/// The popover's layout state, held in Tauri state so the page can ask for it on mount: an emit
+/// with no JS listener registered yet is dropped by Tauri with `Ok(())`, so without a getter a
+/// show before `listen` resolved — or after a webview reload — rendered the wrong pane while the
+/// log claimed the right one (`/code-review` finding 3, 2026-09-17). Mirrors `get_playback_state`
+/// for the engine.
+///
+/// `expanded` is the height the user last chose and **persists across hides** within a run
+/// (decided 2026-09-18): a hide has no side effect, and the next show lays the panel out for the
+/// display the icon is then on — an expanded panel hidden on the ANMITE and reopened on the
+/// built-in gets 720 pt, not 598. Where the chosen height no longer fits, the show collapses it
+/// and records that.
 pub struct PanelState {
-    view: Mutex<PanelView>,
+    inner: Mutex<Inner>,
+}
+
+struct Inner {
+    expanded: bool,
+    last: PanelLayout,
+}
+
+impl Default for PanelState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                expanded: false,
+                // Before the first show nothing has been laid out; the first show replaces this.
+                last: PanelLayout {
+                    view: PanelView::Transport,
+                    state: PanelHeight::Collapsed,
+                    width: PANEL_WIDTH,
+                    height: COLLAPSED_HEIGHT,
+                    expandable: true,
+                },
+            }),
+        }
+    }
 }
 
 impl PanelState {
-    /// `Mutex::lock().unwrap()`: poison propagation only (CLAUDE.md's exemption).
-    pub fn view(&self) -> PanelView {
-        *self.view.lock().unwrap()
+    /// The layout last emitted. `Mutex::lock().unwrap()`: poison propagation only (CLAUDE.md's
+    /// exemption), here and below.
+    pub fn layout(&self) -> PanelLayout {
+        self.inner.lock().unwrap().last
+    }
+
+    /// The height the next show lays out for.
+    fn wanted_height(&self) -> PanelHeight {
+        if self.inner.lock().unwrap().expanded {
+            PanelHeight::Expanded
+        } else {
+            PanelHeight::Collapsed
+        }
+    }
+
+    /// Record a layout that is about to be applied and return what the page is told.
+    fn record(&self, view: PanelView, layout: &Layout) -> PanelLayout {
+        let mut inner = self.inner.lock().unwrap();
+        inner.expanded = layout.state == PanelHeight::Expanded;
+        inner.last = PanelLayout {
+            view,
+            state: layout.state,
+            width: layout.size.0,
+            height: layout.size.1,
+            expandable: layout.expandable,
+        };
+        inner.last
     }
 }
 
@@ -365,22 +458,14 @@ fn show_on_main<R: Runtime>(
     // the reverse: a re-launch while About was up kicked the user back to the transport with no
     // gesture on the popover (`/code-review` finding 6, 2026-09-17).
     let view = reason.view();
-    *handle.state::<PanelState>().view.lock().unwrap() = view;
-    if let Err(e) = handle.emit(crate::events::PANEL_VIEW, view) {
-        log::warn!(
-            "panel view={view:?} reason={} not emitted: {e}",
-            reason.as_str()
-        );
-    } else {
-        log::info!("panel view={view:?} reason={}", reason.as_str());
-    }
-
-    let size = (PANEL_SIZE.width, PANEL_SIZE.height);
-    let position = anchor_for(&window, rect, size)?;
+    let state = handle.state::<PanelState>();
+    let laid = layout_for(&window, rect, state.wanted_height())?;
+    let emitted = state.record(view, &laid);
+    emit_layout(handle, emitted, reason.as_str());
     // Origin and size in one call while the panel is still hidden, so the hidden-window
     // `setContentSize:` trap (bottom-left kept — M2d Step 0, measured, unexplained) has nothing to
     // act on: the frame is set whole, never a size against a remembered origin.
-    apply_frame(&panel, position, size);
+    apply_frame(&panel, laid.anchored.position, laid.size);
     panel.show();
     // `show()` is `orderFrontRegardless` alone, and a panel that is never key can never resign
     // key. Not `show_and_make_key()`: that also makes the content view (`WryWebViewParent`)
@@ -535,6 +620,85 @@ fn log_tray_screen_check<R: Runtime>(panel: &PanelHandle<R>, rect: Rect) {
         None => log::warn!(
             "panel placed: no NSScreen contains the tray icon centre; rect=({px},{py} {pw}x{ph})"
         ),
+    }
+}
+
+/// Emit the layout the page should render, logging either way.
+fn emit_layout<R: Runtime>(handle: &AppHandle<R>, layout: PanelLayout, reason: &str) {
+    match handle.emit(crate::events::PANEL_LAYOUT, layout) {
+        Ok(()) => log::info!(
+            "panel layout view={:?} state={:?} size_points=({}, {}) expandable={} reason={reason}",
+            layout.view,
+            layout.state,
+            layout.width,
+            layout.height,
+            layout.expandable
+        ),
+        Err(e) => log::warn!("panel layout {layout:?} reason={reason} not emitted: {e}"),
+    }
+}
+
+/// The page's expand/collapse request (`commands::panel::panel_set_expanded`). The page reports a
+/// click; Rust decides: a **refusal** when decision D1's floor says the capped height would not
+/// exceed the collapsed one (`expandable=false` — the page's control is disabled then, decision
+/// D4, but the decision is made here regardless), a logged no-op when the panel is hidden, and
+/// otherwise a layout for the new height against a **fresh tray rect** — never a size-only change,
+/// which leaves a panel on the wrong display (M2d Step 0 P5) — applied as one frame change.
+///
+/// Main-thread discipline and logging as in [`hide`].
+pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        let want = if expanded {
+            PanelHeight::Expanded
+        } else {
+            PanelHeight::Collapsed
+        };
+        let Ok(panel) = on_main.get_webview_panel(PANEL_LABEL) else {
+            log::warn!("panel resize want={want:?} panel not in the tauri-nspanel store");
+            return;
+        };
+        let Some(window) = on_main.get_webview_window(PANEL_LABEL) else {
+            log::warn!("panel resize want={want:?} panel has no tauri webview window");
+            return;
+        };
+        if !panel.is_visible() {
+            log::info!("panel resize want={want:?} effective=false reason=hidden");
+            return;
+        }
+        let Some(rect) = crate::tray::rect(&on_main) else {
+            return;
+        };
+        let laid = match layout_for(&window, rect, want) {
+            Ok(l) => l,
+            Err(e) => {
+                log::warn!("panel resize want={want:?} layout failed: {e}");
+                return;
+            }
+        };
+        if laid.state != want {
+            log::info!(
+                "panel resize want={want:?} effective=false reason=refused expandable={} \
+                 capped_height={}",
+                laid.expandable,
+                laid.size.1
+            );
+            return;
+        }
+        let state = on_main.state::<PanelState>();
+        let view = state.layout().view;
+        let emitted = state.record(view, &laid);
+        emit_layout(&on_main, emitted, "resize");
+        apply_frame(&panel, laid.anchored.position, laid.size);
+        log::info!(
+            "panel resize want={want:?} effective=true capped={} thread={:?}",
+            laid.capped,
+            std::thread::current().name()
+        );
+        log_tray_screen_check(&panel, rect);
+    });
+    if let Err(e) = queued {
+        log::warn!("panel resize expanded={expanded} not queued: {e}");
     }
 }
 
@@ -704,6 +868,37 @@ fn anchor_points(
     displays: &[Display],
     primary: Option<usize>,
 ) -> Anchored {
+    let (display, accepted, resolution) = resolve_display(tray, displays, primary);
+    let scale = display.map_or(1.0, |i| displays[i].scale);
+    let tray = PointRect::new(
+        tray.x / scale,
+        tray.y / scale,
+        tray.width / scale,
+        tray.height / scale,
+    );
+
+    let position = centred_below(tray, panel);
+    let position = match display {
+        Some(i) => clamp_into(position, panel, displays[i].work_area),
+        None => position,
+    };
+
+    Anchored {
+        position,
+        display,
+        accepted,
+        resolution,
+    }
+}
+
+/// Which display hosts the tray rect: the acceptors, the choice among them, and how it was made.
+/// The first half of `anchor_points`, factored out so `layout` can read the chosen display's work
+/// area for the D1 cap before the size is known. Pure.
+fn resolve_display(
+    tray: PointRect,
+    displays: &[Display],
+    primary: Option<usize>,
+) -> (Option<usize>, Vec<usize>, Resolution) {
     let accepted: Vec<usize> = displays
         .iter()
         .enumerate()
@@ -731,25 +926,76 @@ fn anchor_points(
             _ => (Some(many[0]), Resolution::AmbiguousWithoutPrimary),
         },
     };
-    let scale = display.map_or(1.0, |i| displays[i].scale);
-    let tray = PointRect::new(
-        tray.x / scale,
-        tray.y / scale,
-        tray.width / scale,
-        tray.height / scale,
-    );
+    (display, accepted, resolution)
+}
 
-    let position = centred_below(tray, panel);
-    let position = match display {
-        Some(i) => clamp_into(position, panel, displays[i].work_area),
-        None => position,
+/// The result of laying the panel out for a tray rect and a wanted height: `anchor_points`'
+/// answer for the size that came out of decision D1's cap, plus the cap's own outputs. `state` is
+/// the height **actually laid out** — `Collapsed` when `Expanded` was asked for and refused.
+#[derive(Debug, PartialEq)]
+struct Layout {
+    state: PanelHeight,
+    /// Points.
+    size: (f64, f64),
+    anchored: Anchored,
+    /// `Expanded`, and shorter than `EXPANDED_HEIGHT_NOMINAL` because the display is.
+    capped: bool,
+    /// Decision D1's floor: the capped expanded height exceeds `COLLAPSED_HEIGHT`. Reported on
+    /// every layout, collapsed ones included, so the page can disable its control (decision D4).
+    expandable: bool,
+}
+
+/// Size **and** position for a tray rect and a wanted height, in one pure function (M2d Step 0
+/// P4: the cap belongs where the size is chosen, before the anchor, and needs the chosen display's
+/// work area, which `resolve_display` gives; the refusal falls out of the same computation).
+///
+/// **The cap (decision D1).** The expanded height is `min(EXPANDED_HEIGHT_NOMINAL, usable)`, where
+/// `usable` is the height that fits between the panel's top edge — `TRAY_GAP` below the icon's
+/// bottom edge, which is where `centred_below` puts it — and `EDGE_MARGIN` above the bottom of the
+/// chosen display's work area. On every arrangement measured the icon's bottom edge coincides with
+/// the work-area top, so this equals D1's recorded `work-area height − TRAY_GAP − EDGE_MARGIN`:
+/// 610 − 6 − 6 = **598 pt on the ANMITE, measured** (`run-02-p4.log:32`, landed `[226,36 360×598]`).
+/// Measuring from the icon rather than the work-area top keeps `clamp_into` idle by construction
+/// whenever the two ever differ; the readout is the gap below the icon (6 = idle, 0 = fired).
+///
+/// **The floor (D1, provisional).** Expansion is refused when the capped height would not exceed
+/// `COLLAPSED_HEIGHT`: `expandable` is false and the collapsed layout is returned. No attached
+/// display can exercise this branch, so the unit tests drive it from a synthetic work area on both
+/// sides of the boundary — an inverted comparison would refuse on *every* display.
+///
+/// With no chosen display (`Resolution::Unresolved`) there is no work area to cap against; the
+/// nominal height is used uncapped and reported expandable, and the caller warns as it does today.
+fn layout(
+    tray: PointRect,
+    want: PanelHeight,
+    displays: &[Display],
+    primary: Option<usize>,
+) -> Layout {
+    let (display, _, _) = resolve_display(tray, displays, primary);
+    let (expanded_height, expandable) = match display {
+        Some(i) => {
+            let d = displays[i];
+            let icon_bottom = (tray.y + tray.height) / d.scale;
+            let usable =
+                (d.work_area.y + d.work_area.height - EDGE_MARGIN) - (icon_bottom + TRAY_GAP);
+            let h = EXPANDED_HEIGHT_NOMINAL.min(usable);
+            (h, h > COLLAPSED_HEIGHT)
+        }
+        None => (EXPANDED_HEIGHT_NOMINAL, true),
     };
-
-    Anchored {
-        position,
-        display,
-        accepted,
-        resolution,
+    let (state, height) = match want {
+        PanelHeight::Expanded if expandable => (PanelHeight::Expanded, expanded_height),
+        PanelHeight::Expanded | PanelHeight::Collapsed => {
+            (PanelHeight::Collapsed, COLLAPSED_HEIGHT)
+        }
+    };
+    let size = (PANEL_WIDTH, height);
+    Layout {
+        state,
+        size,
+        anchored: anchor_points(tray, size, displays, primary),
+        capped: state == PanelHeight::Expanded && height < EXPANDED_HEIGHT_NOMINAL,
+        expandable,
     }
 }
 
@@ -789,20 +1035,20 @@ fn clamp_into(position: (f64, f64), panel: (f64, f64), area: PointRect) -> (f64,
     )
 }
 
-/// Gather the live display state, anchor a panel of `panel` points under `rect`, and log what was
-/// chosen. `panel` is the size the panel is *about to have*, not the size it has: at M2d an expand
-/// or collapse anchors for the new height before the frame changes (Step 0 P5 — a size-only change
-/// leaves a panel on the wrong display).
+/// Gather the live display state, lay the panel out for `want` under `rect`, and log what was
+/// chosen. The layout is for the size the panel is *about to have*, not the size it has: an expand
+/// or collapse lays out for the new height before the frame changes (Step 0 P5 — a size-only
+/// change leaves a panel on the wrong display).
 ///
-/// The returned position is the panel's top-left in global points; `apply_frame` converts it to a
-/// Cocoa frame against the menu-bar screen. Nothing in the path reads or divides by the panel
-/// window's own scale, which is what made the pre-M2b code depend on which display the panel
-/// happened to be sitting on.
-fn anchor_for<R: Runtime>(
+/// The position is the panel's top-left in global points; `apply_frame` converts it to a Cocoa
+/// frame against the menu-bar screen. Nothing in the path reads or divides by the panel window's
+/// own scale, which is what made the pre-M2b code depend on which display the panel happened to be
+/// sitting on.
+fn layout_for<R: Runtime>(
     window: &WebviewWindow<R>,
     rect: Rect,
-    panel: (f64, f64),
-) -> tauri::Result<(f64, f64)> {
+    want: PanelHeight,
+) -> tauri::Result<Layout> {
     // `tray-icon` always sends `Physical` on macOS (`mod.rs:515-528` builds it with
     // `to_physical`). A `Logical` rect would already be points; it is passed through with a
     // warning rather than silently scaled, because guessing a scale is how this defect started.
@@ -861,7 +1107,8 @@ fn anchor_for<R: Runtime>(
             .position(|m| m.name() == p.name() && m.position() == p.position())
     });
 
-    let anchored = anchor_points(tray, panel, &displays, primary);
+    let laid = layout(tray, want, &displays, primary);
+    let anchored = &laid.anchored;
 
     match anchored.resolution {
         Resolution::AmbiguousWithoutPrimary => log::warn!(
@@ -886,8 +1133,13 @@ fn anchor_for<R: Runtime>(
 
     let chosen = anchored.display.map(|i| displays[i]);
     log::info!(
-        "panel anchor tray_physical={tray:?} panel_points={panel:?} display={:?} \
-         primary={primary:?} accepted={:?} resolution={:?} position_points={:?} work_area={:?}",
+        "panel anchor tray_physical={tray:?} want={want:?} state={:?} size_points={:?} capped={} \
+         expandable={} display={:?} primary={primary:?} accepted={:?} resolution={:?} \
+         position_points={:?} work_area={:?}",
+        laid.state,
+        laid.size,
+        laid.capped,
+        laid.expandable,
         anchored.display,
         anchored.accepted,
         anchored.resolution,
@@ -895,7 +1147,7 @@ fn anchor_for<R: Runtime>(
         chosen.map(|d| d.work_area)
     );
 
-    Ok(anchored.position)
+    Ok(laid)
 }
 
 #[cfg(test)]
@@ -957,9 +1209,40 @@ mod tests {
         ]
     }
 
-    /// The panel's size in points — what `anchor_points` takes since M2d.
+    /// The collapsed panel's size in points — what `anchor_points` takes since M2d.
     fn panel() -> (f64, f64) {
-        (PANEL_SIZE.width, PANEL_SIZE.height)
+        (PANEL_WIDTH, COLLAPSED_HEIGHT)
+    }
+
+    /// The ANMITE hosting the menu bar, as measured 2026-09-18 (M2d Step 0 P4, `run-02-p4.log:5,8`):
+    /// Tauri (0,0) 1920x1280 scale 2, work_area (0,60) 1920x1220 → (0,30) 960x610 pt.
+    fn menubar_on_anmite() -> Vec<Display> {
+        vec![Display {
+            bounds: PointRect::new(0.0, 0.0, 960.0, 640.0),
+            work_area: PointRect::new(0.0, 30.0, 960.0, 610.0),
+            scale: 2.0,
+        }]
+    }
+
+    /// The tray rect measured in that arrangement (`run-02-p4.log:21`): (788,0) 48x60 physical at 2x
+    /// = (394,0) 24x30 pt, so the icon's bottom edge is at 30 pt — the work-area top.
+    fn anmite_tray() -> PointRect {
+        PointRect::new(788.0, 0.0, 48.0, 60.0)
+    }
+
+    /// A synthetic 1x display `height` pt tall with a 30 pt menu bar, hosting an icon whose bottom
+    /// edge is at 30 pt. `usable` for the cap is then `(height − 6) − (30 + 6) = height − 42`, which
+    /// is what lets a test put the cap exactly on decision D1's floor.
+    fn short_display(height: f64) -> Vec<Display> {
+        vec![Display {
+            bounds: PointRect::new(0.0, 0.0, 1000.0, height),
+            work_area: PointRect::new(0.0, 30.0, 1000.0, height - 30.0),
+            scale: 1.0,
+        }]
+    }
+
+    fn short_display_tray() -> PointRect {
+        PointRect::new(100.0, 0.0, 24.0, 30.0)
     }
 
     /// The assertion the M2b gate settled on: the panel rect must lie inside the work area of the
@@ -967,10 +1250,15 @@ mod tests {
     /// case landed on the *correct* display, 649 pt from the icon and 12 pt inside the menu bar,
     /// so a display-identity assertion would have passed it.
     fn assert_inside_work_area(got: &Anchored, displays: &[Display]) {
+        assert_size_inside_work_area(got, panel(), displays);
+    }
+
+    /// The same assertion for a panel of any size — the expanded layouts below.
+    fn assert_size_inside_work_area(got: &Anchored, size: (f64, f64), displays: &[Display]) {
         let i = got.display.expect("a display should have been chosen");
         let area = displays[i].work_area;
         let (x, y) = got.position;
-        let (w, h) = panel();
+        let (w, h) = size;
         assert!(
             x >= area.x && x + w <= area.x + area.width,
             "panel x {x}..{} outside work area {area:?}",
@@ -1270,6 +1558,123 @@ mod tests {
         let area = PointRect::new(0.0, 30.0, 300.0, 900.0);
         let got = clamp_into((100.0, 36.0), panel(), area);
         assert_eq!(got.0, EDGE_MARGIN);
+    }
+
+    /// Decision D1's number, measured: on the ANMITE the expanded panel is **598 pt** tall —
+    /// `min(720, (30 + 610 − 6) − (30 + 6))` — capped, expandable, landing at (226,36) with its
+    /// bottom at 634 on a 640 pt display (`run-02-p4.log:32,40`). A cap that forgot the bottom
+    /// margin reads 604, one that forgot the gap 604, one that forgot both 610; one measured from
+    /// the display's frame instead of its work area reads 628.
+    #[test]
+    fn cap_on_the_anmite_is_the_measured_598() {
+        let displays = menubar_on_anmite();
+        let got = layout(anmite_tray(), PanelHeight::Expanded, &displays, Some(0));
+        assert_eq!(got.state, PanelHeight::Expanded);
+        assert_eq!(got.size, (360.0, 598.0));
+        assert!(got.capped, "598 < 720 is a cap");
+        assert!(got.expandable, "598 > 420 clears the floor");
+        assert_eq!(got.anchored.position, (226.0, 36.0));
+        assert_eq!(got.anchored.position.1 + got.size.1, 634.0);
+        assert_size_inside_work_area(&got.anchored, got.size, &displays);
+    }
+
+    /// Where the nominal height fits — the built-in hosting the menu bar, `run-01-p5.log:38`: 39 +
+    /// 720 = 759 ≤ 982 — the cap is idle: 720 pt, `capped=false`, the same (758,39) the collapsed
+    /// panel gets. A cap applied where it is not needed, or an inverted floor comparison (which
+    /// would refuse here, on every ordinary display), fails this.
+    #[test]
+    fn cap_is_idle_where_720_fits() {
+        let displays = menubar_on_builtin();
+        let got = layout(
+            PointRect::new(1852.0, 0.0, 48.0, 66.0),
+            PanelHeight::Expanded,
+            &displays,
+            Some(0),
+        );
+        assert_eq!(got.state, PanelHeight::Expanded);
+        assert_eq!(got.size, (360.0, 720.0));
+        assert!(!got.capped);
+        assert!(got.expandable);
+        assert_eq!(got.anchored.position, (758.0, 39.0));
+        assert_size_inside_work_area(&got.anchored, got.size, &displays);
+    }
+
+    /// The readout the cap is judged by: with the cap the panel's top sits `TRAY_GAP` below the
+    /// icon (the clamp was idle); the nominal 720 through the same placement is pinned to the
+    /// work-area top by `clamp_into` — gap 0 — and still ends 110 pt below the display (P4 arm 1,
+    /// `run-02-p4.log:26`: `frame_tl=[226,30 360x720]`, bottom 750 on 640). Executed here rather
+    /// than described, so the two numbers cannot drift apart from the code.
+    #[test]
+    fn cap_keeps_the_clamp_idle() {
+        let displays = menubar_on_anmite();
+        let icon_bottom = 60.0 / 2.0;
+        let capped = layout(anmite_tray(), PanelHeight::Expanded, &displays, Some(0));
+        assert_eq!(capped.anchored.position.1 - icon_bottom, TRAY_GAP);
+
+        let uncapped = anchor_points(
+            anmite_tray(),
+            (PANEL_WIDTH, EXPANDED_HEIGHT_NOMINAL),
+            &displays,
+            Some(0),
+        );
+        assert_eq!(uncapped.position.1 - icon_bottom, 0.0, "the clamp fired");
+        assert_eq!(uncapped.position.1 + EXPANDED_HEIGHT_NOMINAL, 750.0);
+    }
+
+    /// Decision D1's provisional floor, refusing side, driven from a synthetic display because no
+    /// attached one can reach it (`run-02-p4.log:32`: `refuse_expand=false` on the shortest). A
+    /// display where the capped height would *equal* the collapsed height refuses: `Collapsed` is
+    /// laid out, `expandable=false`, and the collapsed layout reports the same flag for the
+    /// control. Split from the expanding side below (review finding 2): one function asserting
+    /// both sides fails identically for an inversion and for an off-by-one, and the failure should
+    /// say which. An inverted comparison fails `cap_is_idle_where_720_fits` instead — it would
+    /// refuse on every ordinary display.
+    #[test]
+    fn refuses_when_the_cap_would_not_exceed_collapsed() {
+        let at_floor = short_display(462.0);
+        let refused = layout(
+            short_display_tray(),
+            PanelHeight::Expanded,
+            &at_floor,
+            Some(0),
+        );
+        assert!(!refused.expandable);
+        assert_eq!(refused.state, PanelHeight::Collapsed);
+        assert_eq!(refused.size, (360.0, 420.0));
+        assert!(
+            !refused.capped,
+            "a refused layout is the collapsed one, not a capped one"
+        );
+        let collapsed = layout(
+            short_display_tray(),
+            PanelHeight::Collapsed,
+            &at_floor,
+            Some(0),
+        );
+        assert!(
+            !collapsed.expandable,
+            "the collapsed layout carries the flag for the control"
+        );
+        assert_eq!(collapsed.size, (360.0, 420.0));
+    }
+
+    /// The floor's expanding side: one point taller than the refusing display above, and the panel
+    /// expands — to 421 pt, capped. A `>=` where `>` belongs fails the refusing test; a cap that is
+    /// off by one in the other direction fails this one.
+    #[test]
+    fn expands_one_point_above_the_floor() {
+        let just_over = short_display(463.0);
+        let allowed = layout(
+            short_display_tray(),
+            PanelHeight::Expanded,
+            &just_over,
+            Some(0),
+        );
+        assert!(allowed.expandable);
+        assert_eq!(allowed.state, PanelHeight::Expanded);
+        assert_eq!(allowed.size, (360.0, 421.0));
+        assert!(allowed.capped);
+        assert_size_inside_work_area(&allowed.anchored, allowed.size, &just_over);
     }
 
     /// Top-left points → Cocoa frame, pinned by the P3 measurement: anchor (758,39), 360×720, on the

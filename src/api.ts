@@ -4,11 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { EqBand } from "./bindings/EqBand";
 import type { IcyMetadata } from "./bindings/IcyMetadata";
+import type { PanelHeight } from "./bindings/PanelHeight";
+import type { PanelLayout } from "./bindings/PanelLayout";
 import type { PanelView } from "./bindings/PanelView";
 import type { PlaybackState } from "./bindings/PlaybackState";
 import type { StreamInfo } from "./bindings/StreamInfo";
 
-export type { EqBand, IcyMetadata, PanelView, PlaybackState, StreamInfo };
+export type { EqBand, IcyMetadata, PanelHeight, PanelLayout, PanelView, PlaybackState, StreamInfo };
 
 export type OndarError = { code: string; message: string };
 
@@ -23,16 +25,20 @@ export const audio = {
   getPlaybackState: () => invoke<PlaybackState>("get_playback_state"),
 };
 
-// The popover itself. `escape` reports a key; what it means is decided in Rust. `getView` is
-// the pane the popover last showed — the value `onPanelView` delivers on every effective show —
-// for the page to mirror on mount, as `getPlaybackState` is for `onState`.
+// The popover itself. `escape` reports a key and `setExpanded` a click on the expand control;
+// what either means is decided in Rust (a refused expansion changes nothing, and the page learns
+// the outcome from `onPanelLayout`, not from the call). `getLayout` is what the popover last laid
+// out — pane, height state, size in points, expandable — the value `onPanelLayout` delivers on
+// every effective show and resize, for the page to mirror on mount, as `getPlaybackState` is for
+// `onState`. The page is told its height; it never computes it.
 export const panel = {
   escape: () => invoke<void>("panel_escape"),
-  getView: () => invoke<PanelView>("get_panel_view"),
+  setExpanded: (expanded: boolean) => invoke<void>("panel_set_expanded", { expanded }),
+  getLayout: () => invoke<PanelLayout>("get_panel_layout"),
 };
 
-export const onPanelView = (cb: (v: PanelView) => void): Promise<UnlistenFn> =>
-  listen<PanelView>("panel:view", (e) => cb(e.payload));
+export const onPanelLayout = (cb: (l: PanelLayout) => void): Promise<UnlistenFn> =>
+  listen<PanelLayout>("panel:layout", (e) => cb(e.payload));
 
 // Name and version from the bundle (`core:app:default` grants both).
 export const app = {

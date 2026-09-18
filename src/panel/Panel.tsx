@@ -1,7 +1,7 @@
 // The popover's root view. Holds the one piece of state shared across panes — which pane is
-// showing, mirrored from Rust's `panel:view` — and reports Escape to Rust.
+// showing, mirrored from Rust's `panel:layout` — and reports Escape to Rust.
 import { useEffect, useState } from "react";
-import { onPanelView, panel } from "../api";
+import { onPanelLayout, panel } from "../api";
 import type { PanelView } from "../api";
 import About from "./About";
 import styles from "./panel.module.css";
@@ -14,9 +14,9 @@ export default function Panel() {
   const [view, setView] = useState<PanelView>("transport");
 
   useEffect(() => {
-    const unlisten = onPanelView(setView);
-    // An emit before this listener existed was dropped by Tauri, so ask for the current pane.
-    panel.getView().then(setView);
+    const unlisten = onPanelLayout((l) => setView(l.view));
+    // An emit before this listener existed was dropped by Tauri, so ask for the current layout.
+    panel.getLayout().then((l) => setView(l.view));
     return () => {
       unlisten.then((un) => un());
     };
