@@ -463,6 +463,18 @@ impl PanelState {
     /// resize re-emits the pane along with the height — carries the pane the page is showing,
     /// not the one the last show landed on (`/code-review` C1, 2026-09-18: Expand after Back
     /// threw the user back to About).
+    /// A refused expansion: the layout was computed against the display as it is now and says
+    /// `expandable=false`, but the page's control is driven by the flag of the last *emitted*
+    /// layout — enabled, if the work area shrank below decision D1's floor while the popover was
+    /// up (Dock reveal, arrangement change). Refresh the flag on the last layout without a new
+    /// generation — nothing is pending, no round trip — and return it for emitting, so the control
+    /// disables (decision D4) instead of clicking into silent no-ops (`/code-review` C5).
+    fn refresh_expandable(&self, expandable: bool) -> PanelLayout {
+        let mut inner = self.inner.lock().unwrap();
+        inner.last.expandable = expandable;
+        inner.last
+    }
+
     fn set_view(&self, view: PanelView) -> PanelView {
         let mut inner = self.inner.lock().unwrap();
         let before = inner.last.view;
@@ -928,6 +940,7 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
                 return;
             }
         };
+        let state = on_main.state::<PanelState>();
         if laid.state != want {
             log::info!(
                 "panel resize want={want:?} effective=false reason=refused expandable={} \
@@ -935,9 +948,11 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
                 laid.expandable,
                 laid.size.1
             );
+            // Same generation, so the page's commit effect does not fire; only the flag changes.
+            let refreshed = state.refresh_expandable(laid.expandable);
+            emit_layout(&on_main, refreshed, "refused");
             return;
         }
-        let state = on_main.state::<PanelState>();
         let view = state.layout().view;
         let emitted = state.request(view, &laid, LayoutKind::Resize, rect);
         emit_layout(&on_main, emitted, "resize");
