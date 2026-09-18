@@ -1,7 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-18 (M2d decision D1 — the expanded height is capped to the work area,
-see "M2d: the expanded height is capped to the work area"). Previously 2026-09-17 (M2c — chrome
+*Last updated: 2026-09-18 (M2d Step 0 measured and decisions D2–D4 recorded beside D1 — see
+"M2d: resize in place — Step 0 measured, D2–D4 decided" and "M2d: the expanded height is capped to
+the work area"). Previously 2026-09-17 (M2c — chrome
 and input: Esc, tray menu, rounded corners, single instance, design tokens, the M1 bench retired
 into the popover; Step 0 measurements and the gate-2 decisions — see "M2c: chrome and input,
 measured").*
@@ -591,6 +592,118 @@ M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed a
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
 
+### M2d: resize in place — Step 0 measured, D2–D4 decided (2026-09-18)
+
+Branch `m2d`. Step 0 was an uncommitted probe on `8901021` (`_handover/m2d-step0-logs/probe.patch`
+is its byte-exact record; report `_handover/m2d-step0-report.md`, gate-1 review
+`m2d-step0-review-2026-09-18.md` — both gitignored, which is why the results live here). Bundled
+debug build, macOS 26.6.2 (25G83), launched detached; every show driven by `tray::rect()` +
+`panel::show_at`. Every figure below is a **measurement** unless marked derived or decided.
+
+**A derived claim about AppKit was wrong, and the first run caught it.** The probe plan read tao
+0.35.3's source and derived that Tauri's `set_size` reaches `setContentSize:`, which "keeps the
+Cocoa bottom-left origin", so a naive height change would grow the panel upward into the menu bar.
+Measured: on a **visible** panel `setContentSize:` keeps the **top-left** — Cocoa frame
+`[537,1312 360×420]` → `[537,1012 360×720]`, top-left unchanged, in both directions over ten
+cycles. On a **hidden** panel it kept the **bottom-left** (top-left y 39 → 339 after a hidden
+shrink). The hidden case is measured and **unexplained**. Reading the source told us which
+selector is called, not what the selector does. Moot while every resize recomputes the anchor
+(below); a trap for any path that sets a size while hidden and then trusts the old position.
+
+**P5 — the M2b latent defect, reached on purpose.** With the icon on the 2× built-in and the panel
+forced onto the 1× BenQ with `setFrameOrigin`, a size-only change (`set_size` 360×720) left the
+panel on the BenQ, 221 pt left of and 783 pt above the icon; re-entering production's
+`anchor_points` with the new size landed it at (758,39) under the icon, in 0.85 ms. On the same
+display the naive and recomputed paths agree — because `setContentSize:` keeps the top-left and the
+clamp is idle there — so a same-display pass proves nothing; the other-display arm is the one that
+could fail, and did. **Rule: every expand and collapse re-enters the anchor computation with the
+new size; there is no size-only path.**
+
+**R3 — which frame a runtime check uses.** The probe logged two forms. The **own-screen** form
+(`panel.frame` inside `panel.screen().visibleFrame`) read `true` on every row *including the two
+failures* — a panel on the wrong display entirely, inside that display's visible frame, passes it.
+The **tray-screen** form (inside the visible frame of the `NSScreen` containing the icon's centre)
+failed where it should. **Any runtime assertion or log check about the panel's placement uses the
+tray-screen visible frame.** The own-screen form is not to be used for this.
+
+**P1 — what reaches the screen on a resize.** Two instant routes were measured on the 60 Hz ANMITE
+with a calibrated capture (179 of 180 frames resolved; a one-frame event is captured with p ≈ 0.99):
+one synchronous `setFrame:display:` on the NSPanel (route S, 0.6–1.7 ms, `Resized` delivered
+inside the call) and Tauri's `set_size` (route T, returns in 0.1 ms, frame changes 2.4–5.2 ms
+later on a further main-queue turn). **Both show exactly one 60 Hz frame of unpainted material at
+the new size on expand, and one frame of stale content clipped by the smaller window on
+collapse.** The page knows its new size within 2–6 ms (its `resize` report reaches Rust 2.0–5.7 ms
+after route S, 4.0–8.7 ms after route T), but WebKit's first paint at the new size lands one
+display period after the window server composites the new frame — the same mechanism as M2c's
+pane flash, with a frame change as the trigger. The animated route (`setFrame:display:animate:`,
+AppKit's default 0.231 s for this delta) showed **14 frames** of material sliding open with the
+page frozen at its old layout throughout, then the same one-frame pop.
+
+**Decision D2, 2026-09-18: the resize is not animated.** One synchronous `setFrame:display:`
+carrying size and position together (route S). Animation hides nothing and adds a quarter second
+of empty material; and **no shorter duration can rescue it**, because the page stayed frozen through
+all 14 frames — shortening only shortens the frozen window until it degenerates into the instant
+case. The question is shut on the measurement, not on taste. `docs/BUILD_PLAN.md`'s "smooth" and
+"animates" wording is amended accordingly.
+
+**P3 — hidden vs visible resize.** Both land in the same frame, anchor and occlusion state. They
+differ in one thing: a hidden WKWebView **does not lay out at all** — no `resize` report until the
+window is shown, then 23–111 ms after the show — and under capture the hide→resize→show path
+composites no wrong-size frame but replays the M2c pane flash on JS-driven content (CSS layout
+current in the first composite, React-rendered content 1–2 frames behind). It also blinks the
+popover off and on, which is not "grows in place".
+
+**Decision D3, Martín, 2026-09-18: the page-commit round trip is in M2d.** M2c review finding 8
+(the one-frame pane flash) had been deferred because "M3 replaces that page". Step 0 measured the
+same mechanism as M2d's **own** resize artefact, which M3 does not remove, so the deferral's reason
+expired and the decision was reopened per "Principle: a measurement that contradicts a recorded
+justification reopens the decision". Design: Rust emits the layout the page should render (view,
+height state, width, height, expandable flag, a generation counter); the page reports its React
+commit for that generation; Rust completes the visible change then — `setFrame` for a resize,
+`orderFrontRegardless` + `makeKeyWindow` for a show — with a **fallback timer** so a dead or slow
+page cannot wedge the popover, a stale report a logged no-op, and a hide cancelling anything
+pending. "Commit" is the DOM commit, not a paint: a hidden page runs no rendering updates (P3), so
+a report from `requestAnimationFrame` would never arrive for a show. This fixes finding 8 by
+ordering; whether it also removes the unpainted band on a visible expand depends on WebKit having
+rasterised the page's pre-laid-out overflow before the frame change — a hypothesis M2d measures at
+acceptance, not a result. The timer's value and the measured round-trip latency are recorded with
+the acceptance results.
+
+**Decision D4, Martín, 2026-09-18: when expansion is refused (D1's floor), the expand control stays
+visible and disabled.** The chrome does not differ between displays. The short-display configuration
+is a fringe case and is accepted rough: implement the shape, spend no polish budget on it. Rust
+refuses regardless of the control's state; the page never decides.
+
+**Decision, 2026-09-18: the height state persists across hides within a run.** A hide has no side
+effect (the property the one-hide-path consolidation at M2c was protecting), and the next show
+recomputes the frame for the display the icon is then on, so an expanded panel hidden on the ANMITE
+and reopened on the built-in gets 720 pt, not 598. An earlier doc comment in `panel.rs` said "M2d
+collapses the expanded state" — that was a prediction, not a decision.
+
+**P2 — is the shadow recomputed on a frame change? Yes, and the result is UNFALSIFIED.** On a
+uniform backdrop with a 0-level threshold (the two absent-reference captures were pixel-identical),
+the shadow's bottom edge moved 948 → 1108 px with the body's 160 px growth and stayed 47 px below
+it, **without** `invalidateShadow()`; calling it changed nothing. The control — halving the blur
+view with no frame change, the content-alpha case `invalidateShadow` is documented for — was
+recomputed automatically too, so the probe never demonstrated it could see a stale shadow.
+Verdict: no staleness observed, no control demonstrated. **The implementation calls
+`invalidateShadow()` unconditionally after every frame change as insurance, not as a fix**
+(58–107 µs on the main thread). The corner **contour** fit read 29.98 pt, rms 2.30 px, in all five
+captures including the control: it is not a weak instrument, it is an instrument pointed at a
+constant — the corner radius convolved with a fixed blur kernel is a property of the rendering,
+not of the state — and it is recorded as such, not as corroboration. Closes the Loose-ends item.
+
+**Instrument lessons, the sixth and seventh instances of "verify the instrument":** the
+`setContentSize:` derivation above (a source-derived claim about what a selector *does*), and an
+opaque probe overlay that kept the window's alpha opaque everywhere and so masked the very control
+it existed to enable — a direct repeat of M2c's lesson that an instrument which changes the
+quantity it measures reports its own shape. Both are appended to the principle section.
+
+**Open, watched at acceptance:** in three P3 runs the panel resigned key 1.5 s / 1.5 s / 62 ms
+after its first show; one was the probe's own helper launching, two are unexplained. No P3
+quantity depends on key status. This is the re-check M2c P7's closure asked for ("if a second
+window ever returns, re-check"); a recurrence with hands off is a defect.
+
 ### M2d: the expanded height is capped to the work area (decided 2026-09-18)
 
 **Decision D1, Martín, 2026-09-18.** The expanded popover's height is
@@ -619,11 +732,23 @@ to expand on a short display is honest and simple, but silently disables a featu
 three displays attached here. Capping keeps the map, which wants area rather than a specific
 height, and costs only that the expanded height varies.
 
-**On the ANMITE this gives ~598 pt (610 − 6 − 6). That figure is derived, not measured.** M2d
-Step 0's P4 measures it; if P4 disagrees, the arithmetic above is wrong, not the measurement.
+**On the ANMITE this gives 598 pt (610 − 6 − 6) — measured 2026-09-18, M2d Step 0 P4** (an
+earlier version of this paragraph recorded the figure as derived, which under this project's tag
+discipline was a correctness bug in the document once the measurement existed). The ANMITE hosted
+the menu bar, work area measured (0,30) 960×610 pt at launch; the probe computed
+`work_area_height_pt=610 usable=598 nominal=720 capped=598 refuse_expand=false` and the panel
+landed at `[226,36 360×598]`, 6 pt below the icon with its bottom 6 pt above the display's edge.
+The pre-cap control — 720 pt through the unchanged show path — was pulled to the work-area top by
+`clamp_into` (gap 0) and still ran 110 pt off the bottom of the display: the clamp cannot fit a
+720 pt panel into 610 pt; the cap is what does. **The gap below the icon is the sensitive
+readout: 6 pt means the clamp was idle, 0 pt means it fired.**
 
-D2 — whether the resize is animated — stays open and is answered from Step 0's P1 and P3, not
-before.
+**The refusal branch was not exercised by any attached display** (no work area here makes
+`capped ≤ 420` true), so it is covered by a unit test driven from a synthetic work area on both
+sides of the boundary — the comparison is one that an inverted or off-by-one version would ship
+unnoticed, and an inverted one refuses on *every* display, not just the short one.
+
+D2, D3 and D4 are recorded in "M2d: resize in place — Step 0 measured, D2–D4 decided" above.
 
 ### M2c: chrome and input, measured (2026-09-16/17)
 
@@ -745,9 +870,11 @@ shell test that reads the stylesheet.
 - **A one-frame flash of the previous pane** on About from the menu, and on the first tray click
   after Back or Esc: the view event is async (JS, then a React commit) and `orderFrontRegardless`
   is not, so the retained WKWebView layer is composited once before the new pane. Predicted by
-  `/code-review` as plausible, now measured. **Deferred**: the fix is a round trip (the page
+  `/code-review` as plausible, now measured. **Deferred** at M2c: the fix is a round trip (the page
   reports its commit, Rust orders in then, with a fallback timer), owed to whichever milestone
-  keeps the About pane — M3 replaces this page.
+  keeps the About pane — M3 replaces this page. **Reopened and taken into M2d as decision D3**
+  (2026-09-18): M2d Step 0 measured the same mechanism as the resize's own artefact, which M3 does
+  not remove. See "M2d: resize in place — Step 0 measured, D2–D4 decided".
 
 ### M2b: coordinates are logical points (decided and measured 2026-09-16)
 
@@ -1320,11 +1447,11 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 
 ### Loose ends
 
-- **Shadow after resize (carried to M2d, 2026-09-17).** The popover's shadow is derived from the
-  window's composited alpha (M2c R8, measured: 20.4 vs 29.4 pt shadow contour for a square vs a
-  17 pt body) and computed by the window server. When M2d resizes the panel, check that the
-  shadow is recomputed after the frame changes (`invalidateShadow()` if it is not), or the
-  expanded panel may keep the collapsed shadow's shape.
+- **Shadow after resize — resolved 2026-09-18 (M2d Step 0, P2).** Carried from M2c R8: a shadow
+  derived from the window's composited alpha might keep the collapsed shape after a resize.
+  Measured: the shadow's extent follows the frame change without `invalidateShadow()`; the control
+  could not manufacture staleness, so the result is unfalsified and the call is made
+  unconditionally as insurance. See "M2d: resize in place — Step 0 measured, D2–D4 decided".
 - **One `pnpm tauri build --debug` failure, not reproducible (2026-09-15).** On branch `m2`
   with the M2a code uncommitted, the build produced `Ondar.app` and then failed at the DMG step:
   `` failed to bundle project: error running bundle_dmg.sh: `failed to run /Users/mv/Developer/Onda/src-tauri/target/debug/bundle/dmg/bundle_dmg.sh` ``
@@ -1437,6 +1564,19 @@ window was on the built-in). The menu-bar display is `screens()[0]`, or `CGMainD
 what `tray-icon` uses. The name is the trap: "main screen" and "main display" are different things in
 AppKit, and a positioning fix built on `mainScreen` would be wrong only on multi-monitor setups where
 focus is on another display — silently, and in exactly the configuration it was written for.
+
+A sixth and a seventh, 2026-09-18 (M2d Step 0). **Sixth: a claim derived from source about what a
+selector does.** tao's source shows `set_size` reaching `setContentSize:`; the plan then asserted
+that the selector keeps the Cocoa bottom-left origin. Measured, a visible window keeps the
+top-left. The source is authoritative about *which* call is made and silent about what AppKit does
+with it — the instrument here was the reader, treating a call site as a behaviour. **Seventh: an
+opaque instrument overlay masked its own control.** The probe's opaque page fill kept the window's
+alpha opaque everywhere, so the blur-view control that was supposed to manufacture a stale shadow
+could not change the silhouette at all — the run read as a pass because the instrument had removed
+the quantity it was measuring. A direct repeat of M2c's lesson (an instrument that changes the
+quantity it measures reports its own shape), caught by looking at the crops rather than the
+numbers. Neither is a "verify the instrument" instance in the quiet-degradation sense of the first
+five; both are the reader's step being skipped — a derivation, or an overlay, taken as the thing.
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 
