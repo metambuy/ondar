@@ -124,6 +124,7 @@ pub fn run() {
             commands::panel::get_panel_layout,
             commands::panel::panel_set_expanded,
             commands::panel::panel_layout_committed,
+            commands::panel::panel_view_back,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ondar");

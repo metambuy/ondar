@@ -32,6 +32,13 @@ pub fn panel_layout_committed(app: AppHandle, generation: u32) {
     panel::layout_committed(&app, generation);
 }
 
+/// The page's Back button left the About pane. Rust records the pane so the next layout event
+/// carries the one the page is showing.
+#[tauri::command]
+pub fn panel_view_back(app: AppHandle) {
+    panel::view_back(&app);
+}
+
 /// The page's expand/collapse control was clicked. Rust decides what that means — a layout for
 /// the new height against a fresh tray rect, or a logged refusal (decision D1's floor) — and the
 /// page learns the outcome from `panel:layout`, never from this call's return.

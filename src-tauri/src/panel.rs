@@ -436,6 +436,17 @@ impl PanelState {
         inner.last
     }
 
+    /// The page left the About pane through its Back button. Recorded so a later layout — a
+    /// resize re-emits the pane along with the height — carries the pane the page is showing,
+    /// not the one the last show landed on (`/code-review` C1, 2026-09-18: Expand after Back
+    /// threw the user back to About).
+    fn set_view(&self, view: PanelView) -> PanelView {
+        let mut inner = self.inner.lock().unwrap();
+        let before = inner.last.view;
+        inner.last.view = view;
+        before
+    }
+
     fn complete(&self, generation: u32) -> Option<Pending> {
         self.inner.lock().unwrap().round_trip.complete(generation)
     }
@@ -898,6 +909,22 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
     });
     if let Err(e) = queued {
         log::warn!("panel resize expanded={expanded} not queued: {e}");
+    }
+}
+
+/// The page's Back button (`commands::panel::panel_view_back`): the About pane gave way to the
+/// transport. The transition itself is the page's — it is made inside an already-shown popover
+/// and re-asserted by Rust on the next show anyway — but the pane on show is Rust's state, so the
+/// page reports it; otherwise the next resize's `panel:layout` would carry `About` and the
+/// listener would put the About pane back with no gesture on it (`/code-review` C1).
+pub fn view_back<R: Runtime>(handle: &AppHandle<R>) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        let before = on_main.state::<PanelState>().set_view(PanelView::Transport);
+        log::info!("panel view back from={before:?} to=Transport");
+    });
+    if let Err(e) = queued {
+        log::warn!("panel view back not queued: {e}");
     }
 }
 

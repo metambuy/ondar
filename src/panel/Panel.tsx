@@ -15,7 +15,9 @@ export default function Panel() {
   const [layout, setLayout] = useState<PanelLayout | null>(null);
   // Rust asserts the view on every show (About for the tray menu's About item, the transport
   // for everything else), so About never outlives a hide. Back is the one local transition: a
-  // choice made inside an already-shown popover, re-asserted by Rust on the next show anyway.
+  // choice made inside an already-shown popover, re-asserted by Rust on the next show anyway —
+  // and reported to Rust, because every later layout event carries the pane too
+  // (`/code-review` C1, 2026-09-18: without the report, Expand after Back re-asserted About).
   const [view, setView] = useState<PanelView>("transport");
   // The window's own height, as the webview sees it — view state, read on `resize`.
   const [windowHeight, setWindowHeight] = useState(window.innerHeight);
@@ -89,7 +91,14 @@ export default function Panel() {
       <div hidden={view === "about"}>
         <Transport />
       </div>
-      {view === "about" && <About onBack={() => setView("transport")} />}
+      {view === "about" && (
+        <About
+          onBack={() => {
+            setView("transport");
+            void panel.viewBack();
+          }}
+        />
+      )}
 
       {/* Decision D4: when expansion is refused (D1's floor) the control stays, disabled, so the
           chrome is the same on every display. Rust refuses regardless of this attribute. */}

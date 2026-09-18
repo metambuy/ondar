@@ -100,8 +100,10 @@ onda/
     │                             panel_set_expanded (the page reports a click on the expand control;
     │                             Rust lays out, applies or refuses), panel_layout_committed (the page
     │                             reports its DOM commit for a layout generation; Rust completes the
-    │                             show or resize then — D3) and get_panel_layout (the layout last
-    │                             emitted, for the page to mirror on mount)
+    │                             show or resize then — D3), panel_view_back (the page's Back left
+    │                             About; recorded so later layouts carry the pane on screen) and
+    │                             get_panel_layout (the layout last emitted, for the page to mirror
+    │                             on mount)
     └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
         ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
         ├── stream.rs             stream-download open, ICY headers, timeout invariant
@@ -200,9 +202,11 @@ pending show in, or changes the visible panel's frame — if that generation is 
 stale, superseded or cancelled generation is a logged no-op; a hide cancels; and a fallback
 timer (`LAYOUT_FALLBACK`, 250 ms provisional, provenance in its doc comment) completes without
 the report so a dead page cannot wedge the popover — `trigger=fallback` on a healthy page is a
-defect. And one panel getter, `get_panel_layout()` (`panel.getLayout()`), the counterpart of the
-`panel:layout` event as `get_playback_state` is of `playback:state`. All four are outside the
-three groups below — they never touch the engine.
+defect. A fourth, `panel_view_back()` (`panel.viewBack()`): the page's Back button left the About
+pane — the one page-local transition — and reports it, so the pane a later layout event carries
+is the one on screen (`/code-review` C1). And one panel getter, `get_panel_layout()`
+(`panel.getLayout()`), the counterpart of the `panel:layout` event as `get_playback_state` is of
+`playback:state`. All five are outside the three groups below — they never touch the engine.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`, and

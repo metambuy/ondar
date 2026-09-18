@@ -33,6 +33,8 @@ export const audio = {
 // `onState`. The page is told its height; it never computes it.
 export const panel = {
   escape: () => invoke<void>("panel_escape"),
+  // Back left the About pane: reported, so the next layout event carries the pane on screen.
+  viewBack: () => invoke<void>("panel_view_back"),
   setExpanded: (expanded: boolean) => invoke<void>("panel_set_expanded", { expanded }),
   getLayout: () => invoke<PanelLayout>("get_panel_layout"),
   // The page committed the DOM for this layout generation; Rust completes the visible change
