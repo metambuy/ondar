@@ -8,11 +8,13 @@
 //! - `PanelBuilder::no_activate(true)` does not make the panel non-activating; it only swaps
 //!   the activation policy around window creation. That is the style mask's job.
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use tauri::{
-    ActivationPolicy, App, AppHandle, LogicalPosition, LogicalSize, Manager, Position, Rect,
-    Runtime, Size, WebviewUrl, WebviewWindow, WindowEvent,
+    ActivationPolicy, App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position,
+    Rect, Runtime, Size, WebviewUrl, WebviewWindow, WindowEvent,
     window::{Effect, EffectState, EffectsBuilder},
 };
 use tauri_nspanel::{
@@ -25,15 +27,33 @@ use tauri_nspanel::{
     objc2_app_kit::{NSWindowOcclusionState, NSWindowStyleMask},
     tauri_panel,
 };
+use ts_rs::TS;
 
-/// Label of the popover window.
-///
-/// Deliberately absent from `capabilities/default.json` (which, being JSON, cannot say so
-/// itself): `panel.html` invokes nothing, so it needs no permissions. Widening the capability
-/// to this window is a real permission decision for when the popover gains commands.
+/// Label of the popover window — the only window, and the one `capabilities/default.json` is
+/// scoped to since the M1 bench window retired (M2c). The page invokes, so the capability is a
+/// real permission decision: `core:default` (events, app name/version) and nothing else.
+/// App-defined commands need no ACL entry from a local page (tauri 2.11.5
+/// `webview/mod.rs:1823`: the ACL gates plugin commands, a declared app manifest, and remote
+/// origins).
 const PANEL_LABEL: &str = "panel";
 
 const PANEL_SIZE: LogicalSize<f64> = LogicalSize::new(360.0, 420.0);
+
+/// Corner radius of the popover, in **points**: Control Center's, measured on macOS 26.6.2
+/// (25G83) on 2026-09-17 — 7.6 pt by a calibrated threshold fit and 8.3 pt by a differential
+/// match, the spread being backdrop-contrast dependent (M2c Step 0, R9). Re-measure if the OS
+/// major version changes; system radii move between releases.
+///
+/// The same number is `--radius-panel` in `src/styles/tokens.css`, and
+/// `tokens_css_panel_radius_matches_the_effects_radius` fails if the two ever disagree.
+///
+/// Applied through `EffectsBuilder::radius`, which reaches window-vibrancy 0.6.0's
+/// `setCornerRadius:` on the effect view — a selector that crate's own source calls possibly
+/// private ("not listed in Apple documentation, might be private, but it works",
+/// `ns_visual_effect_view_tagged.rs:92-99`). Ondar does not call it; Tauri does. Recorded in
+/// ONDAR.md as a dependency risk: a Tauri or window-vibrancy bump could drop it. Measured
+/// 2026-09-17: it rounds the material, and the window shadow follows the corners (R8).
+pub const PANEL_CORNER_RADIUS: f64 = 8.0;
 
 /// Logical **points** between the bottom edge of the tray icon and the top edge of the panel.
 ///
@@ -77,6 +97,9 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     // `Prohibited` around window creation and afterwards restores whatever the policy was
     // *before* — so setting Accessory later would be undone and the Dock icon would return.
     app.set_activation_policy(ActivationPolicy::Accessory);
+    app.manage(PanelState {
+        view: Mutex::new(PanelView::Transport),
+    });
 
     let panel = PanelBuilder::<_, OndarPanel<_>>::new(app.handle(), PANEL_LABEL)
         .url(WebviewUrl::App("panel.html".into()))
@@ -123,6 +146,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     window.set_effects(
         EffectsBuilder::new()
             .effect(Effect::Popover)
+            .radius(PANEL_CORNER_RADIUS)
             // `Active`, not `FollowsWindowActiveState`. Whether AppKit draws a key
             // non-activating panel in an inactive app as "active" was never measured, and the
             // popover should look active whenever it is on screen either way.
@@ -135,22 +159,183 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     // delegate. `Panel::set_event_handler` would replace it — it keeps the original only to
     // restore it when the handler is set back to `None`, and forwards nothing while installed —
     // silencing tao's Resized/Moved/Focused/ScaleFactorChanged for this window. See ONDAR.md.
-    let on_event = panel.clone();
+    let on_resign = app.handle().clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
-            log::info!(
-                "panel resigned key -> hide visible_before={}",
-                on_event.is_visible()
-            );
-            on_event.hide();
+            hide(&on_resign, HideReason::ResignKey);
         }
     });
 
     Ok(())
 }
 
-/// Tray click: hide if shown, otherwise anchor under the tray icon and show as key.
-pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) -> tauri::Result<()> {
+/// Why the popover is being hidden. Logged on every hide, so the log can show that one close is
+/// one *effective* hide whatever else fires: every close measured so far fires two hides — the
+/// toggle's, then the resign-key one 2.2–3.7 ms later (2026-09-15, re-measured 2026-09-16) — and
+/// that stays harmless only while the log can show it is a double.
+///
+/// Variants are added with their callers, because under `-D warnings` an unused variant is a
+/// `dead_code` error rather than a placeholder.
+#[derive(Clone, Copy, Debug)]
+pub enum HideReason {
+    /// The tray icon was clicked while the popover was showing.
+    Toggle,
+    /// The panel resigned key (`WindowEvent::Focused(false)`): a click elsewhere, or being
+    /// ordered out by another hide.
+    ResignKey,
+    /// The page reported an Escape `keydown` (`commands::panel::panel_escape`). Escape reaches
+    /// the webview's JS in both phases — before and after a click inside the panel — with the
+    /// WKWebView first responder from the moment the panel is shown (M2c Step 0, item 1).
+    Esc,
+    /// The tray icon was right-clicked, so the menu is about to open. Decided 2026-09-16: a
+    /// menu over a live popover is not wanted, and opening the menu does not resign the panel's
+    /// key status (Step 0, item 2), so nothing else would hide it. Keyed off `Click{Right, Down}`
+    /// — the only right-click event that arrives — and measured to land visually before the
+    /// menu (R5: 5.6 ms on main).
+    Menu,
+}
+
+impl HideReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::ResignKey => "resign_key",
+            Self::Esc => "esc",
+            Self::Menu => "menu",
+        }
+    }
+}
+
+/// Which pane the popover shows. Crosses the boundary twice — as the `panel:view` event on
+/// every effective show and as the `get_panel_view` command's answer — so it is a generated
+/// type, not a string agreed on by hand on both sides (`/code-review` finding 7, 2026-09-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelView {
+    /// The dev transport (M2c) — the M3 country/station UI later.
+    Transport,
+    /// The About pane, from the tray menu.
+    About,
+}
+
+/// The pane the popover last showed, held in Tauri state so the page can ask for it on mount:
+/// an emit with no JS listener registered yet is dropped by Tauri with `Ok(())`, so without a
+/// getter a show before `listen` resolved — or after a webview reload — rendered the wrong pane
+/// while the log claimed the right one (`/code-review` finding 3, 2026-09-17). Mirrors
+/// `get_playback_state` for the engine.
+pub struct PanelState {
+    view: Mutex<PanelView>,
+}
+
+impl PanelState {
+    /// `Mutex::lock().unwrap()`: poison propagation only (CLAUDE.md's exemption).
+    pub fn view(&self) -> PanelView {
+        *self.view.lock().unwrap()
+    }
+}
+
+/// Why the popover is being shown. Logged like [`HideReason`], and **the quantity the page's
+/// view is derived from**: every effective show stores and emits [`ShowReason::view`], so which
+/// pane is showing is decided here and only mirrored by the webview (decided 2026-09-17; an
+/// earlier draft let the About pane survive a hide, which put the next tray click on About).
+#[derive(Clone, Copy, Debug)]
+pub enum ShowReason {
+    /// The tray icon was clicked while the popover was hidden.
+    Toggle,
+    /// The tray menu's About item. Decided 2026-09-16: About lives inside the popover, not in
+    /// the standard About panel, which an `Accessory` app opens at `NSNormalWindowLevel` behind
+    /// the frontmost app (Step 0, item 3).
+    About,
+    /// `RunEvent::Reopen`: `open Ondar.app` or a Finder double-click against a running app.
+    /// LaunchServices starts no second process for those, so the single-instance plugin cannot
+    /// see them; they arrive as `applicationShouldHandleReopen:` (Step 0, item 5, cases (a)
+    /// and (d) — the latter fires twice, the second show is the logged no-op).
+    Reopen,
+    /// The single-instance plugin's callback: a real second process started (`open -n`, the
+    /// inner binary, a copy of the bundle at another path) and handed off to this one.
+    SecondInstance,
+}
+
+impl ShowReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::About => "about",
+            Self::Reopen => "reopen",
+            Self::SecondInstance => "second_instance",
+        }
+    }
+
+    /// The pane this show lands on: About for [`Self::About`], the transport for everything else.
+    fn view(self) -> PanelView {
+        match self {
+            Self::About => PanelView::About,
+            Self::Toggle | Self::Reopen | Self::SecondInstance => PanelView::Transport,
+        }
+    }
+}
+
+/// **The one hide path.** Every close goes through here — the tray toggle and resign-key today,
+/// and whatever M2c adds — so that when a hide gains side effects (M2d collapses the expanded
+/// state) they run once per close, not once per caller.
+///
+/// Always executed on the main thread. `PanelHandle` is `Send`, but its methods are bare
+/// `msg_send!` with no dispatch of their own (tauri-nspanel c9ec213 `panel.rs:14-17`: "all actual
+/// panel operations must be performed on the main thread"). `run_on_main_thread` runs the closure
+/// inline when already on main (tauri-runtime-wry 2.11.4 `lib.rs:235-255`) and posts it otherwise,
+/// so every caller gets the same path, and the log line records which thread it ran on.
+///
+/// Hiding an already-hidden panel is a logged no-op — `effective=false` — never silence.
+pub fn hide<R: Runtime>(handle: &AppHandle<R>, reason: HideReason) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        let Ok(panel) = on_main.get_webview_panel(PANEL_LABEL) else {
+            log::warn!(
+                "panel hide reason={} panel not in the tauri-nspanel store",
+                reason.as_str()
+            );
+            return;
+        };
+        let effective = panel.is_visible();
+        // `orderOut:` on a window that is already out is itself a no-op, so this is called
+        // unconditionally: the log line is what distinguishes the two cases, not a branch.
+        panel.hide();
+        log::info!(
+            "panel hide reason={} effective={effective} thread={:?}",
+            reason.as_str(),
+            std::thread::current().name()
+        );
+    });
+    if let Err(e) = queued {
+        log::warn!("panel hide reason={} not queued: {e}", reason.as_str());
+    }
+}
+
+/// **The one show path.** Anchors the panel under `rect` (a tray rect in the units
+/// `TrayIconEvent::Click` uses), orders it in and makes it key. Showing an already-visible panel
+/// is a logged no-op: a second request while the popover is up leaves it up (decided 2026-09-17)
+/// rather than toggling it away.
+///
+/// Main-thread discipline and logging as in [`hide`]. Failures are logged here rather than
+/// returned, so a caller on any thread can fire and forget.
+pub fn show_at<R: Runtime>(handle: &AppHandle<R>, rect: Rect, reason: ShowReason) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        if let Err(e) = show_on_main(&on_main, rect, reason) {
+            log::warn!("panel show reason={} failed: {e}", reason.as_str());
+        }
+    });
+    if let Err(e) = queued {
+        log::warn!("panel show reason={} not queued: {e}", reason.as_str());
+    }
+}
+
+fn show_on_main<R: Runtime>(
+    handle: &AppHandle<R>,
+    rect: Rect,
+    reason: ShowReason,
+) -> tauri::Result<()> {
     // Two distinct messages: the spike logged one `window not found` for two different failure
     // sites and the log could not say which had fired.
     let Ok(panel) = handle.get_webview_panel(PANEL_LABEL) else {
@@ -163,26 +348,67 @@ pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) -> tauri::Result<()
     };
 
     if panel.is_visible() {
-        log::info!("panel toggle -> hide");
-        panel.hide();
+        log::info!(
+            "panel show reason={} effective=false thread={:?}",
+            reason.as_str(),
+            std::thread::current().name()
+        );
         return Ok(());
+    }
+
+    // The view changes only on an effective show. Emitting on the no-op too read as "a second
+    // request while the popover is up lands the pane it asked for", but no mouse route reaches
+    // About with the popover visible (right-`Down` hides first), and the only live effect was
+    // the reverse: a re-launch while About was up kicked the user back to the transport with no
+    // gesture on the popover (`/code-review` finding 6, 2026-09-17).
+    let view = reason.view();
+    *handle.state::<PanelState>().view.lock().unwrap() = view;
+    if let Err(e) = handle.emit(crate::events::PANEL_VIEW, view) {
+        log::warn!(
+            "panel view={view:?} reason={} not emitted: {e}",
+            reason.as_str()
+        );
+    } else {
+        log::info!("panel view={view:?} reason={}", reason.as_str());
     }
 
     window.set_position(anchor(&window, rect)?)?;
     panel.show();
     // `show()` is `orderFrontRegardless` alone, and a panel that is never key can never resign
     // key. Not `show_and_make_key()`: that also makes the content view (`WryWebViewParent`)
-    // first responder, taking it from the WKWebView.
+    // first responder, taking it from the WKWebView — measured 2026-09-16: after plain
+    // `make_key_window()` the first responder is the `WryWebView` at t+0 in every run.
     panel.make_key_window();
 
     let ns = panel.as_panel();
     log::info!(
-        "panel shown class={} key={}",
+        "panel show reason={} effective=true class={} key={} thread={:?}",
+        reason.as_str(),
         ns.class().name().to_string_lossy(),
-        ns.isKeyWindow()
+        ns.isKeyWindow(),
+        std::thread::current().name()
     );
     log_settled_occlusion(handle, &panel);
     Ok(())
+}
+
+/// Tray click: hide if shown, otherwise show under the icon. Decides only; the ordering in and
+/// out is [`hide`] and [`show_at`], so a tray close is one effective hide like every other close.
+pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || {
+        let visible = on_main
+            .get_webview_panel(PANEL_LABEL)
+            .is_ok_and(|p| p.is_visible());
+        if visible {
+            hide(&on_main, HideReason::Toggle);
+        } else {
+            show_at(&on_main, rect, ShowReason::Toggle);
+        }
+    });
+    if let Err(e) = queued {
+        log::warn!("panel toggle not queued: {e}");
+    }
 }
 
 /// Log the decoded occlusion state `OCCLUSION_SETTLE` after show.
@@ -949,5 +1175,36 @@ mod tests {
         let area = PointRect::new(0.0, 30.0, 300.0, 900.0);
         let got = clamp_into((100.0, 36.0), panel(), area);
         assert_eq!(got.0, EDGE_MARGIN);
+    }
+
+    /// The radius the effect view is rounded to and the radius the page clips itself to are the
+    /// same measurement written in two places — `PANEL_CORNER_RADIUS` here and `--radius-panel`
+    /// in `tokens.css` (CSS px are points inside the webview). Read the stylesheet at test time
+    /// so the agreement is executed rather than asserted in a comment: change either number
+    /// alone and this fails. (`include_str!` also makes the stylesheet a compile-time input of
+    /// this crate, which is the intended coupling.)
+    #[test]
+    fn tokens_css_panel_radius_matches_the_effects_radius() {
+        const TOKENS: &str = include_str!("../../src/styles/tokens.css");
+        let declaration = TOKENS
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("--radius-panel:"))
+            .expect("tokens.css declares --radius-panel");
+        let value = declaration
+            .trim_start_matches("--radius-panel:")
+            .trim()
+            .trim_end_matches(';')
+            .trim();
+        let px = value
+            .strip_suffix("px")
+            .unwrap_or_else(|| panic!("--radius-panel should be in px, found `{value}`"));
+        let token: f64 = px
+            .parse()
+            .unwrap_or_else(|_| panic!("--radius-panel should be a number, found `{value}`"));
+        assert_eq!(
+            token, PANEL_CORNER_RADIUS,
+            "tokens.css --radius-panel is {value} but PANEL_CORNER_RADIUS is {PANEL_CORNER_RADIUS}"
+        );
     }
 }

@@ -1,7 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-11 (Phase 1 block 2 — harness pacing fix, dwell latch, engine
-watchdog, prefetch knee, and a re-measured latency table).*
+*Last updated: 2026-09-17 (M2c — chrome and input: Esc, tray menu, rounded corners, single
+instance, design tokens, the M1 bench retired into the popover; Step 0 measurements and the
+gate-2 decisions — see "M2c: chrome and input, measured").*
 
 ## What Ondar is
 
@@ -185,6 +186,34 @@ before actually adding):
   - `Monitor::work_area()` is `NSScreen.visibleFrame` in top-left-origin physical pixels
     (tauri-runtime-wry `src/monitor/macos.rs:8-28`). `monitor_from_point` tests against
     `CGDisplayBounds`, which is in **points** (tao `platform_impl/macos/monitor.rs:163-170`).
+
+**Added at M2c (2026-09-17):**
+
+- `tauri-plugin-single-instance` **2.4.4** (the current 2.x; 3.0.0-alpha.0 exists and is not
+  taken), registered **first**. macOS mechanism, read in `src/platform_impl/macos.rs` and
+  measured end to end: a Unix socket at `/tmp/<identifier with `.` and `-` replaced by
+  `_`>_si.sock` (`:62`) — `/tmp/dev_crabnebula_ondar_si.sock` today. A starting process
+  connects; on success it writes cwd + argv and `exit(0)`s inside plugin setup (`:27-29`), before
+  anything else is built; on `NotFound`/`ConnectionRefused` it removes the path and binds, which
+  is why a socket left behind by `kill -9` recovers (measured, R7); on any *other* connect error
+  it launches normally with **no** protection. The callback runs on a tokio worker
+  (`tauri::async_runtime::spawn`, `:100`) — hop to main before touching AppKit. The socket is
+  removed on `RunEvent::Exit`. It covers a real second process only (`open -n`, the inner binary,
+  a copy of the bundle at another path); `open Ondar.app` and a Finder double-click against the
+  running app start no process and arrive as `RunEvent::Reopen`, wired in `lib.rs`.
+- Tauri CLI **2.11.4** (`@tauri-apps/cli`; the `tauri` crate is 2.11.5). `tauri dev --config
+  <file>` merges the file into the configuration `generate_context!` bakes in — tauri-codegen
+  reads `TAURI_CONFIG` (`lib.rs:83-87`) and tauri-build reruns on it (`lib.rs:472`). The CLI
+  source that sets `TAURI_CONFIG` is not readable here (npm ships a binary), so that link is
+  **measured**, not read: `pnpm tauri:dev` creates `/tmp/dev_crabnebula_ondar_dev_si.sock`
+  (2026-09-17), and a bundle built without the overlay keeps `dev.crabnebula.ondar`.
+- **Dependency risk, not a dependency:** `EffectsBuilder::radius` (tauri 2.11.5
+  `window/mod.rs:2453`) reaches window-vibrancy 0.6.0's `setCornerRadius:` on the effect view,
+  which that crate's own source calls "not listed in Apple documentation, might be private, but
+  it works" (`ns_visual_effect_view_tagged.rs:92-99`). Ondar sends no private selector; Tauri
+  does. A Tauri or window-vibrancy bump could drop it, so the corners are part of every
+  milestone's by-eye acceptance. The `wants_layer=false` lead recorded during Step 0 is **void**:
+  rounding works with no layer backing.
 
 **MSRV correction (found and closed 2026-09-10, `7bbe332`):** the workspace `Cargo.toml` used
 to declare `rust-version = "1.85"`, but `stream-download` 0.24.4's own manifest declares
@@ -554,7 +583,133 @@ What that does to the recorded conclusions:
   called `to_window()` before positioning (reverting on the first click), `hides_on_deactivate`
   was still set, and `show()` never made the panel key.
 
-M2a's `panel shown` log line prints `class=`, so a revert cannot go unnoticed again.
+M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
+the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
+field, whatever the line is called).
+
+### M2c: chrome and input, measured (2026-09-16/17)
+
+Branch `m2c`. Step 0 was an uncommitted probe (`_handover/m2c-step0-logs/probe.patch` is its
+byte-exact record; report `_handover/m2c-step0-report.md`), on the bundled debug build, macOS
+26.6.2 (25G83), built-in display at 2×. Martín performed every gesture. Every number here is a
+measurement unless marked as a decision.
+
+**What was measured, and what it decided.**
+
+1. **Escape reaches the webview's JS in both phases** — panel key with Safari still the active
+   app and no click inside the panel, and after one click inside — 3/3 each, and the WKWebView
+   is first responder from `t+0` after plain `make_key_window()` (the `panel.rs` claim written at
+   M2a, now tested). So Esc is a page `keydown` → `panel_escape` → `panel::hide(reason=esc)`;
+   no native subclass or key monitor. The unhandled key beeped in the probe, louder after an
+   in-panel click; the shipped listener calls `preventDefault()`, checked by ear at acceptance.
+2. **`show_menu_on_left_click(false)` is required.** Run A left tray-icon's default `true`:
+   7 left-clicks → 7 `Click{Left,Down}`, 0 `Up`, 0 toggles — the menu's modal tracking loop
+   swallows `mouseUp:` and the toggle keys off `Up`, so the tray icon merely showed the menu.
+   **Right-click emits `Down` only** (5/5, never an `Up`): right-click logic keys off `Down`.
+   Opening the menu does **not** resign a visible panel's key status, so the hide on right-`Down`
+   is explicit — measured to run on main in 5.6 ms and to land visually before the menu (R5).
+3. **The standard About panel opens behind the frontmost app**: created, `visible=true`,
+   `level=0` (`NSNormalWindowLevel`) while the app is inactive. Decided: About is a pane inside
+   the popover, and `PredefinedMenuItem::about` is not used. A 3 s window sampler first missed it
+   entirely — the menu was still open — hence the instrument lesson below.
+4. **`EffectsBuilder::radius` works, and the window shadow follows the corners.** An earlier
+   reading of the same probe said `radius` was inert and recommended the documented `maskImage`;
+   it was **retracted** (see the null-test lesson below). Calibrated against known radii, `radius`
+   and `maskImage` produce identical arcs (0.75 / 9.95 / 12.35 pt measured for 0 / 8.5 / 12 pt
+   set), as do a layer on the effect view and a layer on `contentView`. Shadow contour: **20.40 pt
+   for a square body, 29.40 pt for a 17 pt body** — the shadow derives from the window's
+   composited alpha, so whatever rounds the material rounds the shadow, and `invalidateShadow()`
+   adds nothing. The evidence is the *difference*, not the absolute: blur rounds a square corner
+   on its own. **Radius token 8 pt** — Control Center measured 7.6 pt by a calibrated threshold
+   fit (−0.8 pt) and ≈ 8.3 pt by a differential match; the spread is backdrop-contrast
+   dependent (repeatable to 0.00 pt within a backdrop, ~0.6 pt across). Confirmed at acceptance
+   by one capture holding both the panel and Control Center. Re-measure if the OS major version
+   changes.
+5. **Single instance, six cases.** (a) `open Ondar.app` and (d) a Finder double-click →
+   `RunEvent::Reopen` on the main thread, no plugin callback — LaunchServices starts no process
+   ((d) fires twice). (b) `open -n`, (c) the inner binary, (e) **a copy of the bundle at another
+   path**, (f) `pnpm tauri dev` → the plugin callback on `tokio-rt-worker`. (e) is what
+   justifies the plugin: LaunchServices does not dedupe by identifier across paths. (f) was real
+   dev friction — the dev instance handed off and exited — fixed by the dev identifier
+   (`tauri.dev.conf.json`, `pnpm tauri:dev`). After `kill -9` the socket survives, and the next
+   launch removes and rebinds it; the callback fires again (R7).
+6. **`TrayIcon::rect()` equals `Click { rect }`**: 11/11 clicks, on the main thread in
+   21–198 µs, plus 71–80 µs from the `Reopen` handler. Both are tray-icon 0.24.2's one
+   `get_tray_rect`; the measurement closed the step source could not (same `NSWindow`).
+7. **Quit with a stream playing**: `PredefinedMenuItem::quit` is `terminate:`; the process
+   exited 0 (against a 143/143 SIGTERM control), no panic, `pgrep -x ondar` empty. **The engine
+   is not shut down; the process is**, and the OS reclaims the device. Recorded as the behaviour.
+8. **The setup-time self-resign is gone with `main`**: 3 launches × 5 samples, 15/15 key.
+   The mechanism was never identified; the condition was removed, not explained.
+9. **The double-hide re-measured** at +2.2 / +2.4 / +3.7 ms, and consolidated: one
+   `panel::hide(reason)` and one `panel::show_at(rect, reason)`, each logging `effective=`, so a
+   close reads as one effective hide and one no-op.
+
+**Decisions (Martín, 2026-09-16/17).** Right-click with the popover open hides it first,
+`reason=menu`. About lives in the popover. `tauri dev` gets `<id>.dev` through a dev-only config
+overlay; bundles keep the real identifier. A second launch with the popover already visible
+leaves it visible (logged no-op). The page's view follows the show reason (`panel:view`,
+`"about"` for the About item, `"transport"` otherwise), so About never outlives a hide. Esc calls
+`preventDefault()`. Quit stays `terminate:`, recorded rather than replaced. The M1 bench retired
+into the popover as a dev transport — presets, play/pause/stop, volume, no EQ sliders (M1 exit
+criterion 4 is unexercisable by hand until M5; the engine claim is held by `eq::tests` and
+`eq_headroom_sweep`).
+
+**Design tokens.** `src/styles/tokens.css` values are measurements on this Mac (macOS 26.6.2,
+2026-09-17T18:18:44Z): `NSFont.preferredFont(forTextStyle:)` sizes and line heights, and the
+semantic `NSColor`s resolved in sRGB under both appearances
+(`_handover/m2c-step0-logs/measure-tokens.swift`, raw stdout in `tokens-measured.txt`). They
+coincide with Apple's published values, which is what a correct measurement of a system value
+looks like. The 8 pt rhythm and the 1 px hairline are decisions, not HIG citations — the HIG
+prescribes no grid. `scripts/check-tokens.sh` fails `pnpm lint` on a colour or length literal
+anywhere else in the renderer; the panel radius token is pinned to `PANEL_CORNER_RADIUS` by a
+shell test that reads the stylesheet.
+
+**Instrument lessons, promoted from the Step 0 candidates.**
+
+- **A sampler shorter than the human it waits for measures the wait.** Item 3's first sampler
+  expired while the menu was still open and reported the menu, not the About panel.
+- **An instrument that occludes the quantity it measures reports its own shape.** Three times in
+  item 4: opaque corner markers on the arc, hollow markers still on the arc, and an edge detector
+  that found the shadow's straight offset and called the body square.
+- **Calibrate a method against known values and state the conditions it holds under.** The
+  corner fit was repeatable to 0.00 pt within a backdrop and drifted 0.6 pt across backdrops;
+  consistency is not accuracy, and a calibration carries its conditions with it.
+- **A null test reads exactly like a negative result.** One environment variable fed two
+  rounding mechanisms, so the run meant to isolate `EffectsBuilder::radius` applied no radius at
+  all, and "inert" survived a review on the strength of it. When a probe reports no effect, prove
+  the mechanism was switched on. It was caught by accident — an unrelated capture set the variable
+  the null test had omitted.
+- **Never present a summariser's rendering as a verbatim quote.** The `maskImage` header text a
+  review quoted came from a WebFetch summary; the header on this Mac adds "(It does not also mask
+  subviews.)", the sentence that decided what the option was worth.
+
+**Acceptance, 2026-09-18 (Martín on the bundled build, detached launch; logs and captures in
+`_handover/m2c-acceptance/`).** All eight items passed or were measured:
+
+- **Esc does not beep**, in either phase — `preventDefault()` on the page's `keydown` stops the
+  key from reaching `cancelOperation:`. The probe without it beeped; this is the difference.
+- Right-click with the popover open: gone before the menu. About → Back → transport; About, Esc,
+  tray click → transport. Quit with a stream playing: audio stopped, no instance left.
+- Second launch: `open`, `open -n`, Finder double-click and the `/tmp` copy all showed the
+  popover (three `reopen`, three `second_instance` in the log). The already-visible no-op path
+  was not exercised.
+- Every close in both logs is one `effective=true` and one resign-key `effective=false`.
+- **Control Center and the popover cannot be on screen together** — opening Control Center
+  resigns the panel's key status and the dismissal design hides it — so the planned
+  single-capture comparison is impossible on this OS. Instead, two captures per appearance on
+  one desktop, each the other's absent reference (the R8 differential): the popover's top-left
+  arc fits **9.18 pt (light, 0.17 px rms) / 9.40 pt (dark)** with the same threshold-and-fit
+  family that read an 8.5 pt setting as 9.35–9.95 pt at Step 0 — i.e. the 8 pt setting renders
+  as intended. Control Center's outer glass corner could not be fitted: it differs from the
+  backdrop by less than its own shadow does at every threshold. Step 0's dark-appearance
+  measurement stays the token's provenance; by eye the two corners are comparable.
+- **A one-frame flash of the previous pane** on About from the menu, and on the first tray click
+  after Back or Esc: the view event is async (JS, then a React commit) and `orderFrontRegardless`
+  is not, so the retained WKWebView layer is composited once before the new pane. Predicted by
+  `/code-review` as plausible, now measured. **Deferred**: the fix is a round trip (the page
+  reports its commit, Rust orders in then, with a fallback timer), owed to whichever milestone
+  keeps the About pane — M3 replaces this page.
 
 ### M2b: coordinates are logical points (decided and measured 2026-09-16)
 
@@ -1127,6 +1282,11 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 
 ### Loose ends
 
+- **Shadow after resize (carried to M2d, 2026-09-17).** The popover's shadow is derived from the
+  window's composited alpha (M2c R8, measured: 20.4 vs 29.4 pt shadow contour for a square vs a
+  17 pt body) and computed by the window server. When M2d resizes the panel, check that the
+  shadow is recomputed after the frame changes (`invalidateShadow()` if it is not), or the
+  expanded panel may keep the collapsed shadow's shape.
 - **One `pnpm tauri build --debug` failure, not reproducible (2026-09-15).** On branch `m2`
   with the M2a code uncommitted, the build produced `Ondar.app` and then failed at the DMG step:
   `` failed to bundle project: error running bundle_dmg.sh: `failed to run /Users/mv/Developer/Onda/src-tauri/target/debug/bundle/dmg/bundle_dmg.sh` ``
@@ -1174,8 +1334,9 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    **M2a done and merged 2026-09-15** (`b553737`, tagged `m2a-done`): tray, non-activating panel,
    clamped positioning, resign-key dismissal — see "M2a: the tray path, measured". **M2b
    (coordinates: multi-monitor, mixed scale, the notch) done 2026-09-16** — see "M2b: coordinates
-   are logical points". M2c (Esc, tray menu, rounded corners, single-instance, tokens, retiring the
-   M1 bench window) and M2d (collapsed/expanded resize) remain.
+   are logical points". **M2c (Esc, tray menu, rounded corners, single instance, tokens, the M1
+   bench retired) done 2026-09-17** on branch `m2c` — see "M2c: chrome and input, measured".
+   M2d (collapsed/expanded resize) remains.
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
    click endpoint, cache TTLs, favourites/recents.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio

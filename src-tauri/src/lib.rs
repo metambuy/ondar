@@ -23,6 +23,10 @@ pub mod events {
     pub const STREAM_INFO: &str = "playback:stream_info";
     pub const METADATA: &str = "playback:metadata";
     pub const RECONNECT: &str = "playback:reconnect";
+    /// Which pane the popover shows (`panel::PanelView`); emitted by `panel::show_at` from the
+    /// show reason on every effective show, so the page mirrors it and never decides it. The
+    /// page asks `get_panel_view` on mount for the same value.
+    pub const PANEL_VIEW: &str = "panel:view";
 }
 
 pub fn run() {
@@ -46,11 +50,33 @@ pub fn run() {
     let user_agent = format!("Ondar/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent);
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // Registered first, as the plugin's own docs require: its setup is where a second
+        // process notifies the first and exits, before anything else is built. The callback
+        // runs on a tokio worker (`async_runtime::spawn`, plugin 2.4.4 `macos.rs:100`), and
+        // everything it does to the panel or tray hops to the main thread — `PanelHandle` is
+        // `Send`, but its operations are not safe off main (M2c Step 0, R6).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            log::info!(
+                "single-instance callback thread={:?} argv={argv:?} cwd={cwd:?}",
+                std::thread::current().name()
+            );
+            let on_main = app.clone();
+            if let Err(e) = app.run_on_main_thread(move || {
+                if let Some(rect) = tray::rect(&on_main) {
+                    panel::show_at(&on_main, rect, panel::ShowReason::SecondInstance);
+                }
+            }) {
+                log::warn!("single-instance: main-thread hop failed: {e}");
+            }
+        }))
         // Manages the panel store `PanelBuilder::build()` registers into; without it the
         // builder's internal `to_panel` panics on missing state.
         .plugin(tauri_nspanel::init())
         .manage(AppState { engine })
+        // Tray menu items. Listeners run in the event loop, on the main thread
+        // (tauri 2.11.5 `app.rs:2588-2598`).
+        .on_menu_event(tray::on_menu_event)
         .setup(move |app| {
             panel::setup(app)?;
             tray::setup(app)?;
@@ -93,7 +119,60 @@ pub fn run() {
             commands::audio::set_eq_gain,
             commands::audio::get_eq,
             commands::audio::get_playback_state,
+            commands::panel::panel_escape,
+            commands::panel::get_panel_view,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Ondar");
+        .build(tauri::generate_context!())
+        .expect("error while building Ondar");
+
+    // `.run(callback)` rather than `.run(context)`: `RunEvent::Reopen` is the only way to see
+    // `open Ondar.app` or a Finder double-click against the running app — LaunchServices
+    // starts no second process for either, so the single-instance plugin cannot — and
+    // `.run(context)` discards it. Delivered on the main thread (measured, Step 0 item 5).
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = event
+        {
+            log::info!("reopen has_visible_windows={has_visible_windows}");
+            if let Some(rect) = tray::rect(handle) {
+                panel::show_at(handle, rect, panel::ShowReason::Reopen);
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    /// `pnpm tauri:dev` merges `tauri.dev.conf.json` over `tauri.conf.json` so the dev instance
+    /// gets its own identifier — its own single-instance socket, and from M3 its own data dir —
+    /// and can run beside a bundled build (M2c Step 0, case (f): with one identifier the dev
+    /// instance handed off and exited). The overlay is a literal, so this executes the rule it
+    /// stands for: the dev identifier is the real identifier plus `.dev`, and nothing else is
+    /// overlaid. Renaming the real identifier (OPEN.md's row) without the overlay fails here.
+    #[test]
+    fn dev_identifier_is_the_real_identifier_plus_dev() {
+        let real: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        let dev: serde_json::Value = serde_json::from_str(include_str!("../tauri.dev.conf.json"))
+            .expect("tauri.dev.conf.json parses");
+        let real_id = real["identifier"]
+            .as_str()
+            .expect("tauri.conf.json has a string identifier");
+        let dev_id = dev["identifier"]
+            .as_str()
+            .expect("tauri.dev.conf.json has a string identifier");
+        assert_eq!(
+            dev_id,
+            format!("{real_id}.dev"),
+            "the dev identifier must be the real one plus `.dev`"
+        );
+        assert_eq!(
+            dev.as_object().map(|o| o.len()),
+            Some(1),
+            "the dev overlay carries the identifier and nothing else, so dev cannot silently \
+             diverge from the real config"
+        );
+    }
 }

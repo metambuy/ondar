@@ -1,0 +1,75 @@
+/* Popover styles. Values come from `src/styles/tokens.css` only — `scripts/check-tokens.sh`
+   fails `pnpm lint` on a literal here. Buttons, select and range are left unstyled on purpose:
+   WebKit renders them as native macOS controls. */
+
+.panel {
+  height: 100%;
+  box-sizing: border-box;
+  /* The page is transparent, so nothing here needs clipping today; content that later paints
+     near a corner is clipped to the same shape the effect view is rounded to (`panel.rs`,
+     `PANEL_CORNER_RADIUS`, pinned to `--radius-panel` by a shell test). */
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  padding: var(--space-3);
+  font: var(--text-body);
+  color: var(--color-label);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.heading {
+  margin: 0;
+  font: var(--text-headline);
+}
+
+.line {
+  margin: 0;
+}
+
+.muted {
+  margin: 0;
+  font: var(--text-subheadline);
+  color: var(--color-label-secondary);
+}
+
+/* Status and error text is bounded to three lines. The panel is a fixed 360x420 with
+   `overflow: hidden`, and an `error [http]` message can be an entire HTTP response body
+   (stream-download formats non-2xx errors as `{source}: {body}`), which would push the
+   controls off the panel with no scrollbar (`/code-review` finding 2, 2026-09-17). The full
+   text is in Rust's log. */
+.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--hairline) solid var(--color-separator);
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.field > select,
+.field > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+}

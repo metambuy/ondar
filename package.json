@@ -9,9 +9,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "gen:bindings": "cd src-tauri && cargo test -p ondar-audio"
+    "lint": "eslint . && sh scripts/check-tokens.sh",
+    "gen:bindings": "cd src-tauri && cargo test --workspace"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

@@ -1,6 +1,7 @@
 //! Headless bench for stall/reconnect testing (`scripts/stall-server.py`, README "Stall
-//! testing"). Drives the real `AudioEngine` — the same code path `App.tsx`'s interactive
-//! bench uses — without a webview or a human clicking Play, so runs are scriptable and give
+//! testing"). Drives the real `AudioEngine` — the same code path the popover's dev transport
+//! (`src/panel/Transport.tsx`) uses — without a webview or a human clicking Play, so runs are
+//! scriptable and give
 //! exact timestamps to correlate against the server's own log.
 //!
 //! Usage: `cargo run -p ondar-audio --example stall_bench -- <url> [duration_secs]`

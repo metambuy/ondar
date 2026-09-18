@@ -17,7 +17,8 @@ exit criteria pass.
 
 Tauri + Vite/React/TS scaffold; Rust audio module (`stream-download` → rodio/Symphonia decode
 → EQ adapter → output); play/pause/stop/volume/EQ commands; ICY title events; reconnect and
-error states; EQ biquad unit tests. Plain test window (`src/App.tsx`), no tray.
+error states; EQ biquad unit tests. Plain test window (`src/App.tsx`, retired into the popover
+at M2c), no tray.
 
 **Exit criteria (met):**
 
@@ -25,7 +26,10 @@ error states; EQ biquad unit tests. Plain test window (`src/App.tsx`), no tray.
 2. ICY titles update on stations that send them.
 3. Pull the network: state goes `buffering` → `reconnecting (n)` → `playing` on recovery, or
    `error [network]` after 5 attempts (1/2/4/8/16 s).
-4. EQ sliders audibly change the sound; `cargo test -p ondar-audio` passes.
+4. EQ sliders audibly change the sound; `cargo test -p ondar-audio` passes. *(Since M2c the
+   bench is gone and the popover's dev transport carries no EQ sliders, so this criterion is
+   **unexercisable by hand until M5** brings the EQ UI. The engine-side claim is held by
+   `eq::tests` (17) and `examples/eq_headroom_sweep.rs` in the meantime.)*
 5. Switching stations silences the old station immediately.
 
 CI (fmt/clippy/test/typecheck in GitHub Actions) was not part of this milestone — a separate,
@@ -42,22 +46,26 @@ every commit".
 
 - [x] `ActivationPolicy::Accessory` + `LSUIElement` — no Dock icon (M2a; `lsappinfo` →
       `UIElement` on the bundled build)
-- [ ] Tray icon as a **template image**, light/dark correct — template image set (M2a);
-      light/dark appearance **not yet checked by eye**
+- [x] Tray icon as a **template image**, light/dark correct — template image set (M2a);
+      light/dark appearance checked by eye 2026-09-16
 - [x] `tauri-nspanel`: a non-activating `NSPanel` — a separate `panel` window, not the main
-      window converted (M2a; the M1 bench window is retired at M2b)
-- [ ] Position from Tauri's own `TrayIconEvent::Click { rect }` (`tauri-plugin-positioner` not
+      window converted (M2a; the M1 bench window retired at M2c, into the popover)
+- [x] Position from Tauri's own `TrayIconEvent::Click { rect }` (`tauri-plugin-positioner` not
       needed — ONDAR.md, 2026-09-12) — popover anchors under the tray item, correct on
-      multi-monitor and with the notch — **anchoring and edge clamping done and logged (M2a);
-      multi-monitor untested**
-- [ ] Hide on resign-key / `Esc`; toggle on tray click; right-click tray → quit/preferences —
-      **resign-key and tray toggle done (M2a)**; `Esc` and the right-click menu not started
-- [ ] Vibrancy background (`macos-private-api`, Tauri's own `set_effects` — `window-vibrancy`
-      is not a direct dependency), rounded corners, no window chrome — **vibrancy and no chrome
-      done (M2a; vibrancy by view tree, no visual confirmation)**; rounded corners not started
+      multi-monitor and with the notch — anchoring and edge clamping (M2a); multi-monitor,
+      mixed scale and the notch in logical points (M2b, measured on three displays)
+- [x] Hide on resign-key / `Esc`; toggle on tray click; right-click tray → About + Quit (no
+      Preferences — no preferences window exists in any milestone) — resign-key and tray toggle
+      (M2a); `Esc` and the menu (M2c), every close through one logged hide path
+- [x] Vibrancy background (`macos-private-api`, Tauri's own `set_effects` — `window-vibrancy`
+      is not a direct dependency), rounded corners, no window chrome — vibrancy and no chrome
+      (M2a; confirmed by eye 2026-09-16); rounded corners at the measured 8 pt, shadow following
+      (M2c)
 - [ ] Collapsed/expanded height states with a smooth resize + reposition (empty panes for now)
-- [ ] `tauri-plugin-single-instance`
-- [ ] Design tokens (`styles/tokens.css`) for both appearances
+- [x] `tauri-plugin-single-instance` — 2.4.4, plus `RunEvent::Reopen` for the launches that
+      start no process; both show the popover (M2c)
+- [x] Design tokens (`styles/tokens.css`) for both appearances — values measured on this Mac,
+      literal check in `pnpm lint` (M2c)
 
 **Exit:** popover opens and closes like Bartender/Fantastical; expand/collapse animates with
 no jump; nothing flickers on a second monitor.
