@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    ActivationPolicy, App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position,
-    Rect, Runtime, Size, WebviewUrl, WebviewWindow, WindowEvent,
+    ActivationPolicy, App, AppHandle, Emitter, LogicalSize, Manager, Position, Rect, Runtime, Size,
+    WebviewUrl, WebviewWindow, WindowEvent,
     window::{Effect, EffectState, EffectsBuilder},
 };
 use tauri_nspanel::{
@@ -24,7 +24,10 @@ use tauri_nspanel::{
     PanelLevel,
     // `doc(hidden)` re-exports; used instead of a direct `objc2-app-kit` dependency so the
     // version can never diverge from the one `tauri-nspanel` links.
-    objc2_app_kit::{NSWindowOcclusionState, NSWindowStyleMask},
+    objc2_app_kit::{NSScreen, NSWindowOcclusionState, NSWindowStyleMask},
+    // Qualified, not imported by name: `tauri_panel!` expands `use`s of these same names into
+    // this module, and a second import is a hard error (E0252).
+    objc2_foundation as foundation,
     tauri_panel,
 };
 use ts_rs::TS;
@@ -372,11 +375,12 @@ fn show_on_main<R: Runtime>(
         log::info!("panel view={view:?} reason={}", reason.as_str());
     }
 
-    window.set_position(anchor_for(
-        &window,
-        rect,
-        (PANEL_SIZE.width, PANEL_SIZE.height),
-    )?)?;
+    let size = (PANEL_SIZE.width, PANEL_SIZE.height);
+    let position = anchor_for(&window, rect, size)?;
+    // Origin and size in one call while the panel is still hidden, so the hidden-window
+    // `setContentSize:` trap (bottom-left kept — M2d Step 0, measured, unexplained) has nothing to
+    // act on: the frame is set whole, never a size against a remembered origin.
+    apply_frame(&panel, position, size);
     panel.show();
     // `show()` is `orderFrontRegardless` alone, and a panel that is never key can never resign
     // key. Not `show_and_make_key()`: that also makes the content view (`WryWebViewParent`)
@@ -392,8 +396,146 @@ fn show_on_main<R: Runtime>(
         ns.isKeyWindow(),
         std::thread::current().name()
     );
+    log_tray_screen_check(&panel, rect);
     log_settled_occlusion(handle, &panel);
     Ok(())
+}
+
+/// Set the panel's frame — origin **and** size — in one synchronous `setFrame:display:` (M2d
+/// route S, decision D2), then invalidate the shadow. Main thread only; off it the call is
+/// logged and skipped, never attempted.
+///
+/// Route S over Tauri's `set_size` + `set_position`: those are two *asynchronous* main-queue
+/// dispatches (tao `util/async.rs`), measured at M2d Step 0 with a 2–5 ms window in which the frame
+/// has changed and the position has not, or vice versa; `setFrame:display:` lands both in
+/// 0.6–1.7 ms with tao's `Resized` delivered inside the call. Both routes then show the same one
+/// 60 Hz frame of unpainted material (P1b) — the round trip (D3) addresses that, not the route.
+///
+/// `invalidateShadow()` is **insurance, not a fix**: P2 measured the shadow following the frame
+/// change without it, and the control could not manufacture a stale shadow, so the result is
+/// unfalsified. 58–107 µs. See ONDAR.md, "M2d: resize in place".
+fn apply_frame<R: Runtime>(panel: &PanelHandle<R>, position: (f64, f64), size: (f64, f64)) {
+    let Some(mtm) = foundation::MainThreadMarker::new() else {
+        log::warn!(
+            "panel apply_frame position={position:?} size={size:?} skipped: not on the main thread"
+        );
+        return;
+    };
+    let Some(h0) = main_screen_height(mtm) else {
+        log::warn!("panel apply_frame position={position:?} size={size:?} skipped: no NSScreen");
+        return;
+    };
+    let (x, y, w, h) = cocoa_frame(position, size, h0);
+    let ns = panel.as_panel();
+    ns.setFrame_display(
+        foundation::NSRect::new(
+            foundation::NSPoint::new(x, y),
+            foundation::NSSize::new(w, h),
+        ),
+        true,
+    );
+    ns.invalidateShadow();
+    let now = ns.frame();
+    log::info!(
+        "panel apply_frame top_left_points={position:?} size_points={size:?} \
+         cocoa=[{x},{y} {w}x{h}] frame_now=[{},{} {}x{}] thread={:?}",
+        now.origin.x,
+        now.origin.y,
+        now.size.width,
+        now.size.height,
+        std::thread::current().name()
+    );
+}
+
+/// Height of `NSScreen::screens()[0]`'s frame — the menu-bar display, and the quantity every
+/// bottom-left ↔ top-left conversion is made against (tao's `bottom_left_to_top_left` uses the
+/// same screen). Not `mainScreen`, which is the key window's screen (ONDAR.md, instrument five).
+fn main_screen_height(mtm: foundation::MainThreadMarker) -> Option<f64> {
+    NSScreen::screens(mtm)
+        .iter()
+        .next()
+        .map(|s| s.frame().size.height)
+}
+
+/// A top-left-origin point rect (this module's space) as a Cocoa frame `(x, y, w, h)`, bottom-left
+/// origin, given the menu-bar screen's height `h0`: `y_cocoa = h0 − y_tl − h`. Pure.
+///
+/// Pinned by measurement: the panel anchored at (758,39) 360×720 on the 982 pt built-in had
+/// Cocoa frame `[758,223 360x720]` (M2d Step 0, `run-11-p3-keepopen.log:22`).
+fn cocoa_frame(top_left: (f64, f64), size: (f64, f64), h0: f64) -> (f64, f64, f64, f64) {
+    (top_left.0, h0 - top_left.1 - size.1, size.0, size.1)
+}
+
+/// `inner` lies within `outer`, both Cocoa frames.
+fn frame_contains(outer: foundation::NSRect, inner: foundation::NSRect) -> bool {
+    inner.origin.x >= outer.origin.x
+        && inner.origin.y >= outer.origin.y
+        && inner.origin.x + inner.size.width <= outer.origin.x + outer.size.width
+        && inner.origin.y + inner.size.height <= outer.origin.y + outer.size.height
+}
+
+/// Log the M2d placement check after a frame change or a show: is the panel inside the visible
+/// frame of the **tray icon's** screen, and how far below the icon is its top edge.
+///
+/// The tray-screen form, by rule (ONDAR.md, "M2d: resize in place", R3). The obvious alternative —
+/// the panel inside its *own* `screen().visibleFrame()` — read `true` on both of Step 0's forced
+/// failures (a 720 pt panel sitting on the wrong display entirely) and cannot catch displacement
+/// onto another display. The tray screen is the `NSScreen` whose frame contains the icon's
+/// centre, the same acceptor test `anchor_points` makes on Tauri's monitors, done here on AppKit's.
+///
+/// `gap_below_icon` is the sensitive readout for the D1 cap: 6 (`TRAY_GAP`) means `clamp_into` was
+/// idle; 0 means it fired, i.e. the panel did not fit below the icon. A log line, not an
+/// assertion: nothing here may panic, and no unit test can reach a live `NSScreen`.
+fn log_tray_screen_check<R: Runtime>(panel: &PanelHandle<R>, rect: Rect) {
+    let Some(mtm) = foundation::MainThreadMarker::new() else {
+        log::warn!("panel placed: check skipped, not on the main thread");
+        return;
+    };
+    let (Position::Physical(p), Size::Physical(sz)) = (rect.position, rect.size) else {
+        log::warn!("panel placed: check skipped, tray rect is not Physical");
+        return;
+    };
+    let Some(h0) = main_screen_height(mtm) else {
+        log::warn!("panel placed: check skipped, no NSScreen");
+        return;
+    };
+    let (px, py, pw, ph) = (
+        f64::from(p.x),
+        f64::from(p.y),
+        f64::from(sz.width),
+        f64::from(sz.height),
+    );
+    // First acceptor wins, and index 0 is the menu-bar screen, so it wins any tie.
+    let screens = NSScreen::screens(mtm);
+    let tray_screen = screens.iter().enumerate().find(|(_, s)| {
+        let scale = s.backingScaleFactor();
+        let (cx, cy) = ((px + pw / 2.0) / scale, (py + ph / 2.0) / scale);
+        let f = s.frame();
+        let top = h0 - (f.origin.y + f.size.height);
+        cx >= f.origin.x && cx < f.origin.x + f.size.width && cy >= top && cy < top + f.size.height
+    });
+    let frame = panel.as_panel().frame();
+    match tray_screen {
+        Some((i, s)) => {
+            let scale = s.backingScaleFactor();
+            let icon_bottom_tl = (py + ph) / scale;
+            let panel_top_tl = h0 - (frame.origin.y + frame.size.height);
+            log::info!(
+                "panel placed inside_tray_screen_visible={} gap_below_icon={} tray_screen=[{i}] {:?} \
+                 frame_tl=[{},{} {}x{}]",
+                frame_contains(s.visibleFrame(), frame),
+                panel_top_tl - icon_bottom_tl,
+                s.localizedName().to_string(),
+                frame.origin.x,
+                panel_top_tl,
+                frame.size.width,
+                frame.size.height
+            );
+        }
+        None => log::warn!(
+            "panel placed: no NSScreen contains the tray icon centre; rect=({px},{py} {pw}x{ph})"
+        ),
+    }
 }
 
 /// Tray click: hide if shown, otherwise show under the icon. Decides only; the ordering in and
@@ -652,16 +794,15 @@ fn clamp_into(position: (f64, f64), panel: (f64, f64), area: PointRect) -> (f64,
 /// or collapse anchors for the new height before the frame changes (Step 0 P5 — a size-only change
 /// leaves a panel on the wrong display).
 ///
-/// The returned position is a `LogicalPosition`, i.e. points: `set_position` then hands it to tao,
-/// whose `set_outer_position` does `position.to_logical(scale)` (`window.rs:728-734`) — the
-/// identity on a logical value. Nothing in the path reads or divides by the panel window's own
-/// scale, which is what made the pre-M2b code depend on which display the panel happened to be
-/// sitting on.
+/// The returned position is the panel's top-left in global points; `apply_frame` converts it to a
+/// Cocoa frame against the menu-bar screen. Nothing in the path reads or divides by the panel
+/// window's own scale, which is what made the pre-M2b code depend on which display the panel
+/// happened to be sitting on.
 fn anchor_for<R: Runtime>(
     window: &WebviewWindow<R>,
     rect: Rect,
     panel: (f64, f64),
-) -> tauri::Result<LogicalPosition<f64>> {
+) -> tauri::Result<(f64, f64)> {
     // `tray-icon` always sends `Physical` on macOS (`mod.rs:515-528` builds it with
     // `to_physical`). A `Logical` rect would already be points; it is passed through with a
     // warning rather than silently scaled, because guessing a scale is how this defect started.
@@ -754,10 +895,7 @@ fn anchor_for<R: Runtime>(
         chosen.map(|d| d.work_area)
     );
 
-    Ok(LogicalPosition::new(
-        anchored.position.0,
-        anchored.position.1,
-    ))
+    Ok(anchored.position)
 }
 
 #[cfg(test)]
@@ -1132,6 +1270,30 @@ mod tests {
         let area = PointRect::new(0.0, 30.0, 300.0, 900.0);
         let got = clamp_into((100.0, 36.0), panel(), area);
         assert_eq!(got.0, EDGE_MARGIN);
+    }
+
+    /// Top-left points → Cocoa frame, pinned by the P3 measurement: anchor (758,39), 360×720, on the
+    /// built-in whose frame is 982 pt tall → `[758,223 360x720]` (`run-11-p3-keepopen.log:22`).
+    /// A dropped `− h` gives y = 943; a flipped sign gives −223; using the panel's own display's
+    /// height instead of the menu-bar screen's gives a different y on every other display.
+    #[test]
+    fn cocoa_frame_matches_the_measured_p3_frame() {
+        assert_eq!(
+            cocoa_frame((758.0, 39.0), (360.0, 720.0), 982.0),
+            (758.0, 223.0, 360.0, 720.0)
+        );
+    }
+
+    /// The same conversion where the panel runs off the bottom: P4 arm 1, the 720 pt panel pinned
+    /// to the 640 pt ANMITE's work-area top at (226,30) → Cocoa `[226,-110 360x720]`
+    /// (`run-02-p4.log:26`). Negative Cocoa y is legitimate — it is how "110 pt off the bottom of
+    /// the display" reads in that space.
+    #[test]
+    fn cocoa_frame_can_run_below_the_menu_bar_screen() {
+        assert_eq!(
+            cocoa_frame((226.0, 30.0), (360.0, 720.0), 640.0),
+            (226.0, -110.0, 360.0, 720.0)
+        );
     }
 
     /// The radius the effect view is rounded to and the radius the page clips itself to are the

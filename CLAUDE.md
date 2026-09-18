@@ -90,7 +90,7 @@ onda/
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 20 tests, including the
+    │   │                         flood; holds 3 of the shell's 22 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
     │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc) and
@@ -119,8 +119,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 70 tests `cargo test --workspace`
-reports break down as **63 hand-written + 7 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 72 tests `cargo test --workspace`
+reports break down as **65 hand-written + 7 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -131,11 +131,11 @@ reports break down as **63 hand-written + 7 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 15 — in the **shell** crate; one reads `tokens.css` and pins the radius. (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
+| `panel::tests` | 17 — in the **shell** crate; one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames. (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_panelview` | 1 — generated, in the **shell** crate |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 
-Counting `#[test]` attributes in source gives 63 and will not reconcile with the runner's 70
+Counting `#[test]` attributes in source gives 65 and will not reconcile with the runner's 72
 until those 7 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -158,14 +158,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 70 tests: 50 in the ondar_audio binary and 20 in the shell's
+cargo test --workspace       # 72 tests: 50 in the ondar_audio binary and 22 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (20 tests) and silently skips ondar-audio; this
+                              # `ondar` package (22 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's twenty test names, and one of them —
+                              # prints only the shell's twenty-two test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -331,7 +331,12 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   `get_webview_window(label)`.
 - Non-activating is the style mask: `NonactivatingPanel` ORed onto tao's mask. `no_activate(true)`
   only keeps window *creation* from activating the app.
-- Showing is `show()` then `make_key_window()`; `show()` alone never makes the panel key.
+- Showing is `apply_frame` (one synchronous `setFrame:display:` with origin **and** size, while
+  still hidden — M2d route S, D2), then `show()`, then `make_key_window()`; `show()` alone never
+  makes the panel key. `invalidateShadow()` follows every frame change as insurance (P2,
+  unfalsified). After every show and resize the log carries `panel placed
+  inside_tray_screen_visible=… gap_below_icon=…` — the **tray-screen** form by rule (R3): the
+  own-screen form passed both of Step 0's forced failures. Gap 6 = clamp idle, 0 = clamp fired.
 - Dismissal: hide on `WindowEvent::Focused(false)` (tao's `windowDidResignKey:`). **Not**
   `Panel::set_event_handler`, which replaces tao's delegate and silences its window events.
   `hides_on_deactivate` is not set — it keeps the panel off screen.
