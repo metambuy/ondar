@@ -93,7 +93,7 @@ onda/
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 33 tests, including the
+    │   │                         flood; holds 3 of the shell's 34 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
     │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
@@ -128,8 +128,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 83 tests `cargo test --workspace`
-reports break down as **74 hand-written + 9 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 84 tests `cargo test --workspace`
+reports break down as **74 hand-written + 10 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -141,11 +141,11 @@ reports break down as **74 hand-written + 9 ts-rs-generated**:
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
 | `panel::tests` | 26 — in the **shell** crate; one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; four pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
-| `panel::export_bindings_*` | 3 — generated, in the **shell** crate: `panelview`, `panelheight`, `panellayout` |
+| `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 
-Counting `#[test]` attributes in source gives 74 and will not reconcile with the runner's 83
-until those 9 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
+Counting `#[test]` attributes in source gives 74 and will not reconcile with the runner's 84
+until those 10 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 ## Commands
@@ -167,14 +167,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 83 tests: 50 in the ondar_audio binary and 33 in the shell's
+cargo test --workspace       # 84 tests: 50 in the ondar_audio binary and 34 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (33 tests) and silently skips ondar-audio; this
+                              # `ondar` package (34 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's thirty-three test names, and one of them —
+                              # prints only the shell's thirty-four test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -210,9 +210,11 @@ is the one on screen (`/code-review` C1). And one panel getter, `get_panel_layou
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`, and
-`panel:layout` (a `PanelLayout`: `view` `"about"` | `"transport"`, `state` `"collapsed"` |
-`"expanded"`, `width`/`height` in points, `expandable`; emitted on every effective show — the view
-from the show reason — and on every resize. The page mirrors it and decides none of it: it is told
+`panel:layout` (a `PanelLayout`: `transition` `"show"` | `"resize"` — on a show the hidden frame is
+already at the size, on a resize it changes after the page's commit — `generation`, `view`
+`"about"` | `"transport"`, `state` `"collapsed"` | `"expanded"`, `width`/`height` in points,
+`expandable`; emitted on every effective show — the view from the show reason — and on every
+resize. The page mirrors it and decides none of it: it is told
 its height, never computes it. Superseded M2c's `panel:view`).
 
 "Every command is a message to the engine" is **not** true here. The eight audio commands fall into
@@ -354,7 +356,8 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 - Non-activating is the style mask: `NonactivatingPanel` ORed onto tao's mask. `no_activate(true)`
   only keeps window *creation* from activating the app.
 - Showing is: lay out, `apply_frame` (one synchronous `setFrame:display:` with origin **and**
-  size, while still hidden — M2d route S, D2), emit `panel:layout`, **wait for the page's commit**
+  size, while still hidden — M2d route S, D2), then emit `panel:layout` with `transition=show`
+  (the order is load-bearing for that field), **wait for the page's commit**
   (or the 250 ms fallback), then `show()`, then `make_key_window()`; `show()` alone never makes
   the panel key. Measured on the dev loop 2026-09-18: the hidden-page commit arrives 2–8 ms
   after the request. A resize is the same round trip with `apply_frame` at the end instead of

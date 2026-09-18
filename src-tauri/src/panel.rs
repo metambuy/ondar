@@ -270,6 +270,13 @@ pub enum PanelHeight {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PanelLayout {
+    /// Whether this layout arrives on a show — the hidden panel's frame is **already** at
+    /// `width`×`height` when the page receives it — or on a resize of the visible panel, whose
+    /// frame changes only after the page commits. The page needs the difference: a hidden
+    /// WKWebView fires no `resize`, so on a show it takes `height` as the window's height rather
+    /// than its last `resize` reading (`/code-review` C2, 2026-09-18: a show shorter than the
+    /// last visible height committed with the expanded pane in a collapsed popover's first frame).
+    pub transition: PanelTransition,
     /// Increments on every layout request. The page echoes it in `panel_layout_committed`, so a
     /// report for a layout that has since been superseded, completed or cancelled is a logged
     /// no-op rather than a second apply (decision D3). `u32`, not `u64`: ts-rs maps `u64` to
@@ -280,6 +287,17 @@ pub struct PanelLayout {
     pub width: f64,
     pub height: f64,
     pub expandable: bool,
+}
+
+/// How a [`PanelLayout`] reaches the page — see its `transition` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelTransition {
+    /// A show: the frame is already applied, the panel is about to be ordered in.
+    Show,
+    /// A resize of the visible panel: the frame changes on the page's commit.
+    Resize,
 }
 
 /// The popover's layout state, held in Tauri state so the page can ask for it on mount: an emit
@@ -381,6 +399,7 @@ impl Default for PanelState {
                 expanded: false,
                 // Before the first show nothing has been laid out; the first show replaces this.
                 last: PanelLayout {
+                    transition: PanelTransition::Show,
                     generation: 0,
                     view: PanelView::Transport,
                     state: PanelHeight::Collapsed,
@@ -426,6 +445,10 @@ impl PanelState {
                 .request(kind, layout.anchored.position, layout.size, rect);
         inner.expanded = layout.state == PanelHeight::Expanded;
         inner.last = PanelLayout {
+            transition: match kind {
+                LayoutKind::Show(_) => PanelTransition::Show,
+                LayoutKind::Resize => PanelTransition::Resize,
+            },
             generation,
             view,
             state: layout.state,
@@ -590,12 +613,12 @@ fn show_on_main<R: Runtime>(
     let state = handle.state::<PanelState>();
     let laid = layout_for(&window, rect, state.wanted_height())?;
     let emitted = state.request(view, &laid, LayoutKind::Show(reason), rect);
-    emit_layout(handle, emitted, reason.as_str());
     // Origin and size in one call while the panel is still hidden, so the hidden-window
     // `setContentSize:` trap (bottom-left kept — M2d Step 0, measured, unexplained) has nothing to
-    // act on: the frame is set whole, never a size against a remembered origin — and so the page's
-    // `innerHeight` already agrees with the layout it has just been told when it commits.
+    // act on: the frame is set whole, never a size against a remembered origin. Before the emit,
+    // so `transition=show` is literally true when the page reads it (`/code-review` V2).
     apply_frame(&panel, laid.anchored.position, laid.size);
+    emit_layout(handle, emitted, reason.as_str());
     // Ordering in waits for the page's commit (decision D3): with it before the commit, the
     // retained WKWebView layer was composited once with the previous pane (M2c review finding 8,
     // measured 2026-09-18). `complete_layout` orders in on the commit or on the fallback.
@@ -836,7 +859,9 @@ fn log_tray_screen_check<R: Runtime>(panel: &PanelHandle<R>, rect: Rect) {
 fn emit_layout<R: Runtime>(handle: &AppHandle<R>, layout: PanelLayout, reason: &str) {
     match handle.emit(crate::events::PANEL_LAYOUT, layout) {
         Ok(()) => log::info!(
-            "panel layout view={:?} state={:?} size_points=({}, {}) expandable={} reason={reason}",
+            "panel layout transition={:?} view={:?} state={:?} size_points=({}, {}) expandable={} \
+             reason={reason}",
+            layout.transition,
             layout.view,
             layout.state,
             layout.width,

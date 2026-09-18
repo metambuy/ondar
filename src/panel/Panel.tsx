@@ -26,6 +26,11 @@ export default function Panel() {
     const unlisten = onPanelLayout((l) => {
       setLayout(l);
       setView(l.view);
+      // On a show the hidden panel's frame is already at `l.height`, and a hidden WKWebView fires
+      // no `resize`, so the last reading is whatever the window was when it was last visible —
+      // taller, after a show on a shorter display or after a cancelled collapse. Take Rust's word
+      // for it (`/code-review` C2). On a resize the window has not changed yet; leave it.
+      if (l.transition === "show") setWindowHeight(l.height);
     });
     // An emit before this listener existed was dropped by Tauri, so ask for the current layout.
     panel.getLayout().then((l) => {
