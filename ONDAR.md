@@ -1,8 +1,10 @@
 # Ondar — project document
 
-*Last updated: 2026-09-17 (M2c — chrome and input: Esc, tray menu, rounded corners, single
-instance, design tokens, the M1 bench retired into the popover; Step 0 measurements and the
-gate-2 decisions — see "M2c: chrome and input, measured").*
+*Last updated: 2026-09-18 (M2d decision D1 — the expanded height is capped to the work area,
+see "M2d: the expanded height is capped to the work area"). Previously 2026-09-17 (M2c — chrome
+and input: Esc, tray menu, rounded corners, single instance, design tokens, the M1 bench retired
+into the popover; Step 0 measurements and the gate-2 decisions — see "M2c: chrome and input,
+measured").*
 
 ## What Ondar is
 
@@ -38,8 +40,10 @@ boundary", choose the Rust.
 - Small level meter / spectrum strip
 - Expand affordance
 
-**Expanded popover** (~360×720, grows *in place* — it stays a menu bar popover, never a
-separate window):
+**Expanded popover** (~360×720 nominal, **subject to the D1 cap** — the height is capped to the
+work area of the display the tray icon is on, so "expanded" is a function of the display; see
+"M2d: the expanded height is capped to the work area". Grows *in place* — it stays a menu bar
+popover, never a separate window):
 
 - Satellite map section revealed above the station list
 - Map is framed on the currently selected country
@@ -586,6 +590,40 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M2d: the expanded height is capped to the work area (decided 2026-09-18)
+
+**Decision D1, Martín, 2026-09-18.** The expanded popover's height is
+`min(NOMINAL_EXPANDED, usable work-area height)`, where `NOMINAL_EXPANDED` is the ~720 pt of the
+product shape above and the usable height is what the existing M2b point-space code can give a
+panel anchored under the tray icon: the work-area height of the display the icon is on, minus
+`TRAY_GAP` and `EDGE_MARGIN` (6 pt each, `panel.rs`). No second positioning path: the cap feeds
+the same `anchor_points` / `clamp_into` that places the collapsed panel.
+
+**Floor: expansion is refused only when the capped height would not exceed the collapsed height**
+(420 pt today). That is the only bound justifiable now, and it is recorded as **PROVISIONAL**. The
+real product floor — how short a map pane stops being worth showing — is derived at **M4** from the
+map's minimum legible pane, and M2d must not invent a number for it. A named constant with a
+fabricated justification is exactly what this project's principles forbid ("Principle: an
+assertion must be able to fail on the quantity it pins"). Owner of the floor: **M4**.
+
+**Consequence to design for: "expanded" is a function of the display, not a constant.** Pane
+layout, any future screenshot, and the event the webview receives all tolerate a variable expanded
+height. The webview is told the height; it never computes it (CLAUDE.md, "The one rule").
+
+**Why cap, and not the other two options.** Measured 2026-09-16 while the ANMITE hosted the menu
+bar: it is 960×640 pt with a work area of (0,30) 960×610 pt, so a 720 pt panel cannot fit while a
+420 pt one does. Scrolling inside a fixed 720 pt content area keeps the product constant but puts
+a scroll view inside a popover on a short display, and the map pane at M4 scrolls badly. Refusing
+to expand on a short display is honest and simple, but silently disables a feature on one of the
+three displays attached here. Capping keeps the map, which wants area rather than a specific
+height, and costs only that the expanded height varies.
+
+**On the ANMITE this gives ~598 pt (610 − 6 − 6). That figure is derived, not measured.** M2d
+Step 0's P4 measures it; if P4 disagrees, the arithmetic above is wrong, not the measurement.
+
+D2 — whether the resize is animated — stays open and is answered from Step 0's P1 and P3, not
+before.
 
 ### M2c: chrome and input, measured (2026-09-16/17)
 
