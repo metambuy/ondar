@@ -372,7 +372,11 @@ fn show_on_main<R: Runtime>(
         log::info!("panel view={view:?} reason={}", reason.as_str());
     }
 
-    window.set_position(anchor(&window, rect)?)?;
+    window.set_position(anchor_for(
+        &window,
+        rect,
+        (PANEL_SIZE.width, PANEL_SIZE.height),
+    )?)?;
     panel.show();
     // `show()` is `orderFrontRegardless` alone, and a panel that is never key can never resign
     // key. Not `show_and_make_key()`: that also makes the content view (`WryWebViewParent`)
@@ -514,10 +518,13 @@ enum Resolution {
 ///
 /// `tray` arrives exactly as `TrayIconEvent::Click` gives it: global points multiplied by the
 /// *status item display's* scale (tray-icon 0.24.2 `platform_impl/macos/mod.rs:515-528`), top-left
-/// origin. `panel_physical` is the panel window's `outer_size` and `panel_scale` its own
-/// `scale_factor`, and **the division that turns them into points happens here**: that division is
-/// the quantity this whole change is about, and while it lived in the caller no test could reach it
-/// (`/code-review` finding 3, 2026-09-16).
+/// origin. `panel` is the panel's size in **points**, owned by Rust (`PANEL_SIZE` today; the
+/// collapsed or capped expanded height at M2d) — never read back from the window. Until M2d the
+/// size arrived as the window's `outer_size` with its own `scale_factor`, and the division into
+/// points happened here so a test could reach it (`/code-review` finding 3, 2026-09-16); measured
+/// equal to `PANEL_SIZE` on a 1x and a 2x panel alike (M2d Step 0, `run-01-p5.log:34`,
+/// `run-02-p4.log:21`). With the size a constant, the quantity that division was about no longer
+/// exists, and neither does the test that pinned it (see the 1x test below).
 ///
 /// **Why points, decided 2026-09-16 (route B).** Tauri reports each monitor's
 /// `position`/`size`/`work_area` as global points multiplied by *that monitor's own* scale
@@ -551,17 +558,10 @@ enum Resolution {
 /// clamped, and the caller warns. See ONDAR.md, "M2b: coordinates are logical points".
 fn anchor_points(
     tray: PointRect,
-    panel_physical: (f64, f64),
-    panel_scale: f64,
+    panel: (f64, f64),
     displays: &[Display],
     primary: Option<usize>,
 ) -> Anchored {
-    // Points, from the panel window's own scale — correct for its own size, and for nothing else.
-    let panel = (
-        panel_physical.0 / panel_scale,
-        panel_physical.1 / panel_scale,
-    );
-
     let accepted: Vec<usize> = displays
         .iter()
         .enumerate()
@@ -647,15 +647,20 @@ fn clamp_into(position: (f64, f64), panel: (f64, f64), area: PointRect) -> (f64,
     )
 }
 
-/// Gather the live state, anchor in points, and log what was chosen.
+/// Gather the live display state, anchor a panel of `panel` points under `rect`, and log what was
+/// chosen. `panel` is the size the panel is *about to have*, not the size it has: at M2d an expand
+/// or collapse anchors for the new height before the frame changes (Step 0 P5 — a size-only change
+/// leaves a panel on the wrong display).
 ///
 /// The returned position is a `LogicalPosition`, i.e. points: `set_position` then hands it to tao,
 /// whose `set_outer_position` does `position.to_logical(scale)` (`window.rs:728-734`) — the
-/// identity on a logical value. Nothing in the path divides by the panel window's own scale, which
-/// is what made the old code depend on which display the panel happened to be sitting on.
-fn anchor<R: Runtime>(
+/// identity on a logical value. Nothing in the path reads or divides by the panel window's own
+/// scale, which is what made the pre-M2b code depend on which display the panel happened to be
+/// sitting on.
+fn anchor_for<R: Runtime>(
     window: &WebviewWindow<R>,
     rect: Rect,
+    panel: (f64, f64),
 ) -> tauri::Result<LogicalPosition<f64>> {
     // `tray-icon` always sends `Physical` on macOS (`mod.rs:515-528` builds it with
     // `to_physical`). A `Logical` rect would already be points; it is passed through with a
@@ -674,12 +679,6 @@ fn anchor<R: Runtime>(
             PointRect::new(p.x, p.y, s.width, s.height)
         }
     };
-
-    // Handed to `anchor_points` unconverted: the division into points happens there, where a test
-    // can reach it.
-    let panel_scale = window.scale_factor()?;
-    let outer = window.outer_size()?;
-    let panel_physical = (f64::from(outer.width), f64::from(outer.height));
 
     // Each monitor converted by its *own* scale, which is the only conversion that is correct for
     // it (see `anchor_points`).
@@ -721,7 +720,7 @@ fn anchor<R: Runtime>(
             .position(|m| m.name() == p.name() && m.position() == p.position())
     });
 
-    let anchored = anchor_points(tray, panel_physical, panel_scale, &displays, primary);
+    let anchored = anchor_points(tray, panel, &displays, primary);
 
     match anchored.resolution {
         Resolution::AmbiguousWithoutPrimary => log::warn!(
@@ -746,9 +745,8 @@ fn anchor<R: Runtime>(
 
     let chosen = anchored.display.map(|i| displays[i]);
     log::info!(
-        "panel anchor tray_physical={tray:?} panel_physical={panel_physical:?} \
-         panel_scale={panel_scale} display={:?} primary={primary:?} accepted={:?} \
-         resolution={:?} position_points={:?} work_area={:?}",
+        "panel anchor tray_physical={tray:?} panel_points={panel:?} display={:?} \
+         primary={primary:?} accepted={:?} resolution={:?} position_points={:?} work_area={:?}",
         anchored.display,
         anchored.accepted,
         anchored.resolution,
@@ -804,9 +802,6 @@ mod tests {
         }]
     }
 
-    /// The panel's logical size, and the same size as `outer_size` would report it on a display of
-    /// the given scale — the pair `anchor_points` now takes, so the division into points is under
-    /// test.
     /// `/code-review` finding 1's layout, with the 1x display listed first: a 1x display to the
     /// right of a 2x primary that hosts the menu bar. Artificial only in its ordering.
     fn ambiguous_pair() -> Vec<Display> {
@@ -824,12 +819,9 @@ mod tests {
         ]
     }
 
+    /// The panel's size in points — what `anchor_points` takes since M2d.
     fn panel() -> (f64, f64) {
         (PANEL_SIZE.width, PANEL_SIZE.height)
-    }
-
-    fn panel_physical(scale: f64) -> (f64, f64) {
-        (PANEL_SIZE.width * scale, PANEL_SIZE.height * scale)
     }
 
     /// The assertion the M2b gate settled on: the panel rect must lie inside the work area of the
@@ -856,44 +848,26 @@ mod tests {
     /// Measured 2026-09-16, menu bar on the 1x BenQ: rect (1286,0) 24x30 landed the panel at
     /// points (1118,36) — `[1118,624 360x420]` in Cocoa, 1080 − (624+420) = 36.
     ///   x = 1286 + 24/2 − 360/2 = 1118    y = 0 + 30 + 6 = 36
+    ///
+    /// Until M2d a second test, `mixed_scale_does_not_change_the_answer`, fed the same rect with the
+    /// panel's size as a 2x `outer_size` (720x840) and scale 2, pinning the division into points
+    /// inside `anchor_points` (`/code-review` finding 3, 2026-09-16). M2d made the size a Rust
+    /// constant in points that is never read from the window, so that division — and the quantity
+    /// it was about — no longer exists; the test's inputs would be identical to this one's and it
+    /// could not fail on its own, which is the very condition its own comment gave for rewriting
+    /// it. Retired 2026-09-18 rather than kept as coverage that is not.
     #[test]
     fn measured_1x_tray_rect_matches_the_observed_landing() {
         let displays = menubar_on_benq();
         let got = anchor_points(
             PointRect::new(1286.0, 0.0, 24.0, 30.0),
-            panel_physical(1.0),
-            1.0,
+            panel(),
             &displays,
             Some(0),
         );
         assert_eq!(got.position, (1118.0, 36.0));
         assert_eq!(got.display, Some(0));
         assert_eq!(got.accepted, vec![0]);
-        assert_inside_work_area(&got, &displays);
-    }
-
-    /// The forced mixed-scale case, measured 2026-09-16: icon on the 1x BenQ, panel window on the
-    /// 2x built-in — so `outer_size` reports **720x840** and the window's own scale is 2, while the
-    /// rect is 1x. The panel is 360x420 points either way, so the answer must be the same
-    /// (1118,36) as the 1x test above, and not the (469,18) the old physical-space code produced
-    /// (649 pt left of the icon, 12 pt inside the menu bar band).
-    ///
-    /// **This is the test that pins the panel-scale division**, which is why it takes the physical
-    /// size and the scale separately: dropping the division gives (938,36) and multiplying instead
-    /// of dividing gives (398,36). Until `/code-review` finding 3, the division lived in `anchor`
-    /// and this test had inputs identical to the 1x one — it could not fail on its own.
-    #[test]
-    fn mixed_scale_does_not_change_the_answer() {
-        let displays = menubar_on_benq();
-        let got = anchor_points(
-            PointRect::new(1286.0, 0.0, 24.0, 30.0),
-            panel_physical(2.0),
-            2.0,
-            &displays,
-            Some(0),
-        );
-        assert_eq!(got.accepted, vec![0], "only the 1x display hosts this icon");
-        assert_eq!(got.position, (1118.0, 36.0));
         assert_inside_work_area(&got, &displays);
     }
 
@@ -905,8 +879,7 @@ mod tests {
         let displays = menubar_on_builtin();
         let got = anchor_points(
             PointRect::new(1760.0, 0.0, 48.0, 66.0),
-            panel_physical(2.0),
-            2.0,
+            panel(),
             &displays,
             Some(0),
         );
@@ -921,8 +894,7 @@ mod tests {
         let displays = menubar_on_builtin();
         let got = anchor_points(
             PointRect::new(1932.0, 0.0, 48.0, 66.0),
-            panel_physical(2.0),
-            2.0,
+            panel(),
             &displays,
             Some(0),
         );
@@ -945,8 +917,7 @@ mod tests {
         }];
         let got = anchor_points(
             PointRect::new(100.0, -1080.0, 24.0, 30.0),
-            panel_physical(1.0),
-            1.0,
+            panel(),
             &displays,
             Some(0),
         );
@@ -968,8 +939,7 @@ mod tests {
         }];
         let got = anchor_points(
             PointRect::new(1600.0, -1080.0, 24.0, 30.0),
-            panel_physical(1.0),
-            1.0,
+            panel(),
             &displays,
             Some(0),
         );
@@ -990,8 +960,7 @@ mod tests {
         // Physical at that display's scale 2: (5720, 880) 48x60 = (2860, 440) 24x30 in points.
         let got = anchor_points(
             PointRect::new(5720.0, 880.0, 48.0, 60.0),
-            panel_physical(2.0),
-            2.0,
+            panel(),
             &displays,
             Some(0),
         );
@@ -1020,8 +989,7 @@ mod tests {
         ];
         let got = anchor_points(
             PointRect::new(988.0, 0.0, 24.0, 30.0),
-            panel_physical(1.0),
-            1.0,
+            panel(),
             &displays,
             None,
         );
@@ -1039,8 +1007,7 @@ mod tests {
         }];
         let got = anchor_points(
             PointRect::new(1880.0, -1080.0, 24.0, 30.0),
-            panel_physical(1.0),
-            1.0,
+            panel(),
             &displays,
             None,
         );
@@ -1067,8 +1034,7 @@ mod tests {
         ];
         let got = anchor_points(
             PointRect::new(600.0, 0.0, 20.0, 20.0),
-            panel_physical(1.0),
-            1.0,
+            panel(),
             &displays,
             None,
         );
@@ -1081,13 +1047,7 @@ mod tests {
     /// primary known the fallback clamps instead (test above).
     #[test]
     fn no_display_accepting_still_yields_a_position() {
-        let got = anchor_points(
-            PointRect::new(1286.0, 0.0, 24.0, 30.0),
-            panel_physical(1.0),
-            1.0,
-            &[],
-            None,
-        );
+        let got = anchor_points(PointRect::new(1286.0, 0.0, 24.0, 30.0), panel(), &[], None);
         assert_eq!(got.display, None);
         assert_eq!(got.accepted, Vec::<usize>::new());
         assert_eq!(got.resolution, Resolution::Unresolved);
@@ -1111,8 +1071,7 @@ mod tests {
         let displays = ambiguous_pair();
         let got = anchor_points(
             PointRect::new(2800.0, 0.0, 48.0, 66.0),
-            panel_physical(2.0),
-            2.0,
+            panel(),
             &displays,
             Some(1),
         );
@@ -1132,8 +1091,7 @@ mod tests {
         let displays = ambiguous_pair();
         let got = anchor_points(
             PointRect::new(2800.0, 0.0, 48.0, 66.0),
-            panel_physical(2.0),
-            2.0,
+            panel(),
             &displays,
             None,
         );
@@ -1157,8 +1115,7 @@ mod tests {
         }];
         let got = anchor_points(
             PointRect::new(2800.0, 0.0, 48.0, 66.0),
-            panel_physical(2.0),
-            2.0,
+            panel(),
             &displays,
             Some(0),
         );

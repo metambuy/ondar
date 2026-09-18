@@ -35,7 +35,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 | | | |
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
-| M2 | Tray + NSPanel popover | **in progress** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) on branch `m2c`, 2026-09-17; M2d (collapsed/expanded resize) next |
+| M2 | Tray + NSPanel popover | **in progress** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) on branch `m2d`, 2026-09-18 |
 | M3 | Station API + SQLite cache + country/station UI | |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
@@ -90,7 +90,7 @@ onda/
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 21 tests, including the
+    │   │                         flood; holds 3 of the shell's 20 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
     │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc) and
@@ -119,8 +119,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 71 tests `cargo test --workspace`
-reports break down as **64 hand-written + 7 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 70 tests `cargo test --workspace`
+reports break down as **63 hand-written + 7 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -131,11 +131,11 @@ reports break down as **64 hand-written + 7 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 16 — in the **shell** crate; one reads `tokens.css` and pins the radius |
+| `panel::tests` | 15 — in the **shell** crate; one reads `tokens.css` and pins the radius. (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_panelview` | 1 — generated, in the **shell** crate |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 
-Counting `#[test]` attributes in source gives 64 and will not reconcile with the runner's 71
+Counting `#[test]` attributes in source gives 63 and will not reconcile with the runner's 70
 until those 7 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -158,14 +158,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 71 tests: 50 in the ondar_audio binary and 21 in the shell's
+cargo test --workspace       # 70 tests: 50 in the ondar_audio binary and 20 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (21 tests) and silently skips ondar-audio; this
+                              # `ondar` package (20 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's twenty-one test names, and one of them —
+                              # prints only the shell's twenty test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
