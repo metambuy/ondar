@@ -97,6 +97,21 @@ const EDGE_MARGIN: f64 = TRAY_GAP;
 /// The log line prints the elapsed time actually observed, so a late read is visible as such.
 const OCCLUSION_SETTLE: Duration = Duration::from_millis(100);
 
+/// How long a layout waits for the page's commit before Rust completes it anyway (decision D3's
+/// fallback timer). **Picked, provisional** — the reason, and what replaces it:
+///
+/// It must never fire on a healthy page (firing re-introduces the one-frame artefact the round
+/// trip exists to remove, and moves a show), and it must be short enough that a dead or frozen page
+/// still gets its popover before a click feels ignored. Nothing has yet measured the path it
+/// bounds — Tauri event → React commit → `panel_layout_committed` — so the nearest measured
+/// analogue is used: the page's first `resize` report **after a show**, worst case 111 ms (M2d
+/// Step 0 P3, `run-10-p3.log:48→51`). 250 ms is 2.25× that, the same "two-to-three times the worst
+/// observed" rule `OCCLUSION_SETTLE` uses. Every completion logs `after_ms`; the acceptance run
+/// collects the distribution (hidden shows and visible resizes separately) and this constant and
+/// comment are rewritten from it. **A `trigger=fallback` on a healthy page is a defect, not a
+/// tuning knob.**
+const LAYOUT_FALLBACK: Duration = Duration::from_millis(250);
+
 tauri_panel! {
     panel!(OndarPanel {
         config: {
@@ -255,6 +270,11 @@ pub enum PanelHeight {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PanelLayout {
+    /// Increments on every layout request. The page echoes it in `panel_layout_committed`, so a
+    /// report for a layout that has since been superseded, completed or cancelled is a logged
+    /// no-op rather than a second apply (decision D3). `u32`, not `u64`: ts-rs maps `u64` to
+    /// `bigint`, and a click counter does not need it.
+    pub generation: u32,
     pub view: PanelView,
     pub state: PanelHeight,
     pub width: f64,
@@ -280,6 +300,78 @@ pub struct PanelState {
 struct Inner {
     expanded: bool,
     last: PanelLayout,
+    round_trip: RoundTrip,
+}
+
+/// What a layout request is waiting to do once the page has committed (or the fallback fires).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayoutKind {
+    /// Order the hidden panel in and make it key. The frame was set at request time.
+    Show(ShowReason),
+    /// Change the visible panel's frame.
+    Resize,
+}
+
+/// A layout the page has been told about and Rust has not yet completed.
+#[derive(Debug, Clone)]
+struct Pending {
+    generation: u32,
+    kind: LayoutKind,
+    /// Top-left, points.
+    position: (f64, f64),
+    /// Points.
+    size: (f64, f64),
+    /// The tray rect the layout was made against, for the placement log line.
+    rect: Rect,
+    requested_at: Instant,
+}
+
+/// Decision D3's bookkeeping, pure so the four transitions are unit-tested without AppKit:
+/// a request supersedes any pending one; a completion applies only the generation that is
+/// pending, once; a hide cancels. The caller does the AppKit work on what `complete` returns.
+#[derive(Debug, Default)]
+struct RoundTrip {
+    generation: u32,
+    pending: Option<Pending>,
+}
+
+impl RoundTrip {
+    /// Register a layout the page is about to be told about. Returns its generation. Any pending
+    /// layout is superseded: its later commit becomes a no-op.
+    fn request(
+        &mut self,
+        kind: LayoutKind,
+        position: (f64, f64),
+        size: (f64, f64),
+        rect: Rect,
+    ) -> u32 {
+        self.generation += 1;
+        self.pending = Some(Pending {
+            generation: self.generation,
+            kind,
+            position,
+            size,
+            rect,
+            requested_at: Instant::now(),
+        });
+        self.generation
+    }
+
+    /// The page committed `generation`, or its fallback fired. `Some` exactly when that generation
+    /// is the one pending — and then it no longer is, so the second of a commit and its fallback
+    /// gets `None`.
+    fn complete(&mut self, generation: u32) -> Option<Pending> {
+        match &self.pending {
+            Some(p) if p.generation == generation => self.pending.take(),
+            _ => None,
+        }
+    }
+
+    /// A hide: whatever was pending must not complete — a commit arriving after a hide would
+    /// otherwise order the panel back in. Returns whether anything was cancelled.
+    fn cancel(&mut self) -> bool {
+        self.pending.take().is_some()
+    }
 }
 
 impl Default for PanelState {
@@ -289,12 +381,14 @@ impl Default for PanelState {
                 expanded: false,
                 // Before the first show nothing has been laid out; the first show replaces this.
                 last: PanelLayout {
+                    generation: 0,
                     view: PanelView::Transport,
                     state: PanelHeight::Collapsed,
                     width: PANEL_WIDTH,
                     height: COLLAPSED_HEIGHT,
                     expandable: true,
                 },
+                round_trip: RoundTrip::default(),
             }),
         }
     }
@@ -316,11 +410,23 @@ impl PanelState {
         }
     }
 
-    /// Record a layout that is about to be applied and return what the page is told.
-    fn record(&self, view: PanelView, layout: &Layout) -> PanelLayout {
+    /// Register a layout with the round trip and record it as the last one; returns what the page
+    /// is told, generation included.
+    fn request(
+        &self,
+        view: PanelView,
+        layout: &Layout,
+        kind: LayoutKind,
+        rect: Rect,
+    ) -> PanelLayout {
         let mut inner = self.inner.lock().unwrap();
+        let generation =
+            inner
+                .round_trip
+                .request(kind, layout.anchored.position, layout.size, rect);
         inner.expanded = layout.state == PanelHeight::Expanded;
         inner.last = PanelLayout {
+            generation,
             view,
             state: layout.state,
             width: layout.size.0,
@@ -329,13 +435,21 @@ impl PanelState {
         };
         inner.last
     }
+
+    fn complete(&self, generation: u32) -> Option<Pending> {
+        self.inner.lock().unwrap().round_trip.complete(generation)
+    }
+
+    fn cancel_pending(&self) -> bool {
+        self.inner.lock().unwrap().round_trip.cancel()
+    }
 }
 
 /// Why the popover is being shown. Logged like [`HideReason`], and **the quantity the page's
 /// view is derived from**: every effective show stores and emits [`ShowReason::view`], so which
 /// pane is showing is decided here and only mirrored by the webview (decided 2026-09-17; an
 /// earlier draft let the About pane survive a hide, which put the next tray click on About).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShowReason {
     /// The tray icon was clicked while the popover was hidden.
     Toggle,
@@ -394,11 +508,15 @@ pub fn hide<R: Runtime>(handle: &AppHandle<R>, reason: HideReason) {
             return;
         };
         let effective = panel.is_visible();
+        // A layout still waiting for the page's commit must not complete after this: for a
+        // pending show it would order the panel back in (decision D3).
+        let pending_cancelled = on_main.state::<PanelState>().cancel_pending();
         // `orderOut:` on a window that is already out is itself a no-op, so this is called
         // unconditionally: the log line is what distinguishes the two cases, not a branch.
         panel.hide();
         log::info!(
-            "panel hide reason={} effective={effective} thread={:?}",
+            "panel hide reason={} effective={effective} pending_cancelled={pending_cancelled} \
+             thread={:?}",
             reason.as_str(),
             std::thread::current().name()
         );
@@ -460,30 +578,110 @@ fn show_on_main<R: Runtime>(
     let view = reason.view();
     let state = handle.state::<PanelState>();
     let laid = layout_for(&window, rect, state.wanted_height())?;
-    let emitted = state.record(view, &laid);
+    let emitted = state.request(view, &laid, LayoutKind::Show(reason), rect);
     emit_layout(handle, emitted, reason.as_str());
     // Origin and size in one call while the panel is still hidden, so the hidden-window
     // `setContentSize:` trap (bottom-left kept — M2d Step 0, measured, unexplained) has nothing to
-    // act on: the frame is set whole, never a size against a remembered origin.
+    // act on: the frame is set whole, never a size against a remembered origin — and so the page's
+    // `innerHeight` already agrees with the layout it has just been told when it commits.
     apply_frame(&panel, laid.anchored.position, laid.size);
-    panel.show();
-    // `show()` is `orderFrontRegardless` alone, and a panel that is never key can never resign
-    // key. Not `show_and_make_key()`: that also makes the content view (`WryWebViewParent`)
-    // first responder, taking it from the WKWebView — measured 2026-09-16: after plain
-    // `make_key_window()` the first responder is the `WryWebView` at t+0 in every run.
-    panel.make_key_window();
-
-    let ns = panel.as_panel();
+    // Ordering in waits for the page's commit (decision D3): with it before the commit, the
+    // retained WKWebView layer was composited once with the previous pane (M2c review finding 8,
+    // measured 2026-09-18). `complete_layout` orders in on the commit or on the fallback.
+    arm_fallback(handle, emitted.generation);
     log::info!(
-        "panel show reason={} effective=true class={} key={} thread={:?}",
-        reason.as_str(),
-        ns.class().name().to_string_lossy(),
-        ns.isKeyWindow(),
-        std::thread::current().name()
+        "panel layout pending generation={} kind=show reason={}",
+        emitted.generation,
+        reason.as_str()
     );
-    log_tray_screen_check(&panel, rect);
-    log_settled_occlusion(handle, &panel);
     Ok(())
+}
+
+/// The page committed the DOM for `generation` (`commands::panel::panel_layout_committed`), or
+/// its fallback fired. Completes the visible change for that layout if — and only if — it is the
+/// one still pending; anything else is a logged no-op. Main thread, as everything here.
+///
+/// "Commit" is React's DOM commit, not a paint: a hidden WKWebView runs no rendering updates
+/// (M2d Step 0 P3 — no `resize` report until shown, and `requestAnimationFrame` never fires), so
+/// the page reports from an effect. For a show that is sufficient — the first composite after
+/// `orderFrontRegardless` lays out and paints what is committed. For a visible resize it puts the
+/// state-dependent content in place before the frame changes; whether the newly exposed band is
+/// painted in the same frame depends on WebKit having rasterised the page's pre-laid-out overflow,
+/// which is measured at acceptance, not assumed.
+pub fn layout_committed<R: Runtime>(handle: &AppHandle<R>, generation: u32) {
+    let on_main = handle.clone();
+    let queued = handle.run_on_main_thread(move || complete_layout(&on_main, generation, "commit"));
+    if let Err(e) = queued {
+        log::warn!("panel layout commit generation={generation} not queued: {e}");
+    }
+}
+
+fn complete_layout<R: Runtime>(handle: &AppHandle<R>, generation: u32, trigger: &str) {
+    let Some(pending) = handle.state::<PanelState>().complete(generation) else {
+        log::info!(
+            "panel layout complete generation={generation} trigger={trigger} effective=false"
+        );
+        return;
+    };
+    let Ok(panel) = handle.get_webview_panel(PANEL_LABEL) else {
+        log::warn!(
+            "panel layout complete generation={generation} panel not in the tauri-nspanel store"
+        );
+        return;
+    };
+    let after_ms = pending.requested_at.elapsed().as_millis();
+    match pending.kind {
+        LayoutKind::Show(reason) => {
+            panel.show();
+            // `show()` is `orderFrontRegardless` alone, and a panel that is never key can never
+            // resign key. Not `show_and_make_key()`: that also makes the content view
+            // (`WryWebViewParent`) first responder, taking it from the WKWebView — measured
+            // 2026-09-16: after plain `make_key_window()` the first responder is the `WryWebView`
+            // at t+0 in every run.
+            panel.make_key_window();
+            panel.as_panel().invalidateShadow();
+            let ns = panel.as_panel();
+            log::info!(
+                "panel show reason={} effective=true generation={generation} trigger={trigger} \
+                 after_ms={after_ms} class={} key={} thread={:?}",
+                reason.as_str(),
+                ns.class().name().to_string_lossy(),
+                ns.isKeyWindow(),
+                std::thread::current().name()
+            );
+            log_settled_occlusion(handle, &panel);
+        }
+        LayoutKind::Resize => {
+            apply_frame(&panel, pending.position, pending.size);
+            log::info!(
+                "panel resize effective=true generation={generation} trigger={trigger} \
+                 after_ms={after_ms} size_points={:?} thread={:?}",
+                pending.size,
+                std::thread::current().name()
+            );
+        }
+    }
+    log_tray_screen_check(&panel, pending.rect);
+}
+
+/// Decision D3's fallback: after `LAYOUT_FALLBACK`, complete `generation` if the page has not.
+/// One thread per request, like `log_settled_occlusion`; a request is a click, not a stream.
+fn arm_fallback<R: Runtime>(handle: &AppHandle<R>, generation: u32) {
+    let handle = handle.clone();
+    let spawned = std::thread::Builder::new()
+        .name("ondar-layout-fallback".into())
+        .spawn(move || {
+            std::thread::sleep(LAYOUT_FALLBACK);
+            let on_main = handle.clone();
+            let queued = handle
+                .run_on_main_thread(move || complete_layout(&on_main, generation, "fallback"));
+            if let Err(e) = queued {
+                log::warn!("panel layout fallback generation={generation} not queued: {e}");
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("panel layout fallback generation={generation} thread not started: {e}");
+    }
 }
 
 /// Set the panel's frame — origin **and** size — in one synchronous `setFrame:display:` (M2d
@@ -687,15 +885,16 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
         }
         let state = on_main.state::<PanelState>();
         let view = state.layout().view;
-        let emitted = state.record(view, &laid);
+        let emitted = state.request(view, &laid, LayoutKind::Resize, rect);
         emit_layout(&on_main, emitted, "resize");
-        apply_frame(&panel, laid.anchored.position, laid.size);
+        // The frame changes when the page has committed the new layout (decision D3), or when
+        // the fallback fires — `complete_layout`, either way.
+        arm_fallback(&on_main, emitted.generation);
         log::info!(
-            "panel resize want={want:?} effective=true capped={} thread={:?}",
-            laid.capped,
-            std::thread::current().name()
+            "panel layout pending generation={} kind=resize want={want:?} capped={}",
+            emitted.generation,
+            laid.capped
         );
-        log_tray_screen_check(&panel, rect);
     });
     if let Err(e) = queued {
         log::warn!("panel resize expanded={expanded} not queued: {e}");
@@ -1675,6 +1874,81 @@ mod tests {
         assert_eq!(allowed.size, (360.0, 421.0));
         assert!(allowed.capped);
         assert_size_inside_work_area(&allowed.anchored, allowed.size, &just_over);
+    }
+
+    fn any_rect() -> Rect {
+        Rect {
+            position: Position::Physical(tauri::PhysicalPosition::new(0, 0)),
+            size: Size::Physical(tauri::PhysicalSize::new(1, 1)),
+        }
+    }
+
+    fn request(rt: &mut RoundTrip, kind: LayoutKind) -> u32 {
+        rt.request(
+            kind,
+            (0.0, 0.0),
+            (PANEL_WIDTH, COLLAPSED_HEIGHT),
+            any_rect(),
+        )
+    }
+
+    /// A commit for a generation that is not the pending one applies nothing — here the page
+    /// reports the layout it was given *before* the latest request. Without the generation check
+    /// the stale report would apply the newer layout early, or apply it twice.
+    #[test]
+    fn stale_commit_is_a_no_op() {
+        let mut rt = RoundTrip::default();
+        let first = request(&mut rt, LayoutKind::Resize);
+        let second = request(&mut rt, LayoutKind::Resize);
+        assert_ne!(first, second);
+        assert!(rt.complete(first).is_none(), "the superseded generation");
+        assert!(
+            rt.complete(second + 1).is_none(),
+            "a generation never issued"
+        );
+        let done = rt
+            .complete(second)
+            .expect("the pending generation completes");
+        assert_eq!(done.generation, second);
+    }
+
+    /// A newer request replaces the pending one: only the newest completes, exactly once.
+    #[test]
+    fn a_newer_request_supersedes() {
+        let mut rt = RoundTrip::default();
+        let g1 = request(&mut rt, LayoutKind::Show(ShowReason::Toggle));
+        let g2 = request(&mut rt, LayoutKind::Show(ShowReason::About));
+        assert!(rt.complete(g1).is_none());
+        let done = rt.complete(g2).expect("the newest completes");
+        assert_eq!(done.kind, LayoutKind::Show(ShowReason::About));
+        assert!(rt.complete(g2).is_none(), "and only once");
+    }
+
+    /// A hide cancels the pending layout, so a commit that arrives after the hide — the page was
+    /// slow, the user clicked away — cannot order the panel back in.
+    #[test]
+    fn hide_cancels_a_pending_layout() {
+        let mut rt = RoundTrip::default();
+        let g = request(&mut rt, LayoutKind::Show(ShowReason::Toggle));
+        assert!(rt.cancel(), "there was something to cancel");
+        assert!(rt.complete(g).is_none(), "the late commit is a no-op");
+        assert!(!rt.cancel(), "nothing left to cancel");
+    }
+
+    /// The fallback and the page's commit race for the same generation; whichever runs first
+    /// applies, the other is a no-op — so a slow page never produces a second apply.
+    #[test]
+    fn fallback_applies_once_and_the_late_commit_is_a_no_op() {
+        let mut rt = RoundTrip::default();
+        let g = request(&mut rt, LayoutKind::Resize);
+        let by_fallback = rt
+            .complete(g)
+            .expect("the fallback completes the pending layout");
+        assert_eq!(by_fallback.kind, LayoutKind::Resize);
+        assert!(
+            rt.complete(g).is_none(),
+            "the page's late commit applies nothing"
+        );
     }
 
     /// Top-left points → Cocoa frame, pinned by the P3 measurement: anchor (758,39), 360×720, on the

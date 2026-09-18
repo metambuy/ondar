@@ -3,7 +3,7 @@
 // control and the placeholder for the expanded pane, and reports Escape to Rust. It decides none
 // of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
 // a click on the control is a report, answered by the next `panel:layout`.
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { onPanelLayout, panel } from "../api";
 import type { PanelLayout, PanelView } from "../api";
 import About from "./About";
@@ -47,9 +47,19 @@ export default function Panel() {
   // the window's height until the window has shrunk, so no band of bare material opens inside a
   // still-tall window. The value is Rust's, so it is not a style literal (`check-tokens.sh`).
   const rootHeight = Math.max(layout?.height ?? 0, windowHeight);
-  useEffect(() => {
+  // A layout effect, so the variable is in place before anything can paint this render.
+  useLayoutEffect(() => {
     document.documentElement.style.setProperty("--panel-height", `${rootHeight}px`);
   }, [rootHeight]);
+
+  // The round trip's report (decision D3): once the render that used this layout is committed,
+  // tell Rust, which orders a pending show in or changes the frame then. An effect keyed on the
+  // generation, not `requestAnimationFrame`: a hidden WKWebView runs no rendering updates, so an
+  // rAF report would never arrive for a show. Rust ignores a generation that is no longer pending.
+  const generation = layout?.generation;
+  useEffect(() => {
+    if (generation !== undefined) void panel.layoutCommitted(generation);
+  }, [generation]);
 
   useEffect(() => {
     // Escape → Rust, which hides the popover (`reason=esc`). `preventDefault()` because the key

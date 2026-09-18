@@ -35,6 +35,10 @@ export const panel = {
   escape: () => invoke<void>("panel_escape"),
   setExpanded: (expanded: boolean) => invoke<void>("panel_set_expanded", { expanded }),
   getLayout: () => invoke<PanelLayout>("get_panel_layout"),
+  // The page committed the DOM for this layout generation; Rust completes the visible change
+  // (orders a pending show in, or resizes) on it, or on its fallback timer if this never arrives.
+  layoutCommitted: (generation: number) =>
+    invoke<void>("panel_layout_committed", { generation }),
 };
 
 export const onPanelLayout = (cb: (l: PanelLayout) => void): Promise<UnlistenFn> =>

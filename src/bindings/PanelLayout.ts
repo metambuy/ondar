@@ -10,4 +10,11 @@ import type { PanelView } from "./PanelView";
  * it** (D1's consequence; CLAUDE.md, "The one rule"). Supersedes M2c's `panel:view` event and
  * `get_panel_view`, whose value is the `view` field.
  */
-export type PanelLayout = { view: PanelView, state: PanelHeight, width: number, height: number, expandable: boolean, };
+export type PanelLayout = { 
+/**
+ * Increments on every layout request. The page echoes it in `panel_layout_committed`, so a
+ * report for a layout that has since been superseded, completed or cancelled is a logged
+ * no-op rather than a second apply (decision D3). `u32`, not `u64`: ts-rs maps `u64` to
+ * `bigint`, and a click counter does not need it.
+ */
+generation: number, view: PanelView, state: PanelHeight, width: number, height: number, expandable: boolean, };

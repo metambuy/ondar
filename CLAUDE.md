@@ -93,13 +93,15 @@ onda/
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 29 tests, including the
+    │   │                         flood; holds 3 of the shell's 33 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
     │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
     │                             panel_set_expanded (the page reports a click on the expand control;
-    │                             Rust lays out, applies or refuses) and get_panel_layout (the layout
-    │                             last emitted, for the page to mirror on mount)
+    │                             Rust lays out, applies or refuses), panel_layout_committed (the page
+    │                             reports its DOM commit for a layout generation; Rust completes the
+    │                             show or resize then — D3) and get_panel_layout (the layout last
+    │                             emitted, for the page to mirror on mount)
     └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
         ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
         ├── stream.rs             stream-download open, ICY headers, timeout invariant
@@ -124,8 +126,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 79 tests `cargo test --workspace`
-reports break down as **70 hand-written + 9 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 83 tests `cargo test --workspace`
+reports break down as **74 hand-written + 9 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -136,11 +138,11 @@ reports break down as **70 hand-written + 9 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 22 — in the **shell** crate; one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
+| `panel::tests` | 26 — in the **shell** crate; one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; four pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_*` | 3 — generated, in the **shell** crate: `panelview`, `panelheight`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 
-Counting `#[test]` attributes in source gives 70 and will not reconcile with the runner's 79
+Counting `#[test]` attributes in source gives 74 and will not reconcile with the runner's 83
 until those 9 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -163,14 +165,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 79 tests: 50 in the ondar_audio binary and 29 in the shell's
+cargo test --workspace       # 83 tests: 50 in the ondar_audio binary and 33 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (29 tests) and silently skips ondar-audio; this
+                              # `ondar` package (33 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's twenty-nine test names, and one of them —
+                              # prints only the shell's thirty-three test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -191,8 +193,15 @@ Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 and Rust hides the popover through `panel::hide` with `reason=esc`; and `panel_set_expanded(expanded)`
 (`panel.setExpanded()`) — the page reports a click on the expand control and Rust lays the panel
 out for the new height against a fresh tray rect, applies it, or refuses it (D1's floor), logging
-which. And one panel getter, `get_panel_layout()` (`panel.getLayout()`), the counterpart of the
-`panel:layout` event as `get_playback_state` is of `playback:state`. All three are outside the
+which. A third, `panel_layout_committed(generation)` (`panel.layoutCommitted()`), is the
+**round trip** (D3): every `panel:layout` carries a generation; the page reports it from an
+effect after the render that used it, and Rust completes the visible change then — orders a
+pending show in, or changes the visible panel's frame — if that generation is still pending. A
+stale, superseded or cancelled generation is a logged no-op; a hide cancels; and a fallback
+timer (`LAYOUT_FALLBACK`, 250 ms provisional, provenance in its doc comment) completes without
+the report so a dead page cannot wedge the popover — `trigger=fallback` on a healthy page is a
+defect. And one panel getter, `get_panel_layout()` (`panel.getLayout()`), the counterpart of the
+`panel:layout` event as `get_playback_state` is of `playback:state`. All four are outside the
 three groups below — they never touch the engine.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
@@ -340,9 +349,12 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   `get_webview_window(label)`.
 - Non-activating is the style mask: `NonactivatingPanel` ORed onto tao's mask. `no_activate(true)`
   only keeps window *creation* from activating the app.
-- Showing is `apply_frame` (one synchronous `setFrame:display:` with origin **and** size, while
-  still hidden — M2d route S, D2), then `show()`, then `make_key_window()`; `show()` alone never
-  makes the panel key. `invalidateShadow()` follows every frame change as insurance (P2,
+- Showing is: lay out, `apply_frame` (one synchronous `setFrame:display:` with origin **and**
+  size, while still hidden — M2d route S, D2), emit `panel:layout`, **wait for the page's commit**
+  (or the 250 ms fallback), then `show()`, then `make_key_window()`; `show()` alone never makes
+  the panel key. Measured on the dev loop 2026-09-18: the hidden-page commit arrives 2–8 ms
+  after the request. A resize is the same round trip with `apply_frame` at the end instead of
+  `show()`. `invalidateShadow()` follows every frame change as insurance (P2,
   unfalsified). After every show and resize the log carries `panel placed
   inside_tray_screen_visible=… gap_below_icon=…` — the **tray-screen** form by rule (R3): the
   own-screen form passed both of Step 0's forced failures. Gap 6 = clamp idle, 0 = clamp fired.

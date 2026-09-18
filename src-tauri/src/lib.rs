@@ -123,6 +123,7 @@ pub fn run() {
             commands::panel::panel_escape,
             commands::panel::get_panel_layout,
             commands::panel::panel_set_expanded,
+            commands::panel::panel_layout_committed,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ondar");
