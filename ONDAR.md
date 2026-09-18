@@ -684,6 +684,33 @@ shell test that reads the stylesheet.
   review quoted came from a WebFetch summary; the header on this Mac adds "(It does not also mask
   subviews.)", the sentence that decided what the option was worth.
 
+**Acceptance, 2026-09-18 (Martín on the bundled build, detached launch; logs and captures in
+`_handover/m2c-acceptance/`).** All eight items passed or were measured:
+
+- **Esc does not beep**, in either phase — `preventDefault()` on the page's `keydown` stops the
+  key from reaching `cancelOperation:`. The probe without it beeped; this is the difference.
+- Right-click with the popover open: gone before the menu. About → Back → transport; About, Esc,
+  tray click → transport. Quit with a stream playing: audio stopped, no instance left.
+- Second launch: `open`, `open -n`, Finder double-click and the `/tmp` copy all showed the
+  popover (three `reopen`, three `second_instance` in the log). The already-visible no-op path
+  was not exercised.
+- Every close in both logs is one `effective=true` and one resign-key `effective=false`.
+- **Control Center and the popover cannot be on screen together** — opening Control Center
+  resigns the panel's key status and the dismissal design hides it — so the planned
+  single-capture comparison is impossible on this OS. Instead, two captures per appearance on
+  one desktop, each the other's absent reference (the R8 differential): the popover's top-left
+  arc fits **9.18 pt (light, 0.17 px rms) / 9.40 pt (dark)** with the same threshold-and-fit
+  family that read an 8.5 pt setting as 9.35–9.95 pt at Step 0 — i.e. the 8 pt setting renders
+  as intended. Control Center's outer glass corner could not be fitted: it differs from the
+  backdrop by less than its own shadow does at every threshold. Step 0's dark-appearance
+  measurement stays the token's provenance; by eye the two corners are comparable.
+- **A one-frame flash of the previous pane** on About from the menu, and on the first tray click
+  after Back or Esc: the view event is async (JS, then a React commit) and `orderFrontRegardless`
+  is not, so the retained WKWebView layer is composited once before the new pane. Predicted by
+  `/code-review` as plausible, now measured. **Deferred**: the fix is a round trip (the page
+  reports its commit, Rust orders in then, with a fallback timer), owed to whichever milestone
+  keeps the About pane — M3 replaces this page.
+
 ### M2b: coordinates are logical points (decided and measured 2026-09-16)
 
 Branch `m2b`. `4f14213` recorded the Step 0 instrument findings; `0331ace` is the fix.
