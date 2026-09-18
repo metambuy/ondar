@@ -477,6 +477,19 @@ impl PanelState {
     fn cancel_pending(&self) -> bool {
         self.inner.lock().unwrap().round_trip.cancel()
     }
+
+    /// A show is requested and not yet ordered in: the frame is set, the page has been told, the
+    /// commit or the fallback has not arrived. `is_visible()` is false throughout, which is why
+    /// `toggle` asks this too (`/code-review` C3).
+    fn show_pending(&self) -> bool {
+        matches!(
+            self.inner.lock().unwrap().round_trip.pending,
+            Some(Pending {
+                kind: LayoutKind::Show(_),
+                ..
+            })
+        )
+    }
 }
 
 /// Why the popover is being shown. Logged like [`HideReason`], and **the quantity the page's
@@ -530,7 +543,12 @@ impl ShowReason {
 /// inline when already on main (tauri-runtime-wry 2.11.4 `lib.rs:235-255`) and posts it otherwise,
 /// so every caller gets the same path, and the log line records which thread it ran on.
 ///
-/// Hiding an already-hidden panel is a logged no-op — `effective=false` — never silence.
+/// Hiding an already-hidden panel is a logged no-op — `effective=false` — never silence. It still
+/// **cancels a pending show** (D3): the panel is not visible during the round trip, so every hide
+/// that arrives then is `effective=false`, and each has a reason to end the show anyway — a tray
+/// click (`toggle`, C3), a right-click opening the menu, a resign-key that can only mean the panel
+/// was ordered in and out again. A no-op hide has no other side effect (`/code-review` C6:
+/// unverified, decided here — the cancel is the intended behaviour, not an accident of ordering).
 pub fn hide<R: Runtime>(handle: &AppHandle<R>, reason: HideReason) {
     let on_main = handle.clone();
     let queued = handle.run_on_main_thread(move || {
@@ -953,15 +971,24 @@ pub fn view_back<R: Runtime>(handle: &AppHandle<R>) {
     }
 }
 
-/// Tray click: hide if shown, otherwise show under the icon. Decides only; the ordering in and
-/// out is [`hide`] and [`show_at`], so a tray close is one effective hide like every other close.
+/// Tray click: hide if shown **or about to be shown**, otherwise show under the icon. Decides
+/// only; the ordering in and out is [`hide`] and [`show_at`], so a tray close is one effective hide
+/// like every other close.
+///
+/// "About to be shown" is D3's window: a show requested and waiting for the page's commit (or the
+/// 250 ms fallback), during which `is_visible()` is false. Deciding on visibility alone there
+/// turned the second click into another show request — harmless on a healthy page (the window is
+/// 2–8 ms, no human lands in it) but, with the frozen page the fallback exists for, clicks faster
+/// than 250 ms each superseded the pending show and pushed it out while the user was trying to
+/// close it (`/code-review` C3, confirmed on that sub-scenario). A click during a pending show
+/// now hides, which cancels it.
 pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) {
     let on_main = handle.clone();
     let queued = handle.run_on_main_thread(move || {
         let visible = on_main
             .get_webview_panel(PANEL_LABEL)
             .is_ok_and(|p| p.is_visible());
-        if visible {
+        if visible || on_main.state::<PanelState>().show_pending() {
             hide(&on_main, HideReason::Toggle);
         } else {
             show_at(&on_main, rect, ShowReason::Toggle);
@@ -1985,6 +2012,33 @@ mod tests {
         assert!(rt.cancel(), "there was something to cancel");
         assert!(rt.complete(g).is_none(), "the late commit is a no-op");
         assert!(!rt.cancel(), "nothing left to cancel");
+    }
+
+    /// `toggle`'s question: is a show pending? Yes between its request and its completion or
+    /// cancellation; no for a pending resize, and no once the show completed.
+    #[test]
+    fn a_show_is_pending_only_between_request_and_completion() {
+        fn show_pending(rt: &RoundTrip) -> bool {
+            matches!(
+                rt.pending,
+                Some(Pending {
+                    kind: LayoutKind::Show(_),
+                    ..
+                })
+            )
+        }
+        let mut rt = RoundTrip::default();
+        assert!(!show_pending(&rt));
+        let g = request(&mut rt, LayoutKind::Show(ShowReason::Toggle));
+        assert!(show_pending(&rt));
+        rt.complete(g);
+        assert!(!show_pending(&rt), "completed");
+        request(&mut rt, LayoutKind::Resize);
+        assert!(!show_pending(&rt), "a pending resize is not a pending show");
+        let g = request(&mut rt, LayoutKind::Show(ShowReason::Reopen));
+        assert!(rt.cancel());
+        assert!(!show_pending(&rt), "cancelled");
+        assert!(rt.complete(g).is_none());
     }
 
     /// The fallback and the page's commit race for the same generation; whichever runs first
