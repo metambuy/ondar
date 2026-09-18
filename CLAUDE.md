@@ -63,7 +63,10 @@ onda/
 ├── package.json                  pnpm; pnpm-workspace.yaml carries `allowBuilds: esbuild`
 ├── src/                          React renderer for the popover (renderer only)
 │   ├── panel.tsx, vite-env.d.ts  entry (mounts panel/Panel.tsx); Vite's client types for CSS modules
-│   ├── panel/                    Panel.tsx (root: mirrors the pane from Rust, reports Esc),
+│   ├── panel/                    Panel.tsx (root: mirrors the layout from Rust — pane, height state,
+│   │                             height in points, expandable — sets the root height from it, hosts the
+│   │                             expand control (disabled when refused, D4) and the placeholder for the
+│   │                             expanded pane, reports Esc),
 │   │                             Transport.tsx (dev transport: presets, play/pause/stop, volume — no
 │   │                             EQ; replaced at M3), About.tsx (name, version, credits), panel.module.css
 │   ├── styles/tokens.css         THE only file with colour/size literals, light + dark together

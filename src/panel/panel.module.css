@@ -3,7 +3,10 @@
    WebKit renders them as native macOS controls. */
 
 .panel {
-  height: 100%;
+  /* Set by `Panel.tsx` from the height Rust laid out (or the window's, whichever is taller — see
+     the comment there); `100%` only until the first layout arrives. Not a literal: the value is
+     Rust's, in the points the webview's CSS px are. */
+  height: var(--panel-height, 100%);
   box-sizing: border-box;
   /* The page is transparent, so nothing here needs clipping today; content that later paints
      near a corner is clipped to the same shape the effect view is rounded to (`panel.rs`,
@@ -36,8 +39,8 @@
   color: var(--color-label-secondary);
 }
 
-/* Status and error text is bounded to three lines. The panel is a fixed 360x420 with
-   `overflow: hidden`, and an `error [http]` message can be an entire HTTP response body
+/* Status and error text is bounded to three lines. The panel is 360 pt wide at one of two
+   Rust-owned heights with `overflow: hidden`, and an `error [http]` message can be an entire HTTP response body
    (stream-download formats non-2xx errors as `{source}: {body}`), which would push the
    controls off the panel with no scrollbar (`/code-review` finding 2, 2026-09-17). The full
    text is in Rust's log. */
