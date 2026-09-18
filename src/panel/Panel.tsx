@@ -3,7 +3,7 @@
 // control and the placeholder for the expanded pane, and reports Escape to Rust. It decides none
 // of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
 // a click on the control is a report, answered by the next `panel:layout`.
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { onPanelLayout, panel } from "../api";
 import type { PanelLayout, PanelView } from "../api";
 import About from "./About";
@@ -21,9 +21,18 @@ export default function Panel() {
   const [view, setView] = useState<PanelView>("transport");
   // The window's own height, as the webview sees it — view state, read on `resize`.
   const [windowHeight, setWindowHeight] = useState(window.innerHeight);
+  // The newest generation applied, so an older layout arriving late is ignored (below).
+  const newestGeneration = useRef(-1);
 
   useEffect(() => {
-    const unlisten = onPanelLayout((l) => {
+    // One entry point for both channels. The getter's answer and the event are separate IPC
+    // channels with no ordering between them, so a getter answered before a request but delivered
+    // after that request's event would roll the page back to the older layout, and its commit
+    // report would be a no-op while the newer generation waited for the fallback
+    // (`/code-review` C4). Generations only grow, so a layout older than the one held is ignored.
+    const apply = (l: PanelLayout) => {
+      if (l.generation < newestGeneration.current) return;
+      newestGeneration.current = l.generation;
       setLayout(l);
       setView(l.view);
       // On a show the hidden panel's frame is already at `l.height`, and a hidden WKWebView fires
@@ -31,12 +40,10 @@ export default function Panel() {
       // taller, after a show on a shorter display or after a cancelled collapse. Take Rust's word
       // for it (`/code-review` C2). On a resize the window has not changed yet; leave it.
       if (l.transition === "show") setWindowHeight(l.height);
-    });
+    };
+    const unlisten = onPanelLayout(apply);
     // An emit before this listener existed was dropped by Tauri, so ask for the current layout.
-    panel.getLayout().then((l) => {
-      setLayout(l);
-      setView(l.view);
-    });
+    panel.getLayout().then(apply);
     return () => {
       unlisten.then((un) => un());
     };
@@ -63,9 +70,11 @@ export default function Panel() {
   // tell Rust, which orders a pending show in or changes the frame then. An effect keyed on the
   // generation, not `requestAnimationFrame`: a hidden WKWebView runs no rendering updates, so an
   // rAF report would never arrive for a show. Rust ignores a generation that is no longer pending.
+  // Generation 0 is the getter's answer before any show — never pending, so not reported
+  // (`/code-review` C7: it logged an `effective=false` line at every mount).
   const generation = layout?.generation;
   useEffect(() => {
-    if (generation !== undefined) void panel.layoutCommitted(generation);
+    if (generation !== undefined && generation > 0) void panel.layoutCommitted(generation);
   }, [generation]);
 
   useEffect(() => {
