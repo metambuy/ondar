@@ -61,14 +61,20 @@ every commit".
       is not a direct dependency), rounded corners, no window chrome — vibrancy and no chrome
       (M2a; confirmed by eye 2026-09-16); rounded corners at the measured 8 pt, shadow following
       (M2c)
-- [ ] Collapsed/expanded height states with a smooth resize + reposition (empty panes for now)
+- [x] Collapsed/expanded height states, resized **and** repositioned in place in one frame change
+      (empty panes for now) — **not animated** (M2d decision D2, measured: an animated resize is
+      14 frames of empty material with the page frozen, and no duration rescues it); the expanded
+      height is capped to the display (D1, 598 pt measured on the ANMITE); the page's commit is
+      awaited before the frame changes or the popover is shown (D3), which also fixed M2c's
+      one-frame pane flash (M2d)
 - [x] `tauri-plugin-single-instance` — 2.4.4, plus `RunEvent::Reopen` for the launches that
       start no process; both show the popover (M2c)
 - [x] Design tokens (`styles/tokens.css`) for both appearances — values measured on this Mac,
       literal check in `pnpm lint` (M2c)
 
-**Exit:** popover opens and closes like Bartender/Fantastical; expand/collapse animates with
-no jump; nothing flickers on a second monitor.
+**Exit:** popover opens and closes like Bartender/Fantastical; expand/collapse resizes in place
+in one frame change with no jump — **not animated** (D2; the earlier "animates" here predated the
+measurement, ONDAR.md "M2d: resize in place"); nothing flickers on a second monitor.
 
 **Risk:** `tauri-nspanel` API drift — a git-only community crate that moves faster than any
 doc here. Verify against the pinned rev before writing code and record what you find in
