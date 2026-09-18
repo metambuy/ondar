@@ -238,9 +238,10 @@ impl HideReason {
     }
 }
 
-/// Which pane the popover shows. Crosses the boundary twice — as the `panel:view` event on
-/// every effective show and as the `get_panel_view` command's answer — so it is a generated
-/// type, not a string agreed on by hand on both sides (`/code-review` finding 7, 2026-09-17).
+/// Which pane the popover shows. Crosses the boundary as the `view` field of [`PanelLayout`] —
+/// the `panel:layout` event and the `get_panel_layout` answer (M2c's `panel:view` and
+/// `get_panel_view` until M2d) — so it is a generated type, not a string agreed on by hand on both
+/// sides (`/code-review` finding 7, 2026-09-17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
@@ -316,7 +317,8 @@ pub struct PanelState {
 }
 
 struct Inner {
-    expanded: bool,
+    /// The layout last emitted. Its `state` is also the height the user last chose, which the
+    /// next show lays out for (`wanted_height`).
     last: PanelLayout,
     round_trip: RoundTrip,
 }
@@ -396,7 +398,6 @@ impl Default for PanelState {
     fn default() -> Self {
         Self {
             inner: Mutex::new(Inner {
-                expanded: false,
                 // Before the first show nothing has been laid out; the first show replaces this.
                 last: PanelLayout {
                     transition: PanelTransition::Show,
@@ -422,11 +423,7 @@ impl PanelState {
 
     /// The height the next show lays out for.
     fn wanted_height(&self) -> PanelHeight {
-        if self.inner.lock().unwrap().expanded {
-            PanelHeight::Expanded
-        } else {
-            PanelHeight::Collapsed
-        }
+        self.inner.lock().unwrap().last.state
     }
 
     /// Register a layout with the round trip and record it as the last one; returns what the page
@@ -443,7 +440,6 @@ impl PanelState {
             inner
                 .round_trip
                 .request(kind, layout.anchored.position, layout.size, rect);
-        inner.expanded = layout.state == PanelHeight::Expanded;
         inner.last = PanelLayout {
             transition: match kind {
                 LayoutKind::Show(_) => PanelTransition::Show,
@@ -484,6 +480,18 @@ impl PanelState {
 
     fn complete(&self, generation: u32) -> Option<Pending> {
         self.inner.lock().unwrap().round_trip.complete(generation)
+    }
+
+    /// Whether `generation` is the one still pending. Read off the main thread by the fallback,
+    /// so a fallback with nothing to do never hops to main.
+    fn is_pending(&self, generation: u32) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .round_trip
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.generation == generation)
     }
 
     fn cancel_pending(&self) -> bool {
@@ -545,9 +553,10 @@ impl ShowReason {
     }
 }
 
-/// **The one hide path.** Every close goes through here — the tray toggle and resign-key today,
-/// and whatever M2c adds — so that when a hide gains side effects (M2d collapses the expanded
-/// state) they run once per close, not once per caller.
+/// **The one hide path.** Every close goes through here — the tray toggle, resign-key, Esc, the
+/// menu — so that a hide's side effect (today: cancelling a pending layout, below) runs once per
+/// close, not once per caller. The height state is *not* a side effect of hiding: it persists
+/// across hides (decided 2026-09-18; an older version of this comment predicted otherwise).
 ///
 /// Always executed on the main thread. `PanelHandle` is `Send`, but its methods are bare
 /// `msg_send!` with no dispatch of their own (tauri-nspanel c9ec213 `panel.rs:14-17`: "all actual
@@ -564,11 +573,7 @@ impl ShowReason {
 pub fn hide<R: Runtime>(handle: &AppHandle<R>, reason: HideReason) {
     let on_main = handle.clone();
     let queued = handle.run_on_main_thread(move || {
-        let Ok(panel) = on_main.get_webview_panel(PANEL_LABEL) else {
-            log::warn!(
-                "panel hide reason={} panel not in the tauri-nspanel store",
-                reason.as_str()
-            );
+        let Some(panel) = panel_handle(&on_main, "hide") else {
             return;
         };
         let effective = panel.is_visible();
@@ -614,14 +619,7 @@ fn show_on_main<R: Runtime>(
     rect: Rect,
     reason: ShowReason,
 ) -> tauri::Result<()> {
-    // Two distinct messages: the spike logged one `window not found` for two different failure
-    // sites and the log could not say which had fired.
-    let Ok(panel) = handle.get_webview_panel(PANEL_LABEL) else {
-        log::warn!("panel not in the tauri-nspanel store");
-        return Err(tauri::Error::WindowNotFound);
-    };
-    let Some(window) = handle.get_webview_window(PANEL_LABEL) else {
-        log::warn!("panel has no tauri webview window");
+    let Some((panel, window)) = panel_and_window(handle, "show") else {
         return Err(tauri::Error::WindowNotFound);
     };
 
@@ -687,10 +685,7 @@ fn complete_layout<R: Runtime>(handle: &AppHandle<R>, generation: u32, trigger: 
         );
         return;
     };
-    let Ok(panel) = handle.get_webview_panel(PANEL_LABEL) else {
-        log::warn!(
-            "panel layout complete generation={generation} panel not in the tauri-nspanel store"
-        );
+    let Some(panel) = panel_handle(handle, "layout complete") else {
         return;
     };
     let after_ms = pending.requested_at.elapsed().as_millis();
@@ -703,8 +698,10 @@ fn complete_layout<R: Runtime>(handle: &AppHandle<R>, generation: u32, trigger: 
             // 2026-09-16: after plain `make_key_window()` the first responder is the `WryWebView`
             // at t+0 in every run.
             panel.make_key_window();
-            panel.as_panel().invalidateShadow();
             let ns = panel.as_panel();
+            // A second `invalidateShadow` after ordering in — `apply_frame` made one while hidden.
+            // Same insurance as there (P2 unfalsified); the shadow a hidden window has is moot.
+            ns.invalidateShadow();
             log::info!(
                 "panel show reason={} effective=true generation={generation} trigger={trigger} \
                  after_ms={after_ms} class={} key={} thread={:?}",
@@ -729,22 +726,58 @@ fn complete_layout<R: Runtime>(handle: &AppHandle<R>, generation: u32, trigger: 
 }
 
 /// Decision D3's fallback: after `LAYOUT_FALLBACK`, complete `generation` if the page has not.
-/// One thread per request, like `log_settled_occlusion`; a request is a click, not a stream.
+/// The pending check runs off the main thread first (`PanelState` is a `Mutex`), so on a healthy
+/// page — the commit landed 2–8 ms in — nothing is hopped to main and nothing is logged at INFO;
+/// only a fallback that will actually complete something reaches `complete_layout`.
 fn arm_fallback<R: Runtime>(handle: &AppHandle<R>, generation: u32) {
+    let what = format!("layout fallback generation={generation}");
+    after_delay_on_main(
+        handle,
+        "ondar-layout-fallback",
+        LAYOUT_FALLBACK,
+        what,
+        move |handle| {
+            if !handle.state::<PanelState>().is_pending(generation) {
+                log::debug!(
+                    "panel layout fallback generation={generation} not pending; nothing to do"
+                );
+                return None;
+            }
+            Some(move |handle: &AppHandle<R>| complete_layout(handle, generation, "fallback"))
+        },
+    );
+}
+
+/// Sleep `delay` on a named thread, then run `decide` there; if it returns a closure, run that on
+/// the main thread. The shape `log_settled_occlusion` and `arm_fallback` share: one thread per
+/// event (a show or a click, not a stream), both failures logged with `what`, never panicking.
+fn after_delay_on_main<R, D, F>(
+    handle: &AppHandle<R>,
+    thread_name: &str,
+    delay: Duration,
+    what: String,
+    decide: D,
+) where
+    R: Runtime,
+    D: FnOnce(&AppHandle<R>) -> Option<F> + Send + 'static,
+    F: FnOnce(&AppHandle<R>) + Send + 'static,
+{
     let handle = handle.clone();
+    let what_for_thread = what.clone();
     let spawned = std::thread::Builder::new()
-        .name("ondar-layout-fallback".into())
+        .name(thread_name.into())
         .spawn(move || {
-            std::thread::sleep(LAYOUT_FALLBACK);
-            let on_main = handle.clone();
-            let queued = handle
-                .run_on_main_thread(move || complete_layout(&on_main, generation, "fallback"));
-            if let Err(e) = queued {
-                log::warn!("panel layout fallback generation={generation} not queued: {e}");
+            std::thread::sleep(delay);
+            let Some(on_main) = decide(&handle) else {
+                return;
+            };
+            let for_main = handle.clone();
+            if let Err(e) = handle.run_on_main_thread(move || on_main(&for_main)) {
+                log::warn!("panel {what_for_thread} not queued: {e}");
             }
         });
     if let Err(e) = spawned {
-        log::warn!("panel layout fallback generation={generation} thread not started: {e}");
+        log::warn!("panel {what} thread not started: {e}");
     }
 }
 
@@ -813,12 +846,15 @@ fn cocoa_frame(top_left: (f64, f64), size: (f64, f64), h0: f64) -> (f64, f64, f6
     (top_left.0, h0 - top_left.1 - size.1, size.0, size.1)
 }
 
-/// `inner` lies within `outer`, both Cocoa frames.
-fn frame_contains(outer: foundation::NSRect, inner: foundation::NSRect) -> bool {
-    inner.origin.x >= outer.origin.x
-        && inner.origin.y >= outer.origin.y
-        && inner.origin.x + inner.size.width <= outer.origin.x + outer.size.width
-        && inner.origin.y + inner.size.height <= outer.origin.y + outer.size.height
+/// A Cocoa frame as this module's top-left `PointRect`, given the menu-bar screen's height —
+/// `cocoa_frame`'s inverse.
+fn top_left_rect(frame: foundation::NSRect, h0: f64) -> PointRect {
+    PointRect::new(
+        frame.origin.x,
+        h0 - (frame.origin.y + frame.size.height),
+        frame.size.width,
+        frame.size.height,
+    )
 }
 
 /// Log the M2d placement check after a frame change or a show: is the panel inside the visible
@@ -828,7 +864,7 @@ fn frame_contains(outer: foundation::NSRect, inner: foundation::NSRect) -> bool 
 /// the panel inside its *own* `screen().visibleFrame()` — read `true` on both of Step 0's forced
 /// failures (a 720 pt panel sitting on the wrong display entirely) and cannot catch displacement
 /// onto another display. The tray screen is the `NSScreen` whose frame contains the icon's
-/// centre, the same acceptor test `anchor_points` makes on Tauri's monitors, done here on AppKit's.
+/// centre, the same acceptor test `resolve_display` makes on Tauri's monitors, done here on AppKit's.
 ///
 /// `gap_below_icon` is the sensitive readout for the D1 cap: 6 (`TRAY_GAP`) means `clamp_into` was
 /// idle; 0 means it fired, i.e. the panel did not fit below the icon. A log line, not an
@@ -852,36 +888,62 @@ fn log_tray_screen_check<R: Runtime>(panel: &PanelHandle<R>, rect: Rect) {
         f64::from(sz.width),
         f64::from(sz.height),
     );
-    // First acceptor wins, and index 0 is the menu-bar screen, so it wins any tie.
+    // First acceptor wins, and index 0 is the menu-bar screen, so it wins any tie. The same
+    // half-open test `resolve_display` makes on Tauri's monitors, on AppKit's screens.
     let screens = NSScreen::screens(mtm);
     let tray_screen = screens.iter().enumerate().find(|(_, s)| {
         let scale = s.backingScaleFactor();
-        let (cx, cy) = ((px + pw / 2.0) / scale, (py + ph / 2.0) / scale);
-        let f = s.frame();
-        let top = h0 - (f.origin.y + f.size.height);
-        cx >= f.origin.x && cx < f.origin.x + f.size.width && cy >= top && cy < top + f.size.height
+        top_left_rect(s.frame(), h0).contains((px + pw / 2.0) / scale, (py + ph / 2.0) / scale)
     });
     let frame = panel.as_panel().frame();
     match tray_screen {
         Some((i, s)) => {
-            let scale = s.backingScaleFactor();
-            let icon_bottom_tl = (py + ph) / scale;
-            let panel_top_tl = h0 - (frame.origin.y + frame.size.height);
+            let icon_bottom_tl = (py + ph) / s.backingScaleFactor();
+            let tl = top_left_rect(frame, h0);
             log::info!(
                 "panel placed inside_tray_screen_visible={} gap_below_icon={} tray_screen=[{i}] {:?} \
                  frame_tl=[{},{} {}x{}]",
-                frame_contains(s.visibleFrame(), frame),
-                panel_top_tl - icon_bottom_tl,
+                foundation::NSContainsRect(s.visibleFrame(), frame),
+                tl.y - icon_bottom_tl,
                 s.localizedName().to_string(),
-                frame.origin.x,
-                panel_top_tl,
-                frame.size.width,
-                frame.size.height
+                tl.x,
+                tl.y,
+                tl.width,
+                tl.height
             );
         }
         None => log::warn!(
             "panel placed: no NSScreen contains the tray icon centre; rect=({px},{py} {pw}x{ph})"
         ),
+    }
+}
+
+/// The popover's `PanelHandle`, or a warning naming the caller (`what`) and `None`. One message
+/// shape for every site; the spike once logged one `window not found` for two different failure
+/// sites and the log could not say which had fired.
+fn panel_handle<R: Runtime>(handle: &AppHandle<R>, what: &str) -> Option<PanelHandle<R>> {
+    match handle.get_webview_panel(PANEL_LABEL) {
+        Ok(panel) => Some(panel),
+        Err(_) => {
+            log::warn!("panel {what}: panel not in the tauri-nspanel store");
+            None
+        }
+    }
+}
+
+/// The popover's `PanelHandle` and its Tauri window (the latter for the monitor list), or a
+/// warning and `None`.
+fn panel_and_window<R: Runtime>(
+    handle: &AppHandle<R>,
+    what: &str,
+) -> Option<(PanelHandle<R>, WebviewWindow<R>)> {
+    let panel = panel_handle(handle, what)?;
+    match handle.get_webview_window(PANEL_LABEL) {
+        Some(window) => Some((panel, window)),
+        None => {
+            log::warn!("panel {what}: panel has no tauri webview window");
+            None
+        }
     }
 }
 
@@ -918,12 +980,7 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
         } else {
             PanelHeight::Collapsed
         };
-        let Ok(panel) = on_main.get_webview_panel(PANEL_LABEL) else {
-            log::warn!("panel resize want={want:?} panel not in the tauri-nspanel store");
-            return;
-        };
-        let Some(window) = on_main.get_webview_window(PANEL_LABEL) else {
-            log::warn!("panel resize want={want:?} panel has no tauri webview window");
+        let Some((panel, window)) = panel_and_window(&on_main, "resize") else {
             return;
         };
         if !panel.is_visible() {
@@ -1020,14 +1077,15 @@ pub fn toggle<R: Runtime>(handle: &AppHandle<R>, rect: Rect) {
 /// bits (8192 = `1 << 13` is the common one), so a non-zero raw value is *not* "visible". The
 /// decoded bit is the evidence; the raw value is printed beside it only for diagnosis.
 fn log_settled_occlusion<R: Runtime>(handle: &AppHandle<R>, panel: &PanelHandle<R>) {
-    let handle = handle.clone();
     let panel = panel.clone();
     let shown_at = Instant::now();
-    let spawned = std::thread::Builder::new()
-        .name("ondar-occlusion".into())
-        .spawn(move || {
-            std::thread::sleep(OCCLUSION_SETTLE);
-            let queued = handle.run_on_main_thread(move || {
+    after_delay_on_main(
+        handle,
+        "ondar-occlusion",
+        OCCLUSION_SETTLE,
+        "occlusion read".into(),
+        move |_| {
+            Some(move |_: &AppHandle<R>| {
                 let ns = panel.as_panel();
                 let state = ns.occlusionState();
                 log::info!(
@@ -1037,14 +1095,9 @@ fn log_settled_occlusion<R: Runtime>(handle: &AppHandle<R>, panel: &PanelHandle<
                     state.0,
                     ns.isKeyWindow()
                 );
-            });
-            if let Err(e) = queued {
-                log::warn!("panel occlusion read not queued: {e}");
-            }
-        });
-    if let Err(e) = spawned {
-        log::warn!("panel occlusion thread not started: {e}");
-    }
+            })
+        },
+    );
 }
 
 /// A rectangle in **global logical points, top-left origin** — the space every quantity in this
@@ -1112,16 +1165,40 @@ enum Resolution {
     Unresolved,
 }
 
-/// Where the panel goes for a tray click: centred under the icon, then pushed inside the work area
-/// of the display the icon is on. **Pure, and entirely in points.**
+/// The second half of placing the panel: the tray rect into the chosen display's points, centred
+/// below the icon, clamped into that display's work area (no clamp without a display). Pure;
+/// shared with `layout`, which resolves the display once for the cap and the placement.
+fn place(
+    tray: PointRect,
+    panel: (f64, f64),
+    display: Option<usize>,
+    displays: &[Display],
+) -> (f64, f64) {
+    let scale = display.map_or(1.0, |i| displays[i].scale);
+    let tray = PointRect::new(
+        tray.x / scale,
+        tray.y / scale,
+        tray.width / scale,
+        tray.height / scale,
+    );
+    let position = centred_below(tray, panel);
+    match display {
+        Some(i) => clamp_into(position, panel, displays[i].work_area),
+        None => position,
+    }
+}
+
+/// Which display hosts the tray rect: the acceptors, the choice among them, and how it was made —
+/// the first half of placing the panel (`place` is the second; `layout` runs both). **Pure, and
+/// entirely in points.**
 ///
 /// `tray` arrives exactly as `TrayIconEvent::Click` gives it: global points multiplied by the
 /// *status item display's* scale (tray-icon 0.24.2 `platform_impl/macos/mod.rs:515-528`), top-left
-/// origin. `panel` is the panel's size in **points**, owned by Rust (`PANEL_SIZE` today; the
-/// collapsed or capped expanded height at M2d) — never read back from the window. Until M2d the
+/// origin. The panel's size is in **points**, owned by Rust (`PANEL_WIDTH` by the collapsed or
+/// the capped expanded height) — never read back from the window. Until M2d the
 /// size arrived as the window's `outer_size` with its own `scale_factor`, and the division into
-/// points happened here so a test could reach it (`/code-review` finding 3, 2026-09-16); measured
-/// equal to `PANEL_SIZE` on a 1x and a 2x panel alike (M2d Step 0, `run-01-p5.log:34`,
+/// points happened beside this so a test could reach it (`/code-review` finding 3, 2026-09-16); measured
+/// equal to the constant on a 1x and a 2x panel alike (M2d Step 0, `run-01-p5.log:34`,
 /// `run-02-p4.log:21`). With the size a constant, the quantity that division was about no longer
 /// exists, and neither does the test that pinned it (see the 1x test below).
 ///
@@ -1155,38 +1232,6 @@ enum Resolution {
 /// item can then sit on a non-primary display. So the primary is a *preference* among the
 /// acceptors, never an assumption: when it is not among them, the first acceptor is used and
 /// clamped, and the caller warns. See ONDAR.md, "M2b: coordinates are logical points".
-fn anchor_points(
-    tray: PointRect,
-    panel: (f64, f64),
-    displays: &[Display],
-    primary: Option<usize>,
-) -> Anchored {
-    let (display, accepted, resolution) = resolve_display(tray, displays, primary);
-    let scale = display.map_or(1.0, |i| displays[i].scale);
-    let tray = PointRect::new(
-        tray.x / scale,
-        tray.y / scale,
-        tray.width / scale,
-        tray.height / scale,
-    );
-
-    let position = centred_below(tray, panel);
-    let position = match display {
-        Some(i) => clamp_into(position, panel, displays[i].work_area),
-        None => position,
-    };
-
-    Anchored {
-        position,
-        display,
-        accepted,
-        resolution,
-    }
-}
-
-/// Which display hosts the tray rect: the acceptors, the choice among them, and how it was made.
-/// The first half of `anchor_points`, factored out so `layout` can read the chosen display's work
-/// area for the D1 cap before the size is known. Pure.
 fn resolve_display(
     tray: PointRect,
     displays: &[Display],
@@ -1222,7 +1267,7 @@ fn resolve_display(
     (display, accepted, resolution)
 }
 
-/// The result of laying the panel out for a tray rect and a wanted height: `anchor_points`'
+/// The result of laying the panel out for a tray rect and a wanted height: the placement's
 /// answer for the size that came out of decision D1's cap, plus the cap's own outputs. `state` is
 /// the height **actually laid out** — `Collapsed` when `Expanded` was asked for and refused.
 #[derive(Debug, PartialEq)]
@@ -1264,7 +1309,7 @@ fn layout(
     displays: &[Display],
     primary: Option<usize>,
 ) -> Layout {
-    let (display, _, _) = resolve_display(tray, displays, primary);
+    let (display, accepted, resolution) = resolve_display(tray, displays, primary);
     let (expanded_height, expandable) = match display {
         Some(i) => {
             let d = displays[i];
@@ -1286,7 +1331,12 @@ fn layout(
     Layout {
         state,
         size,
-        anchored: anchor_points(tray, size, displays, primary),
+        anchored: Anchored {
+            position: place(tray, size, display, displays),
+            display,
+            accepted,
+            resolution,
+        },
         capped: state == PanelHeight::Expanded && height < EXPANDED_HEIGHT_NOMINAL,
         expandable,
     }
@@ -1361,9 +1411,9 @@ fn layout_for<R: Runtime>(
     };
 
     // Each monitor converted by its *own* scale, which is the only conversion that is correct for
-    // it (see `anchor_points`).
-    let displays: Vec<Display> = window
-        .available_monitors()?
+    // it (see `resolve_display`).
+    let monitors = window.available_monitors()?;
+    let displays: Vec<Display> = monitors
         .iter()
         .map(|m| {
             let scale = m.scale_factor();
@@ -1391,11 +1441,9 @@ fn layout_for<R: Runtime>(
     // Which entry is the primary display. `primary_monitor()` is `CGDisplay::main()` (tao
     // `monitor.rs:158-160`) — the same display `tray-icon` flips its rect against — but it comes
     // back as a `Monitor`, not an index, so it is matched by name and position. `None` here is
-    // survivable: `anchor_points` then treats ambiguity as ambiguity.
+    // survivable: `resolve_display` then treats ambiguity as ambiguity.
     let primary = window.primary_monitor()?.and_then(|p| {
-        window
-            .available_monitors()
-            .ok()?
+        monitors
             .iter()
             .position(|m| m.name() == p.name() && m.position() == p.position())
     });
@@ -1502,9 +1550,16 @@ mod tests {
         ]
     }
 
-    /// The collapsed panel's size in points — what `anchor_points` takes since M2d.
+    /// The collapsed panel's size in points.
     fn panel() -> (f64, f64) {
         (PANEL_WIDTH, COLLAPSED_HEIGHT)
+    }
+
+    /// The M2b anchoring tests' entry: the collapsed layout's placement through the production
+    /// `layout` — display resolution, centring, clamp — with the cap along for the ride (idle at
+    /// 420 pt on every fixture here).
+    fn anchor(tray: PointRect, displays: &[Display], primary: Option<usize>) -> Anchored {
+        layout(tray, PanelHeight::Collapsed, displays, primary).anchored
     }
 
     /// The ANMITE hosting the menu bar, as measured 2026-09-18 (M2d Step 0 P4, `run-02-p4.log:5,8`):
@@ -1578,12 +1633,7 @@ mod tests {
     #[test]
     fn measured_1x_tray_rect_matches_the_observed_landing() {
         let displays = menubar_on_benq();
-        let got = anchor_points(
-            PointRect::new(1286.0, 0.0, 24.0, 30.0),
-            panel(),
-            &displays,
-            Some(0),
-        );
+        let got = anchor(PointRect::new(1286.0, 0.0, 24.0, 30.0), &displays, Some(0));
         assert_eq!(got.position, (1118.0, 36.0));
         assert_eq!(got.display, Some(0));
         assert_eq!(got.accepted, vec![0]);
@@ -1596,12 +1646,7 @@ mod tests {
     #[test]
     fn measured_2x_tray_rect_is_converted_by_its_own_display_scale() {
         let displays = menubar_on_builtin();
-        let got = anchor_points(
-            PointRect::new(1760.0, 0.0, 48.0, 66.0),
-            panel(),
-            &displays,
-            Some(0),
-        );
+        let got = anchor(PointRect::new(1760.0, 0.0, 48.0, 66.0), &displays, Some(0));
         assert_eq!(got.position, (712.0, 39.0));
         assert_inside_work_area(&got, &displays);
     }
@@ -1611,12 +1656,7 @@ mod tests {
     #[test]
     fn the_2026_09_12_rect_still_centres_under_the_icon() {
         let displays = menubar_on_builtin();
-        let got = anchor_points(
-            PointRect::new(1932.0, 0.0, 48.0, 66.0),
-            panel(),
-            &displays,
-            Some(0),
-        );
+        let got = anchor(PointRect::new(1932.0, 0.0, 48.0, 66.0), &displays, Some(0));
         assert_eq!(got.position, (798.0, 39.0));
         assert_eq!(got.position.0 + panel().0 / 2.0, 966.0 + 12.0);
     }
@@ -1634,9 +1674,8 @@ mod tests {
             work_area: PointRect::new(-243.0, -1080.0, 1920.0, 1080.0),
             scale: 1.0,
         }];
-        let got = anchor_points(
+        let got = anchor(
             PointRect::new(100.0, -1080.0, 24.0, 30.0),
-            panel(),
             &displays,
             Some(0),
         );
@@ -1656,9 +1695,8 @@ mod tests {
             work_area: PointRect::new(-243.0, -1080.0, 1920.0, 1080.0),
             scale: 1.0,
         }];
-        let got = anchor_points(
+        let got = anchor(
             PointRect::new(1600.0, -1080.0, 24.0, 30.0),
-            panel(),
             &displays,
             Some(0),
         );
@@ -1677,9 +1715,8 @@ mod tests {
             scale: 2.0,
         }];
         // Physical at that display's scale 2: (5720, 880) 48x60 = (2860, 440) 24x30 in points.
-        let got = anchor_points(
+        let got = anchor(
             PointRect::new(5720.0, 880.0, 48.0, 60.0),
-            panel(),
             &displays,
             Some(0),
         );
@@ -1706,12 +1743,7 @@ mod tests {
                 scale: 1.0,
             },
         ];
-        let got = anchor_points(
-            PointRect::new(988.0, 0.0, 24.0, 30.0),
-            panel(),
-            &displays,
-            None,
-        );
+        let got = anchor(PointRect::new(988.0, 0.0, 24.0, 30.0), &displays, None);
         assert_eq!(got.accepted, vec![1], "the seam is the right display's");
     }
 
@@ -1724,12 +1756,7 @@ mod tests {
             work_area: PointRect::new(-243.0, -1080.0, 1920.0, 1080.0),
             scale: 1.0,
         }];
-        let got = anchor_points(
-            PointRect::new(1880.0, -1080.0, 24.0, 30.0),
-            panel(),
-            &displays,
-            None,
-        );
+        let got = anchor(PointRect::new(1880.0, -1080.0, 24.0, 30.0), &displays, None);
         assert_eq!(got.display, None);
         assert_eq!(got.resolution, Resolution::Unresolved);
         assert_eq!(got.position, (1712.0, -1044.0));
@@ -1751,12 +1778,7 @@ mod tests {
                 scale: 2.0,
             },
         ];
-        let got = anchor_points(
-            PointRect::new(600.0, 0.0, 20.0, 20.0),
-            panel(),
-            &displays,
-            None,
-        );
+        let got = anchor(PointRect::new(600.0, 0.0, 20.0, 20.0), &displays, None);
         assert_eq!(got.accepted, vec![0, 1]);
         assert_eq!(got.display, Some(0), "the first acceptor is used");
     }
@@ -1766,7 +1788,7 @@ mod tests {
     /// primary known the fallback clamps instead (test above).
     #[test]
     fn no_display_accepting_still_yields_a_position() {
-        let got = anchor_points(PointRect::new(1286.0, 0.0, 24.0, 30.0), panel(), &[], None);
+        let got = anchor(PointRect::new(1286.0, 0.0, 24.0, 30.0), &[], None);
         assert_eq!(got.display, None);
         assert_eq!(got.accepted, Vec::<usize>::new());
         assert_eq!(got.resolution, Resolution::Unresolved);
@@ -1788,12 +1810,7 @@ mod tests {
     #[test]
     fn ambiguity_prefers_the_primary_display() {
         let displays = ambiguous_pair();
-        let got = anchor_points(
-            PointRect::new(2800.0, 0.0, 48.0, 66.0),
-            panel(),
-            &displays,
-            Some(1),
-        );
+        let got = anchor(PointRect::new(2800.0, 0.0, 48.0, 66.0), &displays, Some(1));
         assert_eq!(got.accepted, vec![0, 1], "both displays accept this rect");
         assert_eq!(got.display, Some(1), "the primary, not the first acceptor");
         assert_eq!(got.resolution, Resolution::PrimaryAmongAcceptors);
@@ -1808,12 +1825,7 @@ mod tests {
     #[test]
     fn ambiguity_without_a_primary_is_reported_and_still_clamped() {
         let displays = ambiguous_pair();
-        let got = anchor_points(
-            PointRect::new(2800.0, 0.0, 48.0, 66.0),
-            panel(),
-            &displays,
-            None,
-        );
+        let got = anchor(PointRect::new(2800.0, 0.0, 48.0, 66.0), &displays, None);
         assert_eq!(got.display, Some(0));
         assert_eq!(got.resolution, Resolution::AmbiguousWithoutPrimary);
         assert_eq!(got.position, (2644.0, 72.0));
@@ -1832,12 +1844,7 @@ mod tests {
             work_area: PointRect::new(0.0, 33.0, 1280.0, 949.0),
             scale: 2.0,
         }];
-        let got = anchor_points(
-            PointRect::new(2800.0, 0.0, 48.0, 66.0),
-            panel(),
-            &displays,
-            Some(0),
-        );
+        let got = anchor(PointRect::new(2800.0, 0.0, 48.0, 66.0), &displays, Some(0));
         assert_eq!(got.accepted, Vec::<usize>::new());
         assert_eq!(got.resolution, Resolution::PrimaryFallback);
         assert_eq!(got.position, (914.0, 39.0));
@@ -1904,14 +1911,14 @@ mod tests {
         let capped = layout(anmite_tray(), PanelHeight::Expanded, &displays, Some(0));
         assert_eq!(capped.anchored.position.1 - icon_bottom, TRAY_GAP);
 
-        let uncapped = anchor_points(
+        let uncapped = place(
             anmite_tray(),
             (PANEL_WIDTH, EXPANDED_HEIGHT_NOMINAL),
-            &displays,
             Some(0),
+            &displays,
         );
-        assert_eq!(uncapped.position.1 - icon_bottom, 0.0, "the clamp fired");
-        assert_eq!(uncapped.position.1 + EXPANDED_HEIGHT_NOMINAL, 750.0);
+        assert_eq!(uncapped.1 - icon_bottom, 0.0, "the clamp fired");
+        assert_eq!(uncapped.1 + EXPANDED_HEIGHT_NOMINAL, 750.0);
     }
 
     /// Decision D1's provisional floor, refusing side, driven from a synthetic display because no

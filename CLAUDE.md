@@ -88,8 +88,11 @@ onda/
     │   ├── lib.rs                AppState, `events` module, tracing init, event forwarder
     │   │                         (also drives the tray's idle/playing glyph); single-instance
     │   │                         callback and `RunEvent::Reopen` → the panel's show path
-    │   ├── panel.rs              the NSPanel popover: build, toggle, anchor + clamp (pure,
-    │   │                         6 tests), resign-key dismissal, occlusion logging
+    │   ├── panel.rs              the NSPanel popover: build, toggle, resign-key dismissal; the pure
+    │   │                         geometry (display resolution, anchor + clamp, the D1 cap and floor,
+    │   │                         the Cocoa frame conversion) and the D3 round trip's pure bookkeeping
+    │   │                         (`RoundTrip`), both unit-tested; route S `apply_frame`; show, resize,
+    │   │                         commit and fallback paths; the tray-screen placement log
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
@@ -214,8 +217,10 @@ Events (names defined once, in `src-tauri/src/lib.rs::events`):
 already at the size, on a resize it changes after the page's commit — `generation`, `view`
 `"about"` | `"transport"`, `state` `"collapsed"` | `"expanded"`, `width`/`height` in points,
 `expandable`; emitted on every effective show — the view from the show reason — and on every
-resize. The page mirrors it and decides none of it: it is told
-its height, never computes it. Superseded M2c's `panel:view`).
+resize. The page mirrors it and decides none of it: it is told its **target** height and never
+computes that; its root is the larger of the target and the window's own height only while a
+resize is in flight, so nothing is unpainted inside a still-tall window. Superseded M2c's
+`panel:view`).
 
 "Every command is a message to the engine" is **not** true here. The eight audio commands fall into
 three groups, and which group a command is in determines what its return value means:
