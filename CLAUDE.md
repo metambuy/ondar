@@ -35,7 +35,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 | | | |
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
-| M2 | Tray + NSPanel popover | **in progress** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) on branch `m2c`, 2026-09-17; M2d (collapsed/expanded resize) next |
+| M2 | Tray + NSPanel popover | **in progress** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) on branch `m2d`, 2026-09-18 |
 | M3 | Station API + SQLite cache + country/station UI | |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
@@ -63,7 +63,10 @@ onda/
 ├── package.json                  pnpm; pnpm-workspace.yaml carries `allowBuilds: esbuild`
 ├── src/                          React renderer for the popover (renderer only)
 │   ├── panel.tsx, vite-env.d.ts  entry (mounts panel/Panel.tsx); Vite's client types for CSS modules
-│   ├── panel/                    Panel.tsx (root: mirrors the pane from Rust, reports Esc),
+│   ├── panel/                    Panel.tsx (root: mirrors the layout from Rust — pane, height state,
+│   │                             height in points, expandable — sets the root height from it, hosts the
+│   │                             expand control (disabled when refused, D4) and the placeholder for the
+│   │                             expanded pane, reports Esc),
 │   │                             Transport.tsx (dev transport: presets, play/pause/stop, volume — no
 │   │                             EQ; replaced at M3), About.tsx (name, version, credits), panel.module.css
 │   ├── styles/tokens.css         THE only file with colour/size literals, light + dark together
@@ -85,16 +88,25 @@ onda/
     │   ├── lib.rs                AppState, `events` module, tracing init, event forwarder
     │   │                         (also drives the tray's idle/playing glyph); single-instance
     │   │                         callback and `RunEvent::Reopen` → the panel's show path
-    │   ├── panel.rs              the NSPanel popover: build, toggle, anchor + clamp (pure,
-    │   │                         6 tests), resign-key dismissal, occlusion logging
+    │   ├── panel.rs              the NSPanel popover: build, toggle, resign-key dismissal; the pure
+    │   │                         geometry (display resolution, anchor + clamp, the D1 cap and floor,
+    │   │                         the Cocoa frame conversion) and the D3 round trip's pure bookkeeping
+    │   │                         (`RoundTrip`), both unit-tested; route S `apply_frame`; show, resize,
+    │   │                         commit and fallback paths; the tray-screen placement log
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 21 tests, including the
+    │   │                         flood; holds 3 of the shell's 38 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
-    │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc) and
-    │                             get_panel_view (the pane last shown, for the page to mirror on mount)
+    │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
+    │                             panel_set_expanded (the page reports a click on the expand control;
+    │                             Rust lays out, applies or refuses), panel_layout_committed (the page
+    │                             reports its DOM commit for a layout generation; Rust completes the
+    │                             show or resize then — D3), panel_view_back (the page's Back left
+    │                             About; recorded so later layouts carry the pane on screen) and
+    │                             get_panel_layout (the layout last emitted, for the page to mirror
+    │                             on mount)
     └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
         ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
         ├── stream.rs             stream-download open, ICY headers, timeout invariant
@@ -119,8 +131,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 71 tests `cargo test --workspace`
-reports break down as **64 hand-written + 7 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 88 tests `cargo test --workspace`
+reports break down as **78 hand-written + 10 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -131,12 +143,12 @@ reports break down as **64 hand-written + 7 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 16 — in the **shell** crate; one reads `tokens.css` and pins the radius |
-| `panel::export_bindings_panelview` | 1 — generated, in the **shell** crate |
+| `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
+| `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 
-Counting `#[test]` attributes in source gives 64 and will not reconcile with the runner's 71
-until those 7 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
+Counting `#[test]` attributes in source gives 78 and will not reconcile with the runner's 88
+until those 10 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 ## Commands
@@ -158,14 +170,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 71 tests: 50 in the ondar_audio binary and 21 in the shell's
+cargo test --workspace       # 88 tests: 50 in the ondar_audio binary and 38 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (21 tests) and silently skips ondar-audio; this
+                              # `ondar` package (38 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's twenty-one test names, and one of them —
+                              # prints only the shell's thirty-eight test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -181,17 +193,35 @@ error.
 
 Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 `play(url, stationId)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
-`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus one **panel** command,
-`panel_escape()` (`commands/panel.rs`, wrapped as `panel.escape()`): the page reports an Escape
-`keydown` and Rust hides the popover through `panel::hide` with `reason=esc`. And one panel
-getter, `get_panel_view()` (`panel.getView()`), the counterpart of the `panel:view` event as
-`get_playback_state` is of `playback:state`. Both are outside the three groups below — they never
-touch the engine.
+`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus two **panel** commands
+(`commands/panel.rs`): `panel_escape()` (`panel.escape()`) — the page reports an Escape `keydown`
+and Rust hides the popover through `panel::hide` with `reason=esc`; and `panel_set_expanded(expanded)`
+(`panel.setExpanded()`) — the page reports a click on the expand control and Rust lays the panel
+out for the new height against a fresh tray rect, applies it, or refuses it (D1's floor, or
+`reason=view` on the About pane, which has no control and always shows at the collapsed height;
+the user's choice survives it and Back restores it — decided 2026-09-21), logging which. A third, `panel_layout_committed(generation)` (`panel.layoutCommitted()`), is the
+**round trip** (D3): every `panel:layout` carries a generation; the page reports it from an
+effect after the render that used it, and Rust completes the visible change then — orders a
+pending show in, or changes the visible panel's frame — if that generation is still pending. A
+stale, superseded or cancelled generation is a logged no-op; a hide cancels; and a fallback
+timer (`LAYOUT_FALLBACK`, 250 ms provisional, provenance in its doc comment) completes without
+the report so a dead page cannot wedge the popover — `trigger=fallback` on a healthy page is a
+defect. A fourth, `panel_view_back()` (`panel.viewBack()`): the page's Back button left the About
+pane — the one page-local transition — and reports it, so the pane a later layout event carries
+is the one on screen (`/code-review` C1). And one panel getter, `get_panel_layout()`
+(`panel.getLayout()`), the counterpart of the `panel:layout` event as `get_playback_state` is of
+`playback:state`. All five are outside the three groups below — they never touch the engine.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`, and
-`panel:view` (`"about"` | `"transport"`, emitted by `panel::show_at` from the show reason on every
-show — the page mirrors which pane is up and never decides it).
+`panel:layout` (a `PanelLayout`: `transition` `"show"` | `"resize"` — on a show the hidden frame is
+already at the size, on a resize it changes after the page's commit — `generation`, `view`
+`"about"` | `"transport"`, `state` `"collapsed"` | `"expanded"`, `width`/`height` in points,
+`expandable`; emitted on every effective show — the view from the show reason — and on every
+resize. The page mirrors it and decides none of it: it is told its **target** height and never
+computes that; its root is the larger of the target and the window's own height only while a
+resize is in flight, so nothing is unpainted inside a still-tall window. Superseded M2c's
+`panel:view`).
 
 "Every command is a message to the engine" is **not** true here. The eight audio commands fall into
 three groups, and which group a command is in determines what its return value means:
@@ -215,7 +245,7 @@ engine handle and outlive any one session — they are not part of the command s
 
 Types crossing the boundary derive `Serialize, Deserialize, TS` with `#[ts(export)]`: the
 engine's in `crates/ondar-audio/src/types.rs`, the shell's beside the module that owns them
-(`panel.rs`'s `PanelView` is the one so far). Adding one means adding it there, running
+(`panel.rs`'s `PanelView`, `PanelHeight` and `PanelLayout`). Adding one means adding it there, running
 `cargo test --workspace` (plain `cargo test` skips the engine — see above; `pnpm gen:bindings`
 is the alias), and committing the generated `.ts`. No boundary type is typed by hand on the TS
 side.
@@ -331,7 +361,16 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   `get_webview_window(label)`.
 - Non-activating is the style mask: `NonactivatingPanel` ORed onto tao's mask. `no_activate(true)`
   only keeps window *creation* from activating the app.
-- Showing is `show()` then `make_key_window()`; `show()` alone never makes the panel key.
+- Showing is: lay out, `apply_frame` (one synchronous `setFrame:display:` with origin **and**
+  size, while still hidden — M2d route S, D2), then emit `panel:layout` with `transition=show`
+  (the order is load-bearing for that field), **wait for the page's commit**
+  (or the 250 ms fallback), then `show()`, then `make_key_window()`; `show()` alone never makes
+  the panel key. Measured on the dev loop 2026-09-18: the hidden-page commit arrives 2–8 ms
+  after the request. A resize is the same round trip with `apply_frame` at the end instead of
+  `show()`. `invalidateShadow()` follows every frame change as insurance (P2,
+  unfalsified). After every show and resize the log carries `panel placed
+  inside_tray_screen_visible=… gap_below_icon=…` — the **tray-screen** form by rule (R3): the
+  own-screen form passed both of Step 0's forced failures. Gap 6 = clamp idle, 0 = clamp fired.
 - Dismissal: hide on `WindowEvent::Focused(false)` (tao's `windowDidResignKey:`). **Not**
   `Panel::set_event_handler`, which replaces tao's delegate and silences its window events.
   `hides_on_deactivate` is not set — it keeps the panel off screen.
@@ -413,7 +452,13 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 
 - **Plan first.** Anything beyond a one-file fix: propose the plan and wait.
 - **Small commits**, conventional style (`feat(audio):`, `fix(map):`, `docs:`), each building
-  and passing checks on its own. Docs commits stay separate from code commits.
+  and passing checks on its own. Docs commits stay separate from code commits — **except where a
+  document line describes the behaviour the commit changes**: that hunk ships with the code and
+  the commit message says so, because separating them guarantees one pushed state in which the
+  document and the code disagree (2026-09-21, from M2d `7e19a1a`: the plan review asked for
+  ONDAR.md's D1 formula line in the commit that changed the formula, and `/code-review` V3 then
+  flagged the same commit for breaking this rule as it was written). CLAUDE.md's own same-commit
+  rule above is the special case of this one.
 - **CI gates every *push*, verifying that push's head commit — not every commit.** The rule
   above is yours to keep, not something CI enforces: a multi-commit push leaves every commit
   but the last unverified. **So a commit that has to stand on its own has to be pushed on its

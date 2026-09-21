@@ -12,6 +12,10 @@
       NSVisualEffectView that `set_effects` inserts while `set_effects` still returns Ok, so the
       vibrancy would look broken while every check passed. Inline rather than in a stylesheet so
       it holds before any module has loaded.
+
+      `overflow: hidden` on the document is load-bearing too (M2d): on an expand the page lays
+      itself out at the new height before the window grows (Panel.tsx), so for up to one round
+      trip the document is taller than the viewport, and an overlay scrollbar must not flash.
     -->
     <style>
       html,
@@ -20,6 +24,12 @@
         margin: 0;
         height: 100%;
         background: transparent;
+      }
+      /* On the document only, not on #root: a clipping box culls the pre-laid-out band, where
+         document overflow leaves it laid out for WebKit to paint ahead of the frame change. */
+      html,
+      body {
+        overflow: hidden;
       }
     </style>
   </head>

@@ -23,10 +23,11 @@ pub mod events {
     pub const STREAM_INFO: &str = "playback:stream_info";
     pub const METADATA: &str = "playback:metadata";
     pub const RECONNECT: &str = "playback:reconnect";
-    /// Which pane the popover shows (`panel::PanelView`); emitted by `panel::show_at` from the
-    /// show reason on every effective show, so the page mirrors it and never decides it. The
-    /// page asks `get_panel_view` on mount for the same value.
-    pub const PANEL_VIEW: &str = "panel:view";
+    /// What the popover page renders (`panel::PanelLayout`: pane, height state, size in points,
+    /// expandable) — emitted on every effective show and every resize, so the page mirrors it and
+    /// never decides it. The page asks `get_panel_layout` on mount for the same value. M2d;
+    /// supersedes M2c's `panel:view`.
+    pub const PANEL_LAYOUT: &str = "panel:layout";
 }
 
 pub fn run() {
@@ -120,7 +121,10 @@ pub fn run() {
             commands::audio::get_eq,
             commands::audio::get_playback_state,
             commands::panel::panel_escape,
-            commands::panel::get_panel_view,
+            commands::panel::get_panel_layout,
+            commands::panel::panel_set_expanded,
+            commands::panel::panel_layout_committed,
+            commands::panel::panel_view_back,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ondar");

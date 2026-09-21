@@ -1,26 +1,81 @@
-// The popover's root view. Holds the one piece of state shared across panes — which pane is
-// showing, mirrored from Rust's `panel:view` — and reports Escape to Rust.
-import { useEffect, useState } from "react";
-import { onPanelView, panel } from "../api";
-import type { PanelView } from "../api";
+// The popover's root view. Mirrors Rust's `panel:layout` — which pane is showing, which height
+// state the popover is in, how tall it is in points, and whether it may expand — hosts the expand
+// control and the placeholder for the expanded pane, and reports Escape to Rust. It decides none
+// of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
+// a click on the control is a report, answered by the next `panel:layout`.
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { onPanelLayout, panel } from "../api";
+import type { PanelLayout, PanelView } from "../api";
 import About from "./About";
 import styles from "./panel.module.css";
 import Transport from "./Transport";
 
 export default function Panel() {
+  // What Rust last laid out. `null` until the getter answers; the control is disabled meanwhile.
+  const [layout, setLayout] = useState<PanelLayout | null>(null);
   // Rust asserts the view on every show (About for the tray menu's About item, the transport
   // for everything else), so About never outlives a hide. Back is the one local transition: a
-  // choice made inside an already-shown popover, re-asserted by Rust on the next show anyway.
+  // choice made inside an already-shown popover, re-asserted by Rust on the next show anyway —
+  // and reported to Rust, because every later layout event carries the pane too
+  // (`/code-review` C1, 2026-09-18: without the report, Expand after Back re-asserted About).
   const [view, setView] = useState<PanelView>("transport");
+  // The window's own height, as the webview sees it — view state, read on `resize`.
+  const [windowHeight, setWindowHeight] = useState(window.innerHeight);
+  // The newest generation applied, so an older layout arriving late is ignored (below).
+  const newestGeneration = useRef(-1);
 
   useEffect(() => {
-    const unlisten = onPanelView(setView);
-    // An emit before this listener existed was dropped by Tauri, so ask for the current pane.
-    panel.getView().then(setView);
+    // One entry point for both channels. The getter's answer and the event are separate IPC
+    // channels with no ordering between them, so a getter answered before a request but delivered
+    // after that request's event would roll the page back to the older layout, and its commit
+    // report would be a no-op while the newer generation waited for the fallback
+    // (`/code-review` C4). Generations only grow, so a layout older than the one held is ignored.
+    const apply = (l: PanelLayout) => {
+      if (l.generation < newestGeneration.current) return;
+      newestGeneration.current = l.generation;
+      setLayout(l);
+      setView(l.view);
+      // On a show the hidden panel's frame is already at `l.height`, and a hidden WKWebView fires
+      // no `resize`, so the last reading is whatever the window was when it was last visible —
+      // taller, after a show on a shorter display or after a cancelled collapse. Take Rust's word
+      // for it (`/code-review` C2). On a resize the window has not changed yet; leave it.
+      if (l.transition === "show") setWindowHeight(l.height);
+    };
+    const unlisten = onPanelLayout(apply);
+    // An emit before this listener existed was dropped by Tauri, so ask for the current layout.
+    panel.getLayout().then(apply);
     return () => {
       unlisten.then((un) => un());
     };
   }, []);
+
+  useEffect(() => {
+    const onResize = () => setWindowHeight(window.innerHeight);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // The root's height is the larger of the height Rust laid out and the window's own — not
+  // `100%`, and not the event alone. On an expand the root grows to the target before the window
+  // does, so the expanded pane is laid out when the new band appears; on a collapse it stays at
+  // the window's height until the window has shrunk, so no band of bare material opens inside a
+  // still-tall window. The value is Rust's, so it is not a style literal (`check-tokens.sh`).
+  const rootHeight = Math.max(layout?.height ?? 0, windowHeight);
+  // A layout effect, so the variable is in place before anything can paint this render.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--panel-height", `${rootHeight}px`);
+  }, [rootHeight]);
+
+  // The round trip's report (decision D3): once the render that used this layout is committed,
+  // tell Rust, which orders a pending show in or changes the frame then. An effect keyed on the
+  // generation, not `requestAnimationFrame`: a hidden WKWebView runs no rendering updates, so an
+  // rAF report would never arrive for a show. Rust ignores a generation that is no longer pending.
+  // Generation 0 is the getter's answer before any show — never pending, so not reported
+  // (`/code-review` C7: it logged an `effective=false` line at every mount).
+  const generation = layout?.generation;
+  useEffect(() => {
+    if (generation !== undefined && generation > 0) void panel.layoutCommitted(generation);
+  }, [generation]);
 
   useEffect(() => {
     // Escape → Rust, which hides the popover (`reason=esc`). `preventDefault()` because the key
@@ -37,6 +92,11 @@ export default function Panel() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  const expanded = layout?.state === "expanded";
+  // The expanded pane is shown while there is room for it: Rust says expanded, or the window is
+  // still taller than the collapsed target (mid-collapse, before the frame has shrunk).
+  const showExpandedPane = layout !== null && (expanded || windowHeight > layout.height);
+
   // The transport stays mounted while About is up (`hidden`, not unmounted): its stream info,
   // title, volume and selected preset are event-driven or local state with no Rust getter, and
   // unmounting it reset them on every return (`/code-review` finding 1, 2026-09-17).
@@ -45,7 +105,36 @@ export default function Panel() {
       <div hidden={view === "about"}>
         <Transport />
       </div>
-      {view === "about" && <About onBack={() => setView("transport")} />}
+      {view === "about" && (
+        <About
+          onBack={() => {
+            setView("transport");
+            void panel.viewBack();
+          }}
+        />
+      )}
+
+      {/* The control belongs to the transport, not to About (decided 2026-09-21; Rust refuses a
+          resize from About regardless, `reason=view`). Decision D4: when expansion is refused
+          (D1's floor) it stays, disabled, so the chrome is the same on every display. */}
+      {view === "transport" && (
+        <div className={styles.row}>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            disabled={layout === null || !layout.expandable}
+            onClick={() => void panel.setExpanded(!expanded)}
+          >
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        </div>
+      )}
+
+      {showExpandedPane && (
+        <section aria-label="Expanded pane" className={styles.section}>
+          <p className={styles.muted}>Expanded pane. The map (M4) and the equalizer (M5) go here.</p>
+        </section>
+      )}
     </main>
   );
 }

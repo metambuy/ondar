@@ -2,9 +2,12 @@
 
 macOS menu bar radio player. Tauri v2 + Rust core. See `ONDAR.md` for the project document.
 
-## Status: M2 — tray + NSPanel popover (M2c: chrome and input)
+## Status: M2 — tray + NSPanel popover (M2d: collapsed/expanded resize, on branch `m2d`)
 
-M1 (scaffold + audio engine) is done. The M1 bench window retired at M2c into the popover's
+M1 (scaffold + audio engine) is done. M2d adds the two height states: an Expand/Collapse control in
+the popover, the expanded height capped to the display the tray icon is on (598 pt on a 640 pt
+display, 720 pt where it fits), resized and repositioned in one frame change after the page has
+committed the new layout. The expanded pane is a placeholder until M4/M5. The M1 bench window retired at M2c into the popover's
 **dev transport** (`src/panel/Transport.tsx`): three presets, play/pause/stop, volume, and a
 placeholder Now Playing — visibly a placeholder until the M3 country/station UI. No EQ
 sliders until M5.
