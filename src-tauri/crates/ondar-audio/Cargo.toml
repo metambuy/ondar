@@ -11,6 +11,12 @@ rodio = { version = "0.22", default-features = false, features = ["playback", "m
 # Buffered HTTP reader (Read + Seek) with bounded in-memory storage for live streams.
 stream-download = { version = "0.24", default-features = false, features = ["reqwest", "reqwest-native-tls"] }
 reqwest = { version = "0.13", default-features = false }
+# Only for one downcast: the classifier walks a reqwest error's `source()` chain to the
+# `hyper::Error` underneath and asks `is_parse()`, which is how a Shoutcast v1 `ICY 200 OK`
+# status line is told apart from a network fault (M3a, G4a). A `dyn Error` chain cannot be
+# matched on a type this crate cannot name. Already in the tree at the same version via
+# reqwest; no new crate enters Cargo.lock.
+hyper = { version = "1", default-features = false }
 tokio = { version = "1.52", features = ["rt-multi-thread"] }
 tokio-util = "0.7"
 # DSP

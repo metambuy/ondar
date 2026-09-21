@@ -5,13 +5,14 @@
 //! and its own transient-error retries. We add the ICY request header and read the ICY
 //! response headers before handing the reader to the decoder.
 
+use std::error::Error as _;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use reqwest::Url;
-use stream_download::http::HttpStream;
+use stream_download::http::{HttpStream, HttpStreamError};
 use stream_download::source::DecodeError;
 use stream_download::storage::bounded::BoundedStorageProvider;
 use stream_download::storage::memory::MemoryStorageProvider;
@@ -177,7 +178,7 @@ pub async fn open(
 ) -> Result<OpenedStream, StreamError> {
     let stream = match HttpStream::new(client.clone(), url).await {
         Ok(s) => s,
-        Err(e) => return Err(classify_http_error(e.decode_error().await)),
+        Err(e) => return Err(classify_open_error(e)),
     };
 
     let metaint = stream
@@ -224,9 +225,81 @@ pub async fn open(
     })
 }
 
-/// Best-effort mapping from an error string to a user-facing code. `hyper` rejects the
-/// legacy `ICY 200 OK` status line used by Shoutcast v1 servers; that surfaces as an
-/// "invalid HTTP version" style parse error, which we report as `Http`, not `Network`.
+/// Classify a failed open. The `reqwest::Error` is inspected **as a type**, not through its
+/// `Display`: reqwest renders a rejected status line as "error sending request for url (…)"
+/// and keeps the cause — hyper's parse error — in the `source()` chain, so classifying the
+/// top-level string (what this did until M3a) reported a Shoutcast v1 `ICY 200 OK` server as
+/// `Network` and sent the session into the reconnect loop (measured 2026-09-21, M3 Step 0
+/// P5, against a synthetic ICY server). The rule, in order:
+///
+/// - `ResponseFailure` (a status the server did send, 4xx/5xx after `into_result`) → `Http`;
+/// - a `hyper::Error` anywhere in the chain with `is_parse()` (the legacy `ICY` status line,
+///   or any other non-HTTP answer) → `Http`;
+/// - a root message mentioning an invalid HTTP version or status (the fallback if a reqwest
+///   bump changes the chain's shape so the hyper error is no longer reachable) → `Http`;
+/// - everything else (DNS, TCP, TLS, timeouts) → `Network`.
+///
+/// The message carried to the UI is the whole chain, root last, so a log line shows the
+/// cause and not just "error sending request".
+fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
+    match err {
+        // `into_result` already ran `error_for_status`: the server answered, with a status we
+        // cannot play. `FetchError` wraps the reqwest error and the response.
+        HttpStreamError::ResponseFailure(e) => StreamError {
+            code: ErrorCode::Http,
+            message: e.to_string(),
+        },
+        HttpStreamError::FetchFailure(e) => {
+            let code = if e.is_status() || chain_has_parse_error(&e) || root_looks_like_parse(&e) {
+                ErrorCode::Http
+            } else {
+                ErrorCode::Network
+            };
+            StreamError {
+                code,
+                message: chain_message(&e),
+            }
+        }
+    }
+}
+
+fn chain_has_parse_error(e: &reqwest::Error) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        if let Some(h) = err.downcast_ref::<hyper::Error>()
+            && h.is_parse()
+        {
+            return true;
+        }
+        cur = err.source();
+    }
+    false
+}
+
+fn root_looks_like_parse(e: &reqwest::Error) -> bool {
+    let mut root: &(dyn std::error::Error + 'static) = e;
+    while let Some(next) = root.source() {
+        root = next;
+    }
+    let lower = root.to_string().to_ascii_lowercase();
+    lower.contains("invalid http") || lower.contains("http version") || lower.contains("status")
+}
+
+/// "top: cause: root" — every link of the `source()` chain, so the UI and the log see the
+/// reason and not reqwest's outer wrapper alone.
+fn chain_message(e: &reqwest::Error) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut cur = e.source();
+    while let Some(err) = cur {
+        parts.push(err.to_string());
+        cur = err.source();
+    }
+    parts.join(": ")
+}
+
+/// Best-effort mapping from an error *string* to a user-facing code — the second open
+/// stage (`StreamDownload::from_stream`) only exposes its error as text through
+/// `decode_error()`. Kept for that path; the first stage classifies the typed error above.
 fn classify_http_error(message: String) -> StreamError {
     let lower = message.to_ascii_lowercase();
     let code = if lower.contains("status")
@@ -239,4 +312,76 @@ fn classify_http_error(message: String) -> StreamError {
         ErrorCode::Network
     };
     StreamError { code, message }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The classifier is pinned against real sockets, not strings: a listener on 127.0.0.1
+    //! answers what a Shoutcast v1 server, an HTTP server and a dead port answer, and the
+    //! assertion is on the `code` the UI branches on. `icy_status_line_is_http_not_network`
+    //! fails if the classifier goes back to reading the top-level `Display` (which says
+    //! "error sending request" and classifies as `Network`) — the defect M3 Step 0 measured.
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// One-shot server: accept once, read the request head, write `response`, hold the
+    /// socket briefly so the client sees a complete answer, close.
+    fn serve_once(response: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            let _ = sock.write_all(response);
+            let _ = sock.flush();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        format!("http://{addr}/stream")
+    }
+
+    fn open_code(url: &str) -> ErrorCode {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let client = build_client("Ondar/test");
+        let url = parse_url(url).expect("url");
+        match rt.block_on(open(&client, url, Arc::new(AtomicU64::new(0)))) {
+            Ok(_) => panic!("open succeeded against a server that cannot be played"),
+            Err(e) => e.code,
+        }
+    }
+
+    #[test]
+    fn icy_status_line_is_http_not_network() {
+        let url = serve_once(
+            b"ICY 200 OK\r\nicy-name: synthetic shoutcast v1\r\nicy-br: 128\r\ncontent-type: audio/mpeg\r\n\r\n\
+              0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        assert_eq!(open_code(&url), ErrorCode::Http);
+    }
+
+    #[test]
+    fn a_5xx_status_is_http() {
+        let url = serve_once(
+            b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        assert_eq!(open_code(&url), ErrorCode::Http);
+    }
+
+    #[test]
+    fn a_refused_connection_is_network() {
+        // Bind to learn a free port, then drop the listener so the connect is refused.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+        assert_eq!(
+            open_code(&format!("http://{addr}/stream")),
+            ErrorCode::Network
+        );
+    }
 }

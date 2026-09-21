@@ -310,8 +310,14 @@ TypeScript, stop — it belongs in Rust.
 - **Stream reliability varies.** Reconnect logic and honest error states are a first-class
   feature, not polish.
 - **Shoutcast v1 servers** (`ICY 200 OK` status line) are rejected by hyper/reqwest and surface
-  as an `Http` error. Rare via radio-browser's `url_resolved`; measure at M3 before deciding
-  whether a raw-socket fallback is worth it.
+  as an `Http` error **since M3a**. Until then they surfaced as the **reconnect loop**: the
+  classifier read the top-level `Display` ("error sending request…") while hyper's parse error
+  sat in the `source()` chain — measured 2026-09-21 (M3 Step 0, a synthetic ICY server through
+  `stall_bench`: `Reconnecting { attempt: 4 }` after 12 s), the earlier sentence here was a
+  description of behaviour the code did not have. Now the chain is walked (`stream.rs`,
+  `classify_open_error`, pinned by `icy_status_line_is_http_not_network` against a real
+  socket). **Rare:** 0 of 148 reachable stations in the census answered `ICY 200 OK` (upper
+  bound ~2 %), so no raw-socket fallback is built. `scripts/icy-server.py` is the manual check.
 - **EQ output is bounded by a soft-clip stage** (added 2026-09-11, Phase 1 item 4; **exit
   criterion 3 met**). Below 0.95 the stage is the identity bit for bit; above it a rational
   knee, `T + W*(1 - 1/(1+s))` with `s = (|x|-T)/W` and `W = 1-T`, asymptotic to 1.0 and

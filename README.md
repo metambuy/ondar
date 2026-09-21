@@ -168,6 +168,12 @@ from `scripts/stall-server.py` (now written — see "Stall testing"); tuning is 
 
 ## Stall testing
 
+**Shoutcast v1 (`ICY 200 OK`) check, M3a:** `python3 scripts/icy-server.py 18765 <any .mp3>` then
+`cargo run -p ondar-audio --example stall_bench -- http://127.0.0.1:18765/stream 12` — expected
+`Error { code: Http, .. }` on the first attempt and no `Reconnecting`. Before M3a this went into
+the reconnect loop (measured 2026-09-21); the unit test
+`stream::tests::icy_status_line_is_http_not_network` pins it against a real socket.
+
 Pulling real Wi-Fi is nondeterministic and slow to repeat. `scripts/stall-server.py` is a
 deterministic stand-in: a raw-socket test server (not `http.server` — this needs control
 over the status line and half-open/reset/hang behaviour that `http.server` hides) that
