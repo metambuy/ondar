@@ -106,10 +106,15 @@ const OCCLUSION_SETTLE: Duration = Duration::from_millis(100);
 /// bounds — Tauri event → React commit → `panel_layout_committed` — so the nearest measured
 /// analogue is used: the page's first `resize` report **after a show**, worst case 111 ms (M2d
 /// Step 0 P3, `run-10-p3.log:48→51`). 250 ms is 2.25× that, the same "two-to-three times the worst
-/// observed" rule `OCCLUSION_SETTLE` uses. Every completion logs `after_ms`; the acceptance run
-/// collects the distribution (hidden shows and visible resizes separately) and this constant and
-/// comment are rewritten from it. **A `trigger=fallback` on a healthy page is a defect, not a
-/// tuning knob.**
+/// observed" rule `OCCLUSION_SETTLE` uses. Every completion logs `after_ms`.
+///
+/// **Measured at acceptance, 2026-09-21** (`m2d-acc-02`, `m2d-acc-03`, bundled build `57bc490`):
+/// visible resizes 1–4 ms, n = 32; hidden shows 2–13 ms and one 100 ms, n = 8. 250 ms is 2.5× that
+/// maximum, so the value stands — **still provisional**, because n = 8 is short of the ≥ 20 hidden
+/// shows the plan asked for; a later run with that n rewrites this comment, and the constant only
+/// if the rule (≥ 2× the observed maximum, rounded to a frame) then says so. No fallback fired on a
+/// healthy page in either run. **A `trigger=fallback` on a healthy page is a defect, not a tuning
+/// knob.**
 const LAYOUT_FALLBACK: Duration = Duration::from_millis(250);
 
 tauri_panel! {

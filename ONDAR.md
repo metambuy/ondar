@@ -1,6 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-18 (M2d Step 0 measured and decisions D2–D4 recorded beside D1 — see
+*Last updated: 2026-09-21 (M2d acceptance results, the About-pane decision, item 6 recorded as
+unmeasured, and instrument instance eight — see "M2d: resize in place"). Previously 2026-09-18
+(M2d Step 0 measured and decisions D2–D4 recorded beside D1 — see
 "M2d: resize in place — Step 0 measured, D2–D4 decided" and "M2d: the expanded height is capped to
 the work area"). Previously 2026-09-17 (M2c — chrome
 and input: Esc, tray menu, rounded corners, single instance, design tokens, the M1 bench retired
@@ -703,6 +705,55 @@ quantity it measures reports its own shape. Both are appended to the principle s
 after its first show; one was the probe's own helper launching, two are unexplained. No P3
 quantity depends on key status. This is the re-check M2c P7's closure asked for ("if a second
 window ever returns, re-check"); a recurrence with hands off is a defect.
+
+**Acceptance, 2026-09-21 (Martín; `m2d-acc-02` on the ANMITE, `m2d-acc-03` on the built-in,
+both `57bc490`, detached, `.err` empty; the chat's reading in `_handover/OPEN.md`).** Every
+figure measured from those logs.
+
+- **Item 1, the built-in hosting the menu bar — passed.** 16 expands to 360×720 and 16
+  collapses, some ~230 ms apart; every one `trigger=commit`; `inside_tray_screen_visible=true
+  gap_below_icon=6` on all 39 `panel placed` lines; no fallback, no WARN. By eye: grows and
+  shrinks in place, no jump, shadow at both sizes.
+- **Item 2, the ANMITE hosting the menu bar — passed, and an independent fixture.** Expand →
+  `size_points=(360, 598) capped=true expandable=true`, `apply_frame … cocoa=[254,6 360x598]` —
+  bottom 6 pt above the display's edge, gap 6 on show, expand and collapse. The icon sat at
+  x = 844 physical, not P4's 788, so this is not a replay of the unit test's fixture.
+- **Item 5, the round trip — measured, n stated.** `after_ms` on the **visible** path
+  (resizes): 1–4 ms, n = 32 (`m2d-acc-03`; two more in `m2d-acc-02` at 0 and 1). On the
+  **hidden** path (shows): 2–13 ms and one **100 ms** (generation 34, straight after the resize
+  burst), n = 8 across both runs. Short of the planned ≥ 20 shows. **`LAYOUT_FALLBACK` stays
+  provisional at 250 ms** — 2.5× the observed maximum, the rule its doc comment states — until a
+  run with ≥ 20 hidden shows exists; the constant's comment carries this n. No `trigger=fallback`
+  on a healthy page in either run. The dead-page step (a stopped WebContent process) was not run.
+- **Item 6, the unpainted band on a visible expand — UNMEASURED, not passed.** The plan's
+  hypothesis — that laying the page out at the target height before the frame changes lets WebKit
+  paint the new band in the same frame the window grows — has no capture behind it. The
+  measurement needs the P1b instrument on the ANMITE (review F3) and a hand on the Expand control
+  at a known moment; it could not be driven unattended (System Events keystrokes are not
+  authorised from the harness's shell) and Martín's runs did not include a capture. Recorded as an
+  open measurement, not as a result: by eye Martín saw no artefact at item 1, which is what a
+  16.7 ms frame looks like to an eye and is therefore not evidence either way.
+- **Item 7, M2c review finding 8 — closed by eye.** About → Back logs `panel view back
+  from=About to=Transport`, the next show is `view=Transport`, and Martín saw **no pane flash**
+  where he had seen one on 2026-09-18. Closed by eye, not by capture; the mechanism (the show is
+  ordered in after the page's DOM commit) is the round trip's, measured at item 5.
+- **Item 8, regression — passed.** Esc: `reason=esc effective=true` + one no-op; right-click:
+  `reason=menu effective=true` + one no-op; every close one effective hide + one no-op.
+- **Items 3 and 4** (the refusal floor; a visible panel on another display than the icon's) —
+  not reachable by hand on this hardware and stated so in the plan; covered by the unit tests and
+  by construction (no size-only path exists) respectively.
+- **G3 watch.** Four `resign_key effective=true` in `m2d-acc-03`, all hands-on dismissals —
+  including one at +1.48 s after a show, the interval P3's unexplained runs showed, which Martín
+  confirmed was his click outside the popover. No hands-off resign was produced, so P3 runs 10
+  (+1.53 s) and 11 (+62 ms) stay unexplained; the item stays open as a watch into M3.
+- **One defect, found by eye:** the Expand/Collapse control rendered on the About pane. **Decided
+  2026-09-21 (Martín): it does not belong there.** Fixed in `a5f6d2e`: the page renders the
+  control on the transport only; Rust refuses a resize from About regardless (`reason=view`);
+  About opens at the collapsed height whatever the user chose, the choice survives (`chosen`,
+  set only by a successful resize), and Back restores it through the resize path. Three tests pin
+  it. This reverses the plan's "chrome on both panes", which was Code's choice, not a decision.
+- **The review's C1 fix verified at item 7:** the `panel view back` line is the report that keeps
+  a later resize from re-asserting About.
 
 ### M2d: the expanded height is capped to the work area (decided 2026-09-18)
 
@@ -1587,6 +1638,20 @@ the quantity it was measuring. A direct repeat of M2c's lesson (an instrument th
 quantity it measures reports its own shape), caught by looking at the crops rather than the
 numbers. Neither is a "verify the instrument" instance in the quiet-degradation sense of the first
 five; both are the reader's step being skipped — a derivation, or an overlay, taken as the thing.
+
+An eighth, 2026-09-18/21 (M2d `/code-review`): **a tool that ran out of budget reported it as an
+HTTP 429, not as a partial result, and miscounted its own verifiers.** The review agent was cut
+off by the monthly spend limit after dispatching twelve verifiers; nothing in its output said so,
+so the candidate list had to be mined from its transcript, and its last message counted "seven"
+returned verdicts while listing six — the two that completed after it died (C8, C9) reached this
+session as task notifications, not the agent. The salvage produced a full findings file only
+because the review's shape — finders, then one self-contained verifier per candidate, each
+carrying its files, lines and the question to settle — left every candidate usable on its own; a
+monolithic reviewer dying at the same point would have left nothing. The instrument lesson is the
+same family as the first five (quiet degradation: a 429 in a subagent's log is not a result in the
+review's output), with a second half: **count a tool's claims about itself from its artefacts, not
+from its summary** — the provenance of every verdict was re-derived from the twelve transcripts
+before the findings file called eight of nine independently verified.
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 

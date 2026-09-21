@@ -452,7 +452,13 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 
 - **Plan first.** Anything beyond a one-file fix: propose the plan and wait.
 - **Small commits**, conventional style (`feat(audio):`, `fix(map):`, `docs:`), each building
-  and passing checks on its own. Docs commits stay separate from code commits.
+  and passing checks on its own. Docs commits stay separate from code commits — **except where a
+  document line describes the behaviour the commit changes**: that hunk ships with the code and
+  the commit message says so, because separating them guarantees one pushed state in which the
+  document and the code disagree (2026-09-21, from M2d `7e19a1a`: the plan review asked for
+  ONDAR.md's D1 formula line in the commit that changed the formula, and `/code-review` V3 then
+  flagged the same commit for breaking this rule as it was written). CLAUDE.md's own same-commit
+  rule above is the special case of this one.
 - **CI gates every *push*, verifying that push's head commit — not every commit.** The rule
   above is yours to keep, not something CI enforces: a multi-commit push leaves every commit
   but the last unverified. **So a commit that has to stand on its own has to be pushed on its
