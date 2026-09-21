@@ -1034,49 +1034,47 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
 /// refuse (D1's floor) or start the round trip. `reason` is the log's: `resize` for the control,
 /// `back` for the restore after About.
 fn resize_on_main<R: Runtime>(on_main: &AppHandle<R>, want: PanelHeight, reason: &str) {
-    {
-        let Some((panel, window)) = panel_and_window(on_main, "resize") else {
-            return;
-        };
-        if !panel.is_visible() {
-            log::info!("panel resize want={want:?} effective=false reason=hidden");
-            return;
-        }
-        let Some(rect) = crate::tray::rect(on_main) else {
-            return;
-        };
-        let laid = match layout_for(&window, rect, want) {
-            Ok(l) => l,
-            Err(e) => {
-                log::warn!("panel resize want={want:?} layout failed: {e}");
-                return;
-            }
-        };
-        let state = on_main.state::<PanelState>();
-        if laid.state != want {
-            log::info!(
-                "panel resize want={want:?} effective=false reason=refused expandable={} \
-                 capped_height={}",
-                laid.expandable,
-                laid.size.1
-            );
-            // Same generation, so the page's commit effect does not fire; only the flag changes.
-            let refreshed = state.refresh_expandable(laid.expandable);
-            emit_layout(on_main, refreshed, "refused");
-            return;
-        }
-        let view = state.layout().view;
-        let emitted = state.request(view, &laid, LayoutKind::Resize, rect);
-        emit_layout(on_main, emitted, reason);
-        // The frame changes when the page has committed the new layout (decision D3), or when
-        // the fallback fires — `complete_layout`, either way.
-        arm_fallback(on_main, emitted.generation);
-        log::info!(
-            "panel layout pending generation={} kind=resize want={want:?} capped={} reason={reason}",
-            emitted.generation,
-            laid.capped
-        );
+    let Some((panel, window)) = panel_and_window(on_main, "resize") else {
+        return;
+    };
+    if !panel.is_visible() {
+        log::info!("panel resize want={want:?} effective=false reason=hidden");
+        return;
     }
+    let Some(rect) = crate::tray::rect(on_main) else {
+        return;
+    };
+    let laid = match layout_for(&window, rect, want) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("panel resize want={want:?} layout failed: {e}");
+            return;
+        }
+    };
+    let state = on_main.state::<PanelState>();
+    if laid.state != want {
+        log::info!(
+            "panel resize want={want:?} effective=false reason=refused expandable={} \
+             capped_height={}",
+            laid.expandable,
+            laid.size.1
+        );
+        // Same generation, so the page's commit effect does not fire; only the flag changes.
+        let refreshed = state.refresh_expandable(laid.expandable);
+        emit_layout(on_main, refreshed, "refused");
+        return;
+    }
+    let view = state.layout().view;
+    let emitted = state.request(view, &laid, LayoutKind::Resize, rect);
+    emit_layout(on_main, emitted, reason);
+    // The frame changes when the page has committed the new layout (decision D3), or when
+    // the fallback fires — `complete_layout`, either way.
+    arm_fallback(on_main, emitted.generation);
+    log::info!(
+        "panel layout pending generation={} kind=resize want={want:?} capped={} reason={reason}",
+        emitted.generation,
+        laid.capped
+    );
 }
 
 /// The page's Back button (`commands::panel::panel_view_back`): the About pane gave way to the
