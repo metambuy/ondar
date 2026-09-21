@@ -1,7 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-21 (M2 complete — M2d merged `2a9bae9`, tagged `m2d-done`; the milestone
-list updated). Previously 2026-09-21 (M2d acceptance results, the About-pane decision, item 6
+*Last updated: 2026-09-21 (bundle identifier settled: `eu.ondar.radio` — see "Bundle identifier:
+`eu.ondar.radio`"; socket names re-measured). Previously 2026-09-21 (M2 complete — M2d merged
+`2a9bae9`, tagged `m2d-done`; the milestone list updated). Previously 2026-09-21 (M2d acceptance results, the About-pane decision, item 6
 recorded as unmeasured, and instrument instance eight — see "M2d: resize in place"). Previously 2026-09-18
 (M2d Step 0 measured and decisions D2–D4 recorded beside D1 — see
 "M2d: resize in place — Step 0 measured, D2–D4 decided" and "M2d: the expanded height is capped to
@@ -200,7 +201,8 @@ before actually adding):
 - `tauri-plugin-single-instance` **2.4.4** (the current 2.x; 3.0.0-alpha.0 exists and is not
   taken), registered **first**. macOS mechanism, read in `src/platform_impl/macos.rs` and
   measured end to end: a Unix socket at `/tmp/<identifier with `.` and `-` replaced by
-  `_`>_si.sock` (`:62`) — `/tmp/dev_crabnebula_ondar_si.sock` today. A starting process
+  `_`>_si.sock` (`:62`) — `/tmp/eu_ondar_radio_si.sock` since the identifier change (measured
+  2026-09-21; `/tmp/dev_crabnebula_ondar_si.sock` before it). A starting process
   connects; on success it writes cwd + argv and `exit(0)`s inside plugin setup (`:27-29`), before
   anything else is built; on `NotFound`/`ConnectionRefused` it removes the path and binds, which
   is why a socket left behind by `kill -9` recovers (measured, R7); on any *other* connect error
@@ -213,8 +215,10 @@ before actually adding):
   <file>` merges the file into the configuration `generate_context!` bakes in — tauri-codegen
   reads `TAURI_CONFIG` (`lib.rs:83-87`) and tauri-build reruns on it (`lib.rs:472`). The CLI
   source that sets `TAURI_CONFIG` is not readable here (npm ships a binary), so that link is
-  **measured**, not read: `pnpm tauri:dev` creates `/tmp/dev_crabnebula_ondar_dev_si.sock`
-  (2026-09-17), and a bundle built without the overlay keeps `dev.crabnebula.ondar`.
+  **measured**, not read: `pnpm tauri:dev` creates `/tmp/eu_ondar_radio_dev_si.sock` (re-measured
+  2026-09-21 after the identifier change; it was `/tmp/dev_crabnebula_ondar_dev_si.sock` on
+  2026-09-17), and a bundle built without the overlay keeps `eu.ondar.radio` (its `Info.plist`
+  `CFBundleIdentifier`, read 2026-09-21).
 - **Dependency risk, not a dependency:** `EffectsBuilder::radius` (tauri 2.11.5
   `window/mod.rs:2453`) reaches window-vibrancy 0.6.0's `setCornerRadius:` on the effect view,
   which that crate's own source calls "not listed in Apple documentation, might be private, but
@@ -594,6 +598,37 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### Bundle identifier: `eu.ondar.radio` (decided 2026-09-21)
+
+Martín bought the domain **`ondar.eu`** and settled the identifier as its reverse-DNS form,
+**`eu.ondar.radio`**, with the dev overlay **`eu.ondar.radio.dev`** (`src-tauri/tauri.conf.json`,
+`src-tauri/tauri.dev.conf.json`; the shell test `dev_identifier_is_the_real_identifier_plus_dev`
+pins the derivation). It replaces the `dev.crabnebula.ondar` placeholder before M3 creates any
+path under the app data directory, so BUILD_PLAN's M3 soft deadline is met with nothing to
+migrate.
+
+- **Why `radio` and not `app`:** an identifier ending in `.app` (`eu.ondar.app`) collides with the
+  bundle extension on macOS — `Ondar.app` versus an identifier whose last label is `app` — and is
+  the kind of ambiguity Finder, LaunchServices and humans reading a `defaults` domain trip on.
+- **Measured 2026-09-21** (`_handover/identifier-logs/sockets.txt`, `id-01-bundle.log`,
+  `id-02-dev.log`): the rebuilt debug bundle (`Info.plist` `CFBundleIdentifier` =
+  `eu.ondar.radio`, `lsappinfo` agrees) launched detached (`ppid=1`) and created
+  `/tmp/eu_ondar_radio_si.sock`; `pnpm tauri:dev` beside it created
+  `/tmp/eu_ondar_radio_dev_si.sock`, and both processes ran at once — the two-identifier
+  coexistence M2c case (f) needs. Both names follow the plugin's `.`→`_` rule exactly as
+  predicted.
+- **Old data is orphaned and harmless.** `~/Library/WebKit/dev.crabnebula.ondar` and
+  `~/Library/Caches/dev.crabnebula.ondar` (and the `dev.crabnebula.onda` pair from before the
+  rename) stay on disk; nothing reads them, they hold only WebKit's own website data and cache,
+  and there is **no** `~/Library/Application Support/dev.crabnebula.ondar` — the app never wrote
+  a file of its own under the old identifier (listed 2026-09-21, `sockets.txt`). The first launch
+  under the new identifier created the `eu.ondar.radio` pair in the same two places. Delete the
+  old ones by hand or leave them.
+- **Quitting with `pkill` (SIGTERM) leaves the socket file behind** — both `dev_crabnebula_*`
+  sockets were still in `/tmp` after their processes were gone, and so were the new pair after
+  this measurement. Harmless by design: the plugin removes a stale path on `ConnectionRefused`
+  and binds (measured at M2c, R7). Only `RunEvent::Exit` (Quit from the tray menu) removes it.
 
 ### M2d: resize in place — Step 0 measured, D2–D4 decided (2026-09-18)
 

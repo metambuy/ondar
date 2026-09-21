@@ -217,15 +217,14 @@ Every milestone closes with the same ritual:
 1. ~~**Name.**~~ **Settled 2026-09-13: Ondar.** "Onda" collided with Onda Cero, a national
    Spanish radio network; "Ondar" is Basque for sand, and no radio app or station was found
    under it. See ONDAR.md, "Renamed from Onda to Ondar".
-2. **Bundle identifier.** `dev.crabnebula.ondar` (in `src-tauri/tauri.conf.json`) is a
-   placeholder — decide before the first signed artifact. Two deadlines, the second the one
-   that actually bites:
-   - **M3, soft.** Tauri derives the app data directory from the bundle identifier, so
-     changing it after the SQLite cache lands at M3 orphans that cache. Recoverable — it just
-     rebuilds. *(Reasoning recorded 2026-09-13, not a measurement: this has not been tested
-     against a real Tauri build.)*
-   - **M6, hard.** Once a signed artifact exists, macOS keys preferences, app support and
-     keychain items to the identifier, so a change loses user settings silently on upgrade.
+2. ~~**Bundle identifier.**~~ **Settled 2026-09-21: `eu.ondar.radio`** (domain `ondar.eu`
+   bought; dev overlay `eu.ondar.radio.dev`). The M3 soft deadline was met: the change landed
+   before any path under the app data directory exists, so no cache is orphaned. See ONDAR.md,
+   "Bundle identifier: `eu.ondar.radio`". Was: `dev.crabnebula.ondar` was a placeholder with two
+   deadlines — **M3, soft** (Tauri derives the app data directory from the identifier, so a
+   change after the SQLite cache lands orphans that cache) and **M6, hard** (once a signed
+   artifact exists, macOS keys preferences, app support and keychain items to the identifier, so
+   a change loses user settings silently on upgrade).
 3. **Blue Marble month** — one fixed month, or all twelve switching with the calendar
    (twelve months multiplies the bundle; almost certainly one).
 4. **Night-lights dark mode** — worth the extra tile set, or a filter on the day imagery?
