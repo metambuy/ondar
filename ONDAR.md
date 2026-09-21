@@ -1,6 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-21 (bundle identifier settled: `eu.ondar.radio` — see "Bundle identifier:
+*Last updated: 2026-09-21 (M3 Step 0 measured — see "M3 Step 0: the live data, measured"; the geo
+share, the API etiquette line and the verified `hickory-resolver` version updated from it; four
+instrument instances added). Previously 2026-09-21 (bundle identifier settled: `eu.ondar.radio` — see "Bundle identifier:
 `eu.ondar.radio`"; socket names re-measured). Previously 2026-09-21 (M2 complete — M2d merged
 `2a9bae9`, tagged `m2d-done`; the milestone list updated). Previously 2026-09-21 (M2d acceptance results, the About-pane decision, item 6
 recorded as unmeasured, and instrument instance eight — see "M2d: resize in place"). Previously 2026-09-18
@@ -126,7 +128,12 @@ before actually adding):
   bottom-left origin and subtracts the icon height before handing it over). That is the
   convention Tauri's `PhysicalPosition` already uses, so no flip and no unit conversion are
   required. The M2 fallback in the stack table is therefore not taken.
-- `hickory-resolver` 0.26.2
+- `hickory-resolver` **0.26.3** (2026-09-10; verified by compiling against it in the M3 Step 0
+  census, 2026-09-21): `TokioResolver::builder_tokio()?.build()?`, `srv_lookup(name) ->
+  Lookup` (no `SrvLookup` type), `Lookup::answers() -> &[Record]`, `Lookup::valid_until()`;
+  `Record` and `SRV` expose **public fields** (`ttl`, `data`, `name`; `priority`, `weight`,
+  `port`, `target`), not accessor methods. Default features include `tokio` + `system-config`.
+  Was 0.26.2 (verified 2026-09-08).
 - `tauri-specta` 2.0.0-rc.25 (not adopted)
 
 **`tauri-nspanel` — pinned by the M2 spike (2026-09-12), in the tree since M2a (2026-09-15, `36d50b8` on branch `m2`):**
@@ -288,9 +295,11 @@ TypeScript, stop — it belongs in Rust.
   for the base level plus ~33% for the rest of the pyramid. **Decision (2026-09-07): an
   installed size above 100 MB is acceptable.** Measure real numbers at M4 and record them
   here. If Black Marble is also shipped, expect roughly double.
-- **~30% of radio-browser stations have coordinates.** Map markers are therefore sparse;
-  the country dropdown, not the map, is the primary navigation. The map is context and
-  delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
+- **20.7 % of radio-browser stations have coordinates** — measured 2026-09-21 over 25 236
+  stations in eight countries (7 % RU to 38 % BR; `_handover/m3-step0-logs/p3-census.tsv`),
+  an eight-country sample, not a global figure. The inherited "~30 %" is retired. Map markers
+  are therefore sparse; the country dropdown, not the map, is the primary navigation. The map
+  is context and delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
 - ~~**BLOCKER: `src-tauri/icons/icon.png` is a 1×1 placeholder.**~~ **Resolved 2026-09-13.**
   It had stopped being cosmetic: the bundler failed with `Failed to create app icon: No
   matching IconType` and produced nothing, so no bundle could be built at all and
@@ -598,6 +607,101 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M3 Step 0: the live data, measured (2026-09-21)
+
+Before M3a, a census of radio-browser.info from this Mac with the real `User-Agent` — plan
+`_handover/m3-step0-plan.md`, report `_handover/m3-step0-report.md`, raw responses and scripts
+in `_handover/m3-step0-logs/` (the probe crate is uncommitted, kept as `probe.patch`). Every
+number below is **measured** there unless tagged otherwise. It changed four premises M3 had
+inherited and produced four decisions.
+
+**The API.**
+
+- **One server.** The SRV record `_api._tcp.radio-browser.info` has a single target,
+  `de1.api.radio-browser.info` (priority 1, weight 1, port 443), by two instruments
+  (`hickory-resolver` and `dig`). `de2` still resolves and answers but to the **same address**
+  (`91.98.4.78`); `fi1`, `nl1`, `at1`, `fr1` do not resolve; `all.api.radio-browser.info` is the
+  same address again; `api.radio-browser.info` is the Netlify-hosted docs site, not an API host.
+  `/json/servers` lists `de1` twice (v4, v6). Consequence: "3 retries across *different* hosts"
+  has no object — the client retries the same host with backoff, and the offline cache carries
+  resilience. The fallback list is the measured set: `de1`, `all.api`.
+- **SRV TTL ~5 min observed, zone TTL not answered.** A fresh answer carried `ttl=300` and
+  decremented 300 → 270 over 30 s; the "authoritative" `dig @<Cloudflare NS> +norecurse`
+  answer *also* decremented (270 → 265 in 5 s), so port 53 is intercepted by the local
+  resolver on this network and the zone value cannot be read from here. Re-resolve per launch
+  and on failover; persisting the result is pointless.
+- **`bycountrycodeexact` truncates silently at 1000.** With no `limit`, six of eight countries
+  came back with exactly 1000 records against `stationcount` 1 456–8 190, status 200, no
+  header saying so. `?limit=100000` returned `stationcount` ±1 (US 8 191 rows, 9 457 048 B in
+  3.2 s). The client must send an explicit limit and guard against a 1000-row answer.
+- **`hidebroken=true` equals the `lastcheckok == 1` subset exactly** (PT: 345 = 345, symmetric
+  difference 0, fetched back to back on one host). The countries list keeps its 250 rows under
+  it; per-country counts drop (US −955).
+- **`search`** honours `countrycode` (case-insensitive), `hidebroken`, `order=votes|
+  clickcount|clicktrend` with `reverse`, `limit` and `offset` (disjoint consecutive pages);
+  `search?countrycode=PT` was byte-for-byte the `bycountrycodeexact/PT` list (371 rows).
+  `nameExact` is case-insensitive (`ORBITAL` and `Orbital`), `order=name` uses a collation
+  the client cannot reproduce, and `name` matches a case- and diacritic-folded substring.
+  Whether `search` applies the 1000 default on a country larger than 1000 is **not
+  measured** (needs a > 1000 country through `search`).
+- **No compression.** `Accept-Encoding: gzip` is ignored (`tiny-http`, chunked). Some *station*
+  servers gzip playlists without being asked (Wowza) — M3c's playlist fetch decodes; the
+  stations client needs nothing.
+- Latency on this line: ttfb 139–971 ms; the 9.5 MB US list in 3.2 s. **DNS is outside
+  reqwest's `connect_timeout`** — the census client sat 12 min on a name that never resolved;
+  a whole-request or connect-phase bound is required (M3a, both clients).
+- `/json/stats`: 59 411 stations, 6 647 broken, 241 countries; the countries list's
+  `stationcount` sums to 64 791 — unexplained, recorded (G7); the app shows its own counts.
+
+**The data (eight countries: US DE PT ES FR BR RU MT, 25 236 stations).**
+
+- Countries: 250 rows; **9 lowercase codes** (`ch de fr gr nz ru tr us uy`, one station each,
+  duplicating their uppercase row's name) and **`XX`** (empty name, 1 station); no empty codes.
+- Stations, pooled: `lastcheckok == 0` 8.7 %; `bitrate == 0` **16.8 %** (30.8 % in DE); `hls == 1`
+  **3.8 %** (9.7 % PT, 2.4 % DE); geo present **20.7 %**; empty `url_resolved` 210 rows; https
+  60.7 %; folded name + url duplicates 1–22 % per country (FR 832 rows); codec strings verbatim
+  `MP3` 16 678, `AAC+` 3 982, `AAC` 3 682, `UNKNOWN` 310, `OGG` 308, empty 210, `AAC,H.264` 41
+  (video), `MP4` 13. radio-browser rechecks every station roughly daily (`lastchecktime` age
+  p50 13–18 h, p90 24–71 h, max 120 h = its retention), which is what a 24 h list TTL
+  implicitly assumes — it holds.
+- **HLS shape (sample of 10 `hls == 1` stations, 7 countries; MT has none):** 5 are ADTS-AAC
+  media playlists with a leading ID3 tag (the timed-metadata carrier), 5 are MPEG-TS — 2
+  audio-only, **3 carrying H.264 video** (TV feeds listed as radio; one master's first variant is
+  video-only). fMP4: none. All live sliding windows, target durations 4–13 s, sequence
+  advancing on refresh. The two `.m3u8` URLs flagged `hls == 0` were `302`s onto plain ADTS
+  streams — the flag was right, the file name was not.
+- **Shoutcast v1: 0 of 148 reachable stations** answered `ICY 200 OK` (153 probed on a raw
+  socket, redirects followed; 22 % of `url_resolved` redirect; 93 % offer `icy-metaint`). Rule
+  of three: ≤ 2 %. See the Constraints entry for what the engine does with one.
+
+**The per-country cap, decided 750.** After the filter (drop `lastcheckok == 0` and empty
+`url_resolved`, dedupe folded name + url, keep `bitrate == 0` sorted last among equal votes,
+sort votes then clicktrend), the share of a country's total `clickcount` carried by its top N
+(`_handover/m3-step0-logs/p3-cap.tsv`, and the 750 column recomputed under the decided rules):
+
+| cc | filtered n | clicks @500 | **clicks @750** | clicks @1000 | votes @750 |
+|---|---|---|---|---|---|
+| US | 6 832 | 50.6 % | **56.9 %** | 61.9 % | 91.4 % |
+| DE | 5 735 | 52.0 % | **59.2 %** | 64.1 % | 85.6 % |
+| FR | 2 844 | 76.7 % | **84.0 %** | 88.5 % | 97.5 % |
+| RU | 2 650 | 63.4 % | **70.4 %** | 76.1 % | 96.1 % |
+| BR | 1 366 | 73.4 % | **83.9 %** | 93.4 % | 99.3 % |
+| ES | 1 236 | 88.9 % | **94.0 %** | 97.2 % | 99.5 % |
+| PT | 328 | 100 % | **100 %** | 100 % | 100 % |
+
+The curve is flat in the long tail; 750 is Martín's call (2026-09-21) between the report's 500
+and the next row.
+
+**Decisions (Martín, 2026-09-21, gate 1).** (1) Cap **750** per country. (2) **`bitrate == 0` is
+kept, sorted last** among equal votes: a zero bitrate is "unknown", not "broken" (`lastcheckok`
+covers broken), and dropping it costs 16.8 % pooled, 30.8 % in DE; the prefetch formula falls
+back to `one_decoder_read` when the bitrate is unknown (M3b). Reverses BUILD_PLAN's "drop
+bitrate 0". (3) **HLS is split:** ADTS-AAC media playlists (live refresh loop + ID3 strip) ship
+in M3 as M3c; the MPEG-TS demux and audio-variant selection move to after M4; until then a TS
+station fails with an honest error, not a reconnect loop. (4) The two `ondar-audio` defects
+Step 0 surfaced — the ICY status line surfacing as a reconnect loop, and DNS unbounded on the
+connect path — are fixed in M3a, each its own commit.
 
 ### Bundle identifier: `eu.ondar.radio` (decided 2026-09-21)
 
@@ -1580,7 +1684,10 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 
 - Send a descriptive `User-Agent` (`Ondar/<version>`) on every radio-browser request.
 - Discover servers via the `_api._tcp.radio-browser.info` SRV record (`hickory-resolver`),
-  with hardcoded fallbacks; do not hammer a single host.
+  with hardcoded fallbacks; do not hammer a single host. **There is one host** (measured
+  2026-09-21: the SRV record has a single target, `de1`; `de2` is the same address; the older
+  mirror names no longer resolve), so retries are same-host with backoff, three attempts, and
+  **the cache is the resilience story, not the retry loop**.
 - Call the station-click endpoint when playback actually starts, once per play.
 - Cache aggressively (countries: 7 days, station lists: 24 h) and respect the cache offline.
 
@@ -1689,6 +1796,21 @@ same family as the first five (quiet degradation: a 429 in a subagent's log is n
 review's output), with a second half: **count a tool's claims about itself from its artefacts, not
 from its summary** — the provenance of every verdict was re-derived from the twelve transcripts
 before the findings file called eight of nine independently verified.
+
+A ninth to a twelfth, 2026-09-21 (M3 Step 0 census), all of the quiet-degradation kind. **Ninth:
+a 200 that is not the whole answer.** `bycountrycodeexact` with no `limit` returned exactly 1000
+rows for six countries whose `stationcount` was 1 456–8 190, with no header saying so; the
+instrument is the response itself, and the check was the record count against a second source
+(the countries list). **Tenth: a body that is not what was asked for.** A station server
+(Wowza) gzip-compressed a playlist although the request sent no `Accept-Encoding`; the probe
+parsed compressed bytes as playlist lines and requested a garbage segment URL. The check was
+the `content-encoding` header and the magic bytes. **Eleventh: a timeout that does not cover
+the wait.** reqwest's `connect_timeout` bounds the TCP connect, not the DNS resolution before
+it; the census client sat 12 minutes with no socket open. The check was `lsof` (no sockets)
+against the log (no progress). **Twelfth: the parser of the second instrument.** The `dig`
+output parser matched the script's own `##` headings that contained "SRV" and reported a
+disagreement between two instruments that in fact agreed; the run stopped, correctly, and the
+parser was the defect. All four are in `_handover/m3-step0-report.md`.
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 

@@ -36,7 +36,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
 | M2 | Tray + NSPanel popover | **done** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) merged 2026-09-21 (`2a9bae9`, tagged `m2d-done`) |
-| M3 | Station API + SQLite cache + country/station UI | |
+| M3 | Station API + SQLite cache + country/station UI | **in progress** — Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a` |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
 | M6 | Signing, notarisation, DMG | |
@@ -442,8 +442,10 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 2. **HLS and redirect chains.** `stream-download` handles plain HTTP/Icecast, not `.m3u8`.
    Detect and surface `unsupported_format` rather than hanging. Also: Shoutcast v1 servers
    (`ICY 200 OK` status line) are rejected by hyper and surface as `http`.
-3. **Sparse station coordinates.** ~30 % of radio-browser stations have lat/lng. The country
-   dropdown is the primary navigation; the map must never be the only route to a station.
+3. **Sparse station coordinates.** 20.7 % of radio-browser stations have lat/lng (measured
+   2026-09-21 over 25 236 stations in eight countries, 7–38 % by country; the inherited "~30 %"
+   is retired). The country dropdown is the primary navigation; the map must never be the only
+   route to a station.
 4. **Stream reliability.** Dead and mislabelled streams are common. Honest error states and
    reconnect behaviour are a feature, not polish — do not paper over them with spinners.
 5. **Build host.** Building, signing and notarising all require macOS.

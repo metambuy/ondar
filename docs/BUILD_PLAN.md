@@ -95,17 +95,29 @@ tray path, measured".
 reach them from the popover.
 
 - [ ] `stations::client` — `reqwest`, SRV discovery of `_api._tcp.radio-browser.info` with
-      hardcoded fallback hosts, `User-Agent: Ondar/<version>`, timeouts, 3 retries with backoff
-      across *different* hosts
-- [ ] Endpoints: `/json/countries`, `/json/stations/bycountrycodeexact/{cc}`,
-      `/json/url/{uuid}` (click), `/json/stations/search`
-- [ ] `stations::model` — `Station`, `Country`; normalise `url_resolved`, codec, bitrate
-- [ ] Filtering: drop `lastcheckok == 0`, drop bitrate 0, dedupe by name+url, sort by votes
-      then clicktrend, cap per country
+      the measured fallbacks (`de1`, `all.api` — there is one server, Step 0 2026-09-21),
+      `User-Agent: Ondar/<version>`, connect 10 s + a stall bound + a per-request total sized
+      from the byte count, **3 attempts on the same host with backoff** and one SRV re-resolve
+      between attempts 1 and 2; fetch the whole country with `hidebroken=true` and an
+      **explicit high `limit`** (the API truncates silently at 1000 without one), then filter,
+      dedupe, sort and cap **750** locally — never let the server cap before the filter
+- [ ] Endpoints: `/json/countries?hidebroken=true`,
+      `/json/stations/bycountrycodeexact/{cc}?hidebroken=true&limit=…`,
+      `/json/url/{uuid}` (click, M3b), `/json/stations/search` (search only)
+- [ ] `stations::model` — `Station`, `Country`; normalise `url_resolved`, codec, bitrate;
+      merge the 9 lowercase country codes into their uppercase rows, drop `XX`
+- [ ] Filtering: drop `lastcheckok == 0` (= `hidebroken`), drop empty `url_resolved`,
+      **keep `bitrate == 0` sorted last among equal votes** (decided 2026-09-21, reverses
+      "drop bitrate 0": a zero bitrate is unknown, not broken, and it is 16.8 % of stations),
+      dedupe by folded name + `url_resolved`, sort by votes then clicktrend, cap 750
 - [ ] `stations::cache` — SQLite (`rusqlite`, bundled); countries TTL 7 d, station lists TTL
-      24 h; serve stale on network failure
+      24 h; serve stale on network failure **with no age ceiling**, reporting the age
 - [ ] `store.rs` — favourites and recently-played (SQLite), reachable from the collapsed view
-- [ ] Port `cities.js` → `resources/cities.json`; load into `geo`
+- [ ] ~~Port `cities.js` → `resources/cities.json`; load into `geo`~~ → **M4** (only the map
+      consumes it; brief D4, 2026-09-21)
+- [ ] HLS (M3c): ADTS-AAC media playlists only — live refresh loop + ID3 strip; the MPEG-TS
+      demux and audio-variant selection move to after M4 (decided 2026-09-21 from Step 0's
+      sample: 5/10 ADTS, 5/10 TS of which 3 carry video)
 - [ ] Commands: `list_countries`, `list_stations(country_code)`, `search_stations(query)`
 - [ ] UI: searchable country dropdown wired to `list_countries`; station list wired to
       `list_stations`, click-to-play through the existing `play` command
@@ -230,9 +242,10 @@ Every milestone closes with the same ritual:
 4. **Night-lights dark mode** — worth the extra tile set, or a filter on the day imagery?
 5. **Deepest zoom level** — how much bundle size are you willing to spend? The single biggest
    lever on download size.
-6. **HLS streams** — support them (adds `hls` handling in Rust) or exclude them from results?
-   See ONDAR.md's known risks for the current state (not yet measured how many stations this
-   affects).
+6. ~~**HLS streams**~~ **Settled 2026-09-21: supported, in Rust, split.** Measured at M3 Step 0:
+   3.8 % of an eight-country sample (9.7 % in PT); of ten sampled, five ADTS-AAC media
+   playlists and five MPEG-TS (three with video). ADTS ships in M3 as M3c; the TS demux moves
+   to after M4. See ONDAR.md, "M3 Step 0: the live data, measured".
 
 ## Risk notes
 
