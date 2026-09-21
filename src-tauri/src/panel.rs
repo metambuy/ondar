@@ -317,10 +317,23 @@ pub struct PanelState {
 }
 
 struct Inner {
-    /// The layout last emitted. Its `state` is also the height the user last chose, which the
-    /// next show lays out for (`wanted_height`).
+    /// The layout last emitted.
     last: PanelLayout,
+    /// The height the user last chose with the control — set by a successful resize, and by
+    /// nothing else. Not always `last.state`: the About pane shows at the collapsed height
+    /// whatever the choice, and the choice survives it so Back restores it (decided 2026-09-21,
+    /// acceptance defect: the control showed on About; it does not, and About does not resize).
+    chosen: PanelHeight,
     round_trip: RoundTrip,
+}
+
+/// The height a show lays out for: the About pane always at the collapsed height, the transport
+/// at the user's choice. Pure, so the decision has a test.
+fn show_height(view: PanelView, chosen: PanelHeight) -> PanelHeight {
+    match view {
+        PanelView::About => PanelHeight::Collapsed,
+        PanelView::Transport => chosen,
+    }
 }
 
 /// What a layout request is waiting to do once the page has committed (or the fallback fires).
@@ -408,6 +421,7 @@ impl Default for PanelState {
                     height: COLLAPSED_HEIGHT,
                     expandable: true,
                 },
+                chosen: PanelHeight::Collapsed,
                 round_trip: RoundTrip::default(),
             }),
         }
@@ -421,9 +435,24 @@ impl PanelState {
         self.inner.lock().unwrap().last
     }
 
-    /// The height the next show lays out for.
-    fn wanted_height(&self) -> PanelHeight {
-        self.inner.lock().unwrap().last.state
+    /// The height a show of `view` lays out for (`show_height`).
+    fn wanted_height_for(&self, view: PanelView) -> PanelHeight {
+        show_height(view, self.inner.lock().unwrap().chosen)
+    }
+
+    /// The height the user last chose with the control.
+    fn chosen(&self) -> PanelHeight {
+        self.inner.lock().unwrap().chosen
+    }
+
+    /// Why a resize request is refused before any layout is computed: `Some("view")` on the About
+    /// pane, where there is no control and no resize (the page hides the button; this is the
+    /// guard that does not depend on it).
+    fn resize_refusal(&self) -> Option<&'static str> {
+        match self.inner.lock().unwrap().last.view {
+            PanelView::About => Some("view"),
+            PanelView::Transport => None,
+        }
     }
 
     /// Register a layout with the round trip and record it as the last one; returns what the page
@@ -440,6 +469,9 @@ impl PanelState {
             inner
                 .round_trip
                 .request(kind, layout.anchored.position, layout.size, rect);
+        if kind == LayoutKind::Resize {
+            inner.chosen = layout.state;
+        }
         inner.last = PanelLayout {
             transition: match kind {
                 LayoutKind::Show(_) => PanelTransition::Show,
@@ -639,7 +671,7 @@ fn show_on_main<R: Runtime>(
     // gesture on the popover (`/code-review` finding 6, 2026-09-17).
     let view = reason.view();
     let state = handle.state::<PanelState>();
-    let laid = layout_for(&window, rect, state.wanted_height())?;
+    let laid = layout_for(&window, rect, state.wanted_height_for(view))?;
     let emitted = state.request(view, &laid, LayoutKind::Show(reason), rect);
     // Origin and size in one call while the panel is still hidden, so the hidden-window
     // `setContentSize:` trap (bottom-left kept — M2d Step 0, measured, unexplained) has nothing to
@@ -980,14 +1012,32 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
         } else {
             PanelHeight::Collapsed
         };
-        let Some((panel, window)) = panel_and_window(&on_main, "resize") else {
+        // No control on the About pane, so no resize from it: refused here whatever the page
+        // renders (decided 2026-09-21). Back restores the choice through `view_back`.
+        if let Some(reason) = on_main.state::<PanelState>().resize_refusal() {
+            log::info!("panel resize want={want:?} effective=false reason={reason}");
+            return;
+        }
+        resize_on_main(&on_main, want, "resize");
+    });
+    if let Err(e) = queued {
+        log::warn!("panel resize expanded={expanded} not queued: {e}");
+    }
+}
+
+/// The resize path proper, on the main thread: lay out for `want` against a fresh tray rect,
+/// refuse (D1's floor) or start the round trip. `reason` is the log's: `resize` for the control,
+/// `back` for the restore after About.
+fn resize_on_main<R: Runtime>(on_main: &AppHandle<R>, want: PanelHeight, reason: &str) {
+    {
+        let Some((panel, window)) = panel_and_window(on_main, "resize") else {
             return;
         };
         if !panel.is_visible() {
             log::info!("panel resize want={want:?} effective=false reason=hidden");
             return;
         }
-        let Some(rect) = crate::tray::rect(&on_main) else {
+        let Some(rect) = crate::tray::rect(on_main) else {
             return;
         };
         let laid = match layout_for(&window, rect, want) {
@@ -1007,23 +1057,20 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
             );
             // Same generation, so the page's commit effect does not fire; only the flag changes.
             let refreshed = state.refresh_expandable(laid.expandable);
-            emit_layout(&on_main, refreshed, "refused");
+            emit_layout(on_main, refreshed, "refused");
             return;
         }
         let view = state.layout().view;
         let emitted = state.request(view, &laid, LayoutKind::Resize, rect);
-        emit_layout(&on_main, emitted, "resize");
+        emit_layout(on_main, emitted, reason);
         // The frame changes when the page has committed the new layout (decision D3), or when
         // the fallback fires — `complete_layout`, either way.
-        arm_fallback(&on_main, emitted.generation);
+        arm_fallback(on_main, emitted.generation);
         log::info!(
-            "panel layout pending generation={} kind=resize want={want:?} capped={}",
+            "panel layout pending generation={} kind=resize want={want:?} capped={} reason={reason}",
             emitted.generation,
             laid.capped
         );
-    });
-    if let Err(e) = queued {
-        log::warn!("panel resize expanded={expanded} not queued: {e}");
     }
 }
 
@@ -1035,8 +1082,14 @@ pub fn set_expanded<R: Runtime>(handle: &AppHandle<R>, expanded: bool) {
 pub fn view_back<R: Runtime>(handle: &AppHandle<R>) {
     let on_main = handle.clone();
     let queued = handle.run_on_main_thread(move || {
-        let before = on_main.state::<PanelState>().set_view(PanelView::Transport);
-        log::info!("panel view back from={before:?} to=Transport");
+        let state = on_main.state::<PanelState>();
+        let before = state.set_view(PanelView::Transport);
+        let chosen = state.chosen();
+        log::info!("panel view back from={before:?} to=Transport chosen={chosen:?}");
+        // About showed at the collapsed height whatever the choice; the transport gets it back.
+        if chosen == PanelHeight::Expanded {
+            resize_on_main(&on_main, PanelHeight::Expanded, "back");
+        }
     });
     if let Err(e) = queued {
         log::warn!("panel view back not queued: {e}");
@@ -2077,6 +2130,85 @@ mod tests {
             rt.complete(g).is_none(),
             "the page's late commit applies nothing"
         );
+    }
+
+    /// Decided 2026-09-21: the About pane shows at the collapsed height whatever the user chose,
+    /// and the transport shows the choice. An inverted match, or one that ignores the view, fails.
+    #[test]
+    fn about_shows_collapsed_and_the_transport_shows_the_choice() {
+        assert_eq!(
+            show_height(PanelView::About, PanelHeight::Expanded),
+            PanelHeight::Collapsed
+        );
+        assert_eq!(
+            show_height(PanelView::About, PanelHeight::Collapsed),
+            PanelHeight::Collapsed
+        );
+        assert_eq!(
+            show_height(PanelView::Transport, PanelHeight::Expanded),
+            PanelHeight::Expanded
+        );
+        assert_eq!(
+            show_height(PanelView::Transport, PanelHeight::Collapsed),
+            PanelHeight::Collapsed
+        );
+    }
+
+    /// The choice survives an About show: expand (a resize), then About (a collapsed show), then
+    /// Back — the transport lays out expanded again. A state that let the About show overwrite the
+    /// choice — as `last.state` did before `chosen` existed — fails at the last assertion.
+    #[test]
+    fn the_choice_survives_an_about_show() {
+        let displays = menubar_on_builtin();
+        let tray = PointRect::new(1852.0, 0.0, 48.0, 66.0);
+        let state = PanelState::default();
+        assert_eq!(state.chosen(), PanelHeight::Collapsed);
+
+        let expanded = layout(tray, PanelHeight::Expanded, &displays, Some(0));
+        state.request(
+            PanelView::Transport,
+            &expanded,
+            LayoutKind::Resize,
+            any_rect(),
+        );
+        assert_eq!(state.chosen(), PanelHeight::Expanded);
+
+        assert_eq!(
+            state.wanted_height_for(PanelView::About),
+            PanelHeight::Collapsed
+        );
+        let collapsed = layout(tray, PanelHeight::Collapsed, &displays, Some(0));
+        let shown = state.request(
+            PanelView::About,
+            &collapsed,
+            LayoutKind::Show(ShowReason::About),
+            any_rect(),
+        );
+        assert_eq!(shown.state, PanelHeight::Collapsed);
+        assert_eq!(shown.view, PanelView::About);
+        assert_eq!(
+            state.chosen(),
+            PanelHeight::Expanded,
+            "a show does not touch the choice"
+        );
+
+        state.set_view(PanelView::Transport);
+        assert_eq!(
+            state.wanted_height_for(PanelView::Transport),
+            PanelHeight::Expanded
+        );
+    }
+
+    /// A resize request is refused on the About pane before any layout is computed, and allowed
+    /// on the transport — the Rust-side guard behind the page hiding its control.
+    #[test]
+    fn a_resize_is_refused_on_the_about_pane() {
+        let state = PanelState::default();
+        assert_eq!(state.resize_refusal(), None);
+        state.set_view(PanelView::About);
+        assert_eq!(state.resize_refusal(), Some("view"));
+        state.set_view(PanelView::Transport);
+        assert_eq!(state.resize_refusal(), None);
     }
 
     /// Top-left points → Cocoa frame, pinned by the P3 measurement: anchor (758,39), 360×720, on the

@@ -96,7 +96,7 @@ onda/
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 35 tests, including the
+    │   │                         flood; holds 3 of the shell's 38 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
     │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
@@ -131,8 +131,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 85 tests `cargo test --workspace`
-reports break down as **75 hand-written + 10 ts-rs-generated**:
+export_bindings_<type>` that writes the `.ts` file. So the 88 tests `cargo test --workspace`
+reports break down as **78 hand-written + 10 ts-rs-generated**:
 
 | | |
 |---|---|
@@ -143,11 +143,11 @@ reports break down as **75 hand-written + 10 ts-rs-generated**:
 | `reconnect::tests` | 1 |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 27 — in the **shell** crate; one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
+| `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 
-Counting `#[test]` attributes in source gives 75 and will not reconcile with the runner's 85
+Counting `#[test]` attributes in source gives 78 and will not reconcile with the runner's 88
 until those 10 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -170,14 +170,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 85 tests: 50 in the ondar_audio binary and 35 in the shell's
+cargo test --workspace       # 88 tests: 50 in the ondar_audio binary and 38 in the shell's
                               # ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (35 tests) and silently skips ondar-audio; this
+                              # `ondar` package (38 tests) and silently skips ondar-audio; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's thirty-five test names, and one of them —
+                              # prints only the shell's thirty-eight test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -197,8 +197,9 @@ Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
 (`commands/panel.rs`): `panel_escape()` (`panel.escape()`) — the page reports an Escape `keydown`
 and Rust hides the popover through `panel::hide` with `reason=esc`; and `panel_set_expanded(expanded)`
 (`panel.setExpanded()`) — the page reports a click on the expand control and Rust lays the panel
-out for the new height against a fresh tray rect, applies it, or refuses it (D1's floor), logging
-which. A third, `panel_layout_committed(generation)` (`panel.layoutCommitted()`), is the
+out for the new height against a fresh tray rect, applies it, or refuses it (D1's floor, or
+`reason=view` on the About pane, which has no control and always shows at the collapsed height;
+the user's choice survives it and Back restores it — decided 2026-09-21), logging which. A third, `panel_layout_committed(generation)` (`panel.layoutCommitted()`), is the
 **round trip** (D3): every `panel:layout` carries a generation; the page reports it from an
 effect after the render that used it, and Rust completes the visible change then — orders a
 pending show in, or changes the visible panel's frame — if that generation is still pending. A

@@ -114,18 +114,21 @@ export default function Panel() {
         />
       )}
 
-      {/* Decision D4: when expansion is refused (D1's floor) the control stays, disabled, so the
-          chrome is the same on every display. Rust refuses regardless of this attribute. */}
-      <div className={styles.row}>
-        <button
-          type="button"
-          aria-expanded={expanded}
-          disabled={layout === null || !layout.expandable}
-          onClick={() => void panel.setExpanded(!expanded)}
-        >
-          {expanded ? "Collapse" : "Expand"}
-        </button>
-      </div>
+      {/* The control belongs to the transport, not to About (decided 2026-09-21; Rust refuses a
+          resize from About regardless, `reason=view`). Decision D4: when expansion is refused
+          (D1's floor) it stays, disabled, so the chrome is the same on every display. */}
+      {view === "transport" && (
+        <div className={styles.row}>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            disabled={layout === null || !layout.expandable}
+            onClick={() => void panel.setExpanded(!expanded)}
+          >
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        </div>
+      )}
 
       {showExpandedPane && (
         <section aria-label="Expanded pane" className={styles.section}>
