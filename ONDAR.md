@@ -1,7 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-21 (M2d acceptance results, the About-pane decision, item 6 recorded as
-unmeasured, and instrument instance eight — see "M2d: resize in place"). Previously 2026-09-18
+*Last updated: 2026-09-21 (M2 complete — M2d merged `2a9bae9`, tagged `m2d-done`; the milestone
+list updated). Previously 2026-09-21 (M2d acceptance results, the About-pane decision, item 6
+recorded as unmeasured, and instrument instance eight — see "M2d: resize in place"). Previously 2026-09-18
 (M2d Step 0 measured and decisions D2–D4 recorded beside D1 — see
 "M2d: resize in place — Step 0 measured, D2–D4 decided" and "M2d: the expanded height is capped to
 the work area"). Previously 2026-09-17 (M2c — chrome
@@ -1562,7 +1563,8 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    (coordinates: multi-monitor, mixed scale, the notch) done 2026-09-16** — see "M2b: coordinates
    are logical points". **M2c (Esc, tray menu, rounded corners, single instance, tokens, the M1
    bench retired) done 2026-09-17** on branch `m2c` — see "M2c: chrome and input, measured".
-   M2d (collapsed/expanded resize) remains.
+   **M2d (collapsed/expanded resize: two heights, the D1 cap, the page-commit round trip) done
+   2026-09-21, merged `2a9bae9`, tagged `m2d-done`** — see "M2d: resize in place". **M2 complete.**
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
    click endpoint, cache TTLs, favourites/recents.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio

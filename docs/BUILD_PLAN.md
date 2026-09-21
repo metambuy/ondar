@@ -74,7 +74,10 @@ every commit".
 
 **Exit:** popover opens and closes like Bartender/Fantastical; expand/collapse resizes in place
 in one frame change with no jump — **not animated** (D2; the earlier "animates" here predated the
-measurement, ONDAR.md "M2d: resize in place"); nothing flickers on a second monitor.
+measurement, ONDAR.md "M2d: resize in place"); nothing flickers on a second monitor. **Met
+2026-09-21:** M2d merged `2a9bae9`, tagged `m2d-done`; M2 complete. (The one M2d measurement still
+open — whether the round trip removes the resize's unpainted band, acceptance item 6 — is
+recorded in ONDAR.md as unmeasured, not as a failed exit.)
 
 **Risk:** `tauri-nspanel` API drift — a git-only community crate that moves faster than any
 doc here. Verify against the pinned rev before writing code and record what you find in

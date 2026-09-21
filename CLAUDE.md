@@ -35,7 +35,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 | | | |
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
-| M2 | Tray + NSPanel popover | **in progress** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) on branch `m2d`, 2026-09-18 |
+| M2 | Tray + NSPanel popover | **done** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) merged 2026-09-21 (`2a9bae9`, tagged `m2d-done`) |
 | M3 | Station API + SQLite cache + country/station UI | |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
