@@ -17,7 +17,8 @@ reqwest = { version = "0.13", default-features = false }
 # matched on a type this crate cannot name. Already in the tree at the same version via
 # reqwest; no new crate enters Cargo.lock.
 hyper = { version = "1", default-features = false }
-tokio = { version = "1.52", features = ["rt-multi-thread"] }
+# `time` for the connect-phase bound (`tokio::time::timeout` around the headers phase, M3a G4b).
+tokio = { version = "1.52", features = ["rt-multi-thread", "time"] }
 tokio-util = "0.7"
 # DSP
 biquad = "0.6"

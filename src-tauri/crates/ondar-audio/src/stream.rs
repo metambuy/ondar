@@ -142,6 +142,31 @@ pub struct OpenedStream {
 
 /// Build the one HTTP client the engine uses for its lifetime.
 pub fn build_client(user_agent: &str) -> reqwest::Client {
+    client_builder(user_agent)
+        .build()
+        .expect("reqwest client with static configuration")
+}
+
+/// TCP connect bound. **Measured 2026-09-21 (M3a, G4b): this bound covers DNS resolution
+/// too** — with a resolver that never answers, `open` returns `Network` when it elapses
+/// (10.01 s at this value; `dns_resolution_is_inside_connect_timeout` pins it at 200 ms).
+/// The M3 Step 0 report had derived the opposite from a census-client hang; the derivation
+/// was wrong for reqwest 0.13's client, see ONDAR.md "Reconnect ownership and stream
+/// timeouts".
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The engine client's configuration, before `build()`, so a test can add a DNS resolver
+/// (`ClientBuilder::dns_resolver`) and still exercise the production settings.
+pub(crate) fn client_builder(user_agent: &str) -> reqwest::ClientBuilder {
+    client_builder_with_connect_timeout(user_agent, CONNECT_TIMEOUT)
+}
+
+/// Same, with the connect bound as a parameter: the test that pins "DNS is inside the
+/// bound" uses 200 ms rather than waiting out the production 10 s.
+pub(crate) fn client_builder_with_connect_timeout(
+    user_agent: &str,
+    connect_timeout: Duration,
+) -> reqwest::ClientBuilder {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         "Icy-MetaData",
@@ -150,14 +175,12 @@ pub fn build_client(user_agent: &str) -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(user_agent)
         .default_headers(headers)
-        .connect_timeout(Duration::from_secs(10))
+        .connect_timeout(connect_timeout)
         // Without this, a dead connection that never sends a byte and never resets (common
         // when the network drops mid-stream) leaves the decode thread's read blocked
         // forever, so starvation is detected but the session never reconnects. Also covers
         // the wait for a first connect's response headers, not just body reads.
         .read_timeout(read_timeout())
-        .build()
-        .expect("reqwest client with static configuration")
 }
 
 pub fn parse_url(url: &str) -> Result<Url, StreamError> {
@@ -354,6 +377,49 @@ mod tests {
             Ok(_) => panic!("open succeeded against a server that cannot be played"),
             Err(e) => e.code,
         }
+    }
+
+    /// A resolver that never answers — a stalled DNS server with no system change.
+    struct HangingResolver;
+    impl reqwest::dns::Resolve for HangingResolver {
+        fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// G4(b), measured rather than assumed: reqwest's `connect_timeout` bounds the DNS
+    /// resolution as well as the TCP connect. With a resolver that never answers and a 200 ms
+    /// bound, `open` returns `Network` promptly. **Fails if** DNS sits outside the bound (the
+    /// call would hang and the outer 5 s guard would elapse) or if a stalled connect were
+    /// classified as anything but `Network`. Measured first against the production 10 s:
+    /// `open` returned at 10.01 s (2026-09-21).
+    #[test]
+    fn dns_resolution_is_inside_connect_timeout() {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let client = client_builder_with_connect_timeout("Ondar/test", Duration::from_millis(200))
+            .dns_resolver(std::sync::Arc::new(HangingResolver))
+            .build()
+            .expect("client");
+        let url = parse_url("http://stalled.example.com/stream").expect("url");
+        let started = std::time::Instant::now();
+        let outcome = rt.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                open(&client, url, Arc::new(AtomicU64::new(0))),
+            )
+            .await
+        });
+        let elapsed = started.elapsed();
+        let result = outcome
+            .expect("open must return within the 5 s guard: DNS is not inside connect_timeout");
+        let err = result
+            .err()
+            .expect("a stalled resolver cannot yield a stream");
+        assert_eq!(err.code, ErrorCode::Network, "{}", err.message);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "open took {elapsed:?} against a 200 ms connect bound"
+        );
     }
 
     #[test]

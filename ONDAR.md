@@ -654,9 +654,12 @@ inherited and produced four decisions.
 - **No compression.** `Accept-Encoding: gzip` is ignored (`tiny-http`, chunked). Some *station*
   servers gzip playlists without being asked (Wowza) — M3c's playlist fetch decodes; the
   stations client needs nothing.
-- Latency on this line: ttfb 139–971 ms; the 9.5 MB US list in 3.2 s. **DNS is outside
-  reqwest's `connect_timeout`** — the census client sat 12 min on a name that never resolved;
-  a whole-request or connect-phase bound is required (M3a, both clients).
+- Latency on this line: ttfb 139–971 ms; the 9.5 MB US list in 3.2 s. The census client
+  once sat 12 min before its first fetch of a station with no socket open; the report
+  *derived* "DNS is outside reqwest's `connect_timeout`" from it. **Falsified on the audio
+  path at M3a** (see "Reconnect ownership and stream timeouts": a stalled resolver is
+  bounded at 10.01 s); the census hang's cause is unexplained. The stations client still
+  gets a stall bound and a per-request total (M3a plan, F4) for its own reasons.
 - `/json/stats`: 59 411 stations, 6 647 broken, 241 countries; the countries list's
   `stationcount` sums to 64 791 — unexplained, recorded (G7); the app shows its own counts.
 
@@ -1275,6 +1278,19 @@ Both values are env-overridable (`ONDAR_READ_TIMEOUT_SECS`, `ONDAR_RETRY_TIMEOUT
 so `stream.rs` clamps `read_timeout` to `retry_timeout * 2` and warns if the invariant
 is violated.
 
+**The connect bound covers DNS (measured 2026-09-21, M3a G4b).** The M3 Step 0 report
+*derived* from a 12-minute hang of its own census client that reqwest's `connect_timeout`
+does not bound DNS resolution, and gate 1 asked M3a to measure it on the audio path or
+bound the connect phase outright. Measured first, with a resolver injected through
+`ClientBuilder::dns_resolver` whose future never completes: `stream::open` against the
+production client (`connect_timeout` 10 s) returned `Network` at **10.01 s**; against a
+200 ms bound it returns within the second. So on the engine's path a stalled resolver is
+bounded by `connect_timeout` and no extra bound is needed; the test
+`dns_resolution_is_inside_connect_timeout` pins it (a hang there would trip the test's 5 s
+guard). The census client's own hang therefore has an **unexplained** cause — it had the
+same 10 s `connect_timeout` — and is recorded as such, not as "DNS". Instrument instance
+eleven below is corrected accordingly.
+
 **Two upstream bugs in `stream-download` 0.24.4, not reported upstream** (decided
 2026-09-09 — the findings are recorded here rather than filed; revisit if either
 starts costing us): `handle_reconnect` tests only the outer `timeout` result, so a
@@ -1810,10 +1826,15 @@ instrument is the response itself, and the check was the record count against a 
 (the countries list). **Tenth: a body that is not what was asked for.** A station server
 (Wowza) gzip-compressed a playlist although the request sent no `Accept-Encoding`; the probe
 parsed compressed bytes as playlist lines and requested a garbage segment URL. The check was
-the `content-encoding` header and the magic bytes. **Eleventh: a timeout that does not cover
-the wait.** reqwest's `connect_timeout` bounds the TCP connect, not the DNS resolution before
-it; the census client sat 12 minutes with no socket open. The check was `lsof` (no sockets)
-against the log (no progress). **Twelfth: the parser of the second instrument.** The `dig`
+the `content-encoding` header and the magic bytes. **Eleventh — corrected at M3a: a derived cause
+recorded as a measured one.** The census client sat 12 minutes with no socket open (`lsof`
+against the log — that part was measured), and the report wrote the *cause* as "reqwest's
+`connect_timeout` bounds the TCP connect, not the DNS resolution before it" without measuring
+it. Measured at M3a with an injected stalled resolver, the production client's
+`connect_timeout` bounds DNS too (`open` returned at 10.01 s). The instrument lesson is the
+opposite of the one first written: the hang was real, its explanation was a guess, and a
+guess tagged *derived* must be checked before it becomes a fix. The hang's cause stays
+unexplained. **Twelfth: the parser of the second instrument.** The `dig`
 output parser matched the script's own `##` headings that contained "SRV" and reported a
 disagreement between two instruments that in fact agreed; the run stopped, correctly, and the
 parser was the defect. All four are in `_handover/m3-step0-report.md`.
