@@ -122,9 +122,16 @@ reach them from the popover.
 - [ ] UI: searchable country dropdown wired to `list_countries`; station list wired to
       `list_stations`, click-to-play through the existing `play` command
 - [x] Tests: response parsing from recorded fixtures, filter/dedupe logic, cache TTL
+- [x] **M3a acceptance, 2026-09-22** (`_handover/m3a-acceptance.md`): 10 items, 8 passed as
+      built; item 8 (ICY → `Http` in one attempt) fixed by a retry policy by cause (`3ab7ec2`),
+      item 6's stale `refreshing…` fixed by a `failed` refresh event (`4d83918`); the re-request
+      of an expired list on popover show / reconnect is **M3b** (page behaviour). See ONDAR.md,
+      "M3a: the station directory, built", the acceptance paragraph.
 
 **Exit:** country dropdown populated from Rust; selecting a country lists real stations;
-airplane mode still shows the last cached lists; favourites persist across restarts.
+airplane mode still shows the last cached lists (**measured 2026-09-22**, acceptance item 5);
+favourites persist across restarts (by test at M3a — recents measured by hand; the favourite
+control and its hand check are M3b's).
 
 ---
 

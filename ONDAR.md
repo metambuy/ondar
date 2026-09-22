@@ -1,7 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-22 (M3a built on branch `m3a` — see "M3a: the station directory, built";
-rusqlite 0.40.2 verified). Previously 2026-09-21 (M3 Step 0 measured — see "M3 Step 0: the live data, measured"; the geo
+*Last updated: 2026-09-22 (M3a acceptance run and its two fixes — see "M3a: the station
+directory, built", the acceptance paragraph; the Shoutcast v1 constraint corrected; instrument
+instance thirteen). Previously 2026-09-22 (M3a built on branch `m3a`; rusqlite 0.40.2 verified). Previously 2026-09-21 (M3 Step 0 measured — see "M3 Step 0: the live data, measured"; the geo
 share, the API etiquette line and the verified `hickory-resolver` version updated from it; four
 instrument instances added). Previously 2026-09-21 (bundle identifier settled: `eu.ondar.radio` — see "Bundle identifier:
 `eu.ondar.radio`"; socket names re-measured). Previously 2026-09-21 (M2 complete — M2d merged
@@ -668,9 +669,11 @@ the decisions Martín took at the plan review (2026-09-21):
   the test.
 - **Two `ondar-audio` fixes that Step 0 surfaced** (decision 6): the ICY status line is now
   `Http` (the classifier walks the error's `source()` chain to hyper's parse error; `hyper` is a
-  direct dependency for that downcast only), and the DNS claim was **measured and falsified**
-  before any bound was added — reqwest's `connect_timeout` covers DNS on the audio path (see
-  "Reconnect ownership and stream timeouts").
+  direct dependency for that downcast only) — **and, from acceptance, terminal on the first
+  attempt** (`StreamError::terminal`, `retry_or_fail` by cause; see the acceptance paragraph and
+  the Constraints entry) — and the DNS claim was **measured and falsified** before any bound was
+  added — reqwest's `connect_timeout` covers DNS on the audio path (see "Reconnect ownership and
+  stream timeouts").
 - **Measured on the dev loop, 2026-09-22:** schema migrated to v1; the database at
   `~/Library/Application Support/eu.ondar.radio.dev/ondar.sqlite` (the bundle's is under
   `eu.ondar.radio/`); one SRV record; countries 240 rows; PT fetched 344 rows (`hidebroken`),
@@ -679,7 +682,56 @@ the decisions Martín took at the plan review (2026-09-21):
   design): re-running an older commit's cancelled run cancels the tip's. The rule for a branch
   built one-commit-per-push is therefore **wait for green before the next push**, and never
   re-run an older run while the tip's is in flight (learned on commits 5 and 7).
-- Tests 88 → **141** (124 hand-written + 17 generated; audio 54, shell 39, stations 48).
+- Tests 88 → **141** (124 hand-written + 17 generated; audio 54, shell 39, stations 48); after
+  the acceptance fixes **148** (129 + 19; audio 58, shell 40, stations 50).
+
+**Acceptance, run 2026-09-22 14:00–15:47 UTC** (`_handover/m3a-acceptance.md`, ten items from the
+plan's Verification section against the debug bundle at `b52e61c`, logs `m3a-acc-*` beside it;
+8 of 10 passed first time, the two failures fixed on `m3a` and re-run):
+
+- **Passed as built:** S2 offline with no cache → `code: "stations"` after three same-host attempts
+  in 3.02 s, nothing retries afterwards (`m3a-acc-01b`); the bundle's database is its own file
+  (`eu.ondar.radio/`, the dev loop's under `.dev/`); first launch online → 240 countries, PT 344
+  rows → 327 kept, `PT|327|344` in SQLite; a second open within 24 h → **zero** fetch or SRV lines;
+  an expired list offline → served **immediately** at the click, `cached 25 h ago · refreshing…`,
+  the refresh fails in 3.0 s with `(expired list stays)`; recents survive a restart and a replay
+  moves the row without a duplicate; G4(b) by its test; 0 `ERROR`/`panicked` across every run.
+  Also measured, unplanned: **France, 3 650 rows → 750 kept** through the live client (the
+  > 1 000-station country the plan had deferred to M3b: `limit=100000` honoured, the guard silent
+  with `expected` known, the cap applied).
+- **Item 8 failed, then fixed (`3ab7ec2`).** `stall_bench` against `scripts/icy-server.py` read
+  `Reconnecting { attempt: 4 }` after 12 s with four requests — the shape `e51f3ea` had been
+  written to remove — and `Error { code: Http }` only at 31.4 s, six requests. The classification
+  was right; `retry_or_fail` ignored the cause. Now a terminal open error (hyper parse error, 4xx)
+  fails the session at once; 5xx and network keep the backoff; `engine::session_tests` drive
+  `run_session` against counting servers (ICY 1, 404 1, 503 > 1 requests; mutation-checked). Re-run:
+  `Error { code: Http }` at **0.138 s**, one request, no `Reconnecting`. The Constraints entry that
+  had recorded the classification as the whole fix is corrected (instance thirteen below).
+- **Item 6 failed as written, half fixed (`4d83918`), half carried.** After the network came back
+  the page kept `cached 25 h ago · refreshing…` through four opens with no fetch in the log. Two
+  causes: (a) the service's failure arm emitted nothing, so the flag never cleared — now every
+  fetch ends with one event carrying a `RefreshOutcome` (`landed` | `failed`), and the page clears
+  the flag on `failed` without re-requesting (re-run `m3a-acc-06`: `cached 26 h ago`, no
+  `refreshing…`, 10 s after the failed refresh); (b) the page requests a list on mount and on a
+  country change only, so a popover open after a reconnect never re-requests — **carried to M3b**
+  as page behaviour (the dev list retires there; the service already restarts a refresh on any
+  repeat request for an expired list, shown by the country-change variant: PT refetched in
+  0.46 s, the event reached the page, the cache replaced). The acceptance item's premise "each
+  open starts a refresh" was Code's assumption about the page, not a measurement.
+- **Method.** The "done" handshake cannot span a Wi-Fi-off step: the first offline run launched
+  with the network still up (void), and a blocking script that waited for the default route to
+  drop aborted twice at 240 s with Wi-Fi off — the route test never fired on this Mac, cause not
+  found — while the harness's permission classifier timed out on a launch attempt. Offline items
+  are now run by Martín himself from Terminal (Code lists the commands, ends its turn), online
+  ones by Code's launcher with the handshake.
+- **Observations, not criteria:** six `stream_download` DEBUG lines per play under `RUST_LOG=info`
+  (the shell's filter should not pass them; cause not identified); the first popover show of a
+  session with the 327-row list mounted takes 51–83 ms against M2d's 2–13 ms, later shows 2–35 ms
+  (`LAYOUT_FALLBACK` 250 ms still 3× the worst); the dev list's country `<select>` is wider than
+  the panel (its label is a flex item that cannot shrink below the select's intrinsic width), which
+  also pushes the countries provenance line off the right edge — dev list, retires at M3b.
+  Favourites persist by test only (`store::tests`); the dev list has no favourite control, so the
+  hand check moves to M3b.
 
 ### M3 Step 0: the live data, measured (2026-09-21)
 
@@ -1907,6 +1959,18 @@ unexplained. **Twelfth: the parser of the second instrument.** The `dig`
 output parser matched the script's own `##` headings that contained "SRV" and reported a
 disagreement between two instruments that in fact agreed; the run stopped, correctly, and the
 parser was the defect. All four are in `_handover/m3-step0-report.md`.
+
+**Thirteenth, 2026-09-22 (M3a acceptance, item 8): a unit test on the wrong level, recorded as
+the fix.** `e51f3ea` made the ICY status line classify as `Http`, pinned it with socket tests on
+`stream::open`, and this document's Constraints entry then said Shoutcast v1 servers "surface as
+an `Http` error since M3a" — but the engine's `retry_or_fail` never read the cause, so the
+runtime still ran five attempts, 31 s and six requests before the `Http` appeared. Acceptance
+measured it with the same instrument Step 0 had used (`stall_bench` against
+`scripts/icy-server.py`) and got Step 0's number back. The lesson: a test that pins a function's
+output proves that function; the claim was about the session, and only a test at the session's
+level (`engine::session_tests`, counting requests) can carry it. Same family as eleven — a
+derived claim written as a measured one — with the added step that the derivation had a green
+test beside it.
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 
