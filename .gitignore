@@ -4,6 +4,10 @@ src-tauri/target
 src-tauri/gen/schemas
 .DS_Store
 _handover/
+# Claude Code's machine-local settings (the `/add-dir` grants for this Mac's data directories).
+# Never committed: it names paths on one machine. The global excludes file hides it here; CI
+# and any other clone would not (2026-09-22).
+.claude/settings.local.json
 # Scratch drop-boxes for files handed over from a chat session. Two patterns on purpose:
 # gitignore matches whole path components, so `outputs/` does NOT cover `Claude outputs/`,
 # which is the directory that actually exists today.
