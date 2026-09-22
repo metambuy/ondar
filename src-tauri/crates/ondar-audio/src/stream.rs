@@ -276,9 +276,9 @@ pub async fn open(
 /// - a `hyper::Error` anywhere in the chain with `is_parse()` (the legacy `ICY` status line,
 ///   or any other non-HTTP answer) → `Http`, **terminal** (the server will not become HTTP/1.1
 ///   on the next attempt);
-/// - a root message mentioning an invalid HTTP version or status (the fallback if a reqwest
+/// - a root message with the non-HTTP wording (`NON_HTTP_WORDING`: the fallback if a reqwest
 ///   bump changes the chain's shape so the hyper error is no longer reachable) → `Http`,
-///   terminal only for the version/parse wording;
+///   terminal;
 /// - everything else (DNS, TCP, TLS, timeouts) → `Network`, retriable.
 ///
 /// The message carried to the UI is the whole chain, root last, so a log line shows the
@@ -353,13 +353,26 @@ fn chain_has_parse_error(e: &reqwest::Error) -> bool {
     false
 }
 
+/// What hyper says about an answer that is not HTTP (`invalid HTTP version parsed` for an
+/// `ICY 200 OK` line), lower-cased. The one table both classifier stages read, so the same
+/// wording cannot be terminal in one and retriable in the other. `"status"` is **not** here:
+/// a transport error whose root mentions a status (a TLS certificate status, a future reqwest
+/// that folds a 503 into the fetch error) is not a non-HTTP answer, and the review (finding
+/// 8, 2026-09-22) found the old stage-1 table matching it and making the 5xx branch below
+/// unreachable.
+const NON_HTTP_WORDING: [&str; 3] = ["invalid http", "http version", "parse"];
+
+fn non_http_wording(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    NON_HTTP_WORDING.iter().any(|w| lower.contains(w))
+}
+
 fn root_looks_like_parse(e: &reqwest::Error) -> bool {
     let mut root: &(dyn std::error::Error + 'static) = e;
     while let Some(next) = root.source() {
         root = next;
     }
-    let lower = root.to_string().to_ascii_lowercase();
-    lower.contains("invalid http") || lower.contains("http version") || lower.contains("status")
+    non_http_wording(&root.to_string())
 }
 
 /// "top: cause: root" — every link of the `source()` chain, so the UI and the log see the
@@ -378,10 +391,8 @@ fn chain_message(e: &reqwest::Error) -> String {
 /// stage (`StreamDownload::from_stream`) only exposes its error as text through
 /// `decode_error()`. Kept for that path; the first stage classifies the typed error above.
 fn classify_http_error(message: String) -> StreamError {
-    let lower = message.to_ascii_lowercase();
-    let parse =
-        lower.contains("invalid http") || lower.contains("parse") || lower.contains("version");
-    let code = if parse || lower.contains("status") {
+    let parse = non_http_wording(&message);
+    let code = if parse || message.to_ascii_lowercase().contains("status") {
         ErrorCode::Http
     } else {
         ErrorCode::Network
@@ -550,6 +561,21 @@ mod tests {
             (ErrorCode::Http, true),
             "403: Http, terminal"
         );
+    }
+
+    /// Finding 8: the two stages read one table, and "status" is not non-HTTP wording. Fails
+    /// if `"status"` is put back in the table (the 503 wording becomes terminal) or if the
+    /// hyper wording is dropped from it (the ICY line stops being terminal on the fallback).
+    #[test]
+    fn status_wording_is_not_a_non_http_answer() {
+        assert!(!non_http_wording(
+            "HTTP status server error (503 Service Unavailable)"
+        ));
+        assert!(non_http_wording("invalid HTTP version parsed"));
+        let e = classify_http_error("HTTP status server error (503 Service Unavailable)".into());
+        assert_eq!((e.code, e.terminal), (ErrorCode::Http, false));
+        let e = classify_http_error("invalid HTTP version parsed".into());
+        assert_eq!((e.code, e.terminal), (ErrorCode::Http, true));
     }
 
     #[test]
