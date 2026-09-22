@@ -431,6 +431,9 @@ pub(crate) mod fakes {
         pub totals: Mutex<Vec<Duration>>,
         pub timing: Option<Arc<FakeTiming>>,
         pub takes: Duration,
+        /// When set, every call waits for one permit before answering — the service tests hold
+        /// a fetch open with it (`release()` lets exactly one call through).
+        pub gate: Option<Arc<tokio::sync::Semaphore>>,
     }
 
     impl FakeTransport {
@@ -441,6 +444,7 @@ pub(crate) mod fakes {
                 totals: Mutex::new(Vec::new()),
                 timing: None,
                 takes: Duration::ZERO,
+                gate: None,
             })
         }
         pub fn slow(
@@ -454,7 +458,21 @@ pub(crate) mod fakes {
                 totals: Mutex::new(Vec::new()),
                 timing: Some(timing),
                 takes,
+                gate: None,
             })
+        }
+        pub fn gated(script: Vec<Result<Response, String>>) -> Arc<FakeTransport> {
+            Arc::new(FakeTransport {
+                script: Mutex::new(script),
+                urls: Mutex::new(Vec::new()),
+                totals: Mutex::new(Vec::new()),
+                timing: None,
+                takes: Duration::ZERO,
+                gate: Some(Arc::new(tokio::sync::Semaphore::new(0))),
+            })
+        }
+        pub fn release(&self) {
+            self.gate.as_ref().expect("gated transport").add_permits(1);
         }
         pub fn calls(&self) -> usize {
             self.urls.lock().unwrap().len()
@@ -468,13 +486,21 @@ pub(crate) mod fakes {
             if let Some(t) = &self.timing {
                 t.advance(self.takes);
             }
-            let mut script = self.script.lock().unwrap();
-            let answer = if script.len() > 1 {
-                script.remove(0)
-            } else {
-                script[0].clone()
+            let answer = {
+                let mut script = self.script.lock().unwrap();
+                if script.len() > 1 {
+                    script.remove(0)
+                } else {
+                    script[0].clone()
+                }
             };
-            Box::pin(async move { answer })
+            let gate = self.gate.clone();
+            Box::pin(async move {
+                if let Some(g) = gate {
+                    g.acquire().await.expect("gate open").forget();
+                }
+                answer
+            })
         }
     }
 
