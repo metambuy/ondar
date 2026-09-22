@@ -2,6 +2,6 @@
 import type { RefreshOutcome } from "./RefreshOutcome";
 
 /**
- * Payload of `stations:updated`.
+ * Payload of `countries:updated`.
  */
-export type StationsUpdated = { country_code: string, outcome: RefreshOutcome, };
+export type CountriesUpdated = { outcome: RefreshOutcome, };

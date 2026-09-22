@@ -17,6 +17,20 @@ pub struct Country {
     pub station_count: u32,
 }
 
+/// How a background refresh ended — carried by `stations:updated` / `countries:updated`, so
+/// the page can tell "re-request, the list changed" from "the expired list stays; stop saying
+/// refreshing". Added 2026-09-22 (M3a acceptance item 6): before it, a failed refresh emitted
+/// nothing and the page's `refreshing…` never cleared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshOutcome {
+    /// The fetch landed and the stored list was replaced.
+    Landed,
+    /// Every attempt failed; whatever was stored stays as it was.
+    Failed,
+}
+
 /// The audio codec radio-browser reports, normalised from its free-text `codec` field.
 /// `raw` on [`Station`] keeps the original string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -12,6 +12,7 @@ use std::thread;
 use tauri::Emitter;
 
 use ondar_audio::{AudioEngine, EngineEvent, PlaybackState};
+use ondar_stations::model::RefreshOutcome;
 use ondar_stations::{Event as StationsEvent, StationsHandle, StationsService};
 use tauri::Manager;
 
@@ -33,10 +34,12 @@ pub mod events {
     /// never decides it. The page asks `get_panel_layout` on mount for the same value. M2d;
     /// supersedes M2c's `panel:view`.
     pub const PANEL_LAYOUT: &str = "panel:layout";
-    /// A background refresh of one country's station list landed (stale-while-revalidate,
-    /// M3a F5): the page re-requests `list_stations` for it. Payload `StationsUpdated`.
+    /// A background refresh of one country's station list ended (stale-while-revalidate,
+    /// M3a F5). Payload `StationsUpdated { country_code, outcome }`: `landed` — the page
+    /// re-requests `list_stations`; `failed` — the expired list stays, the page clears its
+    /// `refreshing` flag and does not re-request (a re-request would start another refresh).
     pub const STATIONS_UPDATED: &str = "stations:updated";
-    /// The countries list was refreshed in the background: re-request `list_countries`.
+    /// The same for the countries list. Payload `CountriesUpdated { outcome }`.
     pub const COUNTRIES_UPDATED: &str = "countries:updated";
 }
 
@@ -45,6 +48,14 @@ pub mod events {
 #[ts(export)]
 pub struct StationsUpdated {
     pub country_code: String,
+    pub outcome: RefreshOutcome,
+}
+
+/// Payload of `countries:updated`.
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CountriesUpdated {
+    pub outcome: RefreshOutcome,
 }
 
 pub fn run() {
@@ -109,11 +120,18 @@ pub fn run() {
                 &user_agent,
                 std::sync::Arc::new(move |ev| {
                     let result = match ev {
-                        StationsEvent::StationsUpdated { country_code } => sink_handle
-                            .emit(events::STATIONS_UPDATED, StationsUpdated { country_code }),
-                        StationsEvent::CountriesUpdated => {
-                            sink_handle.emit(events::COUNTRIES_UPDATED, ())
-                        }
+                        StationsEvent::StationsUpdated {
+                            country_code,
+                            outcome,
+                        } => sink_handle.emit(
+                            events::STATIONS_UPDATED,
+                            StationsUpdated {
+                                country_code,
+                                outcome,
+                            },
+                        ),
+                        StationsEvent::CountriesUpdated { outcome } => sink_handle
+                            .emit(events::COUNTRIES_UPDATED, CountriesUpdated { outcome }),
                     };
                     if let Err(e) = result {
                         log::warn!("failed to emit stations event: {e}");

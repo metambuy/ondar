@@ -138,7 +138,8 @@ onda/
         ├── store.rs              favourites; recents (20, replay moves to the top)
         ├── service.rs            the DB thread + a 2-worker fetch runtime: never awaits the network on
         │                         the DB thread; coalesces fetches per country; stale-while-revalidate;
-        │                         emits StationsUpdated/CountriesUpdated through a sink
+        │                         emits StationsUpdated/CountriesUpdated (with a RefreshOutcome:
+        │                         landed | failed — every fetch ends with one event) through a sink
         ├── fixtures/             census slices + PROVENANCE.md (the data's stated freedoms)
         └── (scripts/fixture-slice.py regenerates the PT slice)
 ```
@@ -154,8 +155,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 145 tests `cargo test --workspace`
-reports break down as **128 hand-written + 17 ts-rs-generated** (audio 58, shell 39, stations 48):
+export_bindings_<type>` that writes the `.ts` file. So the 148 tests `cargo test --workspace`
+reports break down as **129 hand-written + 19 ts-rs-generated** (audio 58, shell 40, stations 50):
 
 | | |
 |---|---|
@@ -173,16 +174,16 @@ reports break down as **128 hand-written + 17 ts-rs-generated** (audio 58, shell
 | `client::tests` | 12 — `limit=` always sent; the three truncation rules with the F6 boundary pair (1171/1172); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
 | `cache::tests` | 6 — migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
 | `store::tests` | 4 — replay to top without duplicate; the recents cap; a favourite survives its list's replacement; idempotent add |
-| `service::tests` | 7 — a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
-| `model::export_bindings_*` | 6 — generated, stations crate |
+| `service::tests` | 8 — a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
+| `model::export_bindings_*` | 7 — generated, stations crate (`RefreshOutcome` since 2026-09-22) |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
 | `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
-| `export_bindings_stationsupdated` | 1 — generated, shell crate: the `stations:updated` payload |
+| `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 128 and will not reconcile with the runner's 145
-until those 17 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
+Counting `#[test]` attributes in source gives 129 and will not reconcile with the runner's 148
+until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 ## Commands
@@ -205,14 +206,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 145 tests: 58 in the ondar_audio binary, 48 in ondar_stations and
-                              # 39 in the shell's ondar_lib; the remaining targets have 0. Plain
+cargo test --workspace       # 148 tests: 58 in the ondar_audio binary, 50 in ondar_stations and
+                              # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (39 tests) and silently skips both crates; this
+                              # `ondar` package (40 tests) and silently skips both crates; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's thirty-nine test names, and one of them —
+                              # prints only the shell's forty test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -262,8 +263,10 @@ code. The page never fetches, filters or ranks.
 
 Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`,
-`stations:updated` (a `StationsUpdated { country_code }`: a background refresh of that country's
-list landed — re-request it), `countries:updated` (same for the countries list), and
+`stations:updated` (a `StationsUpdated { country_code, outcome }`: a background refresh of that
+country's list ended — `outcome` `"landed"`: re-request it; `"failed"`: the expired list stays,
+clear `refreshing` and do **not** re-request, since a re-request starts another refresh),
+`countries:updated` (a `CountriesUpdated { outcome }`, same rule for the countries list), and
 `panel:layout` (a `PanelLayout`: `transition` `"show"` | `"resize"` — on a show the hidden frame is
 already at the size, on a resize it changes after the page's commit — `generation`, `view`
 `"about"` | `"transport"`, `state` `"collapsed"` | `"expanded"`, `width`/`height` in points,

@@ -654,7 +654,7 @@ the decisions Martín took at the plan review (2026-09-21):
   one table set, no dependency); TTL 24 h for a list, 7 d for countries, from radio-browser's
   own recheck cadence; an expired list is never dropped — it is served at once as `cached` with
   `refreshing: true` while a refresh runs (**stale-while-revalidate**, F5), and with no age
-  ceiling when the network is down (G3). `stations:updated { country_code }` tells the page
+  ceiling when the network is down (G3). `stations:updated { country_code, outcome }` tells the page
   when a refresh landed. Only a missing list makes a caller wait.
 - **Service** (decision 2 as amended by F3): one thread owns the connection and never awaits the
   network; fetches run as tasks on a two-worker runtime and report back through the same

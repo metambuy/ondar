@@ -8,8 +8,10 @@
 //! flight. Missing → the caller waits under the fetch's key; concurrent callers for one
 //! country share one fetch. When a fetch lands the list is replaced in one transaction, every
 //! waiter gets `Fresh`, and the event sink receives `StationsUpdated` for the page to
-//! re-request. When it fails, waiters get the error (they had nothing to fall back on) and an
-//! expired list stays where it was, with no age ceiling.
+//! re-request. When it fails, waiters get the error (they had nothing to fall back on), an
+//! expired list stays where it was, with no age ceiling, and the sink receives the same event
+//! with `outcome: Failed` — every fetch ends with exactly one event, so the page can clear its
+//! `refreshing` flag (2026-09-22, acceptance item 6).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,17 +24,22 @@ use tokio::sync::oneshot;
 use crate::cache::{Cache, CacheError, Stored, system_clock};
 use crate::client::{Client, ClientError};
 use crate::filter;
-use crate::model::{CacheSource, Country, ListedCountries, ListedStations, Station};
+use crate::model::{
+    CacheSource, Country, ListedCountries, ListedStations, RefreshOutcome, Station,
+};
 use crate::store;
 
 /// What the shell forwards as Tauri events.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// A background refresh of this country's list landed: re-request it.
+    /// A background refresh of this country's list ended. `Landed`: the stored list was
+    /// replaced — re-request it. `Failed`: nothing changed; the expired list stays.
     StationsUpdated {
         country_code: String,
+        outcome: RefreshOutcome,
     },
-    CountriesUpdated,
+    /// The same for the countries list.
+    CountriesUpdated { outcome: RefreshOutcome },
 }
 
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
@@ -339,7 +346,10 @@ impl Service {
                         }
                     }
                 }
-                (self.sink)(Event::StationsUpdated { country_code: cc });
+                (self.sink)(Event::StationsUpdated {
+                    country_code: cc,
+                    outcome: RefreshOutcome::Landed,
+                });
             }
             Err(e) => {
                 log::warn!(
@@ -353,6 +363,10 @@ impl Service {
                 for w in waiters {
                     let _ = w.send(Err(ServiceError::Client(e.clone())));
                 }
+                (self.sink)(Event::StationsUpdated {
+                    country_code: cc,
+                    outcome: RefreshOutcome::Failed,
+                });
             }
         }
     }
@@ -417,13 +431,18 @@ impl Service {
                         }
                     }
                 }
-                (self.sink)(Event::CountriesUpdated);
+                (self.sink)(Event::CountriesUpdated {
+                    outcome: RefreshOutcome::Landed,
+                });
             }
             Err(e) => {
                 log::warn!("countries fetch failed: {e}");
                 for w in waiters {
                     let _ = w.send(Err(ServiceError::Client(e.clone())));
                 }
+                (self.sink)(Event::CountriesUpdated {
+                    outcome: RefreshOutcome::Failed,
+                });
             }
         }
     }
@@ -579,7 +598,8 @@ mod tests {
             assert_eq!(
                 *log.lock().unwrap(),
                 vec![Event::StationsUpdated {
-                    country_code: "PT".into()
+                    country_code: "PT".into(),
+                    outcome: RefreshOutcome::Landed,
                 }]
             );
             let again = within(100, h.list_stations("PT")).await.unwrap();
@@ -604,9 +624,20 @@ mod tests {
                 ),
                 "{err:?}"
             );
-            assert!(log.lock().unwrap().is_empty(), "no event on failure");
+            // The sink runs on the DB thread just after the waiter's reply; give it a moment.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![Event::StationsUpdated {
+                    country_code: "US".into(),
+                    outcome: RefreshOutcome::Failed,
+                }],
+                "a fetch that failed with nothing cached still ends with its event"
+            );
         });
-        // With an expired list present: served, refresh fails silently, list still there.
+        // With an expired list present: served, the refresh fails, the list is still there and
+        // the failure was announced (checked before the second request, which starts another
+        // refresh).
         let (clock, now) = fake_clock(T0);
         let mut cache = Cache::in_memory(clock).unwrap();
         cache.put_stations("PT", &[st("old", 1)], 1, T0).unwrap();
@@ -617,9 +648,46 @@ mod tests {
             let r = within(100, h.list_stations("PT")).await.unwrap();
             assert!(r.refreshing && r.age_secs == 9 * 24 * 3600);
             tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![Event::StationsUpdated {
+                    country_code: "PT".into(),
+                    outcome: RefreshOutcome::Failed,
+                }]
+            );
             let r = within(100, h.list_stations("PT")).await.unwrap();
             assert_eq!(r.items[0].uuid, "old", "no age ceiling");
-            assert!(log.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn a_failed_refresh_ends_with_one_failed_event() {
+        // Acceptance item 6 (2026-09-22): the page's `refreshing…` never cleared because the
+        // failure arm emitted nothing. Fails if the failure arm emits nothing (the 2 s wait
+        // elapses with an empty log), or emits twice, or reports `Landed`.
+        let (clock, now) = fake_clock(T0);
+        let mut cache = Cache::in_memory(clock).unwrap();
+        cache.put_stations("PT", &[st("old", 1)], 1, T0).unwrap();
+        *now.lock().unwrap() = T0 + TTL_STATIONS + 1;
+        let transport = FakeTransport::new(vec![Err("connect refused".into())]);
+        let (h, log) = service_with(cache, transport.clone());
+        block_on(async {
+            let first = within(100, h.list_stations("PT")).await.unwrap();
+            assert!(first.refreshing);
+            let mut waited = 0;
+            while log.lock().unwrap().is_empty() && waited < 2000 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                waited += 10;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![Event::StationsUpdated {
+                    country_code: "PT".into(),
+                    outcome: RefreshOutcome::Failed,
+                }]
+            );
+            assert_eq!(transport.calls(), 3, "one fetch, three attempts");
         });
     }
 
@@ -662,7 +730,12 @@ mod tests {
             let c = within(100, h.list_countries()).await.unwrap();
             assert_eq!(c.source, CacheSource::Cached);
             assert_eq!(transport.calls(), 1);
-            assert_eq!(*log.lock().unwrap(), vec![Event::CountriesUpdated]);
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![Event::CountriesUpdated {
+                    outcome: RefreshOutcome::Landed
+                }]
+            );
         });
     }
 }

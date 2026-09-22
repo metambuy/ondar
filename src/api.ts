@@ -16,9 +16,21 @@ import type { ListedCountries } from "./bindings/ListedCountries";
 import type { ListedStations } from "./bindings/ListedStations";
 import type { Station } from "./bindings/Station";
 import type { StationsUpdated } from "./bindings/StationsUpdated";
+import type { CountriesUpdated } from "./bindings/CountriesUpdated";
+import type { RefreshOutcome } from "./bindings/RefreshOutcome";
 
 export type { EqBand, IcyMetadata, PanelHeight, PanelLayout, PanelView, PlaybackState, StreamInfo };
-export type { CacheSource, Codec, Country, ListedCountries, ListedStations, Station, StationsUpdated };
+export type {
+  CacheSource,
+  Codec,
+  Country,
+  CountriesUpdated,
+  ListedCountries,
+  ListedStations,
+  RefreshOutcome,
+  Station,
+  StationsUpdated,
+};
 
 export type OndarError = { code: string; message: string };
 
@@ -71,8 +83,9 @@ export const onMetadata = (cb: (m: IcyMetadata) => void): Promise<UnlistenFn> =>
 
 // The station directory (M3a). Every call is answered by Rust's stations service from its
 // SQLite cache; a list carries its provenance (`source`, `age_secs`, `refreshing`), and an
-// expired list is served at once while Rust refreshes it — `onStationsUpdated` says when to ask
-// again. The page never fetches, filters or ranks anything itself.
+// expired list is served at once while Rust refreshes it — `onStationsUpdated` says how that
+// refresh ended: `landed` (ask again) or `failed` (the expired list stays; stop showing
+// "refreshing"). The page never fetches, filters or ranks anything itself.
 export const stations = {
   listCountries: () => invoke<ListedCountries>("list_countries"),
   listStations: (countryCode: string) => invoke<ListedStations>("list_stations", { countryCode }),
@@ -86,5 +99,5 @@ export const stations = {
 
 export const onStationsUpdated = (cb: (u: StationsUpdated) => void): Promise<UnlistenFn> =>
   listen<StationsUpdated>("stations:updated", (e) => cb(e.payload));
-export const onCountriesUpdated = (cb: () => void): Promise<UnlistenFn> =>
-  listen<null>("countries:updated", () => cb());
+export const onCountriesUpdated = (cb: (u: CountriesUpdated) => void): Promise<UnlistenFn> =>
+  listen<CountriesUpdated>("countries:updated", (e) => cb(e.payload));

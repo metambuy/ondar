@@ -47,12 +47,20 @@ export default function DevStations() {
   useEffect(loadCountries, []);
   useEffect(() => loadStations(selected), [selected]);
 
-  // A background refresh landed (stale-while-revalidate): ask again for what is on screen.
+  // A background refresh ended (stale-while-revalidate). Landed: ask again for what is on
+  // screen. Failed: Rust says the expired list stays — mirror that by clearing the flag it
+  // set, and do not ask again (an offline page would otherwise loop fetch → fail → event →
+  // fetch every few seconds).
   useEffect(() => {
     const un1 = onStationsUpdated((u) => {
-      if (u.country_code === selected) loadStations(selected);
+      if (u.country_code !== selected) return;
+      if (u.outcome === "landed") loadStations(selected);
+      else setList((l) => (l && l.country_code === u.country_code ? { ...l, refreshing: false } : l));
     });
-    const un2 = onCountriesUpdated(loadCountries);
+    const un2 = onCountriesUpdated((u) => {
+      if (u.outcome === "landed") loadCountries();
+      else setCountries((c) => (c ? { ...c, refreshing: false } : c));
+    });
     return () => {
       un1.then((un) => un());
       un2.then((un) => un());
