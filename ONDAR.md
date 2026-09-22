@@ -334,7 +334,8 @@ TypeScript, stop — it belongs in Rust.
   counts (ICY 1, 404 1, 503 > 1, 429 > 1 after its `Retry-After`, a 404 on a reconnect
   → `Reconnecting { 2 }`) with `run_session` driven against real sockets. **Rare:** 0 of 148 reachable
   stations in the census answered `ICY 200 OK` (upper bound ~2 %), so no raw-socket fallback is
-  built. `scripts/icy-server.py` is the manual check.
+  built. `scripts/stall-server.py --mode icy200` is the manual check (`scripts/icy-server.py`,
+  which duplicated that mode, was removed 2026-09-22).
 - **EQ output is bounded by a soft-clip stage** (added 2026-09-11, Phase 1 item 4; **exit
   criterion 3 met**). Below 0.95 the stage is the identity bit for bit; above it a rational
   knee, `T + W*(1 - 1/(1+s))` with `s = (|x|-T)/W` and `W = 1-T`, asymptotic to 1.0 and
@@ -715,7 +716,8 @@ plan's Verification section against the debug bundle at `b52e61c`, logs `m3a-acc
   Also measured, unplanned: **France, 3 650 rows → 750 kept** through the live client (the
   > 1 000-station country the plan had deferred to M3b: `limit=100000` honoured, the guard silent
   with `expected` known, the cap applied).
-- **Item 8 failed, then fixed (`3ab7ec2`).** `stall_bench` against `scripts/icy-server.py` read
+- **Item 8 failed, then fixed (`3ab7ec2`).** `stall_bench` against `scripts/icy-server.py` (since
+  removed for `stall-server.py --mode icy200`) read
   `Reconnecting { attempt: 4 }` after 12 s with four requests — the shape `e51f3ea` had been
   written to remove — and `Error { code: Http }` only at 31.4 s, six requests. The classification
   was right; `retry_or_fail` ignored the cause. Now a terminal open error (hyper parse error, or
