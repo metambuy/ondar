@@ -326,9 +326,13 @@ TypeScript, stop — it belongs in Rust.
   was still there; this paragraph's earlier "since M3a" described behaviour the code did not
   have (instrument instance eleven's class: a derived claim recorded as measured — the socket
   tests pinned `stream::open`'s code, not the runtime). Now `StreamError::terminal` carries the
-  cause and the session fails at once on a parse error or a 4xx, keeping the backoff for
-  network errors and 5xx; `engine::session_tests` pins the request counts (ICY 1, 404 1,
-  503 > 1) with `run_session` driven against real sockets. **Rare:** 0 of 148 reachable
+  cause and the session fails at once on a parse error or a 401/403/404/410 — **on its first
+  open only** — keeping the backoff for network errors, 5xx, 408/429 (their `Retry-After`
+  honoured, capped at 30 s) and for every answer on a reconnect (the review's finding 4,
+  2026-09-22, narrowed the acceptance fix's "any 4xx, any attempt": a rate-limited first open
+  and a mount mid-restart both deserve the backoff); `engine::session_tests` pins the request
+  counts (ICY 1, 404 1, 503 > 1, 429 > 1 after its `Retry-After`, a 404 on a reconnect
+  → `Reconnecting { 2 }`) with `run_session` driven against real sockets. **Rare:** 0 of 148 reachable
   stations in the census answered `ICY 200 OK` (upper bound ~2 %), so no raw-socket fallback is
   built. `scripts/icy-server.py` is the manual check.
 - **EQ output is bounded by a soft-clip stage** (added 2026-09-11, Phase 1 item 4; **exit
@@ -678,7 +682,8 @@ the decisions Martín took at the plan review (2026-09-21):
   `Http` (the classifier walks the error's `source()` chain to hyper's parse error; `hyper` is a
   direct dependency for that downcast only) — **and, from acceptance, terminal on the first
   attempt** (`StreamError::terminal`, `retry_or_fail` by cause; see the acceptance paragraph and
-  the Constraints entry) — and the DNS claim was **measured and falsified** before any bound was
+  the Constraints entry; narrowed by the review's finding 4 to 401/403/404/410 and to the first
+  open of a session) — and the DNS claim was **measured and falsified** before any bound was
   added — reqwest's `connect_timeout` covers DNS on the audio path (see "Reconnect ownership and
   stream timeouts").
 - **Measured on the dev loop, 2026-09-22:** schema migrated to v1; the database at
@@ -709,8 +714,9 @@ plan's Verification section against the debug bundle at `b52e61c`, logs `m3a-acc
 - **Item 8 failed, then fixed (`3ab7ec2`).** `stall_bench` against `scripts/icy-server.py` read
   `Reconnecting { attempt: 4 }` after 12 s with four requests — the shape `e51f3ea` had been
   written to remove — and `Error { code: Http }` only at 31.4 s, six requests. The classification
-  was right; `retry_or_fail` ignored the cause. Now a terminal open error (hyper parse error, 4xx)
-  fails the session at once; 5xx and network keep the backoff; `engine::session_tests` drive
+  was right; `retry_or_fail` ignored the cause. Now a terminal open error (hyper parse error, or
+  401/403/404/410 on the session's first open — the review's finding 4 narrowed "any 4xx")
+  fails the session at once; 5xx, 408/429 and network keep the backoff; `engine::session_tests` drive
   `run_session` against counting servers (ICY 1, 404 1, 503 > 1 requests; mutation-checked). Re-run:
   `Error { code: Http }` at **0.138 s**, one request, no `Reconnecting`. The Constraints entry that
   had recorded the classification as the whole fix is corrected (instance thirteen below).

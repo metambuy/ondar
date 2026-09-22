@@ -156,14 +156,14 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 153 tests `cargo test --workspace`
-reports break down as **134 hand-written + 19 ts-rs-generated** (audio 58, shell 40, stations 55):
+export_bindings_<type>` that writes the `.ts` file. So the 157 tests `cargo test --workspace`
+reports break down as **138 hand-written + 19 ts-rs-generated** (audio 62, shell 40, stations 55):
 
 | | |
 |---|---|
 | `engine::tick_tests` | 20 |
-| `engine::session_tests` | 3 — the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }` |
-| `stream::tests` | 5 — real sockets on 127.0.0.1, asserting `(code, terminal)`: an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 is `Http` and terminal, a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
+| `engine::session_tests` | 5 — the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }`. Review finding 4: a 429 with `Retry-After: 3` → `Reconnecting { 1 }` and no second request inside 2 s (fails if every 4xx is terminal, or if the header is ignored); a 404 on the reconnect after a 1.5 s WAV stream ended → `Reconnecting { 2 }`, no `Error` (fails if a reconnect's 4xx is terminal) |
+| `stream::tests` | 7 — real sockets on 127.0.0.1, asserting `(code, terminal)`: an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 and a 403 are `Http` and terminal, a 429 is `Http`, retriable and carries its `Retry-After` (finding 4), a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
 | `eq::tests` | 17 |
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
@@ -183,7 +183,7 @@ reports break down as **134 hand-written + 19 ts-rs-generated** (audio 58, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 134 and will not reconcile with the runner's 153
+Counting `#[test]` attributes in source gives 138 and will not reconcile with the runner's 157
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -207,7 +207,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 153 tests: 58 in the ondar_audio binary, 55 in ondar_stations and
+cargo test --workspace       # 157 tests: 62 in the ondar_audio binary, 55 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this
@@ -394,10 +394,14 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    (`ONDAR_READ_TIMEOUT_SECS`, `ONDAR_RETRY_TIMEOUT_SECS`, `ONDAR_PREFETCH_BYTES`).
 5. Backoff is 1/2/4/8/16 s, 5 attempts, counter reset after 30 s of stable playback; then
    `PlaybackState::Error` with the last attempt's code. **The policy is by cause** (2026-09-22,
-   M3a acceptance item 8): a **terminal** open error — a non-HTTP answer such as `ICY 200 OK`, or
-   a 4xx — fails the session on the first attempt with `code: http` and no `Reconnecting`;
-   network errors, 5xx, a decoder failure and a stream that ended keep the backoff.
-   `StreamError::terminal` carries the decision from the classifier to `retry_or_fail`.
+   M3a acceptance item 8, narrowed the same day by review finding 4): a **terminal** open error
+   — a non-HTTP answer such as `ICY 200 OK`, or a 401/403/404/410 — fails the session on the
+   first attempt with `code: http` and no `Reconnecting`, **but only while the session has never
+   opened**; on a reconnect every answer keeps the backoff (a mount that was playing can be 404
+   while its source restarts). Network errors, 5xx, 408/429, a decoder failure and a stream that
+   ended keep the backoff, each delay stretched to the server's `Retry-After` (delta-seconds,
+   capped at 30 s). `StreamError::terminal` and `retry_after` carry the decision from the
+   classifier to `retry_or_fail`; `run_session`'s `opened_once` confines it to the first open.
 6. ICY metadata absence is normal, not an error.
 7. EQ: 10 ISO-266 octave bands, Q = 1.414, ±12 dB. Gains are atomics read at frame boundaries
    every 64 frames; changed bands get new coefficients while **filter state is preserved** —

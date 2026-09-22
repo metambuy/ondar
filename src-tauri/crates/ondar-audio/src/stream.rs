@@ -131,11 +131,17 @@ pub struct StreamError {
     pub code: ErrorCode,
     pub message: String,
     /// The server answered, and would answer the same way again: a non-HTTP status line
-    /// (`ICY 200 OK`) or a 4xx. The engine fails the session at once on a terminal error
-    /// instead of entering the backoff — decided 2026-09-22 (M3a acceptance, item 8: the
-    /// classifier alone left an ICY server in the reconnect loop for five attempts, 31 s and
-    /// six requests). `false` for what a retry can fix: DNS, TCP, TLS, timeouts, a 5xx.
+    /// (`ICY 200 OK`) or one of 401/403/404/410. The engine fails the session at once on a
+    /// terminal error **on its first open** instead of entering the backoff — decided
+    /// 2026-09-22 (M3a acceptance, item 8: the classifier alone left an ICY server in the
+    /// reconnect loop for five attempts, 31 s and six requests); on a reconnect nothing is
+    /// terminal, since a mount that was playing a minute ago can be 404 while its source
+    /// restarts (`/code-review` finding 4, same day). `false` for what a retry can fix: DNS,
+    /// TCP, TLS, timeouts, a 5xx, and the 4xx that change with time — 408, 429.
     pub terminal: bool,
+    /// The server's `Retry-After`, delta-seconds form only (the HTTP-date form is not worth
+    /// parsing for a radio stream). The backoff waits at least this long, capped in the engine.
+    pub retry_after: Option<Duration>,
 }
 
 pub struct OpenedStream {
@@ -194,6 +200,7 @@ pub fn parse_url(url: &str) -> Result<Url, StreamError> {
         code: ErrorCode::InvalidUrl,
         message: format!("invalid stream URL: {e}"),
         terminal: true,
+        retry_after: None,
     })
 }
 
@@ -263,8 +270,9 @@ pub async fn open(
 /// P5, against a synthetic ICY server). The rule, in order:
 ///
 /// - `ResponseFailure` (a status the server did send, 4xx/5xx after `into_result`) → `Http`,
-///   **terminal when 4xx** (the resource is not there; asking again changes nothing) and
-///   retriable when 5xx (an overloaded relay may recover);
+///   **terminal for 401, 403, 404 and 410** (the resource is not there for us; asking again
+///   changes nothing), retriable for every other status — 5xx (an overloaded relay may
+///   recover) and the 4xx that describe a moment, 408 and 429, whose `Retry-After` is carried;
 /// - a `hyper::Error` anywhere in the chain with `is_parse()` (the legacy `ICY` status line,
 ///   or any other non-HTTP answer) → `Http`, **terminal** (the server will not become HTTP/1.1
 ///   on the next attempt);
@@ -279,12 +287,16 @@ fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
     match err {
         // `into_result` already ran `error_for_status`: the server answered, with a status we
         // cannot play. `FetchError` wraps the reqwest error and the response.
-        HttpStreamError::ResponseFailure(e) => StreamError {
-            code: ErrorCode::Http,
-            // The response is kept on the error: the status is read from it directly.
-            terminal: e.response().status().is_client_error(),
-            message: e.to_string(),
-        },
+        HttpStreamError::ResponseFailure(e) => {
+            // The response is kept on the error: the status and headers are read from it.
+            let response = e.response();
+            StreamError {
+                code: ErrorCode::Http,
+                terminal: status_is_terminal(response.status()),
+                retry_after: retry_after(response.headers()),
+                message: e.to_string(),
+            }
+        }
         HttpStreamError::FetchFailure(e) => {
             let parse = chain_has_parse_error(&e) || root_looks_like_parse(&e);
             let (code, terminal) = if parse {
@@ -298,14 +310,34 @@ fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
                 code,
                 message: chain_message(&e),
                 terminal,
+                retry_after: None,
             }
         }
     }
 }
 
-/// A 4xx: the server has no stream at this URL for us. 5xx and "no status" are not.
+/// The statuses that mean "not for you, not now, not later": no stream at this URL for us.
+/// Everything else — 5xx, 408, 429, the rest of 4xx — may read differently on the next
+/// attempt, so it keeps the backoff.
+fn status_is_terminal(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 401 | 403 | 404 | 410)
+}
+
+/// The same rule read off a `reqwest::Error` that carries a status.
 fn is_client_error(e: &reqwest::Error) -> bool {
-    e.status().is_some_and(|s| s.is_client_error())
+    e.status().is_some_and(status_is_terminal)
+}
+
+/// `Retry-After` in its delta-seconds form; `None` for an absent, HTTP-date or unparsable value.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 
 fn chain_has_parse_error(e: &reqwest::Error) -> bool {
@@ -360,6 +392,7 @@ fn classify_http_error(message: String) -> StreamError {
         code,
         message,
         terminal: parse,
+        retry_after: None,
     }
 }
 
@@ -395,15 +428,21 @@ mod tests {
         format!("http://{addr}/stream")
     }
 
-    /// `(code, terminal)` — the two things the engine branches on.
-    fn open_code(url: &str) -> (ErrorCode, bool) {
+    /// The error `open` returns against a server that cannot be played.
+    fn open_err(url: &str) -> StreamError {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let client = build_client("Ondar/test");
         let url = parse_url(url).expect("url");
         match rt.block_on(open(&client, url, Arc::new(AtomicU64::new(0)))) {
             Ok(_) => panic!("open succeeded against a server that cannot be played"),
-            Err(e) => (e.code, e.terminal),
+            Err(e) => e,
         }
+    }
+
+    /// `(code, terminal)` — the two things the engine branches on.
+    fn open_code(url: &str) -> (ErrorCode, bool) {
+        let e = open_err(url);
+        (e.code, e.terminal)
     }
 
     /// A resolver that never answers — a stalled DNS server with no system change.
@@ -482,6 +521,34 @@ mod tests {
             open_code(&url),
             (ErrorCode::Http, true),
             "4xx: Http, terminal"
+        );
+    }
+
+    /// Finding 4: a 429 describes a moment, not the URL. Fails on the "every 4xx is terminal"
+    /// rule, and if `Retry-After` is not read off the response.
+    #[test]
+    fn a_429_is_http_retriable_and_carries_its_retry_after() {
+        let url = serve_once(
+            b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 7\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        let e = open_err(&url);
+        assert_eq!(
+            (e.code, e.terminal),
+            (ErrorCode::Http, false),
+            "{}",
+            e.message
+        );
+        assert_eq!(e.retry_after, Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn a_403_is_http_and_terminal() {
+        let url =
+            serve_once(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+        assert_eq!(
+            open_code(&url),
+            (ErrorCode::Http, true),
+            "403: Http, terminal"
         );
     }
 
