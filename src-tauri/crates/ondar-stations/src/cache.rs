@@ -124,6 +124,12 @@ impl Cache {
         (self.clock)()
     }
 
+    /// The store (`store.rs`) shares the connection: favourites and recents live in the same
+    /// file, on the same thread.
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     fn stored<T>(&self, items: T, fetched_at: i64, ttl: i64) -> Stored<T> {
         let age = (self.now() - fetched_at).max(0);
         Stored {

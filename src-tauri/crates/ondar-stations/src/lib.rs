@@ -14,5 +14,6 @@ pub mod filter;
 pub mod model;
 pub mod normalise;
 pub mod srv;
+pub mod store;
 
 pub use model::{CacheSource, Codec, Country, ListedCountries, ListedStations, Station};
