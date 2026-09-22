@@ -154,13 +154,14 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 141 tests `cargo test --workspace`
-reports break down as **124 hand-written + 17 ts-rs-generated** (audio 54, shell 39, stations 48):
+export_bindings_<type>` that writes the `.ts` file. So the 145 tests `cargo test --workspace`
+reports break down as **128 hand-written + 17 ts-rs-generated** (audio 58, shell 39, stations 48):
 
 | | |
 |---|---|
 | `engine::tick_tests` | 20 |
-| `stream::tests` | 4 — real sockets on 127.0.0.1: an `ICY 200 OK` answer is `Http` (mutation-checked against the old rule), a 500 is `Http`, a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
+| `engine::session_tests` | 3 — the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }` |
+| `stream::tests` | 5 — real sockets on 127.0.0.1, asserting `(code, terminal)`: an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 is `Http` and terminal, a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
 | `eq::tests` | 17 |
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
@@ -180,7 +181,7 @@ reports break down as **124 hand-written + 17 ts-rs-generated** (audio 54, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_stationsupdated` | 1 — generated, shell crate: the `stations:updated` payload |
 
-Counting `#[test]` attributes in source gives 124 and will not reconcile with the runner's 141
+Counting `#[test]` attributes in source gives 128 and will not reconcile with the runner's 145
 until those 17 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -204,7 +205,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 141 tests: 54 in the ondar_audio binary, 48 in ondar_stations and
+cargo test --workspace       # 145 tests: 58 in the ondar_audio binary, 48 in ondar_stations and
                               # 39 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (39 tests) and silently skips both crates; this
@@ -386,7 +387,11 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    the download loop spins forever. `stream.rs` clamps and warns. Both are env-overridable
    (`ONDAR_READ_TIMEOUT_SECS`, `ONDAR_RETRY_TIMEOUT_SECS`, `ONDAR_PREFETCH_BYTES`).
 5. Backoff is 1/2/4/8/16 s, 5 attempts, counter reset after 30 s of stable playback; then
-   `PlaybackState::Error { code: network }`.
+   `PlaybackState::Error` with the last attempt's code. **The policy is by cause** (2026-09-22,
+   M3a acceptance item 8): a **terminal** open error — a non-HTTP answer such as `ICY 200 OK`, or
+   a 4xx — fails the session on the first attempt with `code: http` and no `Reconnecting`;
+   network errors, 5xx, a decoder failure and a stream that ended keep the backoff.
+   `StreamError::terminal` carries the decision from the classifier to `retry_or_fail`.
 6. ICY metadata absence is normal, not an error.
 7. EQ: 10 ISO-266 octave bands, Q = 1.414, ±12 dB. Gains are atomics read at frame boundaries
    every 64 frames; changed bands get new coefficients while **filter state is preserved** —

@@ -313,14 +313,23 @@ TypeScript, stop — it belongs in Rust.
 - **Stream reliability varies.** Reconnect logic and honest error states are a first-class
   feature, not polish.
 - **Shoutcast v1 servers** (`ICY 200 OK` status line) are rejected by hyper/reqwest and surface
-  as an `Http` error **since M3a**. Until then they surfaced as the **reconnect loop**: the
+  as an `Http` error **on the first attempt, since M3a's acceptance fix (2026-09-22)**. The
+  history has two steps, and the first was recorded here as if it were the whole fix. (1) The
   classifier read the top-level `Display` ("error sending request…") while hyper's parse error
   sat in the `source()` chain — measured 2026-09-21 (M3 Step 0, a synthetic ICY server through
-  `stall_bench`: `Reconnecting { attempt: 4 }` after 12 s), the earlier sentence here was a
-  description of behaviour the code did not have. Now the chain is walked (`stream.rs`,
-  `classify_open_error`, pinned by `icy_status_line_is_http_not_network` against a real
-  socket). **Rare:** 0 of 148 reachable stations in the census answered `ICY 200 OK` (upper
-  bound ~2 %), so no raw-socket fallback is built. `scripts/icy-server.py` is the manual check.
+  `stall_bench`: `Reconnecting { attempt: 4 }` after 12 s); `e51f3ea` walked the chain
+  (`stream.rs`, `classify_open_error`, pinned by `icy_status_line_is_http_not_network` against a
+  real socket). (2) But the engine's `retry_or_fail` ignored the cause: **acceptance item 8
+  re-measured the same `Reconnecting { attempt: 4 }` at 12 s**, and `Error { code: Http }` only
+  at 31.4 s after five attempts and six requests — the classification was right and the loop
+  was still there; this paragraph's earlier "since M3a" described behaviour the code did not
+  have (instrument instance eleven's class: a derived claim recorded as measured — the socket
+  tests pinned `stream::open`'s code, not the runtime). Now `StreamError::terminal` carries the
+  cause and the session fails at once on a parse error or a 4xx, keeping the backoff for
+  network errors and 5xx; `engine::session_tests` pins the request counts (ICY 1, 404 1,
+  503 > 1) with `run_session` driven against real sockets. **Rare:** 0 of 148 reachable
+  stations in the census answered `ICY 200 OK` (upper bound ~2 %), so no raw-socket fallback is
+  built. `scripts/icy-server.py` is the manual check.
 - **EQ output is bounded by a soft-clip stage** (added 2026-09-11, Phase 1 item 4; **exit
   criterion 3 met**). Below 0.95 the stage is the identity bit for bit; above it a rational
   knee, `T + W*(1 - 1/(1+s))` with `s = (|x|-T)/W` and `W = 1-T`, asymptotic to 1.0 and

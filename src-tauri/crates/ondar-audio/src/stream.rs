@@ -130,6 +130,12 @@ pub fn prefetch_bytes() -> u64 {
 pub struct StreamError {
     pub code: ErrorCode,
     pub message: String,
+    /// The server answered, and would answer the same way again: a non-HTTP status line
+    /// (`ICY 200 OK`) or a 4xx. The engine fails the session at once on a terminal error
+    /// instead of entering the backoff — decided 2026-09-22 (M3a acceptance, item 8: the
+    /// classifier alone left an ICY server in the reconnect loop for five attempts, 31 s and
+    /// six requests). `false` for what a retry can fix: DNS, TCP, TLS, timeouts, a 5xx.
+    pub terminal: bool,
 }
 
 pub struct OpenedStream {
@@ -187,6 +193,7 @@ pub fn parse_url(url: &str) -> Result<Url, StreamError> {
     Url::parse(url).map_err(|e| StreamError {
         code: ErrorCode::InvalidUrl,
         message: format!("invalid stream URL: {e}"),
+        terminal: true,
     })
 }
 
@@ -255,12 +262,16 @@ pub async fn open(
 /// `Network` and sent the session into the reconnect loop (measured 2026-09-21, M3 Step 0
 /// P5, against a synthetic ICY server). The rule, in order:
 ///
-/// - `ResponseFailure` (a status the server did send, 4xx/5xx after `into_result`) → `Http`;
+/// - `ResponseFailure` (a status the server did send, 4xx/5xx after `into_result`) → `Http`,
+///   **terminal when 4xx** (the resource is not there; asking again changes nothing) and
+///   retriable when 5xx (an overloaded relay may recover);
 /// - a `hyper::Error` anywhere in the chain with `is_parse()` (the legacy `ICY` status line,
-///   or any other non-HTTP answer) → `Http`;
+///   or any other non-HTTP answer) → `Http`, **terminal** (the server will not become HTTP/1.1
+///   on the next attempt);
 /// - a root message mentioning an invalid HTTP version or status (the fallback if a reqwest
-///   bump changes the chain's shape so the hyper error is no longer reachable) → `Http`;
-/// - everything else (DNS, TCP, TLS, timeouts) → `Network`.
+///   bump changes the chain's shape so the hyper error is no longer reachable) → `Http`,
+///   terminal only for the version/parse wording;
+/// - everything else (DNS, TCP, TLS, timeouts) → `Network`, retriable.
 ///
 /// The message carried to the UI is the whole chain, root last, so a log line shows the
 /// cause and not just "error sending request".
@@ -270,20 +281,31 @@ fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
         // cannot play. `FetchError` wraps the reqwest error and the response.
         HttpStreamError::ResponseFailure(e) => StreamError {
             code: ErrorCode::Http,
+            // The response is kept on the error: the status is read from it directly.
+            terminal: e.response().status().is_client_error(),
             message: e.to_string(),
         },
         HttpStreamError::FetchFailure(e) => {
-            let code = if e.is_status() || chain_has_parse_error(&e) || root_looks_like_parse(&e) {
-                ErrorCode::Http
+            let parse = chain_has_parse_error(&e) || root_looks_like_parse(&e);
+            let (code, terminal) = if parse {
+                (ErrorCode::Http, true)
+            } else if e.is_status() {
+                (ErrorCode::Http, is_client_error(&e))
             } else {
-                ErrorCode::Network
+                (ErrorCode::Network, false)
             };
             StreamError {
                 code,
                 message: chain_message(&e),
+                terminal,
             }
         }
     }
+}
+
+/// A 4xx: the server has no stream at this URL for us. 5xx and "no status" are not.
+fn is_client_error(e: &reqwest::Error) -> bool {
+    e.status().is_some_and(|s| s.is_client_error())
 }
 
 fn chain_has_parse_error(e: &reqwest::Error) -> bool {
@@ -325,16 +347,20 @@ fn chain_message(e: &reqwest::Error) -> String {
 /// `decode_error()`. Kept for that path; the first stage classifies the typed error above.
 fn classify_http_error(message: String) -> StreamError {
     let lower = message.to_ascii_lowercase();
-    let code = if lower.contains("status")
-        || lower.contains("invalid http")
-        || lower.contains("parse")
-        || lower.contains("version")
-    {
+    let parse =
+        lower.contains("invalid http") || lower.contains("parse") || lower.contains("version");
+    let code = if parse || lower.contains("status") {
         ErrorCode::Http
     } else {
         ErrorCode::Network
     };
-    StreamError { code, message }
+    // Only a non-HTTP answer is known to be terminal from text alone; a bare "status" could
+    // be a 5xx.
+    StreamError {
+        code,
+        message,
+        terminal: parse,
+    }
 }
 
 #[cfg(test)]
@@ -369,13 +395,14 @@ mod tests {
         format!("http://{addr}/stream")
     }
 
-    fn open_code(url: &str) -> ErrorCode {
+    /// `(code, terminal)` — the two things the engine branches on.
+    fn open_code(url: &str) -> (ErrorCode, bool) {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let client = build_client("Ondar/test");
         let url = parse_url(url).expect("url");
         match rt.block_on(open(&client, url, Arc::new(AtomicU64::new(0)))) {
             Ok(_) => panic!("open succeeded against a server that cannot be played"),
-            Err(e) => e.code,
+            Err(e) => (e.code, e.terminal),
         }
     }
 
@@ -428,7 +455,11 @@ mod tests {
             b"ICY 200 OK\r\nicy-name: synthetic shoutcast v1\r\nicy-br: 128\r\ncontent-type: audio/mpeg\r\n\r\n\
               0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         );
-        assert_eq!(open_code(&url), ErrorCode::Http);
+        assert_eq!(
+            open_code(&url),
+            (ErrorCode::Http, true),
+            "ICY: Http and terminal"
+        );
     }
 
     #[test]
@@ -436,7 +467,22 @@ mod tests {
         let url = serve_once(
             b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         );
-        assert_eq!(open_code(&url), ErrorCode::Http);
+        assert_eq!(
+            open_code(&url),
+            (ErrorCode::Http, false),
+            "5xx: Http, retriable"
+        );
+    }
+
+    #[test]
+    fn a_4xx_status_is_http_and_terminal() {
+        let url =
+            serve_once(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+        assert_eq!(
+            open_code(&url),
+            (ErrorCode::Http, true),
+            "4xx: Http, terminal"
+        );
     }
 
     #[test]
@@ -447,7 +493,7 @@ mod tests {
         drop(listener);
         assert_eq!(
             open_code(&format!("http://{addr}/stream")),
-            ErrorCode::Network
+            (ErrorCode::Network, false)
         );
     }
 }

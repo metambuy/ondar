@@ -562,7 +562,7 @@ fn run_session(
             Ok(o) => o,
             Err(e) => {
                 log::warn!("connect failed: {}", e.message);
-                if !retry_or_fail(&ctx, e.code, e.message) {
+                if !retry_or_fail(&ctx, e.code, e.message, e.terminal) {
                     return;
                 }
                 continue;
@@ -604,7 +604,7 @@ fn run_session(
             }
             Err(e) => {
                 log::warn!("decoder failed to open: {e}");
-                if !retry_or_fail(&ctx, ErrorCode::Decode, e.to_string()) {
+                if !retry_or_fail(&ctx, ErrorCode::Decode, e.to_string(), false) {
                     return;
                 }
                 continue;
@@ -695,13 +695,27 @@ fn run_session(
             &ctx,
             ErrorCode::Network,
             "the stream ended unexpectedly".to_string(),
+            false,
         ) {
             return;
         }
     }
 }
 
-fn retry_or_fail(ctx: &SessionCtx, code: ErrorCode, message: String) -> bool {
+/// The retry policy, by cause. A **terminal** failure (`StreamError::terminal`: a non-HTTP
+/// answer such as `ICY 200 OK`, or a 4xx) fails the session on the spot — retrying cannot
+/// change what the server says. Everything else (network, 5xx, decoder, a stream that ended)
+/// goes through the 1/2/4/8/16 s backoff and fails with the code of the last attempt once
+/// the five are spent. Until 2026-09-22 the cause was ignored here and only labelled the final
+/// error; M3a acceptance item 8 measured an ICY server at `Reconnecting { attempt: 4 }` after
+/// 12 s and `Error { code: Http }` only at 31 s, six requests — `session_tests` pins the
+/// request counts.
+fn retry_or_fail(ctx: &SessionCtx, code: ErrorCode, message: String, terminal: bool) -> bool {
+    if terminal {
+        log::warn!("not retrying, the answer would not change: {message}");
+        ctx.set_state(PlaybackState::Error { code, message });
+        return false;
+    }
     let mut backoff = ctx.backoff.lock().unwrap();
     match backoff.next() {
         Some((attempt, delay)) => {
@@ -903,6 +917,214 @@ fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod session_tests {
+    //! The retry policy, pinned at the level a unit test on `stream::open` could not reach:
+    //! `run_session` itself, against real sockets on 127.0.0.1 that count the requests they
+    //! get. No audio device — the `Player` hangs off a device-less `rodio::mixer::mixer`, so
+    //! these run on a CI runner with no output hardware. Each test says what makes it fail.
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc::Receiver;
+
+    use super::*;
+
+    /// Accept forever, count every request, answer each with `response`, hold the socket
+    /// briefly so the client sees a complete answer, close.
+    fn counting_server(response: &'static [u8]) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(response);
+                let _ = sock.flush();
+                thread::sleep(Duration::from_millis(200));
+            }
+        });
+        (format!("http://{addr}/stream"), count)
+    }
+
+    struct Harness {
+        ctx: SessionCtx,
+        events: Receiver<EngineEvent>,
+        // Dropping the runtime while `run_session` still holds its handle would abort the
+        // open; kept for the harness's lifetime.
+        _rt: tokio::runtime::Runtime,
+        // The mixer's output end; dropping it would end the `Player`'s mixer.
+        _mixer_out: rodio::mixer::MixerSource,
+    }
+
+    /// Start `run_session` against `url` on its own thread, as `Engine::play` does, minus the
+    /// device: the `Player` is connected to a bare mixer that nothing drains.
+    fn start_session(url: &str) -> Harness {
+        let (ev_tx, ev_rx) = mpsc::channel();
+        let shared = Shared {
+            state: Arc::new(Mutex::new(PlaybackState::Connecting)),
+            events: ev_tx,
+            gains: EqGains::default(),
+            paused: Arc::new(AtomicBool::new(false)),
+        };
+        let ctx = SessionCtx {
+            cancel: Arc::new(AtomicBool::new(false)),
+            download: Arc::new(Mutex::new(None)),
+            ring: Arc::new(Mutex::new(None)),
+            backoff: Arc::new(Mutex::new(Backoff::default())),
+            reconnect_count: Arc::new(AtomicU64::new(0)),
+            shared,
+        };
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (mixer, mixer_out) = rodio::mixer::mixer(
+            std::num::NonZero::new(2).expect("2"),
+            std::num::NonZero::new(44_100).expect("44100"),
+        );
+        let player = Arc::new(Player::connect_new(&mixer));
+        let url = stream::parse_url(url).expect("url");
+        let client = stream::build_client("Ondar/test");
+        let handle = rt.handle().clone();
+        let session = ctx.clone();
+        thread::spawn(move || run_session(session, url, client, handle, player));
+        Harness {
+            ctx,
+            events: ev_rx,
+            _rt: rt,
+            _mixer_out: mixer_out,
+        }
+    }
+
+    /// Wait up to `within` for the shared state to satisfy `done`; returns every state seen.
+    fn states_until(
+        h: &Harness,
+        within: Duration,
+        done: impl Fn(&PlaybackState) -> bool,
+    ) -> Vec<PlaybackState> {
+        let deadline = Instant::now() + within;
+        let mut seen = Vec::new();
+        loop {
+            while let Ok(ev) = h.events.try_recv() {
+                if let EngineEvent::State(s) = ev {
+                    seen.push(s);
+                }
+            }
+            if done(&h.ctx.shared.state()) || Instant::now() >= deadline {
+                return seen;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn is_error(s: &PlaybackState) -> bool {
+        matches!(s, PlaybackState::Error { .. })
+    }
+
+    fn reconnecting(seen: &[PlaybackState]) -> Vec<u32> {
+        seen.iter()
+            .filter_map(|s| match s {
+                PlaybackState::Reconnecting { attempt } => Some(*attempt),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Fails on a cause-blind policy: the state would be `Reconnecting { 1 }` inside the 3 s
+    /// window (the terminal `Error` only arrives after 31 s) and the server would see a
+    /// second request at ~1.2 s.
+    #[test]
+    fn an_icy_server_fails_the_session_on_the_first_attempt() {
+        let (url, requests) = counting_server(
+            b"ICY 200 OK\r\nicy-name: synthetic shoutcast v1\r\ncontent-type: audio/mpeg\r\n\r\n\
+              0123456789abcdef0123456789abcdef",
+        );
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(3), is_error);
+        let state = h.ctx.shared.state();
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::Http,
+                    ..
+                }
+            ),
+            "expected Error {{ Http }} within 3 s, got {state:?}"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            Vec::<u32>::new(),
+            "no Reconnecting state"
+        );
+        // Let a would-be second attempt (1 s backoff) show itself before counting.
+        thread::sleep(Duration::from_millis(1300));
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "one request, no retry");
+        h.ctx.cancel();
+    }
+
+    /// Same shape for a 4xx: the resource is not there.
+    #[test]
+    fn a_404_fails_the_session_on_the_first_attempt() {
+        let (url, requests) = counting_server(
+            b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(3), is_error);
+        let state = h.ctx.shared.state();
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::Http,
+                    ..
+                }
+            ),
+            "expected Error {{ Http }} within 3 s, got {state:?}"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            Vec::<u32>::new(),
+            "no Reconnecting state"
+        );
+        thread::sleep(Duration::from_millis(1300));
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "one request, no retry");
+        h.ctx.cancel();
+    }
+
+    /// A 5xx keeps the backoff. Fails if 5xx were made terminal (one request, an `Error`
+    /// state inside the window) or if the backoff's first delay were not ~1 s.
+    #[test]
+    fn a_503_is_retried_through_the_backoff() {
+        let (url, requests) = counting_server(
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(3), |_| {
+            requests.load(Ordering::SeqCst) >= 2
+        });
+        assert!(
+            requests.load(Ordering::SeqCst) >= 2,
+            "a second request within 3 s (saw {})",
+            requests.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            reconnecting(&seen).first(),
+            Some(&1),
+            "Reconnecting {{ 1 }} was emitted"
+        );
+        assert!(!is_error(&h.ctx.shared.state()), "not failed after one 5xx");
+        h.ctx.cancel();
+    }
 }
 
 #[cfg(test)]
