@@ -1,0 +1,16 @@
+[package]
+name = "ondar-stations"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Station directory for Ondar: radio-browser.info client, normalisation, ranking, SQLite cache and store. No Tauri dependency."
+
+[dependencies]
+# Types shared with the UI, exported by ts-rs exactly as ondar-audio does (`cargo test --workspace`
+# writes src/bindings/ through .cargo/config.toml's TS_RS_EXPORT_DIR).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ts-rs = { version = "12", features = ["serde-compat"] }
+thiserror = "2"
+log = "0.4"
