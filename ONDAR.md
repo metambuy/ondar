@@ -656,7 +656,11 @@ the decisions Martín took at the plan review (2026-09-21):
   own recheck cadence; an expired list is never dropped — it is served at once as `cached` with
   `refreshing: true` while a refresh runs (**stale-while-revalidate**, F5), and with no age
   ceiling when the network is down (G3). `stations:updated { country_code, outcome }` tells the page
-  when a refresh landed. Only a missing list makes a caller wait.
+  when a refresh landed. Only a missing list makes a caller wait. A file that will not open or
+  migrate is moved aside as `ondar.sqlite.corrupt-<unix seconds>` and recreated; if that fails
+  too the directory is **unavailable** (`code: "stations"` on every call) and the app still
+  launches — until the review fix of 2026-09-22 (finding 2) the open error propagated out of
+  `setup` and a corrupt cache stopped the tray, the popover and audio from coming up at all.
 - **Service** (decision 2 as amended by F3): one thread owns the connection and never awaits the
   network; fetches run as tasks on a two-worker runtime and report back through the same
   channel; concurrent callers for one country share one fetch. Measured by test: a held fetch

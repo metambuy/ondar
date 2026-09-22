@@ -110,35 +110,44 @@ pub fn run() {
             // `~/Library/Application Support/eu.ondar.radio/` for the bundle, `….dev/` for
             // `pnpm tauri:dev` (its own file, so dev and bundle never share a cache). Its
             // events are forwarded as Tauri events; the sink runs on the service's DB thread,
-            // and `emit` is thread-safe.
-            let data_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("ondar.sqlite");
+            // and `emit` is thread-safe. Nothing here can stop the launch: a database that
+            // will not open is moved aside and recreated by the service, and if the directory
+            // itself is unusable the handle is degraded (every command answers
+            // `code: "stations"`) while the tray, the popover and audio come up as usual
+            // (`/code-review` finding 2, 2026-09-22).
             let sink_handle = app.handle().clone();
-            let stations = StationsService::start(
-                db_path,
-                &user_agent,
-                std::sync::Arc::new(move |ev| {
-                    let result = match ev {
-                        StationsEvent::StationsUpdated {
+            let sink: ondar_stations::EventSink = std::sync::Arc::new(move |ev| {
+                let result = match ev {
+                    StationsEvent::StationsUpdated {
+                        country_code,
+                        outcome,
+                    } => sink_handle.emit(
+                        events::STATIONS_UPDATED,
+                        StationsUpdated {
                             country_code,
                             outcome,
-                        } => sink_handle.emit(
-                            events::STATIONS_UPDATED,
-                            StationsUpdated {
-                                country_code,
-                                outcome,
-                            },
-                        ),
-                        StationsEvent::CountriesUpdated { outcome } => sink_handle
-                            .emit(events::COUNTRIES_UPDATED, CountriesUpdated { outcome }),
-                    };
-                    if let Err(e) = result {
-                        log::warn!("failed to emit stations event: {e}");
+                        },
+                    ),
+                    StationsEvent::CountriesUpdated { outcome } => {
+                        sink_handle.emit(events::COUNTRIES_UPDATED, CountriesUpdated { outcome })
                     }
-                }),
-            )
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+                };
+                if let Err(e) = result {
+                    log::warn!("failed to emit stations event: {e}");
+                }
+            });
+            let stations = match app.path().app_data_dir() {
+                Ok(data_dir) => {
+                    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                        log::warn!("cannot create {}: {e}", data_dir.display());
+                    }
+                    StationsService::start(data_dir.join("ondar.sqlite"), &user_agent, sink)
+                }
+                Err(e) => {
+                    log::error!("no application data directory: {e}");
+                    StationsHandle::unavailable(format!("no application data directory: {e}"))
+                }
+            };
             app.manage(AppState { engine, stations });
 
             panel::setup(app)?;

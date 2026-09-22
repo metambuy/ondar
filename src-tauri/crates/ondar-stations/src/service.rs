@@ -16,7 +16,7 @@
 //! from the write, never assumed from the fetch (`/code-review` finding 1, 2026-09-22).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -56,6 +56,11 @@ pub enum ServiceError {
     InvalidCountry(String),
     #[error("the stations service is not running")]
     Closed,
+    /// The cache could not be opened even after its file was moved aside, so the service never
+    /// started; every call answers this and the app runs without a directory (`/code-review`
+    /// finding 2, 2026-09-22).
+    #[error("station directory unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl From<CacheError> for ServiceError {
@@ -85,16 +90,36 @@ enum Msg {
 }
 
 /// The handle the shell keeps; cloneable, `Send + Sync`. Every method is answered by the DB
-/// thread; none blocks the caller's thread.
+/// thread; none blocks the caller's thread. A degraded handle (`unavailable`) has no thread
+/// behind it and answers every call with `ServiceError::Unavailable`.
 #[derive(Clone)]
 pub struct StationsHandle {
-    tx: mpsc::Sender<Msg>,
+    inner: Handle,
+}
+
+#[derive(Clone)]
+enum Handle {
+    Live(mpsc::Sender<Msg>),
+    Unavailable(Arc<str>),
 }
 
 impl StationsHandle {
+    /// A handle with no service behind it: every method answers `Unavailable(reason)`.
+    pub fn unavailable(reason: impl Into<String>) -> StationsHandle {
+        StationsHandle {
+            inner: Handle::Unavailable(Arc::from(reason.into())),
+        }
+    }
+
     async fn ask<T>(&self, build: impl FnOnce(Reply<T>) -> Msg) -> Result<T, ServiceError> {
+        let sender = match &self.inner {
+            Handle::Live(tx) => tx,
+            Handle::Unavailable(reason) => {
+                return Err(ServiceError::Unavailable(reason.to_string()));
+            }
+        };
         let (tx, rx) = oneshot::channel();
-        self.tx.send(build(tx)).map_err(|_| ServiceError::Closed)?;
+        sender.send(build(tx)).map_err(|_| ServiceError::Closed)?;
         rx.await.unwrap_or(Err(ServiceError::Closed))
     }
     pub async fn list_countries(&self) -> Result<ListedCountries, ServiceError> {
@@ -132,18 +157,18 @@ pub struct StationsService;
 
 impl StationsService {
     /// Production: the database at `db_path` (created if missing), the live client, real time.
-    pub fn start(
-        db_path: PathBuf,
-        user_agent: &str,
-        sink: EventSink,
-    ) -> Result<StationsHandle, ServiceError> {
-        let cache = Cache::open(&db_path, system_clock())?;
-        log::info!("stations cache at {}", db_path.display());
-        Ok(Self::start_with(
-            cache,
-            Arc::new(Client::production(user_agent)),
-            sink,
-        ))
+    /// Never fails: a file that cannot be opened or migrated is moved aside and recreated, and
+    /// if that fails too the handle is degraded (`ServiceError::Unavailable` on every call), so
+    /// the tray, the popover and audio still come up — until 2026-09-22 the error propagated
+    /// to `setup` and the whole app refused to launch (`/code-review` finding 2).
+    pub fn start(db_path: PathBuf, user_agent: &str, sink: EventSink) -> StationsHandle {
+        match open_or_recover(&db_path) {
+            Ok(cache) => Self::start_with(cache, Arc::new(Client::production(user_agent)), sink),
+            Err(reason) => {
+                log::error!("stations service not started: {reason}");
+                StationsHandle::unavailable(reason)
+            }
+        }
     }
 
     /// The pieces injected — the tests' entry point.
@@ -155,7 +180,9 @@ impl StationsService {
             .thread_name("ondar-stations-fetch")
             .build()
             .expect("stations fetch runtime");
-        let handle = StationsHandle { tx: tx.clone() };
+        let handle = StationsHandle {
+            inner: Handle::Live(tx.clone()),
+        };
         thread::Builder::new()
             .name("ondar-stations-db".into())
             .spawn(move || {
@@ -176,6 +203,55 @@ impl StationsService {
             .expect("spawn stations db thread");
         handle
     }
+}
+
+/// Open the cache; if that fails, move the file (with its `-wal`/`-shm`) aside as
+/// `<name>.corrupt-<unix seconds>` and open once more on a fresh file. The error text carries
+/// both attempts when the second fails too.
+fn open_or_recover(db_path: &Path) -> Result<Cache, String> {
+    let first = match Cache::open(db_path, system_clock()) {
+        Ok(cache) => {
+            log::info!("stations cache at {}", db_path.display());
+            return Ok(cache);
+        }
+        Err(e) => e,
+    };
+    log::warn!(
+        "stations cache at {} cannot be opened ({first}); moving it aside and recreating",
+        db_path.display()
+    );
+    let aside = move_aside(db_path)
+        .map_err(|e| format!("{first}; and moving the file aside failed: {e}"))?;
+    match Cache::open(db_path, system_clock()) {
+        Ok(cache) => {
+            log::warn!(
+                "stations cache recreated at {} (the old file is {})",
+                db_path.display(),
+                aside.display()
+            );
+            Ok(cache)
+        }
+        Err(second) => Err(format!("{first}; on a recreated file: {second}")),
+    }
+}
+
+/// Rename `<db>`, `<db>-wal` and `<db>-shm` (those that exist) to `<db>.corrupt-<ts>` and the
+/// same with the suffixes; returns the base name they were moved to.
+fn move_aside(db_path: &Path) -> std::io::Result<PathBuf> {
+    let aside = with_suffix(db_path, &format!(".corrupt-{}", (system_clock())()));
+    for suffix in ["", "-wal", "-shm"] {
+        let from = with_suffix(db_path, suffix);
+        if from.exists() {
+            std::fs::rename(&from, with_suffix(&aside, suffix))?;
+        }
+    }
+    Ok(aside)
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
 }
 
 struct Service {
@@ -782,6 +858,70 @@ mod tests {
                 h.list_stations("p1").await.unwrap_err(),
                 ServiceError::InvalidCountry("P1".into())
             );
+        });
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ondar-stations-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_corrupt_database_is_moved_aside_and_the_service_starts_on_a_fresh_one() {
+        // `/code-review` finding 2 (2026-09-22): a truncated `ondar.sqlite` made `start`
+        // return `Err`, `setup` propagated it, and `.build().expect(..)` ended the app on every
+        // launch. Fails if `start` gives up on the first open error (`list_favourites` answers
+        // `Unavailable`), leaves the garbage in place (no `.corrupt-` sibling), or does not
+        // recreate a real database (header check).
+        // No stale `-wal` beside it: the bundled SQLite deletes an invalid WAL itself during
+        // the failed open (probed 2026-09-22), so that sibling rename is not observable here.
+        let dir = temp_dir("corrupt");
+        let db = dir.join("ondar.sqlite");
+        std::fs::write(&db, [b"not a database\n".as_slice(); 300].concat()).unwrap();
+        let (sink, _) = events();
+        let h = StationsService::start(db.clone(), "Ondar/test", sink);
+        block_on(async {
+            let favs = within(2000, h.list_favourites()).await.unwrap();
+            assert!(favs.is_empty(), "a fresh database");
+        });
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("ondar.sqlite.corrupt-")),
+            "{names:?}"
+        );
+        assert!(
+            std::fs::read(&db)
+                .unwrap()
+                .starts_with(b"SQLite format 3\0"),
+            "the new file is a real database"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_unopenable_path_degrades_the_handle_instead_of_aborting() {
+        // The second half of finding 2: when even a fresh file cannot be created, `start`
+        // still returns — a handle that answers `Unavailable` at once. Fails if `start` panics
+        // or a call hangs (the 500 ms guard).
+        let db = temp_dir("missing").join("no-such-dir").join("ondar.sqlite");
+        let (sink, _) = events();
+        let h = StationsService::start(db, "Ondar/test", sink);
+        block_on(async {
+            let err = within(500, h.list_favourites()).await.unwrap_err();
+            assert!(matches!(err, ServiceError::Unavailable(_)), "{err:?}");
+            let err = within(500, h.list_stations("PT")).await.unwrap_err();
+            assert!(matches!(err, ServiceError::Unavailable(_)), "{err:?}");
         });
     }
 
