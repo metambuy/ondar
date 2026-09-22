@@ -135,7 +135,8 @@ onda/
         │                         the three-rule truncation guard (rule 3 from 2 000 stations up); an
         │                         empty countries answer refused
         ├── cache.rs              rusqlite (bundled), user_version migrations, TTL 24 h / 7 d, expired
-        │                         lists kept with their age, local search
+        │                         lists kept with their age, local search (ASCII case folding,
+        │                         LIKE metacharacters escaped)
         ├── store.rs              favourites; recents (20, replay moves to the top)
         ├── service.rs            the DB thread + a 2-worker fetch runtime: never awaits the network on
         │                         the DB thread; coalesces fetches per country; stale-while-revalidate;
@@ -157,8 +158,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 160 tests `cargo test --workspace`
-reports break down as **141 hand-written + 19 ts-rs-generated** (audio 64, shell 40, stations 56):
+export_bindings_<type>` that writes the `.ts` file. So the 161 tests `cargo test --workspace`
+reports break down as **142 hand-written + 19 ts-rs-generated** (audio 64, shell 40, stations 57):
 
 | | |
 |---|---|
@@ -174,7 +175,7 @@ reports break down as **141 hand-written + 19 ts-rs-generated** (audio 64, shell
 | `filter::tests` | 5 — bitrate 0 sorts last among equal votes (fails on `Option`'s natural order); dedupe keeps the higher votes; broken/empty-url dropped; the cap cuts after sorting; the PT-60 slice ranks to 44 |
 | `srv::tests` | 2 — priority/weight order; no records → the measured fallbacks only |
 | `client::tests` | 14 — `limit=` always sent; an empty countries answer refused (`EmptyCountries`); the three truncation rules with the F6 boundary pair (1171/1172) and rule 3's floor (expected 3, rows 1 accepted; the 1999/2000 pair — finding 6); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
-| `cache::tests` | 6 — migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
+| `cache::tests` | 7 — `LIKE` metacharacters in a search query match literally (`Radio_1`, `%`; finding 9); migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
 | `store::tests` | 4 — replay to top without duplicate; the recents cap; a favourite survives its list's replacement; idempotent add |
 | `service::tests` | 12 — an empty `200 []` countries answer is an error for every waiter and a `failed` refresh, never `Closed` (finding 3); a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
 | `model::export_bindings_*` | 7 — generated, stations crate (`RefreshOutcome` since 2026-09-22) |
@@ -184,7 +185,7 @@ reports break down as **141 hand-written + 19 ts-rs-generated** (audio 64, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 141 and will not reconcile with the runner's 160
+Counting `#[test]` attributes in source gives 142 and will not reconcile with the runner's 161
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -208,7 +209,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 160 tests: 64 in the ondar_audio binary, 56 in ondar_stations and
+cargo test --workspace       # 161 tests: 64 in the ondar_audio binary, 57 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this

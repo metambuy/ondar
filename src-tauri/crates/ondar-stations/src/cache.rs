@@ -265,12 +265,16 @@ impl Cache {
         Ok(())
     }
 
-    /// Local search over every cached list (the offline fallback for `search_stations`):
-    /// case-insensitive substring on the name, by votes.
+    /// Local search over every cached list (the offline fallback for `search_stations`): a
+    /// substring match on the name, by votes. Case folding is SQLite `LIKE`'s, which is
+    /// **ASCII only** (`RÁDIO` does not match `rádio`); proper folding is an M3b decision.
+    /// `%`, `_` and `\` in the query are escaped, so they match themselves: until 2026-09-22
+    /// they were stripped, `Radio_1` could never be found and a query of `%` became `LIKE '%%'`
+    /// — the top 50 of every cached list (`/code-review` finding 9).
     pub fn search_local(&self, query: &str, limit: usize) -> Result<Vec<Station>, CacheError> {
-        let like = format!("%{}%", query.trim().replace(['%', '_'], ""));
+        let like = format!("%{}%", like_escape(query.trim()));
         let mut stmt = self.conn.prepare(
-            "SELECT station_json FROM stations WHERE name LIKE ?1 ORDER BY votes DESC LIMIT ?2",
+            "SELECT station_json FROM stations WHERE name LIKE ?1 ESCAPE '\\' ORDER BY votes DESC LIMIT ?2",
         )?;
         let rows = stmt
             .query_map(params![like, limit as i64], |r| r.get::<_, String>(0))?
@@ -280,6 +284,18 @@ impl Cache {
             .map(|j| serde_json::from_str::<Station>(j))
             .collect::<Result<Vec<_>, _>>()?)
     }
+}
+
+/// Escape SQLite `LIKE`'s metacharacters (and the escape itself) with `\`.
+fn like_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Bring `conn` to `MIGRATIONS.len()`: each pending step and the version stamp in one
@@ -472,6 +488,46 @@ pub(crate) mod tests {
         assert_eq!(cache.station_count("XX").unwrap(), None);
         *now.lock().unwrap() = T0 + TTL_COUNTRIES;
         assert!(cache.countries().unwrap().unwrap().expired);
+    }
+
+    #[test]
+    fn local_search_matches_like_metacharacters_literally() {
+        // Finding 9. Fails on the stripping code: `Radio_1` became `%Radio1%` (no hit), and a
+        // bare `%` became `%%` (every row).
+        let (clock, _) = fake_clock(T0);
+        let mut cache = Cache::in_memory(clock).unwrap();
+        let mut a = st("a", 9);
+        a.name = "Radio_1".into();
+        let mut b = st("b", 5);
+        b.name = "Radio 100% Hits".into();
+        let mut c = st("c", 7);
+        c.name = "Bay".into();
+        cache.put_stations("PT", &[a, b, c], 3, T0).unwrap();
+        let ids = |q: &str| {
+            cache
+                .search_local(q, 10)
+                .unwrap()
+                .iter()
+                .map(|s| s.uuid.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("Radio_1"), ["a"]);
+        assert_eq!(
+            ids("_"),
+            ["a"],
+            "an underscore is a character, not a wildcard"
+        );
+        assert_eq!(
+            ids("%"),
+            ["b"],
+            "a percent sign is a character, not a wildcard"
+        );
+        assert_eq!(ids("100%"), ["b"]);
+        assert!(
+            ids("\\").is_empty(),
+            "the escape character matches only itself"
+        );
+        assert_eq!(ids("radio"), ["a", "b"], "ASCII case folded, by votes");
     }
 
     #[test]
