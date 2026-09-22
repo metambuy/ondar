@@ -9,7 +9,7 @@ export type ListedCountries = { items: Array<Country>,
 /**
  * Unix seconds when the network answered.
  */
-fetched_at: bigint, age_secs: bigint, source: CacheSource, 
+fetched_at: number, age_secs: number, source: CacheSource, 
 /**
  * A background refresh is in flight for this list (stale-while-revalidate); a
  * `stations:updated` event follows when it lands.

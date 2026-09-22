@@ -9,8 +9,16 @@ import type { PanelLayout } from "./bindings/PanelLayout";
 import type { PanelView } from "./bindings/PanelView";
 import type { PlaybackState } from "./bindings/PlaybackState";
 import type { StreamInfo } from "./bindings/StreamInfo";
+import type { CacheSource } from "./bindings/CacheSource";
+import type { Codec } from "./bindings/Codec";
+import type { Country } from "./bindings/Country";
+import type { ListedCountries } from "./bindings/ListedCountries";
+import type { ListedStations } from "./bindings/ListedStations";
+import type { Station } from "./bindings/Station";
+import type { StationsUpdated } from "./bindings/StationsUpdated";
 
 export type { EqBand, IcyMetadata, PanelHeight, PanelLayout, PanelView, PlaybackState, StreamInfo };
+export type { CacheSource, Codec, Country, ListedCountries, ListedStations, Station, StationsUpdated };
 
 export type OndarError = { code: string; message: string };
 
@@ -60,3 +68,23 @@ export const onStreamInfo = (cb: (i: StreamInfo) => void): Promise<UnlistenFn> =
   listen<StreamInfo>("playback:stream_info", (e) => cb(e.payload));
 export const onMetadata = (cb: (m: IcyMetadata) => void): Promise<UnlistenFn> =>
   listen<IcyMetadata>("playback:metadata", (e) => cb(e.payload));
+
+// The station directory (M3a). Every call is answered by Rust's stations service from its
+// SQLite cache; a list carries its provenance (`source`, `age_secs`, `refreshing`), and an
+// expired list is served at once while Rust refreshes it — `onStationsUpdated` says when to ask
+// again. The page never fetches, filters or ranks anything itself.
+export const stations = {
+  listCountries: () => invoke<ListedCountries>("list_countries"),
+  listStations: (countryCode: string) => invoke<ListedStations>("list_stations", { countryCode }),
+  searchStations: (query: string) => invoke<Station[]>("search_stations", { query }),
+  listFavourites: () => invoke<Station[]>("list_favourites"),
+  addFavourite: (station: Station) => invoke<void>("add_favourite", { station }),
+  removeFavourite: (uuid: string) => invoke<boolean>("remove_favourite", { uuid }),
+  listRecents: () => invoke<Station[]>("list_recents"),
+  recordPlayed: (station: Station) => invoke<void>("record_played", { station }),
+};
+
+export const onStationsUpdated = (cb: (u: StationsUpdated) => void): Promise<UnlistenFn> =>
+  listen<StationsUpdated>("stations:updated", (e) => cb(e.payload));
+export const onCountriesUpdated = (cb: () => void): Promise<UnlistenFn> =>
+  listen<null>("countries:updated", () => cb());

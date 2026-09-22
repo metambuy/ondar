@@ -5,4 +5,4 @@ import type { Station } from "./Station";
 /**
  * One country's station list with its provenance.
  */
-export type ListedStations = { country_code: string, items: Array<Station>, fetched_at: bigint, age_secs: bigint, source: CacheSource, refreshing: boolean, };
+export type ListedStations = { country_code: string, items: Array<Station>, fetched_at: number, age_secs: number, source: CacheSource, refreshing: boolean, };

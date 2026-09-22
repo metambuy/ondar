@@ -55,8 +55,13 @@ pub struct Station {
     /// The codec string names a video codec (`AAC,H.264`, 41 of 25 236 in the census): a TV
     /// feed listed as radio. Kept and flagged; whether to hide it is M3c's decision.
     pub video: bool,
+    /// `i64` in Rust; a JSON number on the wire and a `number` in TypeScript — the counts
+    /// are far below 2^53 (the census maximum was 10 832 votes).
+    #[ts(type = "number")]
     pub votes: i64,
+    #[ts(type = "number")]
     pub click_count: i64,
+    #[ts(type = "number")]
     pub click_trend: i64,
     /// `(lat, lng)`; `None` when either is null **or both are 0** (a known default, not a
     /// position — none seen in the census, the rule is a guard).
@@ -89,7 +94,9 @@ pub enum CacheSource {
 pub struct ListedCountries {
     pub items: Vec<Country>,
     /// Unix seconds when the network answered.
+    #[ts(type = "number")]
     pub fetched_at: i64,
+    #[ts(type = "number")]
     pub age_secs: u64,
     pub source: CacheSource,
     /// A background refresh is in flight for this list (stale-while-revalidate); a
@@ -103,7 +110,9 @@ pub struct ListedCountries {
 pub struct ListedStations {
     pub country_code: String,
     pub items: Vec<Station>,
+    #[ts(type = "number")]
     pub fetched_at: i64,
+    #[ts(type = "number")]
     pub age_secs: u64,
     pub source: CacheSource,
     pub refreshing: bool,

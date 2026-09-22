@@ -29,7 +29,12 @@ hls: boolean,
  * The codec string names a video codec (`AAC,H.264`, 41 of 25 236 in the census): a TV
  * feed listed as radio. Kept and flagged; whether to hide it is M3c's decision.
  */
-video: boolean, votes: bigint, click_count: bigint, click_trend: bigint, 
+video: boolean, 
+/**
+ * `i64` in Rust; a JSON number on the wire and a `number` in TypeScript — the counts
+ * are far below 2^53 (the census maximum was 10 832 votes).
+ */
+votes: number, click_count: number, click_trend: number, 
 /**
  * `(lat, lng)`; `None` when either is null **or both are 0** (a known default, not a
  * position — none seen in the census, the rule is a guard).

@@ -255,7 +255,7 @@ impl Cache {
     /// Local search over every cached list (the offline fallback for `search_stations`):
     /// case-insensitive substring on the name, by votes.
     pub fn search_local(&self, query: &str, limit: usize) -> Result<Vec<Station>, CacheError> {
-        let like = format!("%{}%", query.trim().replace('%', "").replace('_', ""));
+        let like = format!("%{}%", query.trim().replace(['%', '_'], ""));
         let mut stmt = self.conn.prepare(
             "SELECT station_json FROM stations WHERE name LIKE ?1 ORDER BY votes DESC LIMIT ?2",
         )?;
