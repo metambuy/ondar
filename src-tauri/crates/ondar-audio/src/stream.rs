@@ -228,7 +228,7 @@ pub async fn open(
 ) -> Result<OpenedStream, StreamError> {
     let stream = match HttpStream::new(client.clone(), url).await {
         Ok(s) => s,
-        Err(e) => return Err(classify_open_error(e)),
+        Err(e) => return Err(classify_open_error(e).await),
     };
 
     let metaint = stream
@@ -295,19 +295,29 @@ pub async fn open(
 /// - everything else (DNS, TCP, TLS, timeouts) → `Network`, retriable.
 ///
 /// The message carried to the UI is the whole chain, root last, so a log line shows the
-/// cause and not just "error sending request".
-fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
+/// cause and not just "error sending request"; for a status the server sent, the first
+/// `BODY_EXCERPT` chars of its body follow — `<h2>Mount point not found</h2>` is what tells a
+/// mislabelled mount from a dead host (`/code-review` finding 10, 2026-09-22: `3ab7ec2` had
+/// dropped it for `e.to_string()`).
+async fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
     match err {
         // `into_result` already ran `error_for_status`: the server answered, with a status we
         // cannot play. `FetchError` wraps the reqwest error and the response.
         HttpStreamError::ResponseFailure(e) => {
-            // The response is kept on the error: the status and headers are read from it.
+            // The response is kept on the error: the status and headers are read from it
+            // before `decode_error` consumes it for the body.
             let response = e.response();
+            let terminal = status_is_terminal(response.status());
+            let retry_after = retry_after(response.headers());
+            let head = e.to_string();
+            // `decode_error` formats "{source}: {body}" (or "{source}. Error decoding …").
+            let full = e.decode_error().await;
+            let tail = full.strip_prefix(&head).unwrap_or(full.as_str());
             StreamError {
                 code: ErrorCode::Http,
-                terminal: status_is_terminal(response.status()),
-                retry_after: retry_after(response.headers()),
-                message: e.to_string(),
+                terminal,
+                retry_after,
+                message: format!("{head}{}", excerpt(tail, BODY_EXCERPT)),
             }
         }
         HttpStreamError::FetchFailure(e) => {
@@ -327,6 +337,19 @@ fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
             }
         }
     }
+}
+
+/// How much of an error response's body the message keeps.
+const BODY_EXCERPT: usize = 200;
+
+/// The first `max` chars of `s`, whitespace collapsed, with an ellipsis if cut.
+fn excerpt(s: &str, max: usize) -> String {
+    let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: String = collapsed.chars().take(max).collect();
+    if collapsed.chars().count() > max {
+        out.push('…');
+    }
+    out
 }
 
 /// The statuses that mean "not for you, not now, not later": no stream at this URL for us.
@@ -605,6 +628,32 @@ mod tests {
         assert!(e.message.contains("mms"), "{}", e.message);
         assert!(parse_url("https://example.com/stream").is_ok());
         assert!(parse_url("http://example.com/stream").is_ok());
+    }
+
+    /// Finding 10: the server's own explanation reaches the message. Fails on `e.to_string()`
+    /// alone (the message ends at the URL) and if the excerpt is unbounded (the 600-char body
+    /// would arrive whole).
+    #[test]
+    fn an_error_response_body_reaches_the_message_bounded() {
+        static BODY: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+            let body = format!("<h2>Mount point not found</h2>{}", "x".repeat(600));
+            format!(
+                "HTTP/1.1 404 Not Found\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes()
+        });
+        let url = serve_once(BODY.as_slice());
+        let e = open_err(&url);
+        assert_eq!((e.code, e.terminal), (ErrorCode::Http, true));
+        assert!(e.message.contains("Mount point not found"), "{}", e.message);
+        let tail = e.message.split("404 Not Found").nth(1).unwrap_or("");
+        assert!(
+            tail.chars().count() < 300,
+            "bounded excerpt, got {} chars",
+            tail.chars().count()
+        );
+        assert!(e.message.ends_with('…'), "{}", e.message);
     }
 
     #[test]
