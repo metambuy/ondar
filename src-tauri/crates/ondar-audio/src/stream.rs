@@ -195,13 +195,26 @@ pub(crate) fn client_builder_with_connect_timeout(
         .read_timeout(read_timeout())
 }
 
+/// Parse a station URL; only `http` and `https` are playable. Anything else (`mms://`,
+/// `rtsp://` — legacy Windows Media rows exist in radio-browser, and `normalise` keeps any
+/// non-empty string) is `InvalidUrl` here, before a request: reqwest rejects the scheme as a
+/// builder error that the classifier could only read as `Network`, and the session then ran
+/// the whole 31 s backoff for an answer that could not change (`/code-review` finding 5,
+/// 2026-09-22).
 pub fn parse_url(url: &str) -> Result<Url, StreamError> {
-    Url::parse(url).map_err(|e| StreamError {
+    let invalid = |message: String| StreamError {
         code: ErrorCode::InvalidUrl,
-        message: format!("invalid stream URL: {e}"),
+        message,
         terminal: true,
         retry_after: None,
-    })
+    };
+    let parsed = Url::parse(url).map_err(|e| invalid(format!("invalid stream URL: {e}")))?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed),
+        other => Err(invalid(format!(
+            "unsupported URL scheme {other:?} (http or https only)"
+        ))),
+    }
 }
 
 /// Connect and return a reader once `PREFETCH_BYTES` have arrived. `reconnect_count` is
@@ -576,6 +589,22 @@ mod tests {
         assert_eq!((e.code, e.terminal), (ErrorCode::Http, false));
         let e = classify_http_error("invalid HTTP version parsed".into());
         assert_eq!((e.code, e.terminal), (ErrorCode::Http, true));
+    }
+
+    /// Finding 5: a non-http scheme is refused before any request. Fails if `parse_url` hands
+    /// an `mms://` URL to reqwest (it parses fine as a URL).
+    #[test]
+    fn a_non_http_scheme_is_invalid_url_not_a_request() {
+        let e = parse_url("mms://live.example.com/stream").expect_err("mms is not playable");
+        assert_eq!(
+            (e.code, e.terminal),
+            (ErrorCode::InvalidUrl, true),
+            "{}",
+            e.message
+        );
+        assert!(e.message.contains("mms"), "{}", e.message);
+        assert!(parse_url("https://example.com/stream").is_ok());
+        assert!(parse_url("http://example.com/stream").is_ok());
     }
 
     #[test]

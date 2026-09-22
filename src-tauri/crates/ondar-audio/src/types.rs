@@ -20,7 +20,7 @@ pub enum ErrorCode {
     Decode,
     /// No output device, or the device rejected every configuration.
     Device,
-    /// The URL could not be parsed.
+    /// The URL could not be parsed, or its scheme is not `http`/`https`.
     InvalidUrl,
 }
 
