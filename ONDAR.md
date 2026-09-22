@@ -654,7 +654,11 @@ the decisions Martín took at the plan review (2026-09-21):
   against a larger limit when the country's `station_count` is unknown or ≥ 1172
   (1000 / (1 − 0.146), the largest measured broken share, so a real 1000-station country is not
   refused forever); fewer than half the published `station_count` (the broken share measured
-  4.6–14.6 %). An empty countries answer (`200 []`) is refused as `EmptyCountries` rather than
+  4.6–14.6 %) — **for countries of 2 000 stations and up only** (`RULE3_MIN_EXPECTED`, 1000 / 0.5):
+  the plan had said rule 3 "cannot fire under 2 000 by construction", and it could — the count
+  it compares against is up to seven days old, or older on an expired countries list, so a
+  small country whose stations went broken since was refused forever (Malta, count 3, one
+  working station: 1 < 1.5; review finding 6, 2026-09-22). An empty countries answer (`200 []`) is refused as `EmptyCountries` rather than
   stored: stored, it left no row for the re-read, dropped every waiter unanswered and was
   announced as `landed`, which made the page fetch it again on every event (review finding 3,
   2026-09-22).

@@ -32,6 +32,14 @@ pub const RULE2_MIN_EXPECTED: u32 = 1172;
 /// The only legitimate gap is the broken share, 4.6–14.6 % measured, so 0.5 sits ≥ 35 points
 /// below it and catches any 1000-row truncation of a country above 2 000 stations.
 pub const TRUNCATION_FACTOR: f64 = 0.5;
+/// Rule 3 applies only from this `station_count` up: `SERVER_DEFAULT_LIMIT / TRUNCATION_FACTOR`,
+/// the range its reasoning covered (a 1000-row truncation of a country with ≥ 2 000 stations).
+/// Below it the rule's inputs are a count up to seven days old — or older, an expired
+/// countries list is kept — against today's `hidebroken` answer, and a small country whose
+/// stations went broken since is refused as truncated forever (Malta: `station_count` 3, one
+/// working station → `1 < 1.5`). The plan had claimed the rule "cannot fire under 2 000 by
+/// construction"; it could (`/code-review` finding 6, 2026-09-22).
+pub const RULE3_MIN_EXPECTED: u32 = (SERVER_DEFAULT_LIMIT as f64 / TRUNCATION_FACTOR) as u32;
 /// Search page size (server-side search is for `search_stations` only, G1).
 pub const SEARCH_LIMIT: u32 = 50;
 /// Per-request totals sized from the byte count (F4): countries and search are ≤ 240 KB;
@@ -133,6 +141,7 @@ pub fn check_complete(
         return truncated("server default 1000");
     }
     if let Some(e) = expected
+        && e >= RULE3_MIN_EXPECTED
         && (rows as f64) < (e as f64) * TRUNCATION_FACTOR
     {
         return truncated("far below station_count");
@@ -635,6 +644,24 @@ mod tests {
             })
         ));
         assert!(check_complete(7235, STATIONS_LIMIT, Some(8190)).is_ok());
+    }
+
+    #[test]
+    fn rule_3_does_not_fire_below_its_floor() {
+        // Finding 6: a small country whose count drifted is not a truncation. Fails on the
+        // unfloored rule (`1 < 1.5` → Truncated) and if the floor is off by one (the 1 999 /
+        // 2 000 pair, both far below their count).
+        assert_eq!(RULE3_MIN_EXPECTED, 2000, "1000 / 0.5");
+        assert!(check_complete(1, STATIONS_LIMIT, Some(3)).is_ok());
+        assert!(check_complete(0, STATIONS_LIMIT, Some(1)).is_ok());
+        assert!(check_complete(999, STATIONS_LIMIT, Some(1999)).is_ok());
+        assert!(matches!(
+            check_complete(999, STATIONS_LIMIT, Some(2000)),
+            Err(ClientError::Truncated {
+                reason: "far below station_count",
+                ..
+            })
+        ));
     }
 
     #[test]
