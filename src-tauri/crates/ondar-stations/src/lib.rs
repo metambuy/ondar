@@ -8,6 +8,7 @@
 //! without an explicit `limit`; `hidebroken=true` *is* the `lastcheckok == 1` filter; a zero
 //! bitrate is "unknown", not "broken" (kept, sorted last); the per-country cap is 750.
 
+pub mod cache;
 pub mod client;
 pub mod filter;
 pub mod model;

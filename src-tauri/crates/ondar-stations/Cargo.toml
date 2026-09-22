@@ -21,3 +21,7 @@ reqwest = { version = "0.13", default-features = false, features = ["native-tls"
 hickory-resolver = { version = "0.26.3", features = ["tokio", "system-config"] }
 # The service's fetch runtime (multi-thread, two workers) and the retry backoff sleeps.
 tokio = { version = "1.52", features = ["rt-multi-thread", "time", "sync"] }
+# The cache and store. `bundled` compiles SQLite in, so the bundle carries its own version and
+# the tests run in-memory with no system library involved. 0.40.2 is the current release
+# (2026-08-08). No other crate in the tree offers SQLite.
+rusqlite = { version = "0.40", features = ["bundled"] }
