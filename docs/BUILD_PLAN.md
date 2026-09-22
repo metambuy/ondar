@@ -120,7 +120,12 @@ reach them from the popover.
       sample: 5/10 ADTS, 5/10 TS of which 3 carry video)
 - [x] Commands: `list_countries`, `list_stations(country_code)`, `search_stations(query)` (+ favourites, recents; **M3a, 2026-09-22**)
 - [ ] UI: searchable country dropdown wired to `list_countries`; station list wired to
-      `list_stations`, click-to-play through the existing `play` command
+      `list_stations`, click-to-play through the existing `play` command. **Requirement carried
+      from the M3a review (finding 7, 2026-09-22):** a `list_stations` reply is applied only if
+      its `country_code` is the selection at the moment it lands — a missing list can wait on
+      the network for up to 200 s and land after a fast reply for the next selection (the dev
+      list has the guard; the real list must too). Also: re-request an expired list on popover
+      show / reconnect (carried from acceptance item 6).
 - [x] Tests: response parsing from recorded fixtures, filter/dedupe logic, cache TTL
 - [x] **M3a acceptance, 2026-09-22** (`_handover/m3a-acceptance.md`): 10 items, 8 passed as
       built; item 8 (ICY → `Http` in one attempt) fixed by a retry policy by cause (`3ab7ec2`),

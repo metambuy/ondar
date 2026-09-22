@@ -2,7 +2,7 @@
 // so the directory, the cache and the events are exercisable by hand until M3b's UI replaces
 // this. Visibly a placeholder, like the dev transport. Renders what Rust answers and reports
 // clicks; holds no logic — the provenance line is Rust's `source`/`age_secs`/`refreshing`.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { audio, onCountriesUpdated, onStationsUpdated, stations } from "../api";
 import type { ListedCountries, ListedStations, OndarError } from "../api";
 import styles from "./panel.module.css";
@@ -30,6 +30,12 @@ export default function DevStations() {
   const [selected, setSelected] = useState<string>("PT");
   const [list, setList] = useState<ListedStations | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The selection at the moment a reply lands. A slow reply for the previous country (a
+  // missing list waiting on the network, up to the client's 200 s budget) must not replace
+  // the fast one for the current selection; the promise callback captured an older render's
+  // `selected`, so the guard reads a ref kept current by the effect below (`/code-review`
+  // finding 7, 2026-09-22 — M3b's real list carries the same guard, see BUILD_PLAN).
+  const selectedRef = useRef(selected);
 
   const loadCountries = () => {
     stations.listCountries().then(setCountries, (e) => setError(describeError(e)));
@@ -37,15 +43,21 @@ export default function DevStations() {
   const loadStations = (cc: string) => {
     stations.listStations(cc).then(
       (l) => {
+        if (l.country_code !== selectedRef.current) return;
         setList(l);
         setError(null);
       },
-      (e) => setError(describeError(e)),
+      (e) => {
+        if (cc === selectedRef.current) setError(describeError(e));
+      },
     );
   };
 
   useEffect(loadCountries, []);
-  useEffect(() => loadStations(selected), [selected]);
+  useEffect(() => {
+    selectedRef.current = selected;
+    loadStations(selected);
+  }, [selected]);
 
   // A background refresh ended (stale-while-revalidate). Landed: ask again for what is on
   // screen. Failed: Rust says the expired list stays — mirror that by clearing the flag it
