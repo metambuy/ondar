@@ -14,3 +14,10 @@ serde_json = "1"
 ts-rs = { version = "12", features = ["serde-compat"] }
 thiserror = "2"
 log = "0.4"
+# The HTTP client: the same TLS the engine uses (native-tls via stream-download). No gzip
+# feature on purpose — radio-browser ignores Accept-Encoding (measured 2026-09-21, G6).
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+# SRV discovery of _api._tcp.radio-browser.info (verified 0.26.3 in the M3 Step 0 census).
+hickory-resolver = { version = "0.26.3", features = ["tokio", "system-config"] }
+# The service's fetch runtime (multi-thread, two workers) and the retry backoff sleeps.
+tokio = { version = "1.52", features = ["rt-multi-thread", "time", "sync"] }

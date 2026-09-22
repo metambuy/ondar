@@ -8,8 +8,10 @@
 //! without an explicit `limit`; `hidebroken=true` *is* the `lastcheckok == 1` filter; a zero
 //! bitrate is "unknown", not "broken" (kept, sorted last); the per-country cap is 750.
 
+pub mod client;
 pub mod filter;
 pub mod model;
 pub mod normalise;
+pub mod srv;
 
 pub use model::{CacheSource, Codec, Country, ListedCountries, ListedStations, Station};
