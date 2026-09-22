@@ -650,7 +650,10 @@ the decisions Martín took at the plan review (2026-09-21):
   against a larger limit when the country's `station_count` is unknown or ≥ 1172
   (1000 / (1 − 0.146), the largest measured broken share, so a real 1000-station country is not
   refused forever); fewer than half the published `station_count` (the broken share measured
-  4.6–14.6 %).
+  4.6–14.6 %). An empty countries answer (`200 []`) is refused as `EmptyCountries` rather than
+  stored: stored, it left no row for the re-read, dropped every waiter unanswered and was
+  announced as `landed`, which made the page fetch it again on every event (review finding 3,
+  2026-09-22).
 - **Cache** (rusqlite, `bundled`): hand-rolled `PRAGMA user_version` migrations (decision 1 —
   one table set, no dependency); TTL 24 h for a list, 7 d for countries, from radio-browser's
   own recheck cadence; an expired list is never dropped — it is served at once as `cached` with

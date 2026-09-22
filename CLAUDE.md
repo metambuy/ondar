@@ -132,7 +132,7 @@ onda/
         ├── srv.rs                SRV lookup (hickory-resolver), measured fallbacks de1 + all.api
         ├── client.rs             Transport/HostSource/Timing traits (fakes in tests); same-host retries
         │                         under a 200 s budget; stall + per-request totals; explicit limit and
-        │                         the three-rule truncation guard
+        │                         the three-rule truncation guard; an empty countries answer refused
         ├── cache.rs              rusqlite (bundled), user_version migrations, TTL 24 h / 7 d, expired
         │                         lists kept with their age, local search
         ├── store.rs              favourites; recents (20, replay moves to the top)
@@ -156,8 +156,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 151 tests `cargo test --workspace`
-reports break down as **132 hand-written + 19 ts-rs-generated** (audio 58, shell 40, stations 53):
+export_bindings_<type>` that writes the `.ts` file. So the 153 tests `cargo test --workspace`
+reports break down as **134 hand-written + 19 ts-rs-generated** (audio 58, shell 40, stations 55):
 
 | | |
 |---|---|
@@ -172,10 +172,10 @@ reports break down as **132 hand-written + 19 ts-rs-generated** (audio 58, shell
 | `normalise::tests` | 6 — **stations** crate, from here to `service`: the countries fixture parses 250 → 240 with DE's merged count; the PT-60 slice's edge rows pinned by an independent Python pass; codec mapping; the geo rule |
 | `filter::tests` | 5 — bitrate 0 sorts last among equal votes (fails on `Option`'s natural order); dedupe keeps the higher votes; broken/empty-url dropped; the cap cuts after sorting; the PT-60 slice ranks to 44 |
 | `srv::tests` | 2 — priority/weight order; no records → the measured fallbacks only |
-| `client::tests` | 12 — `limit=` always sent; the three truncation rules with the F6 boundary pair (1171/1172); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
+| `client::tests` | 13 — `limit=` always sent; an empty countries answer refused (`EmptyCountries`); the three truncation rules with the F6 boundary pair (1171/1172); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
 | `cache::tests` | 6 — migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
 | `store::tests` | 4 — replay to top without duplicate; the recents cap; a favourite survives its list's replacement; idempotent add |
-| `service::tests` | 11 — a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
+| `service::tests` | 12 — an empty `200 []` countries answer is an error for every waiter and a `failed` refresh, never `Closed` (finding 3); a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
 | `model::export_bindings_*` | 7 — generated, stations crate (`RefreshOutcome` since 2026-09-22) |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
 | `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
@@ -183,7 +183,7 @@ reports break down as **132 hand-written + 19 ts-rs-generated** (audio 58, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 132 and will not reconcile with the runner's 151
+Counting `#[test]` attributes in source gives 134 and will not reconcile with the runner's 153
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -207,7 +207,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 151 tests: 58 in the ondar_audio binary, 53 in ondar_stations and
+cargo test --workspace       # 153 tests: 58 in the ondar_audio binary, 55 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this

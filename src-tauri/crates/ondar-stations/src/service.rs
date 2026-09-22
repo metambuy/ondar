@@ -926,6 +926,29 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_countries_answer_is_an_error_for_every_waiter_and_a_failed_refresh() {
+        // Finding 3 (2026-09-22): `200 []` wrote no row, the re-read found nothing, the
+        // `Ok(None)` arm dropped every waiter's oneshot (`ask` reported "the stations service is
+        // not running") and then announced `Landed`, so the page re-requested and re-fetched on
+        // every event. Fails on that code at the first assertion (`Closed`), and on a client
+        // that accepts the empty list at the outcome (`Landed`).
+        let transport = FakeTransport::new(vec![ok(b"[]")]);
+        let (h, _, log, _) = service(transport.clone(), T0);
+        block_on(async {
+            let err = within(2000, h.list_countries()).await.unwrap_err();
+            assert_eq!(err, ServiceError::Client(ClientError::EmptyCountries));
+            settle_events(&log).await;
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![Event::CountriesUpdated {
+                    outcome: RefreshOutcome::Failed
+                }]
+            );
+            assert_eq!(transport.calls(), 1);
+        });
+    }
+
+    #[test]
     fn countries_follow_the_same_path() {
         const COUNTRIES: &[u8] = include_bytes!("../fixtures/countries.json");
         let transport = FakeTransport::new(vec![ok(COUNTRIES)]);

@@ -96,6 +96,11 @@ pub enum ClientError {
     },
     #[error("{0}")]
     Parse(String),
+    /// `/json/countries` answered `200 []` (or nothing that survives normalisation). The
+    /// directory has ~240 countries; an empty answer is a broken server, not data — stored as a
+    /// list it would be re-fetched on every `landed` event (`/code-review` finding 3).
+    #[error("the countries list came back empty")]
+    EmptyCountries,
 }
 
 impl From<ParseError> for ClientError {
@@ -207,11 +212,16 @@ impl Client {
         )
     }
 
+    /// The countries list, normalised. An empty answer is refused (`EmptyCountries`).
     pub async fn countries(&self) -> Result<Vec<Country>, ClientError> {
         let body = self
             .fetch_with_retries(&countries_path(), TOTAL_SMALL)
             .await?;
-        Ok(normalise::countries(&body)?)
+        let items = normalise::countries(&body)?;
+        if items.is_empty() {
+            return Err(ClientError::EmptyCountries);
+        }
+        Ok(items)
     }
 
     /// One country's whole `hidebroken` list, normalised, **not** ranked (the service ranks and
@@ -740,6 +750,17 @@ mod tests {
             matches!(err, ClientError::Truncated { got: 1000, .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn an_empty_countries_answer_is_refused() {
+        // Finding 3: `200 []` used to parse to an empty Vec that the service stored as nothing
+        // and announced as `landed`. Fails if the client hands the empty list back as `Ok`.
+        let transport = FakeTransport::new(vec![ok(b"[]")]);
+        let c = client(transport.clone(), FakeHosts::new(&["h"]), FakeTiming::new());
+        let err = block_on(c.countries()).unwrap_err();
+        assert_eq!(err, ClientError::EmptyCountries);
+        assert_eq!(transport.calls(), 1, "not retried: the answer was a 200");
     }
 
     #[test]
