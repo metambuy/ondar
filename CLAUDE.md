@@ -320,15 +320,19 @@ side.
   `#[cfg(test)]` and must stay that way. Nothing enforces this — `clippy.toml` sets only
   `msrv`.
 
-  **Two sites sit outside both exemptions, by decision (2026-09-14):**
+  **Three sites sit outside both exemptions, by decision (2026-09-14; the third added at M3a
+  and counted by the 2026-09-22 review):**
   - `stream.rs::build_client`'s `.build().expect(..)`, called once from `Engine::new`. It
     fails only if the native-tls connector (Security.framework) cannot initialise or the
     user-agent is not a valid header value.
   - `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `stream.rs`, reached from `play` on every
     open. `BUFFER_BYTES` is a non-zero `const`, so it cannot fire.
+  - `client.rs::ReqwestTransport::new`'s `.build().expect(..)` in `ondar-stations`, called once
+    from `StationsService::start` at setup — the same reqwest builder with the same two ways
+    to fail as the first site.
 
   The documented resolution is to *describe* them here rather than change them. Converting
-  both to real error handling is an open option nobody has taken.
+  them to real error handling is an open option nobody has taken.
 - One shell error type, `OndarError` (`thiserror`), serialised as `{ code, message }` with a
   stable `code` discriminant so the UI branches on it without parsing strings. Engine-side
   failure reasons are `types::ErrorCode` (`network`, `http`, `unsupported_format`, `decode`,
