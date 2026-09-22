@@ -2,7 +2,7 @@
 
 macOS menu bar radio player. Tauri v2 + Rust core. See `ONDAR.md` for the project document.
 
-## Status: M2 done — tray + NSPanel popover; next M3 (station API, SQLite cache, country/station UI)
+## Status: M2 done; M3a (station directory: client, SQLite cache, store, commands, dev list) on branch `m3a`
 
 M1 (scaffold + audio engine) and M2 (tray + NSPanel popover, merged 2026-09-21 at `m2d-done`) are
 done. M2d added the two height states: an Expand/Collapse control in

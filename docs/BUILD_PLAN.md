@@ -94,34 +94,34 @@ tray path, measured".
 **Goal:** the app knows about every country and its stations, offline-tolerant, and you can
 reach them from the popover.
 
-- [ ] `stations::client` — `reqwest`, SRV discovery of `_api._tcp.radio-browser.info` with
+- [x] `stations::client` — `reqwest`, SRV discovery of `_api._tcp.radio-browser.info` with
       the measured fallbacks (`de1`, `all.api` — there is one server, Step 0 2026-09-21),
       `User-Agent: Ondar/<version>`, connect 10 s + a stall bound + a per-request total sized
       from the byte count, **3 attempts on the same host with backoff** and one SRV re-resolve
       between attempts 1 and 2; fetch the whole country with `hidebroken=true` and an
       **explicit high `limit`** (the API truncates silently at 1000 without one), then filter,
       dedupe, sort and cap **750** locally — never let the server cap before the filter
-- [ ] Endpoints: `/json/countries?hidebroken=true`,
+- [x] Endpoints: `/json/countries?hidebroken=true`,
       `/json/stations/bycountrycodeexact/{cc}?hidebroken=true&limit=…`,
       `/json/url/{uuid}` (click, M3b), `/json/stations/search` (search only)
-- [ ] `stations::model` — `Station`, `Country`; normalise `url_resolved`, codec, bitrate;
+- [x] `stations::model` — `Station`, `Country`; normalise `url_resolved`, codec, bitrate;
       merge the 9 lowercase country codes into their uppercase rows, drop `XX`
-- [ ] Filtering: drop `lastcheckok == 0` (= `hidebroken`), drop empty `url_resolved`,
+- [x] Filtering: drop `lastcheckok == 0` (= `hidebroken`), drop empty `url_resolved`,
       **keep `bitrate == 0` sorted last among equal votes** (decided 2026-09-21, reverses
       "drop bitrate 0": a zero bitrate is unknown, not broken, and it is 16.8 % of stations),
       dedupe by folded name + `url_resolved`, sort by votes then clicktrend, cap 750
-- [ ] `stations::cache` — SQLite (`rusqlite`, bundled); countries TTL 7 d, station lists TTL
+- [x] `stations::cache` — SQLite (`rusqlite`, bundled); countries TTL 7 d, station lists TTL
       24 h; serve stale on network failure **with no age ceiling**, reporting the age
-- [ ] `store.rs` — favourites and recently-played (SQLite), reachable from the collapsed view
+- [x] `store.rs` — favourites and recently-played (SQLite), reachable from the collapsed view
 - [ ] ~~Port `cities.js` → `resources/cities.json`; load into `geo`~~ → **M4** (only the map
       consumes it; brief D4, 2026-09-21)
 - [ ] HLS (M3c): ADTS-AAC media playlists only — live refresh loop + ID3 strip; the MPEG-TS
       demux and audio-variant selection move to after M4 (decided 2026-09-21 from Step 0's
       sample: 5/10 ADTS, 5/10 TS of which 3 carry video)
-- [ ] Commands: `list_countries`, `list_stations(country_code)`, `search_stations(query)`
+- [x] Commands: `list_countries`, `list_stations(country_code)`, `search_stations(query)` (+ favourites, recents; **M3a, 2026-09-22**)
 - [ ] UI: searchable country dropdown wired to `list_countries`; station list wired to
       `list_stations`, click-to-play through the existing `play` command
-- [ ] Tests: response parsing from recorded fixtures, filter/dedupe logic, cache TTL
+- [x] Tests: response parsing from recorded fixtures, filter/dedupe logic, cache TTL
 
 **Exit:** country dropdown populated from Rust; selecting a country lists real stations;
 airplane mode still shows the last cached lists; favourites persist across restarts.

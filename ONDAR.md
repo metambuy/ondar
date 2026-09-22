@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-09-21 (M3 Step 0 measured — see "M3 Step 0: the live data, measured"; the geo
+*Last updated: 2026-09-22 (M3a built on branch `m3a` — see "M3a: the station directory, built";
+rusqlite 0.40.2 verified). Previously 2026-09-21 (M3 Step 0 measured — see "M3 Step 0: the live data, measured"; the geo
 share, the API etiquette line and the verified `hickory-resolver` version updated from it; four
 instrument instances added). Previously 2026-09-21 (bundle identifier settled: `eu.ondar.radio` — see "Bundle identifier:
 `eu.ondar.radio`"; socket names re-measured). Previously 2026-09-21 (M2 complete — M2d merged
@@ -135,6 +136,8 @@ before actually adding):
   `port`, `target`), not accessor methods. Default features include `tokio` + `system-config`.
   Was 0.26.2 (verified 2026-09-08).
 - `tauri-specta` 2.0.0-rc.25 (not adopted)
+- `rusqlite` **0.40.2** (2026-08-08; `bundled`), in the tree since M3a (2026-09-22): `Connection`,
+  `transaction()`, `pragma_query_value`/`pragma_update` for `user_version`, `OptionalExtension`.
 
 **`tauri-nspanel` — pinned by the M2 spike (2026-09-12), in the tree since M2a (2026-09-15, `36d50b8` on branch `m2`):**
 
@@ -613,6 +616,61 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M3a: the station directory, built (2026-09-22)
+
+Branch `m3a` from `0e4b5d0`, ten commits each pushed alone (plan `_handover/m3a-plan.md`,
+reviewed twice; gate 1 and the plan review's F1–F6, S1–S3 all applied). What exists now, and
+the decisions Martín took at the plan review (2026-09-21):
+
+- **`crates/ondar-stations`**, no Tauri dependency: `model` (boundary types; `i64`/`u64` fields
+  exported to TypeScript as `number` — ts-rs's default `bigint` broke the page's arithmetic,
+  and serde sends a JSON number anyway), `normalise` (the census rules with their counts: 9
+  lowercase country codes merged, `XX` dropped, bitrate 0 → unknown, geo null or (0,0) → none,
+  `AAC,H.264` flagged video), `filter::rank` (drop broken and empty-url, dedupe folded name +
+  url keeping the higher votes, sort votes then known-bitrate-first then clicktrend, **cap 750**),
+  `srv` (hickory-resolver 0.26.3; fallbacks `de1`, `all.api` — the measured set), `client`,
+  `cache`, `store`, `service`.
+- **Client rules, all measured:** `bycountrycodeexact/{cc}?hidebroken=true&limit=100000` (the
+  endpoint measured returning a whole > 1000 country); three attempts on the same host with
+  backoff 1/2 s and one SRV re-resolve before attempt 2 (there is one server); a **200 s
+  wall-clock budget** for the sequence; connect 10 s, 15 s without a byte, a per-request total
+  of 30 s (countries, search) or 180 s (a list: 9.5 MB at 0.5 Mbit/s is 152 s); no gzip. The
+  **truncation guard** on the quantity that moved in the census: a full page; exactly 1000 rows
+  against a larger limit when the country's `station_count` is unknown or ≥ 1172
+  (1000 / (1 − 0.146), the largest measured broken share, so a real 1000-station country is not
+  refused forever); fewer than half the published `station_count` (the broken share measured
+  4.6–14.6 %).
+- **Cache** (rusqlite, `bundled`): hand-rolled `PRAGMA user_version` migrations (decision 1 —
+  one table set, no dependency); TTL 24 h for a list, 7 d for countries, from radio-browser's
+  own recheck cadence; an expired list is never dropped — it is served at once as `cached` with
+  `refreshing: true` while a refresh runs (**stale-while-revalidate**, F5), and with no age
+  ceiling when the network is down (G3). `stations:updated { country_code }` tells the page
+  when a refresh landed. Only a missing list makes a caller wait.
+- **Service** (decision 2 as amended by F3): one thread owns the connection and never awaits the
+  network; fetches run as tasks on a two-worker runtime and report back through the same
+  channel; concurrent callers for one country share one fetch. Measured by test: a held fetch
+  does not delay `list_favourites`.
+- **Store:** favourites; recents **20, a replay moves the entry to the top** (decision 3).
+- **Fixtures** (decision 4, F5): ~120 KB of census slices committed under
+  `crates/ondar-stations/fixtures/` with `PROVENANCE.md` quoting the API's stated freedom to
+  "mirror all its data" (no formal data licence exists; the server's AGPL covers the server);
+  `scripts/fixture-slice.py` regenerates the PT slice; the 1000-row truncation body is built in
+  the test.
+- **Two `ondar-audio` fixes that Step 0 surfaced** (decision 6): the ICY status line is now
+  `Http` (the classifier walks the error's `source()` chain to hyper's parse error; `hyper` is a
+  direct dependency for that downcast only), and the DNS claim was **measured and falsified**
+  before any bound was added — reqwest's `connect_timeout` covers DNS on the audio path (see
+  "Reconnect ownership and stream timeouts").
+- **Measured on the dev loop, 2026-09-22:** schema migrated to v1; the database at
+  `~/Library/Application Support/eu.ondar.radio.dev/ondar.sqlite` (the bundle's is under
+  `eu.ondar.radio/`); one SRV record; countries 240 rows; PT fetched 344 rows (`hidebroken`),
+  327 kept after the filter (the census day had 345/328 — live churn); no error lines.
+- **CI on a branch supersedes the older run** (`ci.yml`, `cancel-in-progress` off `main` by
+  design): re-running an older commit's cancelled run cancels the tip's. The rule for a branch
+  built one-commit-per-push is therefore **wait for green before the next push**, and never
+  re-run an older run while the tip's is in flight (learned on commits 5 and 7).
+- Tests 88 → **141** (124 hand-written + 17 generated; audio 54, shell 39, stations 48).
 
 ### M3 Step 0: the live data, measured (2026-09-21)
 
@@ -1730,7 +1788,9 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    **M2d (collapsed/expanded resize: two heights, the D1 cap, the page-commit round trip) done
    2026-09-21, merged `2a9bae9`, tagged `m2d-done`** — see "M2d: resize in place". **M2 complete.**
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
-   click endpoint, cache TTLs, favourites/recents.
+   click endpoint, cache TTLs, favourites/recents. **M3a built 2026-09-22 on branch `m3a`** (the
+   crate, cache, store, commands, a dev list) — see "M3a: the station directory, built"; M3b (UI,
+   click, prefetch from bitrate) and M3c (HLS, ADTS only) follow.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
    coordinate DB merge. Record measured bundle size.
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
