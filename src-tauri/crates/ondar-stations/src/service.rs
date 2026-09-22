@@ -11,7 +11,9 @@
 //! re-request. When it fails, waiters get the error (they had nothing to fall back on), an
 //! expired list stays where it was, with no age ceiling, and the sink receives the same event
 //! with `outcome: Failed` — every fetch ends with exactly one event, so the page can clear its
-//! `refreshing` flag (2026-09-22, acceptance item 6).
+//! `refreshing` flag (2026-09-22, acceptance item 6). A fetch whose list the cache refuses to
+//! store ends exactly like a failed one: `Failed`, nothing replaced — the outcome is derived
+//! from the write, never assumed from the fetch (`/code-review` finding 1, 2026-09-22).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -311,45 +313,30 @@ impl Service {
 
     fn stations_done(&mut self, cc: String, result: Result<Vec<Station>, ClientError>) {
         let waiters = self.pending_stations.remove(&cc).unwrap_or_default();
-        match result {
+        let stored = match result {
             Ok(rows) => {
                 let source_rows = rows.len();
                 let ranked = filter::rank(rows, filter::CAP);
                 let fetched_at = self.cache.now();
-                let stored = match self
+                match self
                     .cache
                     .put_stations(&cc, &ranked, source_rows, fetched_at)
                 {
-                    Ok(()) => self.cache.stations(&cc),
-                    Err(e) => Err(e),
-                };
-                log::info!(
-                    "stations fetched cc={cc} source=fresh rows={source_rows} kept={}",
-                    ranked.len()
-                );
-                match stored {
-                    Ok(Some(s)) => {
-                        for w in waiters {
-                            let _ = w.send(Ok(listed_stations(
-                                &cc,
-                                s.clone(),
-                                CacheSource::Fresh,
-                                false,
-                            )));
-                        }
+                    Ok(()) => {
+                        log::info!(
+                            "stations fetched cc={cc} source=fresh rows={source_rows} kept={}",
+                            ranked.len()
+                        );
+                        Ok(Stored::just_fetched(ranked, fetched_at))
                     }
-                    Ok(None) => {}
                     Err(e) => {
-                        let err = ServiceError::from(e);
-                        for w in waiters {
-                            let _ = w.send(Err(err.clone()));
-                        }
+                        log::warn!(
+                            "stations fetched cc={cc} rows={source_rows} but the cache refused \
+                             the list: {e} (nothing replaced)"
+                        );
+                        Err(ServiceError::from(e))
                     }
                 }
-                (self.sink)(Event::StationsUpdated {
-                    country_code: cc,
-                    outcome: RefreshOutcome::Landed,
-                });
             }
             Err(e) => {
                 log::warn!(
@@ -360,15 +347,17 @@ impl Service {
                         " (no cache)"
                     }
                 );
-                for w in waiters {
-                    let _ = w.send(Err(ServiceError::Client(e.clone())));
-                }
-                (self.sink)(Event::StationsUpdated {
-                    country_code: cc,
-                    outcome: RefreshOutcome::Failed,
-                });
+                Err(ServiceError::Client(e))
             }
-        }
+        };
+        let outcome = finish(
+            waiters,
+            stored.map(|s| listed_stations(&cc, s, CacheSource::Fresh, false)),
+        );
+        (self.sink)(Event::StationsUpdated {
+            country_code: cc,
+            outcome,
+        });
     }
 
     fn list_countries(&mut self, reply: Reply<ListedCountries>) {
@@ -408,44 +397,54 @@ impl Service {
 
     fn countries_done(&mut self, result: Result<Vec<Country>, ClientError>) {
         let waiters = self.pending_countries.take().unwrap_or_default();
-        match result {
+        let stored = match result {
             Ok(items) => {
                 let fetched_at = self.cache.now();
-                let stored = match self.cache.put_countries(&items, fetched_at) {
-                    Ok(()) => self.cache.countries(),
-                    Err(e) => Err(e),
-                };
-                log::info!("countries fetched source=fresh rows={}", items.len());
-                match stored {
-                    Ok(Some(s)) => {
-                        for w in waiters {
-                            let _ =
-                                w.send(Ok(listed_countries(s.clone(), CacheSource::Fresh, false)));
-                        }
+                match self.cache.put_countries(&items, fetched_at) {
+                    Ok(()) => {
+                        log::info!("countries fetched source=fresh rows={}", items.len());
+                        Ok(Stored::just_fetched(items, fetched_at))
                     }
-                    Ok(None) => {}
                     Err(e) => {
-                        let err = ServiceError::from(e);
-                        for w in waiters {
-                            let _ = w.send(Err(err.clone()));
-                        }
+                        log::warn!(
+                            "countries fetched rows={} but the cache refused the list: {e} \
+                             (nothing replaced)",
+                            items.len()
+                        );
+                        Err(ServiceError::from(e))
                     }
                 }
-                (self.sink)(Event::CountriesUpdated {
-                    outcome: RefreshOutcome::Landed,
-                });
             }
             Err(e) => {
                 log::warn!("countries fetch failed: {e}");
-                for w in waiters {
-                    let _ = w.send(Err(ServiceError::Client(e.clone())));
-                }
-                (self.sink)(Event::CountriesUpdated {
-                    outcome: RefreshOutcome::Failed,
-                });
+                Err(ServiceError::Client(e))
             }
-        }
+        };
+        let outcome = finish(
+            waiters,
+            stored.map(|s| listed_countries(s, CacheSource::Fresh, false)),
+        );
+        (self.sink)(Event::CountriesUpdated { outcome });
     }
+}
+
+/// The one exit of a fetch: every waiter gets the same result, and the outcome the sink
+/// announces is derived from it — `Landed` only when the list was stored. Until 2026-09-22 the
+/// `Ok` arm announced `Landed` after the `match` on the put regardless of how the put went, so
+/// a cache that refused the write (read-only, full disk) made the page's re-request start
+/// another full-country fetch, forever (`/code-review` finding 1). The reply is built from
+/// what was just written (`Stored::just_fetched`), so there is no re-read and no arm in which
+/// a waiter could be dropped without an answer.
+fn finish<T: Clone>(waiters: Vec<Reply<T>>, result: Result<T, ServiceError>) -> RefreshOutcome {
+    let outcome = if result.is_ok() {
+        RefreshOutcome::Landed
+    } else {
+        RefreshOutcome::Failed
+    };
+    for w in waiters {
+        let _ = w.send(result.clone());
+    }
+    outcome
 }
 
 #[cfg(test)]
@@ -504,6 +503,16 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(ms), f)
             .await
             .expect("did not complete in time — the reply awaited the fetch")
+    }
+
+    /// Wait (≤ 2 s) for the first event, then a beat for a would-be second one.
+    async fn settle_events(log: &Mutex<Vec<Event>>) {
+        let mut waited = 0;
+        while log.lock().unwrap().is_empty() && waited < 2000 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 10;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     #[test]
@@ -688,6 +697,66 @@ mod tests {
                 }]
             );
             assert_eq!(transport.calls(), 3, "one fetch, three attempts");
+        });
+    }
+
+    #[test]
+    fn a_refused_cache_write_ends_as_failed_not_landed() {
+        // `/code-review` finding 1 (2026-09-22): the fetch landed, `put_stations` failed, and
+        // the event still read `Landed` — the page re-requested, the expired row was served, a
+        // new fetch started: a full-country GET every few seconds for as long as the disk
+        // stayed full. Fails on that code at the event assertion (`Landed`). The write is
+        // refused with `PRAGMA query_only`, SQLite's own read-only switch, on the connection
+        // the service will own.
+        let (clock, now) = fake_clock(T0);
+        let mut cache = Cache::in_memory(clock).unwrap();
+        cache.put_stations("PT", &[st("old", 1)], 1, T0).unwrap();
+        *now.lock().unwrap() = T0 + TTL_STATIONS + 1;
+        cache
+            .conn()
+            .execute_batch("PRAGMA query_only = ON")
+            .unwrap();
+        let transport = FakeTransport::new(vec![ok(&rows(4))]);
+        let (h, log) = service_with(cache, transport.clone());
+        block_on(async {
+            let first = within(100, h.list_stations("PT")).await.unwrap();
+            assert!(first.refreshing);
+            settle_events(&log).await;
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![Event::StationsUpdated {
+                    country_code: "PT".into(),
+                    outcome: RefreshOutcome::Failed,
+                }]
+            );
+            assert_eq!(
+                transport.calls(),
+                1,
+                "one fetch; the service never re-fetches by itself"
+            );
+            let again = within(100, h.list_stations("PT")).await.unwrap();
+            assert_eq!(again.items[0].uuid, "old", "nothing replaced");
+        });
+        // A caller with no list gets the cache's error — not a hang, not `Fresh`.
+        let (clock, _) = fake_clock(T0);
+        let cache = Cache::in_memory(clock).unwrap();
+        cache
+            .conn()
+            .execute_batch("PRAGMA query_only = ON")
+            .unwrap();
+        let transport = FakeTransport::new(vec![ok(&rows(4))]);
+        let (h, log) = service_with(cache, transport);
+        block_on(async {
+            let err = within(2000, h.list_stations("US")).await.unwrap_err();
+            assert!(matches!(err, ServiceError::Cache(_)), "{err:?}");
+            settle_events(&log).await;
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec![Event::StationsUpdated {
+                    country_code: "US".into(),
+                    outcome: RefreshOutcome::Failed,
+                }]
+            );
         });
     }
 

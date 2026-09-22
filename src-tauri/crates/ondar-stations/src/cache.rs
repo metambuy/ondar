@@ -50,6 +50,19 @@ pub struct Stored<T> {
     pub expired: bool,
 }
 
+impl<T> Stored<T> {
+    /// What a list looks like the moment it was written: age 0, not expired. The service
+    /// answers a fetch's waiters from this rather than re-reading what it just stored.
+    pub fn just_fetched(items: T, fetched_at: i64) -> Stored<T> {
+        Stored {
+            items,
+            fetched_at,
+            age_secs: 0,
+            expired: false,
+        }
+    }
+}
+
 pub struct Cache {
     conn: Connection,
     clock: Clock,
