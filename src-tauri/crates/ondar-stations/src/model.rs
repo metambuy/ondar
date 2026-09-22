@@ -93,13 +93,11 @@ pub enum CacheSource {
     /// Fetched from the network for this request.
     Fresh,
     /// Served from SQLite. Fresh within its TTL, or expired and being refreshed (see
-    /// `refreshing` on the listing).
+    /// `refreshing` on the listing). A refresh that failed leaves the list `Cached` with its
+    /// age; the `failed` outcome on `stations:updated` is how the page learns of it — there is
+    /// no third source (a `StaleAfterFailure` variant nothing constructed was removed on
+    /// 2026-09-22, review cleanup: a dead variant in the IPC contract).
     Cached,
-    /// The network failed for a caller that had no list to fall back on — this variant is not
-    /// used for a listing today (a missing list is an error, an expired one is `Cached`), but
-    /// the shape is kept so an explicit stale state can be reported later without a boundary
-    /// change.
-    StaleAfterFailure { error: String },
 }
 
 /// The countries list with its provenance.

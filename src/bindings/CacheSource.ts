@@ -3,4 +3,4 @@
 /**
  * Where a listed result came from, so the UI can be honest about it.
  */
-export type CacheSource = { "kind": "fresh" } | { "kind": "cached" } | { "kind": "stale_after_failure", error: string, };
+export type CacheSource = { "kind": "fresh" } | { "kind": "cached" };

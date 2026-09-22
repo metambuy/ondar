@@ -256,8 +256,8 @@ is the one on screen (`/code-review` C1). And one panel getter, `get_panel_layou
 `add_favourite(station)`, `remove_favourite(uuid)`, `list_recents()`, `record_played(station)`.
 All `async`: each sends a message to the `ondar-stations` service's DB thread and awaits a
 `oneshot` reply — a fetch in flight never delays a cache read or a store call. A list comes back
-as `ListedCountries` / `ListedStations` with its provenance: `source` (`fresh` | `cached` |
-`stale_after_failure`), `fetched_at`, `age_secs`, `refreshing`. An **expired** list is served at
+as `ListedCountries` / `ListedStations` with its provenance: `source` (`fresh` | `cached`),
+`fetched_at`, `age_secs`, `refreshing`. An **expired** list is served at
 once as `cached` with `refreshing: true` while Rust refreshes it in the background
 (stale-while-revalidate); only a **missing** list makes the caller wait, and that wait is bounded
 by the client's 200 s retry budget. Errors: `{ code: "stations", message }` (network exhausted
