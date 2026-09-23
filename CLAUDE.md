@@ -209,12 +209,14 @@ until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ':
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 **The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
-(vitest, jsdom) runs `src/**/*.test.tsx` — **8** today, `StationList.test.tsx` (the wrong-source
+(vitest, jsdom) runs `src/**/*.test.tsx` — **9** today: 8 in `StationList.test.tsx` (the wrong-source
 guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show re-requests,
 the favourites source with the country reply left behind dropped, `recents:updated` re-requests
 only the recents, a favourite toggle only the favourites, a click on the playing row does
-nothing and on the paused row resumes — M3b 5, F2).
-Every "tests" figure in this project is written as the two numbers, `177 + 8`, never their sum:
+nothing and on the paused row resumes — M3b 5, F2) and 1 in `Panel.test.tsx` (offline with no
+countries list and a favourite stored, the country control is enabled and the favourite one
+choice away — acceptance item 9, finding B).
+Every "tests" figure in this project is written as the two numbers, `177 + 9`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -230,8 +232,8 @@ pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.de
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
-                              # tests, 8 today (StationList.test.tsx). Its count is reported BESIDE
-                              # the Rust count — "177 + 8", never "185" — and CI runs it as its own step
+                              # tests, 9 today (StationList + Panel). Its count is reported BESIDE
+                              # the Rust count — "177 + 9", never "186" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types

@@ -53,34 +53,50 @@ export default function CountryControl({ source, onSelect, showGeneration }: Pro
     };
   }, [showGeneration]);
 
-  // While the countries are loading the select shows the selection alone, so it is never
-  // empty — and the two stores, which need no network.
+  // While the countries are loading, or when they could not be had, the select shows the
+  // selection alone (its code, no count — `PT (0)` read as an empty country at acceptance
+  // item 9's fit run), so it is never empty — and the two stores, which need no network. It is
+  // never disabled: offline with nothing cached the stores are the one thing that still works
+  // (M3b acceptance item 9, finding B; `Panel.test.tsx`).
   const items =
     countries?.items ??
     (source.kind === "country" ? [{ code: source.cc, name: source.cc, station_count: 0 }] : []);
+  // An error has no countries to describe, and can be a sentence long: it takes a line of its
+  // own under the row, wrapped and clamped to three lines, so the select keeps its width (on
+  // the row, `nowrap`, it pushed the control off the panel — item 9). The row keeps the short
+  // provenance or `loading…`.
+  const failed = countries === null && error !== null;
   return (
-    <div className={styles.row} data-measure="country_row">
-      <label className={`${styles.field} ${styles.grow}`}>
-        Country
-        <select
-          data-measure="country_select"
-          value={sourceValue(source)}
-          onChange={(e) => onSelect(parseSourceValue(e.target.value))}
-          disabled={countries === null && source.kind === "country"}
-        >
-          <option value="favourites">★ Favourites</option>
-          <option value="recents">Recents</option>
-          <hr />
-          {items.map((c) => (
-            <option key={c.code} value={sourceValue({ kind: "country", cc: c.code })}>
-              {c.name} ({c.station_count})
-            </option>
-          ))}
-        </select>
-      </label>
-      <span className={`${styles.muted} ${styles.nowrap}`} data-measure="countries_provenance">
-        {countries ? provenance(countries) : (error ?? "loading…")}
-      </span>
+    <div className={styles.stack}>
+      <div className={styles.row} data-measure="country_row">
+        <label className={`${styles.field} ${styles.grow}`}>
+          Country
+          <select
+            data-measure="country_select"
+            value={sourceValue(source)}
+            onChange={(e) => onSelect(parseSourceValue(e.target.value))}
+          >
+            <option value="favourites">★ Favourites</option>
+            <option value="recents">Recents</option>
+            <hr />
+            {items.map((c) => (
+              <option key={c.code} value={sourceValue({ kind: "country", cc: c.code })}>
+                {countries ? `${c.name} (${c.station_count})` : c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {!failed && (
+          <span className={`${styles.muted} ${styles.nowrap}`} data-measure="countries_provenance">
+            {countries ? provenance(countries) : "loading…"}
+          </span>
+        )}
+      </div>
+      {failed && (
+        <p className={`${styles.muted} ${styles.clamp}`} role="alert" data-measure="countries_error">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
