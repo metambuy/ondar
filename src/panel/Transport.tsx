@@ -56,7 +56,10 @@ export default function Transport({ station, isFavourite, onToggleFavourite }: P
           <button
             type="button"
             disabled={station === null}
-            onClick={() => station && audio.play(station.url, station.uuid).catch(report("play"))}
+            onClick={() =>
+              station &&
+              audio.play(station.url, station.uuid, station.bitrate_kbps).catch(report("play"))
+            }
           >
             Play
           </button>

@@ -1582,9 +1582,12 @@ the maximum.
 | 128 kbit/s | 2.05 s | 31 KB | they coincide; optimal |
 | 320 kbit/s | 0.82 s | 78 KB | safe, but 0.82 s of buffer where the ring holds 2.0 s |
 
-**M3 refinement:** radio-browser's station record carries `bitrate`, making
-`prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` computable before `open`.
-The `max` is load-bearing — the knee alone starves the decoder at 64 kbit/s.
+**M3 refinement — built at M3b commit 6 (2026-09-23):** radio-browser's station record carries
+`bitrate`, and `play` now carries it to the engine, which sizes the prefetch as
+`prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` before `open`
+(`stream::prefetch_for`, pure and pinned: the floor wins up to 131 kbit/s, 192 kbit/s is
+48 000 B, 320 kbit/s is 80 000 B, no bitrate is the floor). The `max` is load-bearing — the
+knee alone starves the decoder at 64 kbit/s, and the test fails without it.
 
 **The first term is pinned to a dependency's internal behaviour.** `ondar-audio` never
 constructs a `MediaSourceStream`; rodio 0.22.2 does it internally over symphonia-core 0.5.5 and

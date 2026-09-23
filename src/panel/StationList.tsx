@@ -232,7 +232,7 @@ function StationList({
     if (measureParam("play") !== "first" || autoPlayed.current || first === undefined) return;
     autoPlayed.current = true;
     onPlay(first);
-    void audio.play(first.url, first.uuid);
+    void audio.play(first.url, first.uuid, first.bitrate_kbps);
   }, [shown, onPlay]);
 
   const status = shown ? shown.status : (error ?? "loading…");
@@ -268,7 +268,7 @@ function StationList({
                   return;
                 }
                 onPlay(s);
-                void audio.play(s.url, s.uuid);
+                void audio.play(s.url, s.uuid, s.bitrate_kbps);
               }}
             >
               <span className={styles.stationName}>{s.name}</span>

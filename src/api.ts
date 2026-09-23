@@ -35,7 +35,9 @@ export type {
 export type OndarError = { code: string; message: string };
 
 export const audio = {
-  play: (url: string, stationId: string) => invoke<void>("play", { url, stationId }),
+  // `bitrateKbps`: the station record's, or null — Rust sizes the stream's prefetch from it.
+  play: (url: string, stationId: string, bitrateKbps: number | null) =>
+    invoke<void>("play", { url, stationId, bitrateKbps }),
   pause: () => invoke<void>("pause"),
   resume: () => invoke<void>("resume"),
   stop: () => invoke<void>("stop"),

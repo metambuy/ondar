@@ -32,7 +32,7 @@ const mock = vi.hoisted(() => {
   const stationsListeners: ((u: unknown) => void)[] = [];
   const recentsListeners: (() => void)[] = [];
   const stateListeners: ((s: unknown) => void)[] = [];
-  const plays: [string, string][] = [];
+  const plays: [string, string, number | null][] = [];
   let resumes = 0;
   const defer = (what: string) =>
     new Promise((resolve) => {
@@ -45,8 +45,8 @@ const mock = vi.hoisted(() => {
     stateListeners,
     plays,
     resumed: () => resumes,
-    play: (url: string, uuid: string) => {
-      plays.push([url, uuid]);
+    play: (url: string, uuid: string, bitrate: number | null) => {
+      plays.push([url, uuid, bitrate]);
       return Promise.resolve();
     },
     resume: () => {
@@ -234,7 +234,7 @@ describe("StationList", () => {
     expect(mock.plays).toEqual([]);
     expect(mock.resumed()).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Play France Inter" }));
-    expect(mock.plays).toEqual([["https://example.invalid/France Inter", "FR-France Inter"]]);
+    expect(mock.plays).toEqual([["https://example.invalid/France Inter", "FR-France Inter", 128]]);
     view.unmount();
   });
 });

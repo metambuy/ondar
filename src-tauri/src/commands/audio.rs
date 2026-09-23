@@ -21,12 +21,23 @@ use ondar_audio::{AudioCommand, BAND_COUNT, EqBand, MAX_GAIN_DB, PlaybackState};
 use crate::AppState;
 use crate::error::OndarError;
 
+/// `bitrate_kbps`: the station record's, or absent — the engine sizes its prefetch from it
+/// (M3b commit 6: `max(one decoder read, RING_SECONDS × bitrate / 8)`).
 #[tauri::command]
-pub fn play(state: State<'_, AppState>, url: String, station_id: String) -> Result<(), OndarError> {
+pub fn play(
+    state: State<'_, AppState>,
+    url: String,
+    station_id: String,
+    bitrate_kbps: Option<u32>,
+) -> Result<(), OndarError> {
     if url.trim().is_empty() {
         return Err(OndarError::InvalidArgument("url is empty".into()));
     }
-    state.engine.send(AudioCommand::Play { url, station_id });
+    state.engine.send(AudioCommand::Play {
+        url,
+        station_id,
+        bitrate_kbps,
+    });
     Ok(())
 }
 

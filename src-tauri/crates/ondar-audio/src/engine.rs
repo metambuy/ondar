@@ -41,7 +41,13 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
-    Play { url: String, station_id: String },
+    /// `bitrate_kbps`: the station record's, for the prefetch (M3b commit 6); `None` when the
+    /// record has none (the floor applies).
+    Play {
+        url: String,
+        station_id: String,
+        bitrate_kbps: Option<u32>,
+    },
     Pause,
     Resume,
     Stop,
@@ -285,7 +291,11 @@ impl Engine {
     fn run(mut self, rx: Receiver<AudioCommand>) {
         loop {
             match rx.recv_timeout(TICK_INTERVAL) {
-                Ok(AudioCommand::Play { url, station_id }) => self.play(url, station_id),
+                Ok(AudioCommand::Play {
+                    url,
+                    station_id,
+                    bitrate_kbps,
+                }) => self.play(url, station_id, bitrate_kbps),
                 Ok(AudioCommand::Pause) => self.pause(),
                 Ok(AudioCommand::Resume) => self.resume(),
                 Ok(AudioCommand::Stop) => self.stop(),
@@ -468,7 +478,7 @@ impl Engine {
         Ok(player)
     }
 
-    fn play(&mut self, url: String, station_id: String) {
+    fn play(&mut self, url: String, station_id: String, bitrate_kbps: Option<u32>) {
         self.cancel_session();
         self.shared.begin_session(station_id.clone());
         self.shared.paused.store(false, Ordering::Relaxed);
@@ -511,9 +521,13 @@ impl Engine {
 
         let client = self.client.clone();
         let handle = self.rt.handle().clone();
+        let prefetch = stream::prefetch_bytes(bitrate_kbps);
+        log::info!(
+            "play station_id={station_id} bitrate_kbps={bitrate_kbps:?} prefetch_bytes={prefetch}"
+        );
         thread::Builder::new()
             .name(format!("ondar-decode:{station_id}"))
-            .spawn(move || run_session(ctx, url, client, handle, player))
+            .spawn(move || run_session(ctx, url, client, handle, player, prefetch))
             .expect("spawn decode thread");
     }
 
@@ -574,6 +588,7 @@ fn run_session(
     client: reqwest::Client,
     rt: tokio::runtime::Handle,
     player: Arc<Player>,
+    prefetch_bytes: u64,
 ) {
     // Whether this session has ever opened its stream. A terminal answer ends the session
     // only before that: afterwards the same 404 is a mount mid-restart, and the backoff
@@ -589,6 +604,7 @@ fn run_session(
             &client,
             url.clone(),
             ctx.reconnect_count.clone(),
+            prefetch_bytes,
         )) {
             Ok(o) => o,
             Err(e) => {
@@ -1099,7 +1115,8 @@ mod session_tests {
         let client = stream::build_client("Ondar/test");
         let handle = rt.handle().clone();
         let session = ctx.clone();
-        thread::spawn(move || run_session(session, url, client, handle, player));
+        let prefetch = stream::prefetch_bytes(None);
+        thread::spawn(move || run_session(session, url, client, handle, player, prefetch));
         Harness {
             ctx,
             events: ev_rx,
@@ -1116,7 +1133,7 @@ mod session_tests {
     ) -> Vec<PlaybackState> {
         let deadline = Instant::now() + within;
         let mut seen = Vec::new();
-        let mut drain = |seen: &mut Vec<PlaybackState>| {
+        let drain = |seen: &mut Vec<PlaybackState>| {
             while let Ok(ev) = h.events.try_recv() {
                 match ev {
                     EngineEvent::State(s) => seen.push(s),

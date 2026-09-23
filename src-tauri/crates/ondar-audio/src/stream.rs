@@ -19,11 +19,14 @@ use stream_download::storage::memory::MemoryStorageProvider;
 use stream_download::{Settings, StreamDownload};
 use tokio_util::sync::CancellationToken;
 
+use crate::ring::RING_SECONDS;
 use crate::types::ErrorCode;
 
 pub type Reader = StreamDownload<BoundedStorageProvider<MemoryStorageProvider>>;
 
-/// Bytes to buffer before the decoder is allowed to start — 2.05 s at 128 kbit/s.
+/// The **floor** of the bytes buffered before the decoder is allowed to start: one decoder
+/// read. Until M3b commit 6 this was the whole value (32 KB, 2.05 s at 128 kbit/s); now
+/// [`prefetch_for`] raises it to the knee when the station record says the bitrate.
 ///
 /// Bounded from both sides, and at 128 kbit/s the two bounds coincide:
 ///
@@ -52,15 +55,16 @@ pub type Reader = StreamDownload<BoundedStorageProvider<MemoryStorageProvider>>;
 /// | 128 kbit/s | 2.05 s | 31 KB | they coincide; optimal |
 /// | 320 kbit/s | 0.82 s | 78 KB | safe, but only 0.82 s of buffer where the ring holds 2.0 s |
 ///
-/// M3 refinement: radio-browser's station record carries `bitrate`, making
-/// `prefetch_bytes = max(one_decoder_read, RING_SECONDS * bitrate / 8)` computable before
-/// `open`. The `max` matters — the knee alone would starve the decoder at 64 kbit/s. Note the
-/// first term is pinned to a dependency's internal behaviour and **must be re-verified on any
-/// rodio or symphonia bump**.
+/// **Built at M3b commit 6:** radio-browser's station record carries `bitrate`, so
+/// `prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` is computed before
+/// `open` ([`prefetch_for`]). The `max` matters — the knee alone would starve the decoder at
+/// 64 kbit/s; a record with no bitrate (16.8 % of stations, kept and sorted last since M3a)
+/// gets the floor. Note the first term is pinned to a dependency's internal behaviour and
+/// **must be re-verified on any rodio or symphonia bump**.
 ///
 /// Overridable via `ONDAR_PREFETCH_BYTES` (see [`prefetch_bytes`]) so stall testing can trade
 /// startup latency against burst-size realism without a rebuild.
-pub const PREFETCH_BYTES: u64 = 32 * 1024;
+pub const PREFETCH_FLOOR_BYTES: u64 = 32 * 1024;
 /// Size of the in-memory ring the HTTP body is written into (~16 s at 128 kbit/s; also the
 /// maximum look-back Symphonia can use while probing, which needs only a few KB).
 pub const BUFFER_BYTES: usize = 256 * 1024;
@@ -118,11 +122,22 @@ pub fn retry_timeout() -> Duration {
     resolved_timeouts().1
 }
 
-pub fn prefetch_bytes() -> u64 {
-    std::env::var("ONDAR_PREFETCH_BYTES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(PREFETCH_BYTES)
+/// The prefetch for a station whose record says `bitrate_kbps` (or nothing): the larger of
+/// the floor and the knee, `RING_SECONDS × bitrate / 8` — 1 kbit/s is 125 B/s. Pure, so the
+/// tests pin the numbers; `prefetch_bytes` adds the env override.
+pub fn prefetch_for(bitrate_kbps: Option<u32>) -> u64 {
+    let knee = bitrate_kbps.map_or(0, |kbps| u64::from(kbps) * 125 * RING_SECONDS as u64);
+    knee.max(PREFETCH_FLOOR_BYTES)
+}
+
+/// [`prefetch_for`], unless `ONDAR_PREFETCH_BYTES` overrides it (stall testing).
+pub fn prefetch_bytes(bitrate_kbps: Option<u32>) -> u64 {
+    prefetch_override(std::env::var("ONDAR_PREFETCH_BYTES").ok(), bitrate_kbps)
+}
+
+fn prefetch_override(env: Option<String>, bitrate_kbps: Option<u32>) -> u64 {
+    env.and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| prefetch_for(bitrate_kbps))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -217,7 +232,8 @@ pub fn parse_url(url: &str) -> Result<Url, StreamError> {
     }
 }
 
-/// Connect and return a reader once `PREFETCH_BYTES` have arrived. `reconnect_count` is
+/// Connect and return a reader once `prefetch_bytes` have arrived (the caller computed them
+/// from the station's bitrate, [`prefetch_bytes`]). `reconnect_count` is
 /// advanced every time `stream-download` reconnects internally (idle `retry_timeout`, not one
 /// of our own external retries) — see `Settings::on_reconnect` below and `SessionCtx` in
 /// `engine.rs`, which is what actually surfaces it as an event.
@@ -225,6 +241,7 @@ pub async fn open(
     client: &reqwest::Client,
     url: Url,
     reconnect_count: Arc<AtomicU64>,
+    prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
     let stream = match HttpStream::new(client.clone(), url).await {
         Ok(s) => s,
@@ -249,7 +266,7 @@ pub async fn open(
         NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer"),
     );
     let settings = Settings::default()
-        .prefetch_bytes(prefetch_bytes())
+        .prefetch_bytes(prefetch_bytes)
         .retry_timeout(retry_timeout())
         .on_reconnect(
             move |_stream: &HttpStream<reqwest::Client>, _token: &CancellationToken| {
@@ -480,7 +497,12 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let client = build_client("Ondar/test");
         let url = parse_url(url).expect("url");
-        match rt.block_on(open(&client, url, Arc::new(AtomicU64::new(0)))) {
+        match rt.block_on(open(
+            &client,
+            url,
+            Arc::new(AtomicU64::new(0)),
+            PREFETCH_FLOOR_BYTES,
+        )) {
             Ok(_) => panic!("open succeeded against a server that cannot be played"),
             Err(e) => e,
         }
@@ -518,7 +540,12 @@ mod tests {
         let outcome = rt.block_on(async {
             tokio::time::timeout(
                 Duration::from_secs(5),
-                open(&client, url, Arc::new(AtomicU64::new(0))),
+                open(
+                    &client,
+                    url,
+                    Arc::new(AtomicU64::new(0)),
+                    PREFETCH_FLOOR_BYTES,
+                ),
             )
             .await
         });
@@ -666,5 +693,35 @@ mod tests {
             open_code(&format!("http://{addr}/stream")),
             (ErrorCode::Network, false)
         );
+    }
+
+    /// M3b commit 6: the prefetch is the larger of the floor (one decoder read) and the knee
+    /// (`RING_SECONDS × bitrate / 8`). Fails if the `max` is dropped (64 kbit/s would get 16 000,
+    /// the value measured to starve the decoder), if an unknown bitrate is not the floor, or if
+    /// the knee's arithmetic is off (320 kbit/s is 80 000, not 81 920 or 40 000).
+    #[test]
+    fn prefetch_is_the_larger_of_the_floor_and_the_knee() {
+        assert_eq!(prefetch_for(None), PREFETCH_FLOOR_BYTES);
+        assert_eq!(
+            prefetch_for(Some(64)),
+            PREFETCH_FLOOR_BYTES,
+            "the floor wins at 64"
+        );
+        assert_eq!(
+            prefetch_for(Some(128)),
+            PREFETCH_FLOOR_BYTES,
+            "the knee is 32 000 < 32 768"
+        );
+        assert_eq!(prefetch_for(Some(192)), 48_000);
+        assert_eq!(prefetch_for(Some(320)), 80_000);
+        assert_eq!(prefetch_for(Some(0)), PREFETCH_FLOOR_BYTES);
+    }
+
+    /// The env override replaces the computed value whole; an unparsable one is ignored.
+    #[test]
+    fn the_env_override_replaces_the_computed_prefetch() {
+        assert_eq!(prefetch_override(Some("16384".into()), Some(320)), 16_384);
+        assert_eq!(prefetch_override(Some("lots".into()), Some(320)), 80_000);
+        assert_eq!(prefetch_override(None, Some(320)), 80_000);
     }
 }
