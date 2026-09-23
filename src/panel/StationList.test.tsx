@@ -18,7 +18,11 @@
 // 8. a favourite toggle (`storeGeneration`) re-requests the ★ list only (fails if it
 //    re-requests a country list);
 // 9. a click on the playing row does nothing, on the paused row resumes, on another row plays
-//    (fails if the row always plays — F6 review F2).
+//    (fails if the row always plays — F6 review F2);
+// 10. a click on the playing row while `reconnecting` does nothing: the row reads it as audible,
+//    the reading the transport is pinned to in Transport.test.tsx (`/code-review` finding 3,
+//    2026-09-23; fails if `audible` stops counting `reconnecting` — a `play` there is a second
+//    vote and a reset backoff).
 //
 // `../api` is mocked whole: nothing reaches Tauri, and every request is a deferred promise
 // the test resolves in the order it chooses — which is the point.
@@ -260,5 +264,15 @@ describe("StationList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play France Inter" }));
     expect(mock.plays).toEqual([["https://example.invalid/France Inter", "FR-France Inter", 128]]);
     view.unmount();
+  });
+
+  it("does nothing on the playing row while reconnecting — the row reads it as audible", async () => {
+    render(list(country("FR"), 0, 0, "FR-FIP"));
+    await resolve(requests()[0], listed("FR", ["FIP"]));
+    await emitState("reconnecting");
+    const resumed = mock.resumed();
+    fireEvent.click(screen.getByRole("button", { name: "Play FIP" }));
+    expect(mock.plays).toEqual([]);
+    expect(mock.resumed()).toBe(resumed);
   });
 });
