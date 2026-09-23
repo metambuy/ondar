@@ -691,7 +691,10 @@ number cited to a run in `_handover/m3b-measure/`), `_handover/last-report-2026-
   online play's log line; Step 0 P6's "one recorded request").
 - **6 `155d14d` — prefetch from bitrate**: `play(url, stationId, bitrateKbps)`;
   `stream::prefetch_for = max(one decoder read, RING_SECONDS × bitrate / 8)`, pure and pinned
-  (see "The prefetch knee").
+  (see "The prefetch knee"). **Capped after the review** (finding 2, 2026-09-23) at half the
+  stream buffer, 131 072 B: the record's `bitrate` is user-entered (1411, 1536, a `128000`
+  typo), and a prefetch at or over the 256 KB buffer is met only when the buffer is full —
+  startup would wait for the whole window. The knee crosses the cap at 525 kbit/s.
 - Tests 162 → **177** (audio 73, shell 40, stations 64) **+ 8** TypeScript.
 
 **Measured, what fits** (`m3b-measure.md` §§ 1b, 1c, 4; runs `m3b-m-01`…`-06`, `-16`; stills):
@@ -1690,7 +1693,8 @@ the maximum.
 
 **M3 refinement — built at M3b commit 6 (2026-09-23):** radio-browser's station record carries
 `bitrate`, and `play` now carries it to the engine, which sizes the prefetch as
-`prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` before `open`
+`prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` before `open`, capped at
+half the stream buffer since `/code-review` finding 2 (2026-09-23; the M3b section has the reasoning)
 (`stream::prefetch_for`, pure and pinned: the floor wins up to 131 kbit/s, 192 kbit/s is
 48 000 B, 320 kbit/s is 80 000 B, no bitrate is the floor). The `max` is load-bearing — the
 knee alone starves the decoder at 64 kbit/s, and the test fails without it.

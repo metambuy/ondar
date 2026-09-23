@@ -177,15 +177,15 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 179 tests `cargo test --workspace`
-reports break down as **160 hand-written + 19 ts-rs-generated** (audio 75, shell 40, stations 64):
+export_bindings_<type>` that writes the `.ts` file. So the 180 tests `cargo test --workspace`
+reports break down as **161 hand-written + 19 ts-rs-generated** (audio 76, shell 40, stations 64):
 
 | | |
 |---|---|
 | `engine::tick_tests` | 20 |
 | `engine::started_tests` | 7 — the click rule's pure part on `Shared::write_state` (M3b 5): once per session whatever the route back to `Playing` (fails on a per-`Playing` or previous-state rule); a second `play` for the same station starts again; a reconnect before ever playing starts on its first `Playing`; paused while buffering starts on resume, `Started` after `State(Playing)`; a repeated `Playing` is a no-op; **a stale session's `Playing` cannot take the new session's `Started`** (`/code-review` finding 1, 2026-09-23 — the write and its liveness are decided under one lock; fails on a flag read before the lock, which was the code: mutation-checked, the gate disabled sends `Started { u2 }` for a station that has not opened); a cancelled session's late write is dropped before any successor (fails if only `begin_session` moves the generation) |
 | `engine::session_tests` | 6 — a WAV played twice across a reconnect is one session: one `Started`, with the id (fails if per-`Playing`; found the harness needed a mixer drain thread, since `Player::clear()` waits for a queued source); the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }`. Review finding 4: a 429 with `Retry-After: 3` → `Reconnecting { 1 }` and no second request inside 2 s (fails if every 4xx is terminal, or if the header is ignored); a 404 on the reconnect after a 1.5 s WAV stream ended → `Reconnecting { 2 }`, no `Error` (fails if a reconnect's 4xx is terminal) |
-| `stream::tests` | 12 — the prefetch is the larger of the floor and the knee (M3b 6; fails if the `max` is dropped — 64 kbit/s would get 16 000 — or the knee's arithmetic is off), the env override replaces the whole value; a 404's body text reaches the message, bounded to 200 chars (finding 10); `parse_url` refuses a non-http scheme as `invalid_url` before any request (finding 5); real sockets on 127.0.0.1, asserting `(code, terminal)`, plus one on the shared `NON_HTTP_WORDING` table (a 503's "status" wording is not terminal, hyper's version wording is — finding 8): an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 and a 403 are `Http` and terminal, a 429 is `Http`, retriable and carries its `Retry-After` (finding 4), a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
+| `stream::tests` | 13 — the prefetch is the larger of the floor and the knee (M3b 6; fails if the `max` is dropped — 64 kbit/s would get 16 000 — or the knee's arithmetic is off), **capped at half the buffer** (`/code-review` finding 2, 2026-09-23: 10 000 kbit/s and FLAC's 1411 give the ceiling, 524/525 kbit/s straddle it; fails if the upper bound is dropped, which was the code), the env override replaces the whole value; a 404's body text reaches the message, bounded to 200 chars (finding 10); `parse_url` refuses a non-http scheme as `invalid_url` before any request (finding 5); real sockets on 127.0.0.1, asserting `(code, terminal)`, plus one on the shared `NON_HTTP_WORDING` table (a 503's "status" wording is not terminal, hyper's version wording is — finding 8): an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 and a 403 are `Http` and terminal, a 429 is `Http`, retriable and carries its `Retry-After` (finding 4), a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
 | `eq::tests` | 17 |
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
@@ -205,7 +205,7 @@ reports break down as **160 hand-written + 19 ts-rs-generated** (audio 75, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 160 and will not reconcile with the runner's 179
+Counting `#[test]` attributes in source gives 161 and will not reconcile with the runner's 180
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -217,7 +217,7 @@ reply landing after ★ off dropped, `recents:updated` and a favourite toggle re
 list, a click on the playing row does nothing and on the paused row resumes — M3b 5, F2) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `179 + 10`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `180 + 10`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -234,7 +234,7 @@ pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
                               # tests, 10 today (StationList + Panel). Its count is reported BESIDE
-                              # the Rust count — "179 + 10", never "189" — and CI runs it as its own step
+                              # the Rust count — "180 + 10", never "190" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types
@@ -243,7 +243,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 179 tests: 75 in the ondar_audio binary, 64 in ondar_stations and
+cargo test --workspace       # 180 tests: 76 in the ondar_audio binary, 64 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this
@@ -455,10 +455,14 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    `Equalizer` as the last operation on every sample so it cannot be bypassed. See ONDAR.md,
    "EQ output is bounded by a soft-clip stage".
 9. **Prefetch from bitrate** (M3b commit 6): `play` carries the station record's
-   `bitrate_kbps` (or none) and the engine sizes the stream's prefetch as
-   `max(PREFETCH_FLOOR_BYTES = one decoder read, RING_SECONDS × bitrate / 8)` —
+   `bitrate_kbps` (or none) and the engine sizes the stream's prefetch as the knee,
+   `RING_SECONDS × bitrate / 8`, bounded below by `PREFETCH_FLOOR_BYTES` (one decoder read) and
+   above by `PREFETCH_CEILING_BYTES` (half of `BUFFER_BYTES`, 131 072 — a prefetch at or over
+   the buffer is met only when the buffer is full, and the record's `bitrate` is user-entered:
+   1411, 1536 and a `128000` typo exist; `/code-review` finding 2, 2026-09-23) —
    `stream::prefetch_for`, pure and tested (the floor wins up to 131 kbit/s; 320 kbit/s is
-   80 000 B; no bitrate is the floor). `ONDAR_PREFETCH_BYTES` still overrides the whole value.
+   80 000 B; the ceiling from 525 kbit/s; no bitrate is the floor). `ONDAR_PREFETCH_BYTES`
+   still overrides the whole value.
    Logged per play: `play station_id=… bitrate_kbps=… prefetch_bytes=…`.
 8. Call the radio-browser click endpoint exactly once, when playback actually starts — built at
    M3b commit 5: `Shared::write_state` in the engine sends `EngineEvent::Started { station_id }`

@@ -57,10 +57,11 @@ pub type Reader = StreamDownload<BoundedStorageProvider<MemoryStorageProvider>>;
 ///
 /// **Built at M3b commit 6:** radio-browser's station record carries `bitrate`, so
 /// `prefetch_bytes = max(one_decoder_read, RING_SECONDS × bitrate / 8)` is computed before
-/// `open` ([`prefetch_for`]). The `max` matters — the knee alone would starve the decoder at
-/// 64 kbit/s; a record with no bitrate (16.8 % of stations, kept and sorted last since M3a)
-/// gets the floor. Note the first term is pinned to a dependency's internal behaviour and
-/// **must be re-verified on any rodio or symphonia bump**.
+/// `open` ([`prefetch_for`]), **capped at [`PREFETCH_CEILING_BYTES`]** since the review that
+/// followed. The `max` matters — the knee alone would starve the decoder at 64 kbit/s; a
+/// record with no bitrate (16.8 % of stations, kept and sorted last since M3a) gets the floor.
+/// Note the first term is pinned to a dependency's internal behaviour and **must be
+/// re-verified on any rodio or symphonia bump**.
 ///
 /// Overridable via `ONDAR_PREFETCH_BYTES` (see [`prefetch_bytes`]) so stall testing can trade
 /// startup latency against burst-size realism without a rebuild.
@@ -68,6 +69,17 @@ pub const PREFETCH_FLOOR_BYTES: u64 = 32 * 1024;
 /// Size of the in-memory ring the HTTP body is written into (~16 s at 128 kbit/s; also the
 /// maximum look-back Symphonia can use while probing, which needs only a few KB).
 pub const BUFFER_BYTES: usize = 256 * 1024;
+/// The **ceiling** of the prefetch: half of [`BUFFER_BYTES`]. The prefetch is met only once the
+/// writer holds that many bytes, and the writer holds at most `BUFFER_BYTES`: a prefetch at or
+/// over the buffer is met only when the buffer is full, so startup waits for the whole window
+/// (~16 s on a stream that really delivers 128 kbit/s) and the decoder then starts against a
+/// writer that cannot advance until the reader frees space. Half the buffer is the largest head
+/// start that leaves the same amount again for the download to run ahead of the decoder while
+/// it starts. The record's `bitrate` is user-entered and the census found it unreliable (16.8 %
+/// report 0; nothing bounds the upper end — 1411 for FLAC, 1536, a `128000` typo), so an
+/// inflated record must not be able to ask for more (`/code-review` finding 2, 2026-09-23). The
+/// knee crosses the ceiling at 525 kbit/s.
+pub const PREFETCH_CEILING_BYTES: u64 = BUFFER_BYTES as u64 / 2;
 /// `reqwest`'s per-read timeout — also covers the wait for a first connect's response headers
 /// (see `PendingRequest::poll` in `reqwest`), not just body reads. A backstop for a reconnect
 /// that connects and then never delivers a byte. Overridable via `ONDAR_READ_TIMEOUT_SECS`.
@@ -122,12 +134,14 @@ pub fn retry_timeout() -> Duration {
     resolved_timeouts().1
 }
 
-/// The prefetch for a station whose record says `bitrate_kbps` (or nothing): the larger of
-/// the floor and the knee, `RING_SECONDS × bitrate / 8` — 1 kbit/s is 125 B/s. Pure, so the
-/// tests pin the numbers; `prefetch_bytes` adds the env override.
+/// The prefetch for a station whose record says `bitrate_kbps` (or nothing): the knee,
+/// `RING_SECONDS × bitrate / 8` — 1 kbit/s is 125 B/s — bounded below by the floor and above
+/// by the ceiling. Pure, so the tests pin the numbers; `prefetch_bytes` adds the env override.
 pub fn prefetch_for(bitrate_kbps: Option<u32>) -> u64 {
     let knee = bitrate_kbps.map_or(0, |kbps| u64::from(kbps) * 125 * RING_SECONDS as u64);
-    knee.max(PREFETCH_FLOOR_BYTES)
+    // `clamp` panics on floor > ceiling; both are `const` (32 768 < 131 072), and the cap test
+    // asserts the order, so it cannot fire.
+    knee.clamp(PREFETCH_FLOOR_BYTES, PREFETCH_CEILING_BYTES)
 }
 
 /// [`prefetch_for`], unless `ONDAR_PREFETCH_BYTES` overrides it (stall testing).
@@ -715,6 +729,38 @@ mod tests {
         assert_eq!(prefetch_for(Some(192)), 48_000);
         assert_eq!(prefetch_for(Some(320)), 80_000);
         assert_eq!(prefetch_for(Some(0)), PREFETCH_FLOOR_BYTES);
+    }
+
+    /// `/code-review` finding 2 (2026-09-23): the knee is capped at half the buffer, so an
+    /// inflated record cannot ask for more than the writer holds. Fails if the `min` is dropped
+    /// (the code before this test: 10 000 kbit/s asked for 2 500 000 B against a 262 144 B
+    /// buffer, and startup waited for the whole buffer), if the cap is the buffer itself, or at
+    /// the boundary — 524 kbit/s is 131 000, under the cap; 525 is 131 250, capped.
+    #[test]
+    fn prefetch_is_capped_at_half_the_buffer() {
+        assert_eq!(PREFETCH_CEILING_BYTES, 131_072);
+        assert!(PREFETCH_CEILING_BYTES * 2 <= BUFFER_BYTES as u64);
+        assert!(
+            PREFETCH_FLOOR_BYTES < PREFETCH_CEILING_BYTES,
+            "`clamp`'s precondition"
+        );
+        assert_eq!(prefetch_for(Some(10_000)), PREFETCH_CEILING_BYTES);
+        assert_eq!(
+            prefetch_for(Some(1411)),
+            PREFETCH_CEILING_BYTES,
+            "FLAC's 1411, as the directory carries it"
+        );
+        assert_eq!(prefetch_for(Some(524)), 131_000, "just under the cap");
+        assert_eq!(
+            prefetch_for(Some(525)),
+            PREFETCH_CEILING_BYTES,
+            "just over: capped"
+        );
+        assert_eq!(
+            prefetch_for(Some(64)),
+            PREFETCH_FLOOR_BYTES,
+            "the floor still wins at 64"
+        );
     }
 
     /// The env override replaces the computed value whole; an unparsable one is ignored.
