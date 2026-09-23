@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/ondar-audio"]
+members = [".", "crates/ondar-audio", "crates/ondar-stations"]
 resolver = "2"
 
 [workspace.package]
@@ -36,6 +36,7 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec21
 # the socket name, and Ondar wants one instance across versions.
 tauri-plugin-single-instance = "2.4.4"
 ondar-audio = { path = "crates/ondar-audio" }
+ondar-stations = { path = "crates/ondar-stations" }
 serde = { version = "1", features = ["derive"] }
 # Generates the TypeScript for the shell's own boundary types (`PanelView`), the same way
 # `ondar-audio` generates its IPC types: `#[ts(export)]` expands to a test that writes

@@ -1,6 +1,10 @@
 # Ondar — project document
 
-*Last updated: 2026-09-21 (bundle identifier settled: `eu.ondar.radio` — see "Bundle identifier:
+*Last updated: 2026-09-22 (M3a acceptance run and its two fixes — see "M3a: the station
+directory, built", the acceptance paragraph; the Shoutcast v1 constraint corrected; instrument
+instance thirteen). Previously 2026-09-22 (M3a built on branch `m3a`; rusqlite 0.40.2 verified). Previously 2026-09-21 (M3 Step 0 measured — see "M3 Step 0: the live data, measured"; the geo
+share, the API etiquette line and the verified `hickory-resolver` version updated from it; four
+instrument instances added). Previously 2026-09-21 (bundle identifier settled: `eu.ondar.radio` — see "Bundle identifier:
 `eu.ondar.radio`"; socket names re-measured). Previously 2026-09-21 (M2 complete — M2d merged
 `2a9bae9`, tagged `m2d-done`; the milestone list updated). Previously 2026-09-21 (M2d acceptance results, the About-pane decision, item 6
 recorded as unmeasured, and instrument instance eight — see "M2d: resize in place"). Previously 2026-09-18
@@ -126,8 +130,15 @@ before actually adding):
   bottom-left origin and subtracts the icon height before handing it over). That is the
   convention Tauri's `PhysicalPosition` already uses, so no flip and no unit conversion are
   required. The M2 fallback in the stack table is therefore not taken.
-- `hickory-resolver` 0.26.2
+- `hickory-resolver` **0.26.3** (2026-09-10; verified by compiling against it in the M3 Step 0
+  census, 2026-09-21): `TokioResolver::builder_tokio()?.build()?`, `srv_lookup(name) ->
+  Lookup` (no `SrvLookup` type), `Lookup::answers() -> &[Record]`, `Lookup::valid_until()`;
+  `Record` and `SRV` expose **public fields** (`ttl`, `data`, `name`; `priority`, `weight`,
+  `port`, `target`), not accessor methods. Default features include `tokio` + `system-config`.
+  Was 0.26.2 (verified 2026-09-08).
 - `tauri-specta` 2.0.0-rc.25 (not adopted)
+- `rusqlite` **0.40.2** (2026-08-08; `bundled`), in the tree since M3a (2026-09-22): `Connection`,
+  `transaction()`, `pragma_query_value`/`pragma_update` for `user_version`, `OptionalExtension`.
 
 **`tauri-nspanel` — pinned by the M2 spike (2026-09-12), in the tree since M2a (2026-09-15, `36d50b8` on branch `m2`):**
 
@@ -288,9 +299,11 @@ TypeScript, stop — it belongs in Rust.
   for the base level plus ~33% for the rest of the pyramid. **Decision (2026-09-07): an
   installed size above 100 MB is acceptable.** Measure real numbers at M4 and record them
   here. If Black Marble is also shipped, expect roughly double.
-- **~30% of radio-browser stations have coordinates.** Map markers are therefore sparse;
-  the country dropdown, not the map, is the primary navigation. The map is context and
-  delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
+- **20.7 % of radio-browser stations have coordinates** — measured 2026-09-21 over 25 236
+  stations in eight countries (7 % RU to 38 % BR; `_handover/m3-step0-logs/p3-census.tsv`),
+  an eight-country sample, not a global figure. The inherited "~30 %" is retired. Map markers
+  are therefore sparse; the country dropdown, not the map, is the primary navigation. The map
+  is context and delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
 - ~~**BLOCKER: `src-tauri/icons/icon.png` is a 1×1 placeholder.**~~ **Resolved 2026-09-13.**
   It had stopped being cosmetic: the bundler failed with `Failed to create app icon: No
   matching IconType` and produced nothing, so no bundle could be built at all and
@@ -301,8 +314,28 @@ TypeScript, stop — it belongs in Rust.
 - **Stream reliability varies.** Reconnect logic and honest error states are a first-class
   feature, not polish.
 - **Shoutcast v1 servers** (`ICY 200 OK` status line) are rejected by hyper/reqwest and surface
-  as an `Http` error. Rare via radio-browser's `url_resolved`; measure at M3 before deciding
-  whether a raw-socket fallback is worth it.
+  as an `Http` error **on the first attempt, since M3a's acceptance fix (2026-09-22)**. The
+  history has two steps, and the first was recorded here as if it were the whole fix. (1) The
+  classifier read the top-level `Display` ("error sending request…") while hyper's parse error
+  sat in the `source()` chain — measured 2026-09-21 (M3 Step 0, a synthetic ICY server through
+  `stall_bench`: `Reconnecting { attempt: 4 }` after 12 s); `e51f3ea` walked the chain
+  (`stream.rs`, `classify_open_error`, pinned by `icy_status_line_is_http_not_network` against a
+  real socket). (2) But the engine's `retry_or_fail` ignored the cause: **acceptance item 8
+  re-measured the same `Reconnecting { attempt: 4 }` at 12 s**, and `Error { code: Http }` only
+  at 31.4 s after five attempts and six requests — the classification was right and the loop
+  was still there; this paragraph's earlier "since M3a" described behaviour the code did not
+  have (instrument instance eleven's class: a derived claim recorded as measured — the socket
+  tests pinned `stream::open`'s code, not the runtime). Now `StreamError::terminal` carries the
+  cause and the session fails at once on a parse error or a 401/403/404/410 — **on its first
+  open only** — keeping the backoff for network errors, 5xx, 408/429 (their `Retry-After`
+  honoured, capped at 30 s) and for every answer on a reconnect (the review's finding 4,
+  2026-09-22, narrowed the acceptance fix's "any 4xx, any attempt": a rate-limited first open
+  and a mount mid-restart both deserve the backoff); `engine::session_tests` pins the request
+  counts (ICY 1, 404 1, 503 > 1, 429 > 1 after its `Retry-After`, a 404 on a reconnect
+  → `Reconnecting { 2 }`) with `run_session` driven against real sockets. **Rare:** 0 of 148 reachable
+  stations in the census answered `ICY 200 OK` (upper bound ~2 %), so no raw-socket fallback is
+  built. `scripts/stall-server.py --mode icy200` is the manual check (`scripts/icy-server.py`,
+  which duplicated that mode, was removed 2026-09-22).
 - **EQ output is bounded by a soft-clip stage** (added 2026-09-11, Phase 1 item 4; **exit
   criterion 3 met**). Below 0.95 the stage is the identity bit for bit; above it a rational
   knee, `T + W*(1 - 1/(1+s))` with `s = (|x|-T)/W` and `W = 1-T`, asymptotic to 1.0 and
@@ -598,6 +631,265 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M3a: the station directory, built (2026-09-22)
+
+Branch `m3a` from `0e4b5d0`, ten commits each pushed alone (plan `_handover/m3a-plan.md`,
+reviewed twice; gate 1 and the plan review's F1–F6, S1–S3 all applied). What exists now, and
+the decisions Martín took at the plan review (2026-09-21):
+
+- **`crates/ondar-stations`**, no Tauri dependency: `model` (boundary types; `i64`/`u64` fields
+  exported to TypeScript as `number` — ts-rs's default `bigint` broke the page's arithmetic,
+  and serde sends a JSON number anyway), `normalise` (the census rules with their counts: 9
+  lowercase country codes merged, `XX` dropped, bitrate 0 → unknown, geo null or (0,0) → none,
+  `AAC,H.264` flagged video), `filter::rank` (drop broken and empty-url, dedupe folded name +
+  url keeping the higher votes, sort votes then known-bitrate-first then clicktrend, **cap 750**),
+  `srv` (hickory-resolver 0.26.3; fallbacks `de1`, `all.api` — the measured set), `client`,
+  `cache`, `store`, `service`.
+- **Client rules, all measured:** `bycountrycodeexact/{cc}?hidebroken=true&limit=100000` (the
+  endpoint measured returning a whole > 1000 country); three attempts on the same host with
+  backoff 1/2 s and one SRV re-resolve before attempt 2 (there is one server); a **200 s
+  wall-clock budget** for the sequence; connect 10 s, 15 s without a byte, a per-request total
+  of 30 s (countries, search) or 180 s (a list: 9.5 MB at 0.5 Mbit/s is 152 s); no gzip. The
+  **truncation guard** on the quantity that moved in the census: a full page; exactly 1000 rows
+  against a larger limit when the country's `station_count` is unknown or ≥ 1172
+  (1000 / (1 − 0.146), the largest measured broken share, so a real 1000-station country is not
+  refused forever); fewer than half the published `station_count` (the broken share measured
+  4.6–14.6 %) — **for countries of 2 000 stations and up only** (`RULE3_MIN_EXPECTED`, 1000 / 0.5):
+  the plan had said rule 3 "cannot fire under 2 000 by construction", and it could — the count
+  it compares against is up to seven days old, or older on an expired countries list, so a
+  small country whose stations went broken since was refused forever (Malta, count 3, one
+  working station: 1 < 1.5; review finding 6, 2026-09-22). An empty countries answer (`200 []`) is refused as `EmptyCountries` rather than
+  stored: stored, it left no row for the re-read, dropped every waiter unanswered and was
+  announced as `landed`, which made the page fetch it again on every event (review finding 3,
+  2026-09-22).
+- **Cache** (rusqlite, `bundled`): hand-rolled `PRAGMA user_version` migrations (decision 1 —
+  one table set, no dependency); TTL 24 h for a list, 7 d for countries, from radio-browser's
+  own recheck cadence; an expired list is never dropped — it is served at once as `cached` with
+  `refreshing: true` while a refresh runs (**stale-while-revalidate**, F5), and with no age
+  ceiling when the network is down (G3). `stations:updated { country_code, outcome }` tells the page
+  when a refresh landed. Only a missing list makes a caller wait. A file that will not open or
+  migrate is moved aside as `ondar.sqlite.corrupt-<unix seconds>` and recreated; if that fails
+  too the directory is **unavailable** (`code: "stations"` on every call) and the app still
+  launches — until the review fix of 2026-09-22 (finding 2) the open error propagated out of
+  `setup` and a corrupt cache stopped the tray, the popover and audio from coming up at all.
+- **Service** (decision 2 as amended by F3): one thread owns the connection and never awaits the
+  network; fetches run as tasks on a two-worker runtime and report back through the same
+  channel; concurrent callers for one country share one fetch. Measured by test: a held fetch
+  does not delay `list_favourites`.
+- **Store:** favourites; recents **20, a replay moves the entry to the top** (decision 3).
+- **Fixtures** (decision 4, F5): ~120 KB of census slices committed under
+  `crates/ondar-stations/fixtures/` with `PROVENANCE.md` quoting the API's stated freedom to
+  "mirror all its data" (no formal data licence exists; the server's AGPL covers the server);
+  `scripts/fixture-slice.py` regenerates the PT slice; the 1000-row truncation body is built in
+  the test.
+- **Two `ondar-audio` fixes that Step 0 surfaced** (decision 6): the ICY status line is now
+  `Http` (the classifier walks the error's `source()` chain to hyper's parse error; `hyper` is a
+  direct dependency for that downcast only) — **and, from acceptance, terminal on the first
+  attempt** (`StreamError::terminal`, `retry_or_fail` by cause; see the acceptance paragraph and
+  the Constraints entry; narrowed by the review's finding 4 to 401/403/404/410 and to the first
+  open of a session) — and the DNS claim was **measured and falsified** before any bound was
+  added — reqwest's `connect_timeout` covers DNS on the audio path (see "Reconnect ownership and
+  stream timeouts").
+- **Measured on the dev loop, 2026-09-22:** schema migrated to v1; the database at
+  `~/Library/Application Support/eu.ondar.radio.dev/ondar.sqlite` (the bundle's is under
+  `eu.ondar.radio/`); one SRV record; countries 240 rows; PT fetched 344 rows (`hidebroken`),
+  327 kept after the filter (the census day had 345/328 — live churn); no error lines.
+- **CI on a branch supersedes the older run** (`ci.yml`, `cancel-in-progress` off `main` by
+  design): re-running an older commit's cancelled run cancels the tip's. The rule for a branch
+  built one-commit-per-push is therefore **wait for green before the next push**, and never
+  re-run an older run while the tip's is in flight (learned on commits 5 and 7).
+- Tests 88 → **141** (124 hand-written + 17 generated; audio 54, shell 39, stations 48); after
+  the acceptance fixes **148** (129 + 19; audio 58, shell 40, stations 50).
+
+**Acceptance, run 2026-09-22 14:00–15:47 UTC** (`_handover/m3a-acceptance.md`, ten items from the
+plan's Verification section against the debug bundle at `b52e61c`, logs `m3a-acc-*` beside it;
+8 of 10 passed first time, the two failures fixed on `m3a` and re-run):
+
+- **Passed as built:** S2 offline with no cache → `code: "stations"` after three same-host attempts
+  in 3.02 s, nothing retries afterwards (`m3a-acc-01b`); the bundle's database is its own file
+  (`eu.ondar.radio/`, the dev loop's under `.dev/`); first launch online → 240 countries, PT 344
+  rows → 327 kept, `PT|327|344` in SQLite; a second open within 24 h → **zero** fetch or SRV lines;
+  an expired list offline → served **immediately** at the click, `cached 25 h ago · refreshing…`,
+  the refresh fails in 3.0 s with `(expired list stays)`; recents survive a restart and a replay
+  moves the row without a duplicate; G4(b) by its test; 0 `ERROR`/`panicked` across every run.
+  Also measured, unplanned: **France, 3 650 rows → 750 kept** through the live client (the
+  > 1 000-station country the plan had deferred to M3b: `limit=100000` honoured, the guard silent
+  with `expected` known, the cap applied).
+- **Item 8 failed, then fixed (`3ab7ec2`).** `stall_bench` against `scripts/icy-server.py` (since
+  removed for `stall-server.py --mode icy200`) read
+  `Reconnecting { attempt: 4 }` after 12 s with four requests — the shape `e51f3ea` had been
+  written to remove — and `Error { code: Http }` only at 31.4 s, six requests. The classification
+  was right; `retry_or_fail` ignored the cause. Now a terminal open error (hyper parse error, or
+  401/403/404/410 on the session's first open — the review's finding 4 narrowed "any 4xx")
+  fails the session at once; 5xx, 408/429 and network keep the backoff; `engine::session_tests` drive
+  `run_session` against counting servers (ICY 1, 404 1, 503 > 1 requests; mutation-checked). Re-run:
+  `Error { code: Http }` at **0.138 s**, one request, no `Reconnecting`. The Constraints entry that
+  had recorded the classification as the whole fix is corrected (instance thirteen below).
+- **Item 6 failed as written, half fixed (`4d83918`), half carried.** After the network came back
+  the page kept `cached 25 h ago · refreshing…` through four opens with no fetch in the log. Two
+  causes: (a) the service's failure arm emitted nothing, so the flag never cleared — now every
+  fetch ends with one event carrying a `RefreshOutcome` (`landed` | `failed`), and the page clears
+  the flag on `failed` without re-requesting (re-run `m3a-acc-06`: `cached 26 h ago`, no
+  `refreshing…`, 10 s after the failed refresh); (b) the page requests a list on mount and on a
+  country change only, so a popover open after a reconnect never re-requests — **carried to M3b**
+  as page behaviour (the dev list retires there; the service already restarts a refresh on any
+  repeat request for an expired list, shown by the country-change variant: PT refetched in
+  0.46 s, the event reached the page, the cache replaced). The acceptance item's premise "each
+  open starts a refresh" was Code's assumption about the page, not a measurement.
+- **Method.** The "done" handshake cannot span a Wi-Fi-off step: the first offline run launched
+  with the network still up (void), and a blocking script that waited for the default route to
+  drop aborted twice at 240 s with Wi-Fi off — the route test never fired on this Mac, cause not
+  found — while the harness's permission classifier timed out on a launch attempt. Offline items
+  are now run by Martín himself from Terminal (Code lists the commands, ends its turn), online
+  ones by Code's launcher with the handshake.
+- **Observations, not criteria:** six `stream_download` DEBUG lines per play under `RUST_LOG=info`
+  (the shell's filter should not pass them; cause not identified); the first popover show of a
+  session with the 327-row list mounted takes 51–83 ms against M2d's 2–13 ms, later shows 2–35 ms
+  (`LAYOUT_FALLBACK` 250 ms still 3× the worst); the dev list's country `<select>` is wider than
+  the panel (its label is a flex item that cannot shrink below the select's intrinsic width), which
+  also pushes the countries provenance line off the right edge — dev list, retires at M3b.
+  Favourites persist by test only (`store::tests`); the dev list has no favourite control, so the
+  hand check moves to M3b.
+
+**Code review, 2026-09-22** (`/code-review 0e4b5d0..f023084`, the whole branch; findings in
+`_handover/m3a-review-findings.md`, triage in `m3a-code-review-review-2026-09-22.md`; 8 finders
++ 4 verifiers, no run lost to a 429): ten findings, all fixed, one commit each, each pushed alone
+and green, each with a test that fails on the previous commit and a mutation check (exceptions
+stated below). Tests 148 → **162** (audio 65, shell 40, stations 57).
+
+- **`landed` meant "the fetch landed", not "the list was stored"** (`f3de220`, finding 1). With
+  a read-only or full disk the page's re-request on `landed` started another full-country fetch,
+  forever — the loop `4d83918` had been meant to close. One exit path per fetch (`finish`),
+  outcome derived from the write; the post-put re-read went with it.
+- **A cache that would not open stopped the app** (`693f12b`, finding 2): moved aside as
+  `ondar.sqlite.corrupt-<ts>` and recreated, else a degraded handle (`Unavailable`); nothing in
+  `setup` can refuse the launch. Measured on the bundle: the existing database opens normally
+  (`m3a-acc-07`/`08`, no `.corrupt-` file).
+- **`200 []` from `/json/countries`** (`d0b4202`, finding 3) dropped every waiter unanswered
+  (`Closed`) and announced `landed`; now refused by the client (`EmptyCountries`) → `failed`.
+- **Retry policy narrowed** (`5431a70`, finding 4): terminal for 401/403/404/410 and the ICY case
+  only, and only before a session's first open; `Retry-After` honoured (delta-seconds, ≤ 30 s).
+  Session-level tests: a 429 waits out its header; a 404 on the reconnect after a WAV stream
+  ended keeps the backoff.
+- **Rule 3 floored at 2 000** (`c6974f0`, finding 6): the plan's "cannot fire under 2 000 by
+  construction" was false — Malta, count 3, one working station, `1 < 1.5`.
+- **One non-HTTP wording table** (`6bf8114`, finding 8): "status" out of it; the 5xx branch is
+  reachable again. Its test does not compile on the prior commit; the mutation is the check.
+- Small: `mms://` → `invalid_url` before any request (`f19e776`); the dev list applies a reply
+  only for the country still selected (`eeeeb97`, **no test** — no TS runner, the list retires at
+  M3b; BUILD_PLAN carries the guard for M3b's list); `LIKE` metacharacters escaped in the offline
+  search, ASCII-only folding stated (`d5795fb`); the 4xx/5xx body text back in the message,
+  bounded to 200 chars (`73020d3`).
+- Cleanups: `CacheSource::StaleAfterFailure` removed from the IPC contract (`bacca7f`);
+  `scripts/icy-server.py` removed for `stall-server.py --mode icy200` (`e016a5d`); the `expect`
+  census in CLAUDE.md corrected to three sites (`44099b0`); `.claude/settings.local.json`
+  ignored (`6bab153`). Recorded for M3b, not fixed: the 750 cap is applied before storage, so the
+  offline search sees only the top 750 of each list.
+- **Acceptance re-run on the touched paths** (`m3a-acceptance.md`, "Re-run after the review
+  fixes"): item 8 through the replacement server (`Http` at 0.175 s, one request); items 5 and 6
+  as `m3a-acc-07` (expired PT served at once offline, refresh failed at +3.3 s and the `failed`
+  event had cleared `refreshing…` before the first open at +6.2 s; online, FR 3 652 → 750 in
+  1.28 s and PT 344 → 327 in 0.45 s through the new exit path) and `m3a-acc-08` (countries
+  240 rows refreshed at launch, `fetched_at` current). 0 `ERROR`/panic across the three runs.
+
+### M3 Step 0: the live data, measured (2026-09-21)
+
+Before M3a, a census of radio-browser.info from this Mac with the real `User-Agent` — plan
+`_handover/m3-step0-plan.md`, report `_handover/m3-step0-report.md`, raw responses and scripts
+in `_handover/m3-step0-logs/` (the probe crate is uncommitted, kept as `probe.patch`). Every
+number below is **measured** there unless tagged otherwise. It changed four premises M3 had
+inherited and produced four decisions.
+
+**The API.**
+
+- **One server.** The SRV record `_api._tcp.radio-browser.info` has a single target,
+  `de1.api.radio-browser.info` (priority 1, weight 1, port 443), by two instruments
+  (`hickory-resolver` and `dig`). `de2` still resolves and answers but to the **same address**
+  (`91.98.4.78`); `fi1`, `nl1`, `at1`, `fr1` do not resolve; `all.api.radio-browser.info` is the
+  same address again; `api.radio-browser.info` is the Netlify-hosted docs site, not an API host.
+  `/json/servers` lists `de1` twice (v4, v6). Consequence: "3 retries across *different* hosts"
+  has no object — the client retries the same host with backoff, and the offline cache carries
+  resilience. The fallback list is the measured set: `de1`, `all.api`.
+- **SRV TTL ~5 min observed, zone TTL not answered.** A fresh answer carried `ttl=300` and
+  decremented 300 → 270 over 30 s; the "authoritative" `dig @<Cloudflare NS> +norecurse`
+  answer *also* decremented (270 → 265 in 5 s), so port 53 is intercepted by the local
+  resolver on this network and the zone value cannot be read from here. Re-resolve per launch
+  and on failover; persisting the result is pointless.
+- **`bycountrycodeexact` truncates silently at 1000.** With no `limit`, six of eight countries
+  came back with exactly 1000 records against `stationcount` 1 456–8 190, status 200, no
+  header saying so. `?limit=100000` returned `stationcount` ±1 (US 8 191 rows, 9 457 048 B in
+  3.2 s). The client must send an explicit limit and guard against a 1000-row answer.
+- **`hidebroken=true` equals the `lastcheckok == 1` subset exactly** (PT: 345 = 345, symmetric
+  difference 0, fetched back to back on one host). The countries list keeps its 250 rows under
+  it; per-country counts drop (US −955).
+- **`search`** honours `countrycode` (case-insensitive), `hidebroken`, `order=votes|
+  clickcount|clicktrend` with `reverse`, `limit` and `offset` (disjoint consecutive pages);
+  `search?countrycode=PT` was byte-for-byte the `bycountrycodeexact/PT` list (371 rows).
+  `nameExact` is case-insensitive (`ORBITAL` and `Orbital`), `order=name` uses a collation
+  the client cannot reproduce, and `name` matches a case- and diacritic-folded substring.
+  Whether `search` applies the 1000 default on a country larger than 1000 is **not
+  measured** (needs a > 1000 country through `search`).
+- **No compression.** `Accept-Encoding: gzip` is ignored (`tiny-http`, chunked). Some *station*
+  servers gzip playlists without being asked (Wowza) — M3c's playlist fetch decodes; the
+  stations client needs nothing.
+- Latency on this line: ttfb 139–971 ms; the 9.5 MB US list in 3.2 s. The census client
+  once sat 12 min before its first fetch of a station with no socket open; the report
+  *derived* "DNS is outside reqwest's `connect_timeout`" from it. **Falsified on the audio
+  path at M3a** (see "Reconnect ownership and stream timeouts": a stalled resolver is
+  bounded at 10.01 s); the census hang's cause is unexplained. The stations client still
+  gets a stall bound and a per-request total (M3a plan, F4) for its own reasons.
+- `/json/stats`: 59 411 stations, 6 647 broken, 241 countries; the countries list's
+  `stationcount` sums to 64 791 — unexplained, recorded (G7); the app shows its own counts.
+
+**The data (eight countries: US DE PT ES FR BR RU MT, 25 236 stations).**
+
+- Countries: 250 rows; **9 lowercase codes** (`ch de fr gr nz ru tr us uy`, one station each,
+  duplicating their uppercase row's name) and **`XX`** (empty name, 1 station); no empty codes.
+- Stations, pooled: `lastcheckok == 0` 8.7 %; `bitrate == 0` **16.8 %** (30.8 % in DE); `hls == 1`
+  **3.8 %** (9.7 % PT, 2.4 % DE); geo present **20.7 %**; empty `url_resolved` 210 rows; https
+  60.7 %; folded name + url duplicates 1–22 % per country (FR 832 rows); codec strings verbatim
+  `MP3` 16 678, `AAC+` 3 982, `AAC` 3 682, `UNKNOWN` 310, `OGG` 308, empty 210, `AAC,H.264` 41
+  (video), `MP4` 13. radio-browser rechecks every station roughly daily (`lastchecktime` age
+  p50 13–18 h, p90 24–71 h, max 120 h = its retention), which is what a 24 h list TTL
+  implicitly assumes — it holds.
+- **HLS shape (sample of 10 `hls == 1` stations, 7 countries; MT has none):** 5 are ADTS-AAC
+  media playlists with a leading ID3 tag (the timed-metadata carrier), 5 are MPEG-TS — 2
+  audio-only, **3 carrying H.264 video** (TV feeds listed as radio; one master's first variant is
+  video-only). fMP4: none. All live sliding windows, target durations 4–13 s, sequence
+  advancing on refresh. The two `.m3u8` URLs flagged `hls == 0` were `302`s onto plain ADTS
+  streams — the flag was right, the file name was not.
+- **Shoutcast v1: 0 of 148 reachable stations** answered `ICY 200 OK` (153 probed on a raw
+  socket, redirects followed; 22 % of `url_resolved` redirect; 93 % offer `icy-metaint`). Rule
+  of three: ≤ 2 %. See the Constraints entry for what the engine does with one.
+
+**The per-country cap, decided 750.** After the filter (drop `lastcheckok == 0` and empty
+`url_resolved`, dedupe folded name + url, keep `bitrate == 0` sorted last among equal votes,
+sort votes then clicktrend), the share of a country's total `clickcount` carried by its top N
+(`_handover/m3-step0-logs/p3-cap.tsv`, and the 750 column recomputed under the decided rules):
+
+| cc | filtered n | clicks @500 | **clicks @750** | clicks @1000 | votes @750 |
+|---|---|---|---|---|---|
+| US | 6 832 | 50.6 % | **56.9 %** | 61.9 % | 91.4 % |
+| DE | 5 735 | 52.0 % | **59.2 %** | 64.1 % | 85.6 % |
+| FR | 2 844 | 76.7 % | **84.0 %** | 88.5 % | 97.5 % |
+| RU | 2 650 | 63.4 % | **70.4 %** | 76.1 % | 96.1 % |
+| BR | 1 366 | 73.4 % | **83.9 %** | 93.4 % | 99.3 % |
+| ES | 1 236 | 88.9 % | **94.0 %** | 97.2 % | 99.5 % |
+| PT | 328 | 100 % | **100 %** | 100 % | 100 % |
+
+The curve is flat in the long tail; 750 is Martín's call (2026-09-21) between the report's 500
+and the next row.
+
+**Decisions (Martín, 2026-09-21, gate 1).** (1) Cap **750** per country. (2) **`bitrate == 0` is
+kept, sorted last** among equal votes: a zero bitrate is "unknown", not "broken" (`lastcheckok`
+covers broken), and dropping it costs 16.8 % pooled, 30.8 % in DE; the prefetch formula falls
+back to `one_decoder_read` when the bitrate is unknown (M3b). Reverses BUILD_PLAN's "drop
+bitrate 0". (3) **HLS is split:** ADTS-AAC media playlists (live refresh loop + ID3 strip) ship
+in M3 as M3c; the MPEG-TS demux and audio-variant selection move to after M4; until then a TS
+station fails with an honest error, not a reconnect loop. (4) The two `ondar-audio` defects
+Step 0 surfaced — the ICY status line surfacing as a reconnect loop, and DNS unbounded on the
+connect path — are fixed in M3a, each its own commit.
 
 ### Bundle identifier: `eu.ondar.radio` (decided 2026-09-21)
 
@@ -1165,6 +1457,19 @@ Both values are env-overridable (`ONDAR_READ_TIMEOUT_SECS`, `ONDAR_RETRY_TIMEOUT
 so `stream.rs` clamps `read_timeout` to `retry_timeout * 2` and warns if the invariant
 is violated.
 
+**The connect bound covers DNS (measured 2026-09-21, M3a G4b).** The M3 Step 0 report
+*derived* from a 12-minute hang of its own census client that reqwest's `connect_timeout`
+does not bound DNS resolution, and gate 1 asked M3a to measure it on the audio path or
+bound the connect phase outright. Measured first, with a resolver injected through
+`ClientBuilder::dns_resolver` whose future never completes: `stream::open` against the
+production client (`connect_timeout` 10 s) returned `Network` at **10.01 s**; against a
+200 ms bound it returns within the second. So on the engine's path a stalled resolver is
+bounded by `connect_timeout` and no extra bound is needed; the test
+`dns_resolution_is_inside_connect_timeout` pins it (a hang there would trip the test's 5 s
+guard). The census client's own hang therefore has an **unexplained** cause — it had the
+same 10 s `connect_timeout` — and is recorded as such, not as "DNS". Instrument instance
+eleven below is corrected accordingly.
+
 **Two upstream bugs in `stream-download` 0.24.4, not reported upstream** (decided
 2026-09-09 — the findings are recorded here rather than filed; revisit if either
 starts costing us): `handle_reconnect` tests only the outer `timeout` result, so a
@@ -1580,7 +1885,10 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 
 - Send a descriptive `User-Agent` (`Ondar/<version>`) on every radio-browser request.
 - Discover servers via the `_api._tcp.radio-browser.info` SRV record (`hickory-resolver`),
-  with hardcoded fallbacks; do not hammer a single host.
+  with hardcoded fallbacks; do not hammer a single host. **There is one host** (measured
+  2026-09-21: the SRV record has a single target, `de1`; `de2` is the same address; the older
+  mirror names no longer resolve), so retries are same-host with backoff, three attempts, and
+  **the cache is the resilience story, not the retry loop**.
 - Call the station-click endpoint when playback actually starts, once per play.
 - Cache aggressively (countries: 7 days, station lists: 24 h) and respect the cache offline.
 
@@ -1601,7 +1909,9 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    **M2d (collapsed/expanded resize: two heights, the D1 cap, the page-commit round trip) done
    2026-09-21, merged `2a9bae9`, tagged `m2d-done`** — see "M2d: resize in place". **M2 complete.**
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
-   click endpoint, cache TTLs, favourites/recents.
+   click endpoint, cache TTLs, favourites/recents. **M3a built 2026-09-22 on branch `m3a`** (the
+   crate, cache, store, commands, a dev list) — see "M3a: the station directory, built"; M3b (UI,
+   click, prefetch from bitrate) and M3c (HLS, ADTS only) follow.
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
    coordinate DB merge. Record measured bundle size.
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
@@ -1689,6 +1999,38 @@ same family as the first five (quiet degradation: a 429 in a subagent's log is n
 review's output), with a second half: **count a tool's claims about itself from its artefacts, not
 from its summary** — the provenance of every verdict was re-derived from the twelve transcripts
 before the findings file called eight of nine independently verified.
+
+A ninth to a twelfth, 2026-09-21 (M3 Step 0 census), all of the quiet-degradation kind. **Ninth:
+a 200 that is not the whole answer.** `bycountrycodeexact` with no `limit` returned exactly 1000
+rows for six countries whose `stationcount` was 1 456–8 190, with no header saying so; the
+instrument is the response itself, and the check was the record count against a second source
+(the countries list). **Tenth: a body that is not what was asked for.** A station server
+(Wowza) gzip-compressed a playlist although the request sent no `Accept-Encoding`; the probe
+parsed compressed bytes as playlist lines and requested a garbage segment URL. The check was
+the `content-encoding` header and the magic bytes. **Eleventh — corrected at M3a: a derived cause
+recorded as a measured one.** The census client sat 12 minutes with no socket open (`lsof`
+against the log — that part was measured), and the report wrote the *cause* as "reqwest's
+`connect_timeout` bounds the TCP connect, not the DNS resolution before it" without measuring
+it. Measured at M3a with an injected stalled resolver, the production client's
+`connect_timeout` bounds DNS too (`open` returned at 10.01 s). The instrument lesson is the
+opposite of the one first written: the hang was real, its explanation was a guess, and a
+guess tagged *derived* must be checked before it becomes a fix. The hang's cause stays
+unexplained. **Twelfth: the parser of the second instrument.** The `dig`
+output parser matched the script's own `##` headings that contained "SRV" and reported a
+disagreement between two instruments that in fact agreed; the run stopped, correctly, and the
+parser was the defect. All four are in `_handover/m3-step0-report.md`.
+
+**Thirteenth, 2026-09-22 (M3a acceptance, item 8): a unit test on the wrong level, recorded as
+the fix.** `e51f3ea` made the ICY status line classify as `Http`, pinned it with socket tests on
+`stream::open`, and this document's Constraints entry then said Shoutcast v1 servers "surface as
+an `Http` error since M3a" — but the engine's `retry_or_fail` never read the cause, so the
+runtime still ran five attempts, 31 s and six requests before the `Http` appeared. Acceptance
+measured it with the same instrument Step 0 had used (`stall_bench` against
+`scripts/icy-server.py`) and got Step 0's number back. The lesson: a test that pins a function's
+output proves that function; the claim was about the session, and only a test at the session's
+level (`engine::session_tests`, counting requests) can carry it. Same family as eleven — a
+derived claim written as a measured one — with the added step that the derivation had a green
+test beside it.
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 

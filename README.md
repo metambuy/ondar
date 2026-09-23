@@ -2,7 +2,7 @@
 
 macOS menu bar radio player. Tauri v2 + Rust core. See `ONDAR.md` for the project document.
 
-## Status: M2 done — tray + NSPanel popover; next M3 (station API, SQLite cache, country/station UI)
+## Status: M2 done; M3a (station directory: client, SQLite cache, store, commands, dev list) on branch `m3a`, acceptance run 2026-09-22
 
 M1 (scaffold + audio engine) and M2 (tray + NSPanel popover, merged 2026-09-21 at `m2d-done`) are
 done. M2d added the two height states: an Expand/Collapse control in
@@ -167,6 +167,15 @@ are placeholders**, not measured; they're marked as such in `engine.rs` and need
 from `scripts/stall-server.py` (now written — see "Stall testing"); tuning is its own pass.
 
 ## Stall testing
+
+**Shoutcast v1 (`ICY 200 OK`) check, M3a:** `python3 scripts/stall-server.py --file <any .mp3>
+--mode icy200 --port 18765` then
+`cargo run -p ondar-audio --example stall_bench -- http://127.0.0.1:18765/stream 12` — expected
+`Error { code: Http, .. }` on the first attempt and no `Reconnecting`. Before M3a this went into
+the reconnect loop (measured 2026-09-21); the unit test
+`stream::tests::icy_status_line_is_http_not_network` pins it against a real socket, and
+`engine::session_tests` pins the one-request policy. (`scripts/icy-server.py`, a second server
+that did only this, was removed on 2026-09-22 — the `icy200` mode is the same answer.)
 
 Pulling real Wi-Fi is nondeterministic and slow to repeat. `scripts/stall-server.py` is a
 deterministic stand-in: a raw-socket test server (not `http.server` — this needs control

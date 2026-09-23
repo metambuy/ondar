@@ -12,9 +12,15 @@ use std::thread;
 use tauri::Emitter;
 
 use ondar_audio::{AudioEngine, EngineEvent, PlaybackState};
+use ondar_stations::model::RefreshOutcome;
+use ondar_stations::{Event as StationsEvent, StationsHandle, StationsService};
+use tauri::Manager;
 
 pub struct AppState {
     pub engine: AudioEngine,
+    /// The station directory (`ondar-stations`): every method answered by its own DB thread,
+    /// none blocking the caller. Started in `setup`, once the data directory is known.
+    pub stations: StationsHandle,
 }
 
 /// Event names — the only strings the webview needs to know.
@@ -28,6 +34,28 @@ pub mod events {
     /// never decides it. The page asks `get_panel_layout` on mount for the same value. M2d;
     /// supersedes M2c's `panel:view`.
     pub const PANEL_LAYOUT: &str = "panel:layout";
+    /// A background refresh of one country's station list ended (stale-while-revalidate,
+    /// M3a F5). Payload `StationsUpdated { country_code, outcome }`: `landed` — the page
+    /// re-requests `list_stations`; `failed` — the expired list stays, the page clears its
+    /// `refreshing` flag and does not re-request (a re-request would start another refresh).
+    pub const STATIONS_UPDATED: &str = "stations:updated";
+    /// The same for the countries list. Payload `CountriesUpdated { outcome }`.
+    pub const COUNTRIES_UPDATED: &str = "countries:updated";
+}
+
+/// Payload of `stations:updated`.
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct StationsUpdated {
+    pub country_code: String,
+    pub outcome: RefreshOutcome,
+}
+
+/// Payload of `countries:updated`.
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CountriesUpdated {
+    pub outcome: RefreshOutcome,
 }
 
 pub fn run() {
@@ -49,7 +77,7 @@ pub fn run() {
         .init();
 
     let user_agent = format!("Ondar/{}", env!("CARGO_PKG_VERSION"));
-    let (engine, engine_events) = AudioEngine::start(user_agent);
+    let (engine, engine_events) = AudioEngine::start(user_agent.clone());
 
     let app = tauri::Builder::default()
         // Registered first, as the plugin's own docs require: its setup is where a second
@@ -74,11 +102,54 @@ pub fn run() {
         // Manages the panel store `PanelBuilder::build()` registers into; without it the
         // builder's internal `to_panel` panics on missing state.
         .plugin(tauri_nspanel::init())
-        .manage(AppState { engine })
         // Tray menu items. Listeners run in the event loop, on the main thread
         // (tauri 2.11.5 `app.rs:2588-2598`).
         .on_menu_event(tray::on_menu_event)
         .setup(move |app| {
+            // The station directory lives under the identifier-keyed data directory —
+            // `~/Library/Application Support/eu.ondar.radio/` for the bundle, `….dev/` for
+            // `pnpm tauri:dev` (its own file, so dev and bundle never share a cache). Its
+            // events are forwarded as Tauri events; the sink runs on the service's DB thread,
+            // and `emit` is thread-safe. Nothing here can stop the launch: a database that
+            // will not open is moved aside and recreated by the service, and if the directory
+            // itself is unusable the handle is degraded (every command answers
+            // `code: "stations"`) while the tray, the popover and audio come up as usual
+            // (`/code-review` finding 2, 2026-09-22).
+            let sink_handle = app.handle().clone();
+            let sink: ondar_stations::EventSink = std::sync::Arc::new(move |ev| {
+                let result = match ev {
+                    StationsEvent::StationsUpdated {
+                        country_code,
+                        outcome,
+                    } => sink_handle.emit(
+                        events::STATIONS_UPDATED,
+                        StationsUpdated {
+                            country_code,
+                            outcome,
+                        },
+                    ),
+                    StationsEvent::CountriesUpdated { outcome } => {
+                        sink_handle.emit(events::COUNTRIES_UPDATED, CountriesUpdated { outcome })
+                    }
+                };
+                if let Err(e) = result {
+                    log::warn!("failed to emit stations event: {e}");
+                }
+            });
+            let stations = match app.path().app_data_dir() {
+                Ok(data_dir) => {
+                    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                        log::warn!("cannot create {}: {e}", data_dir.display());
+                    }
+                    StationsService::start(data_dir.join("ondar.sqlite"), &user_agent, sink)
+                }
+                Err(e) => {
+                    log::error!("no application data directory: {e}");
+                    StationsHandle::unavailable(format!("no application data directory: {e}"))
+                }
+            };
+            app.manage(AppState { engine, stations });
+
             panel::setup(app)?;
             tray::setup(app)?;
 
@@ -125,6 +196,14 @@ pub fn run() {
             commands::panel::panel_set_expanded,
             commands::panel::panel_layout_committed,
             commands::panel::panel_view_back,
+            commands::stations::list_countries,
+            commands::stations::list_stations,
+            commands::stations::search_stations,
+            commands::stations::list_favourites,
+            commands::stations::add_favourite,
+            commands::stations::remove_favourite,
+            commands::stations::list_recents,
+            commands::stations::record_played,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ondar");

@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { onPanelLayout, panel } from "../api";
 import type { PanelLayout, PanelView } from "../api";
 import About from "./About";
+import DevStations from "./DevStations";
 import styles from "./panel.module.css";
 import Transport from "./Transport";
 
@@ -104,6 +105,7 @@ export default function Panel() {
     <main className={styles.panel}>
       <div hidden={view === "about"}>
         <Transport />
+        <DevStations />
       </div>
       {view === "about" && (
         <About

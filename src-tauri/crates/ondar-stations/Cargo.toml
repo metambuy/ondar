@@ -1,0 +1,27 @@
+[package]
+name = "ondar-stations"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Station directory for Ondar: radio-browser.info client, normalisation, ranking, SQLite cache and store. No Tauri dependency."
+
+[dependencies]
+# Types shared with the UI, exported by ts-rs exactly as ondar-audio does (`cargo test --workspace`
+# writes src/bindings/ through .cargo/config.toml's TS_RS_EXPORT_DIR).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ts-rs = { version = "12", features = ["serde-compat"] }
+thiserror = "2"
+log = "0.4"
+# The HTTP client: the same TLS the engine uses (native-tls via stream-download). No gzip
+# feature on purpose — radio-browser ignores Accept-Encoding (measured 2026-09-21, G6).
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+# SRV discovery of _api._tcp.radio-browser.info (verified 0.26.3 in the M3 Step 0 census).
+hickory-resolver = { version = "0.26.3", features = ["tokio", "system-config"] }
+# The service's fetch runtime (multi-thread, two workers) and the retry backoff sleeps.
+tokio = { version = "1.52", features = ["rt-multi-thread", "time", "sync"] }
+# The cache and store. `bundled` compiles SQLite in, so the bundle carries its own version and
+# the tests run in-memory with no system library involved. 0.40.2 is the current release
+# (2026-08-08). No other crate in the tree offers SQLite.
+rusqlite = { version = "0.40", features = ["bundled"] }

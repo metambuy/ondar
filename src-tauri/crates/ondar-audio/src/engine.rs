@@ -548,6 +548,10 @@ fn run_session(
     rt: tokio::runtime::Handle,
     player: Arc<Player>,
 ) {
+    // Whether this session has ever opened its stream. A terminal answer ends the session
+    // only before that: afterwards the same 404 is a mount mid-restart, and the backoff
+    // carries it (`/code-review` finding 4, 2026-09-22).
+    let mut opened_once = false;
     loop {
         if ctx.cancelled() {
             return;
@@ -562,12 +566,19 @@ fn run_session(
             Ok(o) => o,
             Err(e) => {
                 log::warn!("connect failed: {}", e.message);
-                if !retry_or_fail(&ctx, e.code, e.message) {
+                if !retry_or_fail(
+                    &ctx,
+                    e.code,
+                    e.message,
+                    e.terminal && !opened_once,
+                    e.retry_after,
+                ) {
                     return;
                 }
                 continue;
             }
         };
+        opened_once = true;
         *ctx.download.lock().unwrap() = Some(opened.reader.cancellation_token());
         if ctx.cancelled() {
             opened.reader.cancel_download();
@@ -604,7 +615,7 @@ fn run_session(
             }
             Err(e) => {
                 log::warn!("decoder failed to open: {e}");
-                if !retry_or_fail(&ctx, ErrorCode::Decode, e.to_string()) {
+                if !retry_or_fail(&ctx, ErrorCode::Decode, e.to_string(), false, None) {
                     return;
                 }
                 continue;
@@ -695,17 +706,49 @@ fn run_session(
             &ctx,
             ErrorCode::Network,
             "the stream ended unexpectedly".to_string(),
+            false,
+            None,
         ) {
             return;
         }
     }
 }
 
-fn retry_or_fail(ctx: &SessionCtx, code: ErrorCode, message: String) -> bool {
+/// A server's `Retry-After` lengthens the backoff's delay up to this; past it the session
+/// would look dead to the user, and the backoff's own 16 s is already the longest wait shown.
+const RETRY_AFTER_CAP: Duration = Duration::from_secs(30);
+
+/// The retry policy, by cause. A **terminal** failure (`StreamError::terminal` — a non-HTTP
+/// answer such as `ICY 200 OK`, or 401/403/404/410 — and only while the session has never
+/// opened, see `run_session`) fails the session on the spot: retrying cannot change what the
+/// server says. Everything else (network, 5xx, 408/429, decoder, a stream that ended, any
+/// answer on a reconnect) goes through the 1/2/4/8/16 s backoff, each delay stretched to the
+/// server's `Retry-After` when it sent one (capped), and fails with the code of the last
+/// attempt once the five are spent. Until 2026-09-22 the cause was ignored here and only
+/// labelled the final error; M3a acceptance item 8 measured an ICY server at
+/// `Reconnecting { attempt: 4 }` after 12 s and `Error { code: Http }` only at 31 s, six
+/// requests — `session_tests` pins the request counts. The same day's review (finding 4)
+/// narrowed the terminal set from "any 4xx" and confined it to the first open.
+fn retry_or_fail(
+    ctx: &SessionCtx,
+    code: ErrorCode,
+    message: String,
+    terminal: bool,
+    retry_after: Option<Duration>,
+) -> bool {
+    if terminal {
+        log::warn!("not retrying, the answer would not change: {message}");
+        ctx.set_state(PlaybackState::Error { code, message });
+        return false;
+    }
     let mut backoff = ctx.backoff.lock().unwrap();
     match backoff.next() {
         Some((attempt, delay)) => {
             drop(backoff);
+            let delay = match retry_after {
+                Some(ra) => delay.max(ra.min(RETRY_AFTER_CAP)),
+                None => delay,
+            };
             ctx.set_state(PlaybackState::Reconnecting { attempt });
             ctx.sleep_cancellable(delay);
             !ctx.cancelled()
@@ -903,6 +946,317 @@ fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod session_tests {
+    //! The retry policy, pinned at the level a unit test on `stream::open` could not reach:
+    //! `run_session` itself, against real sockets on 127.0.0.1 that count the requests they
+    //! get. No audio device — the `Player` hangs off a device-less `rodio::mixer::mixer`, so
+    //! these run on a CI runner with no output hardware. Each test says what makes it fail.
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc::Receiver;
+
+    use super::*;
+
+    /// Accept forever, count every request; connection `i` is answered with `responses[i]`
+    /// (the last one repeated), the socket held briefly so the client sees a complete answer,
+    /// then closed.
+    fn scripted_server(responses: Vec<Vec<u8>>) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                let n = seen.fetch_add(1, Ordering::SeqCst);
+                let response = &responses[n.min(responses.len() - 1)];
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(response);
+                let _ = sock.flush();
+                thread::sleep(Duration::from_millis(200));
+            }
+        });
+        (format!("http://{addr}/stream"), count)
+    }
+
+    /// One fixed answer for every connection.
+    fn counting_server(response: &'static [u8]) -> (String, Arc<AtomicUsize>) {
+        scripted_server(vec![response.to_vec()])
+    }
+
+    /// A playable stream that ends: an HTTP 200 carrying `secs` of 16-bit mono 44.1 kHz WAV
+    /// silence, then the connection closes. Shorter than the 2 s ring on purpose — nothing
+    /// drains the device-less `Player`, so a longer file would block the decode loop on a full
+    /// ring instead of reaching EOF.
+    fn wav_response(secs: f32) -> Vec<u8> {
+        let rate = 44_100u32;
+        let data_len = (rate as f32 * secs) as u32 * 2;
+        let mut w = Vec::new();
+        w.extend_from_slice(
+            b"HTTP/1.0 200 OK\r\ncontent-type: audio/wav\r\nconnection: close\r\n\r\n",
+        );
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(36 + data_len).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        w.extend_from_slice(&1u16.to_le_bytes()); // mono
+        w.extend_from_slice(&rate.to_le_bytes());
+        w.extend_from_slice(&(rate * 2).to_le_bytes()); // byte rate
+        w.extend_from_slice(&2u16.to_le_bytes()); // block align
+        w.extend_from_slice(&16u16.to_le_bytes()); // bits
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data_len.to_le_bytes());
+        w.resize(w.len() + data_len as usize, 0);
+        w
+    }
+
+    struct Harness {
+        ctx: SessionCtx,
+        events: Receiver<EngineEvent>,
+        // Dropping the runtime while `run_session` still holds its handle would abort the
+        // open; kept for the harness's lifetime.
+        _rt: tokio::runtime::Runtime,
+        // The mixer's output end; dropping it would end the `Player`'s mixer.
+        _mixer_out: rodio::mixer::MixerSource,
+    }
+
+    /// Start `run_session` against `url` on its own thread, as `Engine::play` does, minus the
+    /// device: the `Player` is connected to a bare mixer that nothing drains.
+    fn start_session(url: &str) -> Harness {
+        let (ev_tx, ev_rx) = mpsc::channel();
+        let shared = Shared {
+            state: Arc::new(Mutex::new(PlaybackState::Connecting)),
+            events: ev_tx,
+            gains: EqGains::default(),
+            paused: Arc::new(AtomicBool::new(false)),
+        };
+        let ctx = SessionCtx {
+            cancel: Arc::new(AtomicBool::new(false)),
+            download: Arc::new(Mutex::new(None)),
+            ring: Arc::new(Mutex::new(None)),
+            backoff: Arc::new(Mutex::new(Backoff::default())),
+            reconnect_count: Arc::new(AtomicU64::new(0)),
+            shared,
+        };
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (mixer, mixer_out) = rodio::mixer::mixer(
+            std::num::NonZero::new(2).expect("2"),
+            std::num::NonZero::new(44_100).expect("44100"),
+        );
+        let player = Arc::new(Player::connect_new(&mixer));
+        let url = stream::parse_url(url).expect("url");
+        let client = stream::build_client("Ondar/test");
+        let handle = rt.handle().clone();
+        let session = ctx.clone();
+        thread::spawn(move || run_session(session, url, client, handle, player));
+        Harness {
+            ctx,
+            events: ev_rx,
+            _rt: rt,
+            _mixer_out: mixer_out,
+        }
+    }
+
+    /// Wait up to `within` for the shared state to satisfy `done`; returns every state seen.
+    fn states_until(
+        h: &Harness,
+        within: Duration,
+        done: impl Fn(&PlaybackState) -> bool,
+    ) -> Vec<PlaybackState> {
+        let deadline = Instant::now() + within;
+        let mut seen = Vec::new();
+        let mut drain = |seen: &mut Vec<PlaybackState>| {
+            while let Ok(ev) = h.events.try_recv() {
+                if let EngineEvent::State(s) = ev {
+                    seen.push(s);
+                }
+            }
+        };
+        loop {
+            drain(&mut seen);
+            if done(&h.ctx.shared.state()) || Instant::now() >= deadline {
+                // The state is set before its event is sent; pick up the one for it.
+                thread::sleep(Duration::from_millis(20));
+                drain(&mut seen);
+                return seen;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn is_error(s: &PlaybackState) -> bool {
+        matches!(s, PlaybackState::Error { .. })
+    }
+
+    fn reconnecting(seen: &[PlaybackState]) -> Vec<u32> {
+        seen.iter()
+            .filter_map(|s| match s {
+                PlaybackState::Reconnecting { attempt } => Some(*attempt),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Fails on a cause-blind policy: the state would be `Reconnecting { 1 }` inside the 3 s
+    /// window (the terminal `Error` only arrives after 31 s) and the server would see a
+    /// second request at ~1.2 s.
+    #[test]
+    fn an_icy_server_fails_the_session_on_the_first_attempt() {
+        let (url, requests) = counting_server(
+            b"ICY 200 OK\r\nicy-name: synthetic shoutcast v1\r\ncontent-type: audio/mpeg\r\n\r\n\
+              0123456789abcdef0123456789abcdef",
+        );
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(3), is_error);
+        let state = h.ctx.shared.state();
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::Http,
+                    ..
+                }
+            ),
+            "expected Error {{ Http }} within 3 s, got {state:?}"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            Vec::<u32>::new(),
+            "no Reconnecting state"
+        );
+        // Let a would-be second attempt (1 s backoff) show itself before counting.
+        thread::sleep(Duration::from_millis(1300));
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "one request, no retry");
+        h.ctx.cancel();
+    }
+
+    /// Same shape for a 404 on the first open: the resource is not there for us.
+    #[test]
+    fn a_404_fails_the_session_on_the_first_attempt() {
+        let (url, requests) = counting_server(
+            b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(3), is_error);
+        let state = h.ctx.shared.state();
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::Http,
+                    ..
+                }
+            ),
+            "expected Error {{ Http }} within 3 s, got {state:?}"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            Vec::<u32>::new(),
+            "no Reconnecting state"
+        );
+        thread::sleep(Duration::from_millis(1300));
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "one request, no retry");
+        h.ctx.cancel();
+    }
+
+    /// A 5xx keeps the backoff. Fails if 5xx were made terminal (one request, an `Error`
+    /// state inside the window) or if the backoff's first delay were not ~1 s.
+    #[test]
+    fn a_503_is_retried_through_the_backoff() {
+        let (url, requests) = counting_server(
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(3), |_| {
+            requests.load(Ordering::SeqCst) >= 2
+        });
+        assert!(
+            requests.load(Ordering::SeqCst) >= 2,
+            "a second request within 3 s (saw {})",
+            requests.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            reconnecting(&seen).first(),
+            Some(&1),
+            "Reconnecting {{ 1 }} was emitted"
+        );
+        assert!(!is_error(&h.ctx.shared.state()), "not failed after one 5xx");
+        h.ctx.cancel();
+    }
+
+    /// A 429 on the first open keeps the backoff, and `Retry-After` stretches its delay.
+    /// Fails on the "every 4xx is terminal" rule (`Error { Http }` at once, one request) and
+    /// if the header is ignored (the backoff alone sends the second request at ~1.1 s; the
+    /// assertion at 2 s would see two).
+    #[test]
+    fn a_429_is_retried_after_its_retry_after() {
+        let (url, requests) = counting_server(
+            b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 3\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(2), |_| {
+            requests.load(Ordering::SeqCst) >= 2
+        });
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "no second request inside the header's 3 s"
+        );
+        assert_eq!(
+            reconnecting(&seen).first(),
+            Some(&1),
+            "Reconnecting {{ 1 }} was emitted"
+        );
+        assert!(!is_error(&h.ctx.shared.state()), "not failed on a 429");
+        let _ = states_until(&h, Duration::from_secs(4), |_| {
+            requests.load(Ordering::SeqCst) >= 2
+        });
+        assert!(
+            requests.load(Ordering::SeqCst) >= 2,
+            "a second request once Retry-After elapsed"
+        );
+        h.ctx.cancel();
+    }
+
+    /// A 404 on a reconnect keeps the backoff: the first connection serves 1.5 s of WAV that
+    /// ends (`Reconnecting { 1 }`), every later one answers 404 — a mount mid-restart. Fails on
+    /// the "every 4xx is terminal" rule: `Error { Http }` right after the reconnect's 404 and
+    /// never `Reconnecting { 2 }`.
+    #[test]
+    fn a_404_on_a_reconnect_keeps_the_backoff() {
+        let (url, requests) = scripted_server(vec![
+            wav_response(1.5),
+            b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
+        ]);
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(8), |s| {
+            matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
+        });
+        let state = h.ctx.shared.state();
+        assert!(!is_error(&state), "ended on the reconnect's 404: {state:?}");
+        assert_eq!(
+            reconnecting(&seen),
+            vec![1, 2],
+            "the 404 after playback went through the backoff ({seen:?})"
+        );
+        assert!(
+            requests.load(Ordering::SeqCst) >= 2,
+            "the reconnect asked the server (saw {})",
+            requests.load(Ordering::SeqCst)
+        );
+        h.ctx.cancel();
+    }
 }
 
 #[cfg(test)]
