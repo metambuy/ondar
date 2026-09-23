@@ -211,7 +211,7 @@ until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ':
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 **The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
-(vitest, jsdom) runs `src/**/*.test.tsx` — **14** today: 12 in `StationList.test.tsx` (the
+(vitest, jsdom) runs `src/**/*.test.tsx` — **15** today: 12 in `StationList.test.tsx` (the
 wrong-source guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show
 re-requests, ★ on lists favourites then recents with the country reply left behind dropped, a ★
 reply landing after ★ off dropped, `recents:updated` and a favourite toggle re-request only the ★
@@ -219,12 +219,13 @@ list, a click on the playing row does nothing and on the paused row resumes — 
 does nothing while `reconnecting`, the row's reading pinned beside the transport's —
 `/code-review` finding 3, 2026-09-23; the previous source's error does not outlive a source
 change while the last answer stays across a show — finding 4; a reply is not serialised outside
-`?measure=perf`, a `JSON.stringify` spy — finding 5), 1 in `Transport.test.tsx` (`reconnecting` offers no
+`?measure=perf`, a `JSON.stringify` spy — finding 5), 2 in `Transport.test.tsx` (`reconnecting` offers no
 Play — Pause disabled, Stop enabled, as `connecting` does; a Play there would be a new session,
-a reset backoff and a second vote — finding 3; fails on the code before it) and 1
+a reset backoff and a second vote — finding 3; fails on the code before it; a rejected `play`
+renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `180 + 14`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `180 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -240,8 +241,8 @@ pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.de
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
-                              # tests, 14 today (StationList + Transport + Panel). Its count is reported BESIDE
-                              # the Rust count — "180 + 14", never "194" — and CI runs it as its own step
+                              # tests, 15 today (StationList + Transport + Panel). Its count is reported BESIDE
+                              # the Rust count — "180 + 15", never "195" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types

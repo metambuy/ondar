@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { audio, onState } from "../api";
 import type { PlaybackState, Station } from "../api";
 import styles from "./panel.module.css";
+import { describeError } from "./provenance";
 
 type Props = {
   /** The station Now Playing names (`Panel`'s `playing`); Play replays it. */
@@ -38,7 +39,7 @@ export default function Transport({ station, isFavourite, onToggleFavourite }: P
   // CLAUDE.md invariant 5): Pause offered but disabled, Stop offered, no Play. A Play here would
   // be a new `play` call — a new session, a reset backoff and a second vote on its first
   // `Playing` (`/code-review` finding 3, 2026-09-23; Transport.test.tsx).
-  const report = (what: string) => (e: unknown) => setLastError(`${what}: ${JSON.stringify(e)}`);
+  const report = (what: string) => (e: unknown) => setLastError(`${what}: ${describeError(e)}`);
   const active = state.kind !== "idle" && state.kind !== "error";
 
   return (

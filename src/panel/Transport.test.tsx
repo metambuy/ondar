@@ -7,17 +7,28 @@
 // Fails if `reconnecting` falls through to the Play branch (the code before this test), or if
 // Stop — the one thing a person may want during a reconnect — is not offered.
 //
+// The second test (`/code-review` finding 8): a rejected `play` — argument validation, the
+// only thing a command's rejection means — renders as `code: message` through `describeError`,
+// as the country control and the list render theirs. Fails on the raw `JSON.stringify` text
+// (the code before it).
+//
 // `../api` is mocked whole: nothing reaches Tauri; the state arrives through `onState` as the
 // `playback:state` event would.
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PlaybackState, Station } from "../api";
 import Transport from "./Transport";
 
 const mock = vi.hoisted(() => {
   const stateListeners: ((s: PlaybackState) => void)[] = [];
+  let playRejection: unknown = null;
   return {
     stateListeners,
+    /** The next `play` calls reject with `e` (`null`: they resolve). */
+    rejectPlay: (e: unknown) => {
+      playRejection = e;
+    },
+    play: () => (playRejection === null ? Promise.resolve() : Promise.reject(playRejection)),
     onState: (cb: (s: PlaybackState) => void) => {
       stateListeners.push(cb);
       return Promise.resolve(() => {});
@@ -27,7 +38,7 @@ const mock = vi.hoisted(() => {
 
 vi.mock("../api", () => ({
   audio: {
-    play: () => Promise.resolve(),
+    play: mock.play,
     pause: () => Promise.resolve(),
     resume: () => Promise.resolve(),
     stop: () => Promise.resolve(),
@@ -62,6 +73,7 @@ const emitState = (s: PlaybackState) => act(async () => mock.stateListeners.forE
 afterEach(() => {
   cleanup();
   mock.stateListeners.length = 0;
+  mock.rejectPlay(null);
 });
 
 describe("Transport", () => {
@@ -77,5 +89,14 @@ describe("Transport", () => {
     expect(screen.queryByRole("button", { name: "Play" })).toBeNull();
     expect(button("Pause").disabled).toBe(true);
     expect(button("Stop").disabled).toBe(false);
+  });
+
+  it("renders a rejected play as `code: message`, as the country control and the list do", async () => {
+    mock.rejectPlay({ code: "invalid_argument", message: "url is empty" });
+    render(<Transport station={fip} isFavourite={false} onToggleFavourite={() => {}} />);
+    await act(async () => {});
+    fireEvent.click(button("Play"));
+    await act(async () => {});
+    expect(screen.getByRole("alert").textContent).toBe("play: invalid_argument: url is empty");
   });
 });
