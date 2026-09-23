@@ -127,6 +127,16 @@ tauri_panel! {
     })
 }
 
+/// The popover's page. A debug build may carry the measurement harness's query
+/// (`measure.rs`, `ONDAR_MEASURE`); a release build has no other URL than the plain one.
+fn panel_url() -> WebviewUrl {
+    #[cfg(debug_assertions)]
+    if let Some(url) = crate::measure::panel_url() {
+        return url;
+    }
+    WebviewUrl::App("panel.html".into())
+}
+
 /// Build the popover, hidden. Call from `setup`, before `tray::setup`.
 pub fn setup(app: &mut App) -> tauri::Result<()> {
     // Must precede `PanelBuilder::build()`. With `no_activate(true)` the builder forces
@@ -136,7 +146,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     app.manage(PanelState::default());
 
     let panel = PanelBuilder::<_, OndarPanel<_>>::new(app.handle(), PANEL_LABEL)
-        .url(WebviewUrl::App("panel.html".into()))
+        .url(panel_url())
         .size(Size::Logical(LogicalSize::new(
             PANEL_WIDTH,
             COLLAPSED_HEIGHT,
@@ -199,6 +209,13 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let on_resign = app.handle().clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
+            // The measurement harness (debug builds only) keeps the popover up so a measurement
+            // can be watched from Terminal or the Web Inspector; logged, never silent.
+            #[cfg(debug_assertions)]
+            if crate::measure::keep_open() {
+                log::info!("panel hide reason=resign_key SUPPRESSED measure_keep_open=1");
+                return;
+            }
             hide(&on_resign, HideReason::ResignKey);
         }
     });

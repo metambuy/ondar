@@ -97,6 +97,14 @@ export const stations = {
   recordPlayed: (station: Station) => invoke<void>("record_played", { station }),
 };
 
+// The dev-only measurement harness's one command (M3b 1a; `src/measure.ts`). The command is
+// compiled into debug builds only, and the page calls it only when loaded with `?measure=…`,
+// which a release build never is.
+export const measure = {
+  report: (kind: string, fields: string, tPage: number) =>
+    invoke<void>("measure_report", { kind, fields, tPage }),
+};
+
 export const onStationsUpdated = (cb: (u: StationsUpdated) => void): Promise<UnlistenFn> =>
   listen<StationsUpdated>("stations:updated", (e) => cb(e.payload));
 export const onCountriesUpdated = (cb: (u: CountriesUpdated) => void): Promise<UnlistenFn> =>

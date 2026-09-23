@@ -4,6 +4,9 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+// The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
+#[cfg(debug_assertions)]
+mod measure;
 mod panel;
 mod tray;
 
@@ -152,6 +155,8 @@ pub fn run() {
 
             panel::setup(app)?;
             tray::setup(app)?;
+            #[cfg(debug_assertions)]
+            measure::setup(app.handle());
 
             let handle = app.handle().clone();
             thread::Builder::new()
@@ -204,6 +209,8 @@ pub fn run() {
             commands::stations::remove_favourite,
             commands::stations::list_recents,
             commands::stations::record_played,
+            #[cfg(debug_assertions)]
+            measure::measure_report,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Ondar");
