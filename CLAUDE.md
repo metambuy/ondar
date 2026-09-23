@@ -36,7 +36,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
 | M2 | Tray + NSPanel popover | **done** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) merged 2026-09-21 (`2a9bae9`, tagged `m2d-done`) |
-| M3 | Station API + SQLite cache + country/station UI | **in progress** — **M3b** on branch `m3b` from 2026-09-23 (plan `_handover/m3b-plan.md`: Step 0 folded into commits 1a harness · 1b country control + station list · 1c Now Playing · 2 the list measured at 50/327/750); Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); awaiting merge |
+| M3 | Station API + SQLite cache + country/station UI | **in progress** — **M3b built** on branch `m3b` from 2026-09-23 (plan `_handover/m3b-plan.md`; Step 0 folded into the commits: 1a `fbb0a79` harness · 1b `de87005` country control + station list + the TS runner · 1c `b4bbfbc` Now Playing · 2 `d1129a3` the list measured at 50/327/750, no virtualisation · 4 `bb2452d` favourites/recents, presets retired · 5 `33400f5` the click endpoint · 6 `155d14d` prefetch from bitrate · 7 docs; **acceptance pending** — ONDAR.md, "M3b: the collapsed view…"); Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); awaiting merge |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
 | M6 | Signing, notarisation, DMG | |
@@ -274,7 +274,7 @@ the user's choice survives it and Back restores it — decided 2026-09-21), logg
 effect after the render that used it, and Rust completes the visible change then — orders a
 pending show in, or changes the visible panel's frame — if that generation is still pending. A
 stale, superseded or cancelled generation is a logged no-op; a hide cancels; and a fallback
-timer (`LAYOUT_FALLBACK`, 250 ms provisional, provenance in its doc comment) completes without
+timer (`LAYOUT_FALLBACK`, 250 ms, kept at n = 74 on 2026-09-23 — provenance in its doc comment) completes without
 the report so a dead page cannot wedge the popover — `trigger=fallback` on a healthy page is a
 defect. A fourth, `panel_view_back()` (`panel.viewBack()`): the page's Back button left the About
 pane — the one page-local transition — and reports it, so the pane a later layout event carries

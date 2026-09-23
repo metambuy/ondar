@@ -248,6 +248,11 @@ outstanding.
 
 Re-verify at the start of each milestone that touches these; update this list.
 
+**Frontend test runner (added M3b 1b, 2026-09-23, from `pnpm-lock.yaml`):** vitest 5.0.1,
+@testing-library/react 16.3.3, @testing-library/dom 10.4.2 (a peer the second requires and
+pnpm does not add on its own — four packages where the decision named three), jsdom 30.1.1.
+`pnpm test` runs `src/**/*.test.tsx`; its count is reported beside the Rust count, never summed.
+
 ### The boundary rule
 
 The webview is a **renderer and an input device**. It holds no business logic, no audio, no
@@ -631,6 +636,100 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M3b: the collapsed view, the click endpoint, prefetch from bitrate — built (2026-09-23)
+
+Branch `m3b` from `92cfe3f`, seven commits each pushed alone (plan `_handover/m3b-plan.md`;
+the Step 0 probe plan was reviewed and **folded into the first commits** — its two measurements
+were made on the real components as they were built, and the harness stayed in the repo for M4:
+`_handover/m3b-step0-plan-review-2026-09-23.md`). Reports: `_handover/m3b-measure.md` (every
+number cited to a run in `_handover/m3b-measure/`), `_handover/last-report-2026-09-23.md`.
+
+- **1a `fbb0a79` — the measurement harness**, debug builds only (`src-tauri/src/measure.rs`,
+  `src/measure.ts`): `ONDAR_MEASURE=<mode>` loads `panel.html?measure=…`, `_KEEP_OPEN` skips
+  the resign-key hide, `_SEQ=show|shows:<n>` drives the production show/hide paths with no
+  click, `measure_report` writes `measure[<mode>] …` lines on the process clock. A release
+  binary has no `measure[` string (checked; the debug binary has 7).
+- **1b `de87005` — the country control and the station list**, replacing the dev list: a
+  native `<select>` (decision 1; a searchable list is a later commit if it proves poor by
+  hand), the ranked rows one line each (decision 2, R1: name, then codec and bitrate, clamped
+  with an ellipsis) scrolling inside the collapsed pane, the wrong-source guard, re-request on
+  every show (M3a acceptance item 6's carried half), `landed` re-requests / `failed` clears.
+  **The first TypeScript tests** (decision F2, Martín 2026-09-23: vitest + testing-library +
+  jsdom; `pnpm test`, its own CI step; **two counts, never summed**): 4 then, 8 now.
+- **1c `b4bbfbc` — Now Playing**: name, the ICY title line **reserved** at body height while
+  empty (decision 5: a title arriving mid-stream moves nothing, at 16 pt of the band), `flag ·
+  codec · bitrate` with the state as text where it is not "playing".
+- **2 `d1129a3` — the list measured at 50 / 327 / 750 rows**: plain, **no virtualisation** —
+  the rule written before the numbers did not fire (below). The `React.memo` arm lost and was
+  deleted.
+- **4 `bb2452d` — favourites and recents** as a filter on the same list (decision 2 of the
+  brief, taken by Code and flagged: ★ Favourites and Recents are the select's first entries —
+  no height taken, one control); the transport row is Play/Pause/Resume, Stop, ★, Volume in
+  one row; the presets retired; `recents:updated` from the service on a recorded play.
+- **5 `33400f5` — the click endpoint** (plan § F6, reviewed with F1–F4): the rule lives in the
+  engine's `Shared::set_state`, where all four `Playing` sites converge — `begin_session`
+  (from `play`) lowers a flag, the first `Playing` that finds it down sends
+  `EngineEvent::Started`; keyed on the session, not the previous state, so an underrun's
+  refill, a resume and a reconnect of a session that already played do not fire, while a
+  session that reconnected before ever playing, or was paused while buffering, fires on its
+  first `Playing`. The shell hands the id to the stations service: the recent from the cached
+  snapshot (schema v2's `stations(uuid)` index), `RecentsUpdated`, then **one** `GET
+  /json/url/{uuid}` on the fetch runtime, `TOTAL_CLICK` 10 s, never retried (a retry could be
+  a second vote), its outcome one log line and nothing else. A measurement run never votes
+  (F1). The page's row does nothing on the station already playing (F2). `record_played` left
+  the page. **Found by the session-level test:** the device-less test harness never drops a
+  queued source, so `Player::clear()` on a second open waited forever — the harness now drains
+  the mixer on a thread. The click's real request/response is an acceptance item (the first
+  online play's log line; Step 0 P6's "one recorded request").
+- **6 `155d14d` — prefetch from bitrate**: `play(url, stationId, bitrateKbps)`;
+  `stream::prefetch_for = max(one decoder read, RING_SECONDS × bitrate / 8)`, pure and pinned
+  (see "The prefetch knee").
+- Tests 162 → **177** (audio 73, shell 40, stations 64) **+ 8** TypeScript.
+
+**Measured, what fits** (`m3b-measure.md` §§ 1b, 1c, 4; runs `m3b-m-01`…`-06`, `-16`; stills):
+the block heights against the plan's derived table, and the rows the collapsed pane holds:
+
+| commit | now_playing | transport | list band | rows (R1, pitch 24) |
+|---|---|---|---|---|
+| 1b (dev Now Playing, dev controls) | 86 | 83 | 118 | **5** |
+| 1c (the real Now Playing) | **62** = derived | 83 | 142 | **6** (as 1b predicted) |
+| 4 (presets retired, one transport row) | 62 | **29** | 196 | **8** (1c predicted 7 — the volume shares the row) |
+
+Country select 20, provenance 14, expand row 18, gaps 8, all countries alike; `rows_full` =
+`rows_by_rect` in every run, pitch uniform over 750 rows, the stills read the same by eye.
+Names clamped by the one-line row: FR 13/750, PT 2/327. The M3a control-row overflow is
+closed: the provenance span's right edge is the content edge. The hidden webview's layout
+equals the visible one. A first build without the body gap was caught by the measurement
+(controls touching the country row) and fixed before 1b's commit.
+
+**Measured, list performance** (§ commit 2; runs `m3b-m-07`…`-15`; the webview presents at
+60 Hz on the 120 Hz built-in, sampler median 17 ms):
+
+| | 50 rows | 327 rows | 750 rows |
+|---|---|---|---|
+| fresh mount, median (reply / commit / paint) | 18 (15 / 2 / 2) | 28 (17 / 3 / 8) | **51 (31 / 5 / 16)**, 75 first |
+| show with the list mounted, 20 shows, median / max | — | — | **8 / 9** (memo 7 / 10; empty list 5 / 7) |
+| programmatic scroll, dropped frames (sampler) | 0 | — | **0** |
+| presentations a frame late (60 fps capture, start-up excluded) | 0 / 152 | — | 7 / 248 |
+| WebContent RSS | 51 MB shown | — | 81 MB mounted, 102 MB after five cycles |
+
+Commit + paint is linear, **22.9 µs/row** (residuals ≤ 0.2 ms); the reply is by bytes,
+0.088 ms/KB (319 KB at the cap). The rows' re-render is not the show's cost (memo moves the
+median 1 ms); the carried 51–83 ms first show did not reproduce — max 27 ms over 66 shows. The
+rule: (i) the show is 0.10 of `LAYOUT_FALLBACK`, (ii) 0 dropped frames against 0, (iii) 3.2 ms
+of commit at the cap — none fired. **F5's outcome fired** (the reply dominates the commit at
+750) and the leaner payload / paged command was **deferred** (chat, 2026-09-23: a boundary
+change is better made once the UI is settled; 31 ms of a 51 ms mount at one mount per
+country change is real but not felt). **`LAYOUT_FALLBACK` stays 250 ms**: the combined
+distribution is n = 74 (M2d's 8, one of them 100 ms, and these 66, max 27), 250 ms is 2.5× the
+max; recorded in the constant's comment rather than re-derived downward from the newer,
+luckier sample. The hand-driven scroll runs once at M3b acceptance.
+
+**Observed, not criteria:** one `stream_download` DEBUG line per play under `RUST_LOG=info`
+(M3a saw six) — cause still open; the Web Inspector was not used (a GUI session Code cannot
+drive; the screen capture stood in); the selected country is not persisted (a launch starts
+on PT).
 
 ### M3a: the station directory, built (2026-09-22)
 
