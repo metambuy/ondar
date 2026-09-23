@@ -107,6 +107,10 @@ const MIGRATIONS: &[&str] = &[
         played_at INTEGER NOT NULL,
         station_json TEXT NOT NULL
     );",
+    // v2 — M3b commit 5 (review F3). The click endpoint looks a played station up by uuid alone
+    // (the shell has only the id the page handed to `play`); the primary key is `(cc, uuid)`,
+    // so without this the lookup on the play path is a scan of every cached list.
+    "CREATE INDEX IF NOT EXISTS stations_uuid ON stations (uuid);",
 ];
 
 impl Cache {
@@ -271,6 +275,23 @@ impl Cache {
     /// `%`, `_` and `\` in the query are escaped, so they match themselves: until 2026-09-22
     /// they were stripped, `Radio_1` could never be found and a query of `%` became `LIKE '%%'`
     /// — the top 50 of every cached list (`/code-review` finding 9).
+    /// A station by uuid from any cached list, else the favourites, else the recents — the
+    /// snapshot the click endpoint records as a recent (M3b commit 5). `None` for an id that
+    /// is not a directory station's.
+    pub fn station_by_uuid(&self, uuid: &str) -> Result<Option<Station>, CacheError> {
+        for sql in [
+            "SELECT station_json FROM stations WHERE uuid = ?1 LIMIT 1",
+            "SELECT station_json FROM favourites WHERE uuid = ?1",
+            "SELECT station_json FROM recents WHERE uuid = ?1",
+        ] {
+            let json: Option<String> = self.conn.query_row(sql, [uuid], |r| r.get(0)).optional()?;
+            if let Some(j) = json {
+                return Ok(Some(serde_json::from_str::<Station>(&j)?));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn search_local(&self, query: &str, limit: usize) -> Result<Vec<Station>, CacheError> {
         let like = format!("%{}%", like_escape(query.trim()));
         let mut stmt = self.conn.prepare(
@@ -367,13 +388,13 @@ pub(crate) mod tests {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            1
+            MIGRATIONS.len() as u32
         );
         migrate(&mut conn).unwrap();
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            1
+            MIGRATIONS.len() as u32
         );
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -553,5 +574,46 @@ pub(crate) mod tests {
             ["a", "b"],
             "by votes, across countries; SQLite LIKE folds ASCII case"
         );
+    }
+
+    /// M3b commit 5 (F6 test 13, review F3): v2 adds the uuid index; a v1 database migrates to
+    /// it, a second `migrate` is a no-op, and the lookup finds a row under any country. Fails
+    /// if the index, the step or the lookup is missing.
+    #[test]
+    fn migration_v2_adds_the_uuid_index_and_the_lookup_uses_any_country() {
+        let (clock, _) = fake_clock(T0);
+        let mut conn = Connection::open_in_memory().unwrap();
+        // Bring the connection to v1 only, as an installed M3a database is.
+        let tx = conn.transaction().unwrap();
+        tx.execute_batch(MIGRATIONS[0]).unwrap();
+        tx.pragma_update(None, "user_version", 1u32).unwrap();
+        tx.commit().unwrap();
+        migrate(&mut conn).unwrap();
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'stations_uuid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1, "the uuid index exists");
+        migrate(&mut conn).unwrap();
+        let again: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(again, 2, "idempotent");
+
+        let mut cache = Cache::with_connection(conn, clock).unwrap();
+        cache.put_stations("DE", &[st("u1", 5)], 344, T0).unwrap();
+        assert_eq!(
+            cache.station_by_uuid("u1").unwrap().map(|s| s.uuid),
+            Some("u1".to_string()),
+            "found under DE without knowing the country"
+        );
+        assert_eq!(cache.station_by_uuid("nope").unwrap(), None);
     }
 }

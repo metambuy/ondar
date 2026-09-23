@@ -13,11 +13,13 @@
 // 6. `recents:updated` re-requests the recents only while they are shown (fails if a country
 //    list is re-requested on it, or if the recents are not);
 // 7. a favourite toggle (`storeGeneration`) re-requests the favourites only (fails if it
-//    re-requests a country list).
+//    re-requests a country list);
+// 8. a click on the playing row does nothing, on the paused row resumes, on another row plays
+//    (fails if the row always plays — F6 review F2).
 //
 // `../api` is mocked whole: nothing reaches Tauri, and every request is a deferred promise
 // the test resolves in the order it chooses — which is the point.
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ListedStations, Station, StationsUpdated } from "../api";
 import StationList from "./StationList";
@@ -29,6 +31,9 @@ const mock = vi.hoisted(() => {
   const requests: { what: string; resolve: (l: unknown) => void }[] = [];
   const stationsListeners: ((u: unknown) => void)[] = [];
   const recentsListeners: (() => void)[] = [];
+  const stateListeners: ((s: unknown) => void)[] = [];
+  const plays: [string, string][] = [];
+  let resumes = 0;
   const defer = (what: string) =>
     new Promise((resolve) => {
       requests.push({ what, resolve });
@@ -37,6 +42,21 @@ const mock = vi.hoisted(() => {
     requests,
     stationsListeners,
     recentsListeners,
+    stateListeners,
+    plays,
+    resumed: () => resumes,
+    play: (url: string, uuid: string) => {
+      plays.push([url, uuid]);
+      return Promise.resolve();
+    },
+    resume: () => {
+      resumes += 1;
+      return Promise.resolve();
+    },
+    onState: (cb: (s: unknown) => void) => {
+      stateListeners.push(cb);
+      return Promise.resolve(() => {});
+    },
     listStations: (countryCode: string) => defer(`cc:${countryCode}`),
     listFavourites: () => defer("favourites"),
     listRecents: () => defer("recents"),
@@ -56,11 +76,11 @@ vi.mock("../api", () => ({
     listStations: mock.listStations,
     listFavourites: mock.listFavourites,
     listRecents: mock.listRecents,
-    recordPlayed: () => Promise.resolve(),
   },
-  audio: { play: () => Promise.resolve() },
+  audio: { play: mock.play, resume: mock.resume },
   onStationsUpdated: mock.onStationsUpdated,
   onRecentsUpdated: mock.onRecentsUpdated,
+  onState: mock.onState,
 }));
 
 function station(name: string, cc: string): Station {
@@ -101,12 +121,14 @@ const whats = () => requests().map((r) => r.what);
 const resolve = (r: Deferred, l: unknown) => act(async () => r.resolve(l));
 const emit = (u: StationsUpdated) => act(async () => mock.stationsListeners.forEach((cb) => cb(u)));
 const emitRecents = () => act(async () => mock.recentsListeners.forEach((cb) => cb()));
-const list = (source: ListSource, showGeneration = 0, storeGeneration = 0) => (
+const emitState = (kind: string) => act(async () => mock.stateListeners.forEach((cb) => cb({ kind })));
+const list = (source: ListSource, showGeneration = 0, storeGeneration = 0, playingUuid: string | null = null) => (
   <StationList
     source={source}
     showGeneration={showGeneration}
     storeGeneration={storeGeneration}
     onPlay={() => {}}
+    playingUuid={playingUuid}
   />
 );
 
@@ -115,6 +137,8 @@ afterEach(() => {
   mock.requests.length = 0;
   mock.stationsListeners.length = 0;
   mock.recentsListeners.length = 0;
+  mock.stateListeners.length = 0;
+  mock.plays.length = 0;
 });
 
 describe("StationList", () => {
@@ -196,5 +220,21 @@ describe("StationList", () => {
     expect(whats()).toEqual(["cc:FR", "favourites"]);
     view.rerender(list({ kind: "favourites" }, 0, 2));
     expect(whats()).toEqual(["cc:FR", "favourites", "favourites"]);
+  });
+
+  it("does nothing on the playing row, resumes the paused one, plays another", async () => {
+    const view = render(list(country("FR"), 0, 0, "FR-FIP"));
+    await resolve(requests()[0], listed("FR", ["FIP", "France Inter"]));
+    await emitState("playing");
+    fireEvent.click(screen.getByRole("button", { name: "Play FIP" }));
+    expect(mock.plays).toEqual([]);
+    expect(mock.resumed()).toBe(0);
+    await emitState("paused");
+    fireEvent.click(screen.getByRole("button", { name: "Play FIP" }));
+    expect(mock.plays).toEqual([]);
+    expect(mock.resumed()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Play France Inter" }));
+    expect(mock.plays).toEqual([["https://example.invalid/France Inter", "FR-France Inter"]]);
+    view.unmount();
   });
 });

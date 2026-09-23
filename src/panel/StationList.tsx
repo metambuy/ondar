@@ -16,11 +16,13 @@
 // - **After a refresh:** `landed` → ask again; `failed` → Rust says the expired list stays, so
 //   clear the flag it set and do not ask again (an offline page would otherwise loop).
 //
-// `record_played` is called here on the click, as the dev list did, until the click endpoint's
-// commit moves both to the first `Playing` of the session (M3b plan, commit 5).
+// A click on the row that is already playing does nothing, and on the row that is paused it
+// resumes (M3b commit 5, F6 review F2): a `play` call is a vote in radio-browser's click
+// counter, sent by Rust on the session's first `Playing`; a replay is stop, then the row. The
+// recent is recorded by Rust at the same moment — the page reports nothing.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { audio, onRecentsUpdated, onStationsUpdated, stations } from "../api";
-import type { Station } from "../api";
+import { audio, onRecentsUpdated, onState, onStationsUpdated, stations } from "../api";
+import type { PlaybackState, Station } from "../api";
 import {
   measureMode,
   measureParam,
@@ -47,6 +49,8 @@ type Props = {
   storeGeneration: number;
   /** A row was clicked: `Panel` hands the station to Now Playing. */
   onPlay: (s: Station) => void;
+  /** The station Now Playing names (`Panel`'s `playing`), so its row does not replay it. */
+  playingUuid: string | null;
   /** The measurement harness's mount repetition (`?measure=perf&m=mount`); `Panel` keys on it. */
   measureRep?: number;
 };
@@ -69,9 +73,17 @@ function meta(s: Station): string {
   return `${s.codec}${bitrate}${s.hls ? " hls" : ""}${s.video ? " video" : ""}`;
 }
 
-function StationList({ source, showGeneration, storeGeneration, onPlay, measureRep = 0 }: Props) {
+function StationList({
+  source,
+  showGeneration,
+  storeGeneration,
+  onPlay,
+  playingUuid,
+  measureRep = 0,
+}: Props) {
   const [list, setList] = useState<Shown | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [playback, setPlayback] = useState<PlaybackState["kind"]>("idle");
   const key = sourceKey(source);
   const sourceRef = useRef(source);
   const listRef = useRef<HTMLUListElement>(null);
@@ -126,6 +138,13 @@ function StationList({ source, showGeneration, storeGeneration, onPlay, measureR
   useEffect(() => {
     if (storeGeneration > 0 && sourceRef.current.kind === "favourites") load(sourceRef.current);
   }, [storeGeneration]);
+
+  useEffect(() => {
+    const unlisten = onState((s) => setPlayback(s.kind));
+    return () => {
+      unlisten.then((un) => un());
+    };
+  }, []);
 
   useEffect(() => {
     const un1 = onStationsUpdated((u) => {
@@ -243,9 +262,13 @@ function StationList({ source, showGeneration, storeGeneration, onPlay, measureR
               className={styles.station}
               aria-label={`Play ${s.name}`}
               onClick={() => {
+                const audible = playback !== "idle" && playback !== "error";
+                if (s.uuid === playingUuid && audible) {
+                  if (playback === "paused") void audio.resume();
+                  return;
+                }
                 onPlay(s);
                 void audio.play(s.url, s.uuid);
-                void stations.recordPlayed(s);
               }}
             >
               <span className={styles.stationName}>{s.name}</span>

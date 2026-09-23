@@ -203,6 +203,7 @@ export default function Panel() {
             source={source}
             showGeneration={showGeneration}
             storeGeneration={storeGeneration}
+            playingUuid={playing?.uuid ?? null}
             onPlay={setPlaying}
             measureRep={mountRep}
           />

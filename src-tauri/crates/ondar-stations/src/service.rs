@@ -82,7 +82,9 @@ enum Msg {
     AddFavourite(Box<Station>, Reply<()>),
     RemoveFavourite(String, Reply<bool>),
     ListRecents(Reply<Vec<Station>>),
-    RecordPlayed(Box<Station>, Reply<()>),
+    /// The engine's session reached its first `Playing` (M3b commit 5): record the recent and
+    /// send the click. No reply — nothing waits on a vote.
+    Started(String),
     CountriesDone(Result<Vec<Country>, ClientError>),
     StationsDone(String, Result<Vec<Station>, ClientError>),
     SearchDone(
@@ -151,9 +153,28 @@ impl StationsHandle {
     pub async fn list_recents(&self) -> Result<Vec<Station>, ServiceError> {
         self.ask(Msg::ListRecents).await
     }
-    pub async fn record_played(&self, station: Station) -> Result<(), ServiceError> {
-        self.ask(|r| Msg::RecordPlayed(Box::new(station), r)).await
+    /// The shell's one call on `EngineEvent::Started`: never blocks, never answers. On a
+    /// degraded handle it is a logged no-op.
+    pub fn started(&self, station_id: String) {
+        match &self.inner {
+            Handle::Live(tx) => {
+                let _ = tx.send(Msg::Started(station_id));
+            }
+            Handle::Unavailable(reason) => {
+                log::info!(
+                    "started station_id={station_id}: directory unavailable ({reason}); no recent, no click"
+                );
+            }
+        }
     }
+}
+
+/// radio-browser's station uuids: 36 characters of lower-case hex and dashes. The presets'
+/// `"manual"` is not one, and neither is anything else the page could hand to `play`.
+pub fn looks_like_station_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+        && id.bytes().filter(|&b| b == b'-').count() == 4
 }
 
 pub struct StationsService;
@@ -164,9 +185,21 @@ impl StationsService {
     /// if that fails too the handle is degraded (`ServiceError::Unavailable` on every call), so
     /// the tray, the popover and audio still come up — until 2026-09-22 the error propagated
     /// to `setup` and the whole app refused to launch (`/code-review` finding 2).
-    pub fn start(db_path: PathBuf, user_agent: &str, sink: EventSink) -> StationsHandle {
+    /// `clicks_suppressed`: a measurement run must not vote (M3b F6 review, F1) — the shell
+    /// passes whether its harness is active; the recent is still recorded.
+    pub fn start(
+        db_path: PathBuf,
+        user_agent: &str,
+        sink: EventSink,
+        clicks_suppressed: bool,
+    ) -> StationsHandle {
         match open_or_recover(&db_path) {
-            Ok(cache) => Self::start_with(cache, Arc::new(Client::production(user_agent)), sink),
+            Ok(cache) => Self::start_with(
+                cache,
+                Arc::new(Client::production(user_agent)),
+                sink,
+                clicks_suppressed,
+            ),
             Err(reason) => {
                 log::error!("stations service not started: {reason}");
                 StationsHandle::unavailable(reason)
@@ -175,7 +208,12 @@ impl StationsService {
     }
 
     /// The pieces injected — the tests' entry point.
-    pub fn start_with(cache: Cache, client: Arc<Client>, sink: EventSink) -> StationsHandle {
+    pub fn start_with(
+        cache: Cache,
+        client: Arc<Client>,
+        sink: EventSink,
+        clicks_suppressed: bool,
+    ) -> StationsHandle {
         let (tx, rx) = mpsc::channel::<Msg>();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -195,6 +233,7 @@ impl StationsService {
                     sink,
                     tx,
                     runtime,
+                    clicks_suppressed,
                     pending_stations: HashMap::new(),
                     pending_countries: None,
                 };
@@ -267,6 +306,8 @@ struct Service {
     /// (empty for a background refresh).
     pending_stations: HashMap<String, Vec<Reply<ListedStations>>>,
     pending_countries: Option<Vec<Reply<ListedCountries>>>,
+    /// The measurement harness is active: record recents, send no click (F1).
+    clicks_suppressed: bool,
 }
 
 fn listed_stations(
@@ -340,14 +381,43 @@ impl Service {
             Msg::ListRecents(reply) => {
                 let _ = reply.send(store::list_recents(&self.cache).map_err(ServiceError::from));
             }
-            Msg::RecordPlayed(station, reply) => {
-                let result = store::record_played(&self.cache, &station);
-                if result.is_ok() {
-                    (self.sink)(Event::RecentsUpdated);
-                }
-                let _ = reply.send(result.map_err(ServiceError::from));
-            }
+            Msg::Started(station_id) => self.started(station_id),
         }
+    }
+
+    /// The first `Playing` of a session (M3b commit 5): the recent, from the cached snapshot
+    /// of the station, then one click on the fetch runtime. Neither can reach back: the click
+    /// task sends nothing to this thread and emits no event; its outcome is one log line.
+    fn started(&mut self, station_id: String) {
+        match self.cache.station_by_uuid(&station_id) {
+            Ok(Some(station)) => match store::record_played(&self.cache, &station) {
+                Ok(()) => (self.sink)(Event::RecentsUpdated),
+                Err(e) => log::warn!("started station_id={station_id}: recent not recorded: {e}"),
+            },
+            Ok(None) => {
+                log::info!("started station_id={station_id}: not a directory station; no recent")
+            }
+            Err(e) => log::warn!("started station_id={station_id}: lookup failed: {e}"),
+        }
+        if !looks_like_station_uuid(&station_id) {
+            log::info!("click station_id={station_id}: not a station uuid; no click");
+            return;
+        }
+        if self.clicks_suppressed {
+            log::info!("click uuid={station_id} suppressed=measurement");
+            return;
+        }
+        let client = self.client.clone();
+        self.runtime.spawn(async move {
+            match client.click(&station_id).await {
+                Ok(ack) => log::info!(
+                    "click uuid={station_id} status={} body={:?}",
+                    ack.status,
+                    ack.body_excerpt
+                ),
+                Err(e) => log::warn!("click uuid={station_id} failed: {e}"),
+            }
+        });
     }
 
     fn list_stations(&mut self, cc: String, reply: Reply<ListedStations>) {
@@ -565,10 +635,27 @@ mod tests {
         let client = Arc::new(client(transport, FakeHosts::new(&["h"]), FakeTiming::new()));
         let cache_for_assertions = Cache::in_memory(clock).unwrap();
         (
-            StationsService::start_with(cache, client, sink),
+            StationsService::start_with(cache, client, sink, false),
             now,
             log,
             cache_for_assertions,
+        )
+    }
+
+    /// A service whose cache already holds one PT list with `UUID`, for the click tests.
+    const UUID: &str = "01234567-89ab-cdef-0123-456789abcdef";
+    fn service_with_station(
+        transport: Arc<FakeTransport>,
+        clicks_suppressed: bool,
+    ) -> (StationsHandle, Arc<Mutex<Vec<Event>>>) {
+        let (clock, _) = fake_clock(T0);
+        let mut cache = Cache::in_memory(clock).unwrap();
+        cache.put_stations("PT", &[st(UUID, 3)], 1, T0).unwrap();
+        let (sink, log) = events();
+        let client = Arc::new(client(transport, FakeHosts::new(&["h"]), FakeTiming::new()));
+        (
+            StationsService::start_with(cache, client, sink, clicks_suppressed),
+            log,
         )
     }
 
@@ -578,7 +665,7 @@ mod tests {
     ) -> (StationsHandle, Arc<Mutex<Vec<Event>>>) {
         let (sink, log) = events();
         let client = Arc::new(client(transport, FakeHosts::new(&["h"]), FakeTiming::new()));
-        (StationsService::start_with(cache, client, sink), log)
+        (StationsService::start_with(cache, client, sink, false), log)
     }
 
     async fn within<T>(ms: u64, f: impl std::future::Future<Output = T>) -> T {
@@ -618,18 +705,97 @@ mod tests {
         });
     }
 
+    /// F6 test 8 (and commit 4's event): the recent is recorded from the cached snapshot,
+    /// `RecentsUpdated` is emitted once, and exactly one click goes out to `/json/url/<uuid>`.
+    /// Fails if either half is missing.
     #[test]
-    fn a_recorded_play_emits_recents_updated_once() {
-        // M3b commit 4: the page showing recents learns of a play from this event, not by
-        // polling. Fails if the RecordPlayed arm emits nothing, or emits on a failed write.
-        let transport = FakeTransport::new(vec![]);
-        let (h, _, log, _) = service(transport, T0);
+    fn started_records_the_recent_and_clicks_once() {
+        let transport = FakeTransport::new(vec![ok(br#"{"ok":"true"}"#)]);
+        let (h, log) = service_with_station(transport.clone(), false);
         block_on(async {
-            within(1000, h.record_played(st("u1", 1))).await.unwrap();
-            let events = log.lock().unwrap().clone();
-            assert_eq!(events, vec![Event::RecentsUpdated]);
+            h.started(UUID.into());
             let recents = within(1000, h.list_recents()).await.unwrap();
             assert_eq!(recents.len(), 1);
+            assert_eq!(recents[0].uuid, UUID);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(log.lock().unwrap().clone(), vec![Event::RecentsUpdated]);
+            assert_eq!(transport.calls(), 1, "one click");
+            assert!(
+                transport.urls.lock().unwrap()[0].ends_with(&format!("/json/url/{UUID}")),
+                "{:?}",
+                transport.urls.lock().unwrap()
+            );
+        });
+    }
+
+    /// F6 test 9: a click that fails is one log line — the recent stays recorded, nothing is
+    /// retried, nothing reaches the sink. Fails if the failure is retried or surfaced.
+    #[test]
+    fn a_failed_click_changes_nothing_but_the_log() {
+        let transport = FakeTransport::new(vec![Err("connection reset".into())]);
+        let (h, log) = service_with_station(transport.clone(), false);
+        block_on(async {
+            h.started(UUID.into());
+            let recents = within(1000, h.list_recents()).await.unwrap();
+            assert_eq!(recents.len(), 1);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(transport.calls(), 1, "no retry");
+            assert_eq!(log.lock().unwrap().clone(), vec![Event::RecentsUpdated]);
+        });
+    }
+
+    /// F6 test 10: an id that is not a station uuid (`"manual"`) records nothing and sends
+    /// nothing; a uuid the cache does not hold sends the click but records no recent. Fails if
+    /// the shape check or the lookup is missing.
+    #[test]
+    fn a_non_directory_id_neither_records_nor_clicks() {
+        let transport = FakeTransport::new(vec![ok(b"{}")]);
+        let (h, log) = service_with_station(transport.clone(), false);
+        block_on(async {
+            h.started("manual".into());
+            let recents = within(1000, h.list_recents()).await.unwrap();
+            assert!(recents.is_empty());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(transport.calls(), 0);
+            assert!(log.lock().unwrap().is_empty());
+
+            h.started("ffffffff-ffff-ffff-ffff-ffffffffffff".into());
+            let recents = within(1000, h.list_recents()).await.unwrap();
+            assert!(recents.is_empty(), "unknown uuid: no recent");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(transport.calls(), 1, "unknown uuid: still a click");
+        });
+    }
+
+    /// F6 test 11: a click held open does not delay a store call (the click runs on the fetch
+    /// runtime, the DB thread moves on). Fails if the click is awaited inline.
+    #[test]
+    fn a_slow_click_does_not_delay_store_calls() {
+        let transport = FakeTransport::gated(vec![ok(b"{}")]);
+        let (h, _) = service_with_station(transport.clone(), false);
+        block_on(async {
+            h.started(UUID.into());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(transport.calls(), 1, "the click started");
+            let favs = within(100, h.list_favourites()).await.unwrap();
+            assert!(favs.is_empty());
+            transport.release();
+        });
+    }
+
+    /// F6 test 12 (review F1): a measurement run records the recent and does not vote. Fails
+    /// if the suppression is missing (one call) or if it also drops the recent.
+    #[test]
+    fn a_measurement_run_records_the_recent_and_does_not_vote() {
+        let transport = FakeTransport::new(vec![ok(b"{}")]);
+        let (h, log) = service_with_station(transport.clone(), true);
+        block_on(async {
+            h.started(UUID.into());
+            let recents = within(1000, h.list_recents()).await.unwrap();
+            assert_eq!(recents.len(), 1);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(transport.calls(), 0, "no click");
+            assert_eq!(log.lock().unwrap().clone(), vec![Event::RecentsUpdated]);
         });
     }
 
@@ -908,7 +1074,7 @@ mod tests {
         let db = dir.join("ondar.sqlite");
         std::fs::write(&db, [b"not a database\n".as_slice(); 300].concat()).unwrap();
         let (sink, _) = events();
-        let h = StationsService::start(db.clone(), "Ondar/test", sink);
+        let h = StationsService::start(db.clone(), "Ondar/test", sink, false);
         block_on(async {
             let favs = within(2000, h.list_favourites()).await.unwrap();
             assert!(favs.is_empty(), "a fresh database");
@@ -937,7 +1103,7 @@ mod tests {
         // or a call hangs (the 500 ms guard).
         let db = temp_dir("missing").join("no-such-dir").join("ondar.sqlite");
         let (sink, _) = events();
-        let h = StationsService::start(db, "Ondar/test", sink);
+        let h = StationsService::start(db, "Ondar/test", sink, false);
         block_on(async {
             let err = within(500, h.list_favourites()).await.unwrap_err();
             assert!(matches!(err, ServiceError::Unavailable(_)), "{err:?}");

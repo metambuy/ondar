@@ -46,6 +46,10 @@ pub const SEARCH_LIMIT: u32 = 50;
 /// a station list is up to 9.5 MB (US), which a 0.5 Mbit/s line delivers in 152 s.
 pub const TOTAL_SMALL: Duration = Duration::from_secs(30);
 pub const TOTAL_LIST: Duration = Duration::from_secs(180);
+/// A click (`/json/url/{uuid}`, M3b commit 5, review F4): a vote nobody reads must not hold
+/// the runtime's attention for the list class's 30 s while a list fetch waits. 10 s is ten
+/// times the slowest small-request first byte the census measured (971 ms).
+pub const TOTAL_CLICK: Duration = Duration::from_secs(10);
 /// No bytes for this long → the request fails (F4: bound the stall, not just the total).
 /// The slowest first byte measured was 971 ms.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(15);
@@ -176,11 +180,31 @@ pub fn stations_path(cc: &str) -> String {
     )
 }
 
+/// The click counter: one GET per play (M3b commit 5).
+pub fn click_path(uuid: &str) -> String {
+    format!("/json/url/{}", qenc(uuid))
+}
+
 pub fn search_path(query: &str) -> String {
     format!(
         "/json/stations/search?name={}&hidebroken=true&order=votes&reverse=true&limit={SEARCH_LIMIT}",
         qenc(query.trim())
     )
+}
+
+/// What a click answered, for the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClickAck {
+    pub status: u16,
+    pub body_excerpt: String,
+}
+
+/// The first 200 characters of a body, lossily, on one line.
+fn excerpt(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    let mut out: String = text.chars().take(200).collect();
+    out = out.replace(['\n', '\r'], " ");
+    out
 }
 
 pub struct Client {
@@ -246,6 +270,27 @@ impl Client {
         let rows = normalise::stations(&body)?;
         check_complete(rows.len(), STATIONS_LIMIT, expected)?;
         Ok(rows)
+    }
+
+    /// radio-browser's click counter, **one request, never retried**: a click is a vote, and a
+    /// retry after a counted-but-unanswered first attempt would be a second one. Its own
+    /// timeout (`TOTAL_CLICK`); the current host, no re-resolve. The answer is returned for the
+    /// log and nothing else (the body's first 200 chars — finding 10's bound).
+    pub async fn click(&self, uuid: &str) -> Result<ClickAck, ClientError> {
+        let host = self.host(false).await;
+        let url = format!("https://{host}{}", click_path(uuid));
+        match self.transport.get(url, TOTAL_CLICK).await {
+            Ok(r) if (200..300).contains(&r.status) => Ok(ClickAck {
+                status: r.status,
+                body_excerpt: excerpt(&r.body),
+            }),
+            Ok(r) => Err(ClientError::Http { status: r.status }),
+            Err(last) => Err(ClientError::Exhausted {
+                last,
+                attempts: 1,
+                elapsed: Duration::ZERO,
+            }),
+        }
     }
 
     /// Server-side search, then the same drop/dedupe/sort rules as a list, without the cap (S1).
@@ -825,5 +870,28 @@ mod tests {
             out[0].uuid, "u0",
             "the higher-votes row of the duplicate pair survives"
         );
+    }
+
+    /// M3b commit 5 (F6 test 7): a click is one request through `transport.get`, never
+    /// `fetch_with_retries`. Fails if the retry loop is reused (three calls for the error
+    /// script) or the path is wrong.
+    #[test]
+    fn click_is_one_request_never_retried() {
+        let transport = FakeTransport::new(vec![Err("connection reset".into())]);
+        let c = Client::new(transport.clone(), FakeHosts::new(&["h"]), FakeTiming::new());
+        let r = block_on(c.click("u1"));
+        assert!(r.is_err(), "the transport error is returned: {r:?}");
+        assert_eq!(transport.calls(), 1, "one attempt");
+        assert_eq!(transport.urls.lock().unwrap()[0], "https://h/json/url/u1");
+        assert_eq!(transport.totals.lock().unwrap()[0], TOTAL_CLICK);
+
+        let transport = FakeTransport::new(vec![ok(
+            br#"{"ok":"true","message":"retrieved station url"}"#,
+        )]);
+        let c = Client::new(transport.clone(), FakeHosts::new(&["h"]), FakeTiming::new());
+        let ack = block_on(c.click("u1")).expect("200");
+        assert_eq!(ack.status, 200);
+        assert!(ack.body_excerpt.contains("retrieved"));
+        assert_eq!(transport.calls(), 1);
     }
 }

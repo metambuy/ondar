@@ -64,6 +64,19 @@ pub struct CountriesUpdated {
     pub outcome: RefreshOutcome,
 }
 
+/// A measurement run must not vote (M3b F6 review, F1): with the harness active the stations
+/// service records recents and sends no click. Release builds have no harness.
+fn clicks_suppressed() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        measure::mode().is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
 pub fn run() {
     // `stream-download` logs via `tracing`, not `log`; `tracing_subscriber::fmt`'s `init()`
     // installs a `LogTracer` itself (its default `tracing-log` feature), which is what lets
@@ -148,13 +161,19 @@ pub fn run() {
                     if let Err(e) = std::fs::create_dir_all(&data_dir) {
                         log::warn!("cannot create {}: {e}", data_dir.display());
                     }
-                    StationsService::start(data_dir.join("ondar.sqlite"), &user_agent, sink)
+                    StationsService::start(
+                        data_dir.join("ondar.sqlite"),
+                        &user_agent,
+                        sink,
+                        clicks_suppressed(),
+                    )
                 }
                 Err(e) => {
                     log::error!("no application data directory: {e}");
                     StationsHandle::unavailable(format!("no application data directory: {e}"))
                 }
             };
+            let stations_for_events = stations.clone();
             app.manage(AppState { engine, stations });
 
             panel::setup(app)?;
@@ -178,6 +197,13 @@ pub fn run() {
                                     tray_playing = playing;
                                 }
                                 handle.emit(events::STATE, s)
+                            }
+                            // The session's first `Playing`: the recent and the click, in the
+                            // stations service, off this thread (M3b commit 5). Not an event
+                            // to the page.
+                            EngineEvent::Started { station_id } => {
+                                stations_for_events.started(station_id);
+                                Ok(())
                             }
                             EngineEvent::StreamInfo(i) => handle.emit(events::STREAM_INFO, i),
                             EngineEvent::Metadata(m) => handle.emit(events::METADATA, m),
@@ -212,7 +238,6 @@ pub fn run() {
             commands::stations::add_favourite,
             commands::stations::remove_favourite,
             commands::stations::list_recents,
-            commands::stations::record_played,
             #[cfg(debug_assertions)]
             measure::measure_report,
         ])

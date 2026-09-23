@@ -68,7 +68,8 @@ pub fn list_recents(cache: &Cache) -> Result<Vec<Station>, CacheError> {
 
 /// Record a play: a replay of a listed station moves it to the top (its `played_at` and
 /// snapshot updated, no second row); the list is then trimmed to `RECENTS_CAP`, oldest out.
-/// Called by the shell on the first `Playing` after a `play` (M3b wires it, with the click).
+/// Called by the service on the first `Playing` after a `play` (`Msg::Started`, M3b commit 5,
+/// with the click).
 pub fn record_played(cache: &Cache, station: &Station) -> Result<(), CacheError> {
     let conn = cache.conn();
     conn.execute(

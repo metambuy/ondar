@@ -63,6 +63,8 @@ impl AudioEngine {
         let shared = Shared {
             state: Arc::new(Mutex::new(PlaybackState::Idle)),
             events: ev_tx,
+            session: Arc::new(Mutex::new(None)),
+            started: Arc::new(AtomicBool::new(false)),
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
         };
@@ -95,9 +97,25 @@ struct Shared {
     events: Sender<EngineEvent>,
     gains: EqGains,
     paused: Arc<AtomicBool>,
+    /// The `station_id` of the session the last `Play` began, for [`EngineEvent::Started`].
+    session: Arc<Mutex<Option<String>>>,
+    /// Whether that session has reached `Playing` yet. `Started` is emitted on the first
+    /// `Playing` of a session — whatever route led there — and never again until the next
+    /// `Play` (M3b commit 5, the click endpoint's rule: once per `play` call, on the first
+    /// `Playing` after it; not on a resume or a reconnect of a session that already played).
+    started: Arc<AtomicBool>,
 }
 
 impl Shared {
+    /// A new session, on `Play`: the id `Started` will carry, and the flag down. Called on the
+    /// engine thread after the previous session is cancelled and before `Connecting`; a stale
+    /// decode thread's updates are dropped by `SessionCtx::set_state`, so it cannot flip the
+    /// new session's flag.
+    fn begin_session(&self, station_id: String) {
+        *self.session.lock().unwrap() = Some(station_id);
+        self.started.store(false, Ordering::Release);
+    }
+
     fn set_state(&self, s: PlaybackState) {
         {
             let mut guard = self.state.lock().unwrap();
@@ -106,7 +124,15 @@ impl Shared {
             }
             *guard = s.clone();
         }
+        let playing = s == PlaybackState::Playing;
         let _ = self.events.send(EngineEvent::State(s));
+        // The session's first `Playing`: one atomic swap decides it, after the state event so
+        // a listener sees `Playing` before it sees `Started`. Every other entry into `Playing`
+        // (an underrun's refill, a resume, a reconnect after playback) finds the flag set.
+        if playing && !self.started.swap(true, Ordering::AcqRel) {
+            let station_id = self.session.lock().unwrap().clone().unwrap_or_default();
+            let _ = self.events.send(EngineEvent::Started { station_id });
+        }
     }
 
     fn state(&self) -> PlaybackState {
@@ -444,6 +470,7 @@ impl Engine {
 
     fn play(&mut self, url: String, station_id: String) {
         self.cancel_session();
+        self.shared.begin_session(station_id.clone());
         self.shared.paused.store(false, Ordering::Relaxed);
         if let Some(p) = &self.player {
             // Silence the previous station now, not when the new one has buffered.
@@ -991,9 +1018,8 @@ mod session_tests {
     }
 
     /// A playable stream that ends: an HTTP 200 carrying `secs` of 16-bit mono 44.1 kHz WAV
-    /// silence, then the connection closes. Shorter than the 2 s ring on purpose — nothing
-    /// drains the device-less `Player`, so a longer file would block the decode loop on a full
-    /// ring instead of reaching EOF.
+    /// silence, then the connection closes. Shorter than the 2 s ring, so the decode loop
+    /// reaches EOF without depending on the harness's drain thread to make room.
     fn wav_response(secs: f32) -> Vec<u8> {
         let rate = 44_100u32;
         let data_len = (rate as f32 * secs) as u32 * 2;
@@ -1020,15 +1046,19 @@ mod session_tests {
     struct Harness {
         ctx: SessionCtx,
         events: Receiver<EngineEvent>,
+        /// Every `Started` id seen while draining, in order.
+        started: Mutex<Vec<String>>,
         // Dropping the runtime while `run_session` still holds its handle would abort the
         // open; kept for the harness's lifetime.
         _rt: tokio::runtime::Runtime,
-        // The mixer's output end; dropping it would end the `Player`'s mixer.
-        _mixer_out: rodio::mixer::MixerSource,
     }
 
     /// Start `run_session` against `url` on its own thread, as `Engine::play` does, minus the
-    /// device: the `Player` is connected to a bare mixer that nothing drains.
+    /// device: the `Player` is connected to a bare mixer whose output a thread pulls at about
+    /// twice real time — the device's stand-in. Without that pull nothing ever drops a queued
+    /// source, and `Player::clear()` on a second open (a reconnect after playback) waits for
+    /// the mixer forever (found by `started_is_sent_once_per_session_across_a_reconnect`,
+    /// M3b commit 5: the second stream reached its fill target and never left `clear()`).
     fn start_session(url: &str) -> Harness {
         let (ev_tx, ev_rx) = mpsc::channel();
         let shared = Shared {
@@ -1036,7 +1066,10 @@ mod session_tests {
             events: ev_tx,
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(None)),
+            started: Arc::new(AtomicBool::new(false)),
         };
+        shared.begin_session("u1".into());
         let ctx = SessionCtx {
             cancel: Arc::new(AtomicBool::new(false)),
             download: Arc::new(Mutex::new(None)),
@@ -1055,6 +1088,13 @@ mod session_tests {
             std::num::NonZero::new(44_100).expect("44100"),
         );
         let player = Arc::new(Player::connect_new(&mixer));
+        thread::spawn(move || {
+            let mut out = mixer_out;
+            loop {
+                for _ in out.by_ref().take(4410) {}
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
         let url = stream::parse_url(url).expect("url");
         let client = stream::build_client("Ondar/test");
         let handle = rt.handle().clone();
@@ -1063,8 +1103,8 @@ mod session_tests {
         Harness {
             ctx,
             events: ev_rx,
+            started: Mutex::new(Vec::new()),
             _rt: rt,
-            _mixer_out: mixer_out,
         }
     }
 
@@ -1078,8 +1118,12 @@ mod session_tests {
         let mut seen = Vec::new();
         let mut drain = |seen: &mut Vec<PlaybackState>| {
             while let Ok(ev) = h.events.try_recv() {
-                if let EngineEvent::State(s) = ev {
-                    seen.push(s);
+                match ev {
+                    EngineEvent::State(s) => seen.push(s),
+                    EngineEvent::Started { station_id } => {
+                        h.started.lock().unwrap().push(station_id)
+                    }
+                    _ => {}
                 }
             }
         };
@@ -1256,6 +1300,155 @@ mod session_tests {
             requests.load(Ordering::SeqCst)
         );
         h.ctx.cancel();
+    }
+
+    /// M3b commit 5, the click rule at session level: a stream that plays, ends and plays
+    /// again through the backoff is **one** session, so `Started` is sent once — on the first
+    /// `Playing` — with the id `begin_session` was given. Fails if `Started` is per-`Playing`
+    /// (two ids), or if the id is lost (an empty string).
+    #[test]
+    fn started_is_sent_once_per_session_across_a_reconnect() {
+        let (url, requests) = counting_server_owned(wav_response(1.5));
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(10), |s| {
+            matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
+        });
+        let playing = seen
+            .iter()
+            .filter(|s| **s == PlaybackState::Playing)
+            .count();
+        assert!(
+            playing >= 2,
+            "the WAV played twice across the reconnect ({seen:?})"
+        );
+        assert!(requests.load(Ordering::SeqCst) >= 2, "two requests");
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            vec!["u1".to_string()],
+            "one Started, with the session's id, across {playing} Playing states"
+        );
+        h.ctx.cancel();
+    }
+
+    /// `counting_server` for a response built at runtime (a WAV is not a `&'static [u8]`).
+    fn counting_server_owned(response: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+        scripted_server(vec![response])
+    }
+}
+
+#[cfg(test)]
+mod started_tests {
+    //! The click rule's pure part (M3b commit 5): `Shared::set_state` sends `Started` on the
+    //! first `Playing` of a session and never again until `begin_session`. Each test names
+    //! what makes it fail.
+    use std::sync::mpsc::Receiver;
+
+    use super::*;
+
+    fn shared() -> (Shared, Receiver<EngineEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let s = Shared {
+            state: Arc::new(Mutex::new(PlaybackState::Idle)),
+            events: tx,
+            gains: EqGains::default(),
+            paused: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(None)),
+            started: Arc::new(AtomicBool::new(false)),
+        };
+        (s, rx)
+    }
+
+    fn drive(s: &Shared, states: &[PlaybackState]) {
+        for st in states {
+            s.set_state(st.clone());
+        }
+    }
+
+    fn started_ids(rx: &Receiver<EngineEvent>) -> Vec<String> {
+        let mut ids = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let EngineEvent::Started { station_id } = ev {
+                ids.push(station_id);
+            }
+        }
+        ids
+    }
+
+    use PlaybackState::{Buffering, Connecting, Paused, Playing, Reconnecting};
+
+    /// Fails if the flag is missing (four `Started`), or if the decision looks at the previous
+    /// state instead of the flag (a resume or a reconnect's `Playing` would count).
+    #[test]
+    fn started_fires_once_per_session_whatever_the_route_back_to_playing() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Playing]);
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+        drive(&s, &[Buffering, Playing]); // an underrun's refill
+        drive(&s, &[Paused, Playing]); // a resume
+        drive(&s, &[Reconnecting { attempt: 1 }, Buffering, Playing]); // a reconnect
+        assert_eq!(started_ids(&rx), Vec::<String>::new());
+    }
+
+    /// Fails if `begin_session` skips the reset when the id is unchanged.
+    #[test]
+    fn a_second_play_for_the_same_station_starts_again() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Playing, Paused]);
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Playing]);
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+    }
+
+    /// Fails if `Reconnecting` anywhere in the history suppresses the click.
+    #[test]
+    fn a_session_that_reconnected_before_ever_playing_starts_on_its_first_playing() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(
+            &s,
+            &[Connecting, Reconnecting { attempt: 1 }, Buffering, Playing],
+        );
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+    }
+
+    /// Fails if `Paused → Playing` is excluded categorically, or if `Started` is sent before
+    /// `State(Playing)`.
+    #[test]
+    fn paused_while_buffering_starts_on_resume() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Paused, Playing]);
+        let events: Vec<EngineEvent> = rx.try_iter().collect();
+        let playing_at = events
+            .iter()
+            .position(|e| matches!(e, EngineEvent::State(Playing)))
+            .expect("State(Playing)");
+        let started_at = events
+            .iter()
+            .position(|e| matches!(e, EngineEvent::Started { .. }))
+            .expect("one Started");
+        assert!(started_at > playing_at, "Started after State(Playing)");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, EngineEvent::Started { .. }))
+                .count(),
+            1
+        );
+    }
+
+    /// Fails if the setter's no-op return is bypassed for the flag check (a second `State`
+    /// or `Started` for the same state).
+    #[test]
+    fn a_repeated_playing_is_a_no_op() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Playing, Playing]);
+        let events: Vec<EngineEvent> = rx.try_iter().collect();
+        assert_eq!(events.len(), 2, "one State and one Started: {events:?}");
     }
 }
 

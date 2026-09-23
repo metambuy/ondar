@@ -103,7 +103,9 @@ reach them from the popover.
       dedupe, sort and cap **750** locally — never let the server cap before the filter
 - [x] Endpoints: `/json/countries?hidebroken=true`,
       `/json/stations/bycountrycodeexact/{cc}?hidebroken=true&limit=…`,
-      `/json/url/{uuid}` (click, M3b), `/json/stations/search` (search only)
+      `/json/url/{uuid}` (click — **M3b commit 5, 2026-09-23**: once per `play`, on the
+      session's first `Playing`, from Rust, never retried; a measurement run never votes),
+      `/json/stations/search` (search only)
 - [x] `stations::model` — `Station`, `Country`; normalise `url_resolved`, codec, bitrate;
       merge the 9 lowercase country codes into their uppercase rows, drop `XX`
 - [x] Filtering: drop `lastcheckok == 0` (= `hidebroken`), drop empty `url_resolved`,

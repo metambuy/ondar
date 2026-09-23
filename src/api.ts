@@ -94,7 +94,6 @@ export const stations = {
   addFavourite: (station: Station) => invoke<void>("add_favourite", { station }),
   removeFavourite: (uuid: string) => invoke<boolean>("remove_favourite", { uuid }),
   listRecents: () => invoke<Station[]>("list_recents"),
-  recordPlayed: (station: Station) => invoke<void>("record_played", { station }),
 };
 
 // The dev-only measurement harness's one command (M3b 1a; `src/measure.ts`). The command is

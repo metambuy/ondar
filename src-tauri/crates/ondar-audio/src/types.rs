@@ -89,6 +89,13 @@ pub struct EqBand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineEvent {
     State(PlaybackState),
+    /// The session begun by a `Play` reached `Playing` for the first time (M3b commit 5): the
+    /// moment the shell records the recent and sends radio-browser's click — once per `play`
+    /// call, never on a resume or a reconnect of a session that already played. Not a
+    /// boundary type: the page is not told.
+    Started {
+        station_id: String,
+    },
     StreamInfo(StreamInfo),
     Metadata(IcyMetadata),
     Reconnect(ReconnectInfo),

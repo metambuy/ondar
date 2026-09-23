@@ -59,11 +59,3 @@ pub async fn remove_favourite(
 pub async fn list_recents(state: State<'_, AppState>) -> Result<Vec<Station>, OndarError> {
     Ok(state.stations.list_recents().await?)
 }
-
-/// Records a play in the recents (20, a replay moves to the top). M3b calls this from Rust on
-/// the first `Playing` after a `play`, with the click endpoint; until then the dev list calls it
-/// when Play is pressed.
-#[tauri::command]
-pub async fn record_played(state: State<'_, AppState>, station: Station) -> Result<(), OndarError> {
-    Ok(state.stations.record_played(station).await?)
-}

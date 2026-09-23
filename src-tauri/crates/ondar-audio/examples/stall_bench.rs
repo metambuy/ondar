@@ -53,6 +53,9 @@ fn main() {
                 let t = start.elapsed().as_secs_f64();
                 match &ev {
                     EngineEvent::State(s) => println!("[{t:7.3}s] state    {s:?}"),
+                    EngineEvent::Started { station_id } => {
+                        println!("[{t:7.3}s] started  station_id={station_id}")
+                    }
                     EngineEvent::StreamInfo(i) => println!("[{t:7.3}s] stream   {i:?}"),
                     EngineEvent::Metadata(m) => println!("[{t:7.3}s] metadata {m:?}"),
                     EngineEvent::Reconnect(r) => {
