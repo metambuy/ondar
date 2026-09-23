@@ -11,7 +11,7 @@ display, 720 pt where it fits), resized and repositioned in one frame change aft
 committed the new layout. The expanded pane is a placeholder until M4/M5. The M1 bench window retired at M2c into the popover;
 since M3b the popover is the product's collapsed view: Now Playing (name, the live ICY title,
 flag · codec · bitrate), the transport row (play/pause, stop, ★ favourite, volume), the country
-select with ★ Favourites and Recents as its first entries, and the station list — eight rows
+select with a ★ toggle beside it for favourites and recents, and the station list — eight rows
 of the selected country's ranked list, scrolling. No EQ sliders until M5.
 
 ## Prerequisites (macOS, Apple Silicon)

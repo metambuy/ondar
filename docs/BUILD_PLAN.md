@@ -124,8 +124,9 @@ reach them from the popover.
 - [x] UI: country dropdown (a native select, searchable by type-ahead — a custom list is a
       later commit if it proves poor by hand) wired to `list_countries`; station list wired to
       `list_stations`, click-to-play through the existing `play` command; ★ Favourites and
-      Recents as the select's first entries; Now Playing; the transport row (**M3b commits
-      1b–4, 2026-09-23**). **The requirement carried from the M3a review (finding 7):** the
+      Recents behind a toggle beside the select (acceptance finding C, `298c342` — they began
+      as the select's first entries and were not found unaided); Now Playing; the transport
+      row (**M3b commits 1b–4, 2026-09-23**). **The requirement carried from the M3a review (finding 7):** the
       real list applies a reply only for the source still selected — pinned by
       `StationList.test.tsx` (vitest, the first TS tests). The re-request on popover show
       (acceptance item 6) is built and tested the same way.
@@ -142,6 +143,19 @@ reach them from the popover.
       2 000, one non-HTTP wording table, `mms://` refused, the dev list's reply guard, `LIKE`
       escaping, the error body text — plus three cleanups; acceptance items 5, 6, 8 re-run
       2026-09-23 (`m3a-acc-07`/`08`). ONDAR.md, "Code review, 2026-09-22".
+- [x] **M3b acceptance, 2026-09-23** (`_handover/m3b-acceptance.md`): 10 items, 7 passed as
+      built; B (the country control unusable offline) fixed `f829b1e`, C (★ discoverability →
+      a toggle beside the select) fixed `298c342`, items 2 and 9 re-run PASS. **A — the output
+      keeps the first session's sample rate — is M1's defect, already on `main`, deferred by
+      decision to its own measured work after the merge, before M4**; items 4 and 6 pass on
+      clicks and prefetch and fail on A, not re-run. ONDAR.md, "M3b: the collapsed view…", the
+      acceptance paragraph.
+- [x] **M3b code review, 2026-09-23** (`_handover/code-review-2026-09-23.md`): eight findings
+      fixed one commit each — the `started` race decided under one lock, the prefetch ceiling,
+      the transport's reading of `reconnecting`, the error cleared on a source change, the
+      reply serialised only under `?measure=perf`, the failed click's own error shape,
+      `describeError` in the transport, and the three drifted document lines (this commit).
+      ONDAR.md, "Code review, 2026-09-23".
 
 **Exit:** country dropdown populated from Rust; selecting a country lists real stations;
 airplane mode still shows the last cached lists (**measured 2026-09-22**, acceptance item 5);

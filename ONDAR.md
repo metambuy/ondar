@@ -737,9 +737,101 @@ max; recorded in the constant's comment rather than re-derived downward from the
 luckier sample. The hand-driven scroll runs once at M3b acceptance.
 
 **Observed, not criteria:** one `stream_download` DEBUG line per play under `RUST_LOG=info`
-(M3a saw six) — cause still open; the Web Inspector was not used (a GUI session Code cannot
-drive; the screen capture stood in); the selected country is not persisted (a launch starts
-on PT).
+(M3a saw six) — cause still open at build time; acceptance below correlated it with A; the Web
+Inspector was not used (a GUI session Code cannot drive; the screen capture stood in); the
+selected country is not persisted (a launch starts on PT).
+
+**Acceptance, run 2026-09-23** (`_handover/m3b-acceptance.md`, ten items; the debug bundle at
+`e23e48d`, at `298c342` for the re-run; runs `m3b-acc-01`…`-10`, `-02r`, `-09r`; triage
+`m3b-acceptance-triage-2026-09-23.md`, the decisions Martín's): **7 of 10 passed as built** —
+1 the collapsed layout (8 full rows, first show 25 ms); 3 play, Now Playing and the recorded
+click (the first online play's `click uuid=… status=200 body="{\"ok\":true,…}"` 1.13 s after
+`play` — Step 0 P6's one recorded request); 5 no vote on a reconnect (one click, four `connect
+failed` at 1/2/4/8 s, recovery on the fifth); 7 the hand-driven scroll at 750 rows (722 frames
+in 12 s, max 20 ms, dropped 0, "looked great"); 8 a favourite across a restart; 10 an expired
+list served at once, refreshed on show. Three findings, each a thing a log cannot see:
+
+- **A — the output keeps the first session's sample rate** (items 4e and 6): six observations
+  over 22 050 / 44 100 / 48 000 Hz sources, every later station playing at the first one's
+  rate (RFI Afrique at 22 050 after a 48 kHz station: ×2.18; 44.1 ↔ 48 is the everyday case
+  and easy to miss by ear). **M1's defect, already on `main`** — M3b is the first milestone
+  where a person plays several stations in one run. **Decided: its own measured piece of work
+  after the merge, before M4**, a milestone in miniature, not a patch: log the decoder's, the
+  ring's, the mixer's and the device's rate at every session start, play three rates in one
+  run, read which of the four stops changing; only then choose between re-opening the sink per
+  session and resampling to a fixed rate. The `stream_download` DEBUG line above is its clue —
+  66 in the run where playback outran the download, one per station otherwise: 44.1 kHz
+  content through a 48 kHz path drains the buffer ~9 % faster than it fills. Items 4 (clicks:
+  3 plays → 3 votes; none on pause, resume or the playing row; Recents in order) and 6 (the
+  prefetch lines: 64 → 32 768, 192 → 48 000, 320 → 80 000) **pass on their own quantities**
+  and were not re-run.
+- **B — offline with nothing cached, the country control was unusable** (item 9): disabled
+  while the countries list was null, and squeezed by unwrapped error text — the stores, the
+  one thing usable offline, unreachable. Fixed `f829b1e`: the select is never disabled, the
+  error on its own clamped line; `Panel.test.tsx` fails on `e23e48d`; fit `m3b-bc-fit-01`
+  `country_row overflow=false`. Re-run `m3b-acc-09r` PASS ("everything is perfect").
+- **C — ★ Favourites and Recents were not found unaided** (item 2): commit 4's reversal
+  above; fixed `298c342`. Re-run `m3b-acc-02r` PASS (the ★ found unaided).
+
+Minor, recorded: the first show of a run is 7–26 ms and later shows reach 63–105 ms (the
+triage's first reading had the two reversed; the fallback never fired — `LAYOUT_FALLBACK`'s
+n = 74 is the steady state, and the first-show-of-a-process figure is a different quantity,
+not folded in); 14 real votes to radio-browser during acceptance, all `status=200`, expected;
+0 `ERROR`/`panicked` and 0 `trigger=fallback` in every run; the acceptance file's
+"StreamInfo/icy lines" do not exist at `info` (a wording error in the item, not a defect).
+
+**Code review, 2026-09-23** (`/code-review 92cfe3f..298c342`; findings in
+`_handover/code-review-2026-09-23.md`, triage in `m3b-code-review-triage-2026-09-23.md`).
+**The instrument, read from the transcripts:** one agent, which spawned nothing — 0 finders,
+0 verifiers; eight candidates after its own dedup, none carrying a verdict, so **eight of eight
+unverified by a second pass** (M3a's run had 8 finders + 4 verifiers); no 429 or spend-limit
+message anywhere (M2d's lesson). Eight findings, all credible on reading, all fixed, one commit
+each, each pushed alone; 1–3 with a test that fails on `298c342` and a mutation check; the
+sample-rate defect A untouched (finding 1 is adjacent, kept apart). Tests 177 → **180** (audio
+76, shell 40, stations 64) **+ 15** TypeScript (12 list, 2 transport, 1 panel).
+
+- **A stale session's `Playing` could take the new session's `Started`** (`3631085`, finding
+  1, must): `SessionCtx::set_state` read the cancel flag, `Shared::set_state` wrote the state
+  and swapped the flag, and the engine thread's `cancel` + `begin_session` fit between — a
+  vote and a recent for a station that had not opened, and nothing on its real first
+  `Playing`. The write, its liveness and the flag now sit under one lock: a generation per
+  session, moved by every `begin_session` and every session end, checked in
+  `Shared::write_state`; the `State` and `Started` events go out under the same lock, so
+  their order is the states'. The race test models the writer's side (its check passed, the
+  next session begun); the same scenario on `298c342`'s `Shared` sends `Started { u2 }`; with
+  the gate disabled both new tests fail. `started_tests` 5 → 7.
+- **The prefetch had no ceiling** (`fd70891`, finding 2, must): `bitrate` is user-entered
+  (1411 for FLAC, 1536, a `128000` typo; the census found 16.8 % at 0) and a prefetch at or
+  over the 256 KB buffer is met only when the buffer is full — startup waited for the whole
+  window. `PREFETCH_CEILING_BYTES` = half the buffer, 131 072 (the largest head start that
+  leaves the same again for the download to run ahead; the knee crosses it at 525 kbit/s);
+  10 000 kbit/s asked for 2 500 000 before. Clippy's `manual_clamp` chose `clamp` over
+  `min().max()`; its precondition (floor < ceiling, both `const`) is asserted by the test.
+- **Play was enabled while `reconnecting`** (`0063c08`, finding 3, must): the ternary matched
+  no branch, so one click was a new session, a reset backoff and a second vote — while the
+  row already read `reconnecting` as audible. The transport reads it as the row does (Pause
+  disabled, Stop, no Play); one test per surface so they cannot drift again —
+  `Transport.test.tsx` (the first), list test 10 (mutation: `audible` without `reconnecting`).
+- **The previous source's error outlived a source change** (`f6c0e40`, finding 4): PT's
+  offline error read as FR's status until FR answered, up to the 200 s budget. Cleared when
+  the source key changes; a show keeps the last answer until the re-request lands — the
+  triage's "clear on source change", narrower than the review's "reset in the effect". List
+  test 11 (the mock's deferred rejects now).
+- **Every list reply was serialised in production** (`c443617`, finding 5): `JSON.stringify`
+  of a 750-row list (~319 KB, part of the 31 ms reply in the 51 ms mount) fed only
+  `?measure=perf`'s `reply_bytes`; `replyBytes()` serialises only under it. List test 12, a
+  spy: called once on `298c342`, never after.
+- **A failed click logged a fabricated elapsed** (`c8a9caa`, finding 7): `Exhausted {
+  attempts: 1, elapsed: ZERO }` read "after 1 attempt(s) in 0.00s" — a budget a click never
+  had, an instant for a 10 s timeout, the class of defect recorded twice as an instrument
+  lesson. `ClientError::Unanswered(reason)`, "the click's one request got no answer: …"; the
+  message asserted in `click_is_one_request_never_retried`.
+- **A rejected `play` rendered as raw JSON** (`f8f8c59`, finding 8): `describeError`, as the
+  country control and the list. Transport test 2. Its own commit — finding 3 touched a
+  different line.
+- **Three documents still described ★-in-the-select and "5–7 rows"** (finding 6): README,
+  BUILD_PLAN and `panel.module.css`'s comment against the measured 8 and the toggle —
+  `298c342` broke the same-commit rule; corrected in the closing docs commit with this record.
 
 ### M3a: the station directory, built (2026-09-22)
 

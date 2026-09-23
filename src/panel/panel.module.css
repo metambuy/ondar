@@ -9,7 +9,7 @@
   height: var(--panel-height, 100%);
   box-sizing: border-box;
   /* A column, so the station list (`.fill` → `.list`) can take the height the fixed blocks
-     leave and scroll inside it (M3b 1b: the collapsed pane fits 5–7 rows of a 750-row list),
+     leave and scroll inside it (M3b: 8 rows of a 750-row list fit in the collapsed pane, measured at commit 4),
      with the rhythm's gap between its blocks. */
   display: flex;
   flex-direction: column;
