@@ -69,8 +69,7 @@ impl AudioEngine {
         let shared = Shared {
             state: Arc::new(Mutex::new(PlaybackState::Idle)),
             events: ev_tx,
-            session: Arc::new(Mutex::new(None)),
-            started: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(Session::default())),
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
         };
@@ -103,26 +102,70 @@ struct Shared {
     events: Sender<EngineEvent>,
     gains: EqGains,
     paused: Arc<AtomicBool>,
-    /// The `station_id` of the session the last `Play` began, for [`EngineEvent::Started`].
-    session: Arc<Mutex<Option<String>>>,
-    /// Whether that session has reached `Playing` yet. `Started` is emitted on the first
-    /// `Playing` of a session — whatever route led there — and never again until the next
-    /// `Play` (M3b commit 5, the click endpoint's rule: once per `play` call, on the first
-    /// `Playing` after it; not on a resume or a reconnect of a session that already played).
-    started: Arc<AtomicBool>,
+    /// The session the last `Play` began — its generation, the id `Started` will carry, and
+    /// whether it has reached `Playing` yet — under **one** lock with every state write that
+    /// comes from a session, so the write and the decision it feeds cannot interleave with
+    /// the engine thread's `cancel` + `begin_session` (`/code-review` finding 1, 2026-09-23).
+    session: Arc<Mutex<Session>>,
+}
+
+/// The engine's record of the live session. `generation` counts every `begin_session` and
+/// every session end; a [`SessionCtx`] carries the generation it was born with, and a write
+/// through it is dropped once the number has moved on. Compared under the lock that also
+/// decides `started`, so a stale decode thread's `Playing` can neither overwrite the successor's
+/// state nor consume its `Started` (a vote and a recent for a station that has not opened).
+#[derive(Default)]
+struct Session {
+    generation: u64,
+    station_id: Option<String>,
+    /// `Started` is emitted on the first `Playing` of a session — whatever route led there —
+    /// and never again until the next `Play` (M3b commit 5, the click endpoint's rule: once per
+    /// `play` call, on the first `Playing` after it; not on a resume or a reconnect of a session
+    /// that already played).
+    started: bool,
 }
 
 impl Shared {
-    /// A new session, on `Play`: the id `Started` will carry, and the flag down. Called on the
-    /// engine thread after the previous session is cancelled and before `Connecting`; a stale
-    /// decode thread's updates are dropped by `SessionCtx::set_state`, so it cannot flip the
-    /// new session's flag.
-    fn begin_session(&self, station_id: String) {
-        *self.session.lock().unwrap() = Some(station_id);
-        self.started.store(false, Ordering::Release);
+    /// A new session, on `Play`: the id `Started` will carry, the flag down, and a fresh
+    /// generation, returned for the session's [`SessionCtx`]. Called on the engine thread after
+    /// the previous session is cancelled and before `Connecting`; a write from the previous
+    /// session's decode thread carries the old generation and is dropped by [`Self::write_state`]
+    /// however late it lands.
+    fn begin_session(&self, station_id: String) -> u64 {
+        let mut session = self.session.lock().unwrap();
+        session.generation += 1;
+        session.station_id = Some(station_id);
+        session.started = false;
+        session.generation
     }
 
+    /// The session `generation` is over: its writes are dropped from here on, even before a
+    /// successor begins (a stale `Playing` between `stop`'s cancel and its `Idle`). A generation
+    /// that is already not the live one changes nothing.
+    fn end_session(&self, generation: u64) {
+        let mut session = self.session.lock().unwrap();
+        if session.generation == generation {
+            session.generation += 1;
+        }
+    }
+
+    /// The engine thread's own state writes: `Connecting`, `Paused`, `Idle`, `Error` — never
+    /// gated on a session.
     fn set_state(&self, s: PlaybackState) {
+        self.write_state(None, s);
+    }
+
+    /// One state write. With `from`, the write belongs to a session and lands only while that
+    /// generation is the live one — decided under the same lock as the write, the `State` event
+    /// and the `Started` decision, so nothing from the engine thread can slip between them.
+    /// `State(Playing)` is sent before `Started`, so a listener sees the state first; every
+    /// entry into `Playing` after the first (an underrun's refill, a resume, a reconnect after
+    /// playback) finds `started` set.
+    fn write_state(&self, from: Option<u64>, s: PlaybackState) {
+        let mut session = self.session.lock().unwrap();
+        if from.is_some_and(|generation| generation != session.generation) {
+            return;
+        }
         {
             let mut guard = self.state.lock().unwrap();
             if *guard == s {
@@ -132,11 +175,9 @@ impl Shared {
         }
         let playing = s == PlaybackState::Playing;
         let _ = self.events.send(EngineEvent::State(s));
-        // The session's first `Playing`: one atomic swap decides it, after the state event so
-        // a listener sees `Playing` before it sees `Started`. Every other entry into `Playing`
-        // (an underrun's refill, a resume, a reconnect after playback) finds the flag set.
-        if playing && !self.started.swap(true, Ordering::AcqRel) {
-            let station_id = self.session.lock().unwrap().clone().unwrap_or_default();
+        if playing && !session.started {
+            session.started = true;
+            let station_id = session.station_id.clone().unwrap_or_default();
             let _ = self.events.send(EngineEvent::Started { station_id });
         }
     }
@@ -171,6 +212,9 @@ struct SessionCtx {
     /// `Settings::on_reconnect` callback attached in `stream::open`, read by `Engine::tick`
     /// to emit `EngineEvent::Reconnect` when it changes.
     reconnect_count: Arc<AtomicU64>,
+    /// The [`Session`] generation this context was born with (`Shared::begin_session`); every
+    /// state write through it is checked against the live one, under the lock.
+    generation: u64,
     shared: Shared,
 }
 
@@ -184,14 +228,16 @@ impl SessionCtx {
         if let Some(token) = self.download.lock().unwrap().take() {
             token.cancel();
         }
+        self.shared.end_session(self.generation);
     }
 
-    /// State updates from a cancelled session are dropped so a stale decode thread cannot
-    /// overwrite the state of its successor.
+    /// A state update from this session, dropped once the session is over so a stale decode
+    /// thread can neither overwrite the state of its successor nor take its `Started`. The
+    /// decision is `Shared::write_state`'s, under its lock — a flag read here and a write there
+    /// left a window for the engine thread's `cancel` + `begin_session` between the two
+    /// (`/code-review` finding 1, 2026-09-23).
     fn set_state(&self, s: PlaybackState) {
-        if !self.cancelled() {
-            self.shared.set_state(s);
-        }
+        self.shared.write_state(Some(self.generation), s);
     }
 
     fn sleep_cancellable(&self, d: Duration) {
@@ -480,7 +526,7 @@ impl Engine {
 
     fn play(&mut self, url: String, station_id: String, bitrate_kbps: Option<u32>) {
         self.cancel_session();
-        self.shared.begin_session(station_id.clone());
+        let generation = self.shared.begin_session(station_id.clone());
         self.shared.paused.store(false, Ordering::Relaxed);
         if let Some(p) = &self.player {
             // Silence the previous station now, not when the new one has buffered.
@@ -514,6 +560,7 @@ impl Engine {
             ring: Arc::new(Mutex::new(None)),
             backoff: Arc::new(Mutex::new(Backoff::default())),
             reconnect_count: Arc::new(AtomicU64::new(0)),
+            generation,
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
@@ -1082,16 +1129,16 @@ mod session_tests {
             events: ev_tx,
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
-            session: Arc::new(Mutex::new(None)),
-            started: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(Session::default())),
         };
-        shared.begin_session("u1".into());
+        let generation = shared.begin_session("u1".into());
         let ctx = SessionCtx {
             cancel: Arc::new(AtomicBool::new(false)),
             download: Arc::new(Mutex::new(None)),
             ring: Arc::new(Mutex::new(None)),
             backoff: Arc::new(Mutex::new(Backoff::default())),
             reconnect_count: Arc::new(AtomicU64::new(0)),
+            generation,
             shared,
         };
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1355,8 +1402,9 @@ mod session_tests {
 
 #[cfg(test)]
 mod started_tests {
-    //! The click rule's pure part (M3b commit 5): `Shared::set_state` sends `Started` on the
-    //! first `Playing` of a session and never again until `begin_session`. Each test names
+    //! The click rule's pure part (M3b commit 5): `Shared::write_state` sends `Started` on the
+    //! first `Playing` of a session and never again until `begin_session`, and only for a
+    //! write from the live session (`/code-review` finding 1, 2026-09-23). Each test names
     //! what makes it fail.
     use std::sync::mpsc::Receiver;
 
@@ -1369,10 +1417,22 @@ mod started_tests {
             events: tx,
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
-            session: Arc::new(Mutex::new(None)),
-            started: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(Session::default())),
         };
         (s, rx)
+    }
+
+    /// A decode thread's handle on the session `generation`, as `Engine::play` builds it.
+    fn ctx(s: &Shared, generation: u64) -> SessionCtx {
+        SessionCtx {
+            cancel: Arc::new(AtomicBool::new(false)),
+            download: Arc::new(Mutex::new(None)),
+            ring: Arc::new(Mutex::new(None)),
+            backoff: Arc::new(Mutex::new(Backoff::default())),
+            reconnect_count: Arc::new(AtomicU64::new(0)),
+            generation,
+            shared: s.clone(),
+        }
     }
 
     fn drive(s: &Shared, states: &[PlaybackState]) {
@@ -1466,6 +1526,42 @@ mod started_tests {
         drive(&s, &[Playing, Playing]);
         let events: Vec<EngineEvent> = rx.try_iter().collect();
         assert_eq!(events.len(), 2, "one State and one Started: {events:?}");
+    }
+
+    /// `/code-review` finding 1 (2026-09-23): the engine thread's `cancel` + `begin_session`
+    /// can run between a decode thread's cancel check and its write. Modelled from the
+    /// writer's side — its check passed, so the write reaches `Shared` — with the next session
+    /// already begun. Fails if the write is gated on a flag read before the lock (the code
+    /// before this test: the stale `Playing` lands, `Started { "u2" }` goes out for a station
+    /// that has not opened, and the real first `Playing` then sends nothing), or if
+    /// `begin_session` does not move the generation.
+    #[test]
+    fn a_stale_sessions_playing_cannot_take_the_new_sessions_started() {
+        let (s, rx) = shared();
+        let stale = ctx(&s, s.begin_session("u1".into()));
+        stale.set_state(Connecting);
+        let live = ctx(&s, s.begin_session("u2".into()));
+        s.set_state(Connecting); // the engine thread, as `play` does
+        stale.set_state(Playing); // the race: its cancel check passed before `begin_session`
+        assert_eq!(s.state(), Connecting, "the stale write is dropped");
+        assert_eq!(started_ids(&rx), Vec::<String>::new());
+        live.set_state(Buffering);
+        live.set_state(Playing);
+        assert_eq!(started_ids(&rx), vec!["u2"]);
+    }
+
+    /// A session that ended with no successor (`stop`: cancel, then the engine's `Idle`): its
+    /// late write is dropped too. Fails if only `begin_session` moves the generation.
+    #[test]
+    fn a_cancelled_sessions_write_is_dropped_before_any_successor() {
+        let (s, rx) = shared();
+        let old = ctx(&s, s.begin_session("u1".into()));
+        old.set_state(Connecting);
+        old.cancel();
+        s.set_state(PlaybackState::Idle);
+        old.set_state(Playing);
+        assert_eq!(s.state(), PlaybackState::Idle, "the late write is dropped");
+        assert_eq!(started_ids(&rx), Vec::<String>::new());
     }
 }
 
