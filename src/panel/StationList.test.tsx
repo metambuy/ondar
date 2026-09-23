@@ -22,7 +22,11 @@
 // 10. a click on the playing row while `reconnecting` does nothing: the row reads it as audible,
 //    the reading the transport is pinned to in Transport.test.tsx (`/code-review` finding 3,
 //    2026-09-23; fails if `audible` stops counting `reconnecting` — a `play` there is a second
-//    vote and a reset backoff).
+//    vote and a reset backoff);
+// 11. the previous source's error does not outlive a source change: PT's failure is not shown
+//    as FR's status while FR's reply is on its way (`/code-review` finding 4, 2026-09-23; fails
+//    on the code before it, where `error` was cleared only by a reply). On a show with the same
+//    source the last answer stays until the new one lands — that is a re-request, not a change.
 //
 // `../api` is mocked whole: nothing reaches Tauri, and every request is a deferred promise
 // the test resolves in the order it chooses — which is the point.
@@ -32,18 +36,18 @@ import type { ListedStations, Station, StationsUpdated } from "../api";
 import StationList from "./StationList";
 import type { ListSource } from "./source";
 
-type Deferred = { what: string; resolve: (l: unknown) => void };
+type Deferred = { what: string; resolve: (l: unknown) => void; reject: (e: unknown) => void };
 
 const mock = vi.hoisted(() => {
-  const requests: { what: string; resolve: (l: unknown) => void }[] = [];
+  const requests: Deferred[] = [];
   const stationsListeners: ((u: unknown) => void)[] = [];
   const recentsListeners: (() => void)[] = [];
   const stateListeners: ((s: unknown) => void)[] = [];
   const plays: [string, string, number | null][] = [];
   let resumes = 0;
   const defer = (what: string) =>
-    new Promise((resolve) => {
-      requests.push({ what, resolve });
+    new Promise((resolve, reject) => {
+      requests.push({ what, resolve, reject });
     });
   return {
     requests,
@@ -127,6 +131,8 @@ const mine: ListSource = { kind: "mine" };
 const requests = (): Deferred[] => mock.requests as unknown as Deferred[];
 const whats = () => requests().map((r) => r.what);
 const resolve = (r: Deferred, l: unknown) => act(async () => r.resolve(l));
+const reject = (r: Deferred, e: unknown) => act(async () => r.reject(e));
+const offline = { code: "stations", message: "radio-browser unreachable after 3 attempt(s) in 3.01s" };
 const emit = (u: StationsUpdated) => act(async () => mock.stationsListeners.forEach((cb) => cb(u)));
 const emitRecents = () => act(async () => mock.recentsListeners.forEach((cb) => cb()));
 const emitState = (kind: string) => act(async () => mock.stateListeners.forEach((cb) => cb({ kind })));
@@ -274,5 +280,22 @@ describe("StationList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play FIP" }));
     expect(mock.plays).toEqual([]);
     expect(mock.resumed()).toBe(resumed);
+  });
+
+  it("clears the previous source's error when the source changes, and keeps it across a show", async () => {
+    const view = render(list(country("PT")));
+    await reject(requests()[0], offline);
+    expect(screen.getByText("stations: radio-browser unreachable after 3 attempt(s) in 3.01s")).toBeTruthy();
+    view.rerender(list(country("PT"), 1));
+    expect(whats()).toEqual(["cc:PT", "cc:PT"]);
+    expect(screen.getByText(/radio-browser unreachable/)).toBeTruthy();
+    view.rerender(list(country("FR"), 1));
+    expect(whats()).toEqual(["cc:PT", "cc:PT", "cc:FR"]);
+    expect(screen.queryByText(/radio-browser unreachable/)).toBeNull();
+    expect(screen.getByText("loading…")).toBeTruthy();
+    await resolve(requests()[2], listed("FR", ["FIP"]));
+    expect(screen.getByText("FIP")).toBeTruthy();
+    await reject(requests()[1], offline);
+    expect(screen.queryByText(/radio-browser unreachable/)).toBeNull();
   });
 });

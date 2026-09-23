@@ -18,6 +18,8 @@
 //   whole: a late half can never mix with a newer list.
 // - **After a refresh:** `landed` → ask again; `failed` → Rust says the expired list stays, so
 //   clear the flag it set and do not ask again (an offline page would otherwise loop).
+// - **An error belongs to its source:** a source change clears it before the new request; a
+//   show keeps it, as it keeps a list, until the re-request answers (`/code-review` finding 4).
 //
 // A click on the row that is already playing does nothing, and on the row that is paused it
 // resumes (M3b commit 5, F6 review F2): a `play` call is a vote in radio-browser's click
@@ -135,6 +137,10 @@ function StationList({
   };
 
   useEffect(() => {
+    // A new source starts clean: the previous one's error is not its status (`/code-review`
+    // finding 4, 2026-09-23). A show re-requests the same source, and there the last answer —
+    // error or list — stays until the new one lands, as an expired list does.
+    if (sourceKey(sourceRef.current) !== key) setError(null);
     sourceRef.current = source;
     load(source);
     // `key` stands for `source` (same list, same key), so a re-render with an equal source
