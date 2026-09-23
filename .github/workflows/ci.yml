@@ -86,6 +86,11 @@ jobs:
       - name: pnpm typecheck
         run: pnpm typecheck
 
+      # The renderer's own tests (vitest under jsdom, from M3b 1b): a separate step and a
+      # separate count from `cargo test` — CLAUDE.md reports the two side by side.
+      - name: pnpm test
+        run: pnpm test
+
       - name: pnpm lint
         run: pnpm lint
 

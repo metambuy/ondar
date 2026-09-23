@@ -85,19 +85,23 @@ export default function Transport() {
 
   return (
     <section aria-label="Dev transport" className={styles.stack}>
-      <h1 className={styles.heading}>Now Playing</h1>
-      <p className={styles.line}>{stationName}</p>
-      <p className={styles.line}>{title ?? "—"}</p>
-      <p className={`${styles.muted} ${styles.clamp}`}>
-        {describe(state)} · {describeStream(info)}
-      </p>
-      {lastError && (
-        <p className={`${styles.muted} ${styles.clamp}`} role="alert">
-          {lastError}
+      {/* `data-measure`: the dev Now Playing block, measured as such by M3b 1b and replaced by
+          `NowPlaying.tsx` in 1c. Same `.stack`, so the gaps inside equal the gaps around. */}
+      <div className={styles.stack} data-measure="now_playing">
+        <h1 className={styles.heading}>Now Playing</h1>
+        <p className={styles.line}>{stationName}</p>
+        <p className={styles.line}>{title ?? "—"}</p>
+        <p className={`${styles.muted} ${styles.clamp}`}>
+          {describe(state)} · {describeStream(info)}
         </p>
-      )}
+        {lastError && (
+          <p className={`${styles.muted} ${styles.clamp}`} role="alert">
+            {lastError}
+          </p>
+        )}
+      </div>
 
-      <div className={styles.section}>
+      <div className={styles.section} data-measure="transport_controls">
         <label className={styles.field}>
           Preset
           <select value={url} onChange={(e) => setUrl(e.target.value)}>

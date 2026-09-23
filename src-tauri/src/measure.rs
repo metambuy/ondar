@@ -58,6 +58,14 @@ pub fn panel_url() -> Option<WebviewUrl> {
     mode().map(|m| WebviewUrl::App(format!("panel.html?measure={m}").into()))
 }
 
+/// The log prefix's mode: the value before any `&` — `fit&cc=FR` is the query, `fit` the mode.
+fn prefix() -> String {
+    mode().map_or_else(
+        || "none".into(),
+        |m| m.split('&').next().unwrap_or_default().to_owned(),
+    )
+}
+
 fn t_ms() -> f64 {
     START
         .get()
@@ -68,12 +76,13 @@ fn t_ms() -> f64 {
 /// is asked for. Called from `setup` after the panel and the tray exist.
 pub fn setup<R: Runtime>(handle: &AppHandle<R>) {
     let _ = START.set(Instant::now());
-    let Some(mode) = mode() else {
+    let Some(query) = mode() else {
         return;
     };
+    let mode = prefix();
     let seq = std::env::var("ONDAR_MEASURE_SEQ").ok();
     log::info!(
-        "measure[{mode}] setup keep_open={} seq={seq:?} url=panel.html?measure={mode}",
+        "measure[{mode}] setup keep_open={} seq={seq:?} url=panel.html?measure={query}",
         keep_open()
     );
     let Some(seq) = seq else {
@@ -126,7 +135,7 @@ fn run_sequence<R: Runtime>(handle: &AppHandle<R>, mode: &str, cycles: Option<u3
 /// at the report.
 #[tauri::command]
 pub fn measure_report(kind: String, fields: String, t_page: f64) {
-    let mode = mode().unwrap_or_else(|| "none".into());
+    let mode = prefix();
     log::info!(
         "measure[{mode}] {kind} {fields} t_page_ms={t_page:.1} t_ms={:.1}",
         t_ms()

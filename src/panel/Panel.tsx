@@ -6,9 +6,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { onPanelLayout, panel } from "../api";
 import type { PanelLayout, PanelView } from "../api";
+import { measureMode, measureParam, reportBlocks } from "../measure";
 import About from "./About";
-import DevStations from "./DevStations";
+import CountryControl from "./CountryControl";
 import styles from "./panel.module.css";
+import StationList from "./StationList";
 import Transport from "./Transport";
 
 export default function Panel() {
@@ -24,6 +26,15 @@ export default function Panel() {
   const [windowHeight, setWindowHeight] = useState(window.innerHeight);
   // The newest generation applied, so an older layout arriving late is ignored (below).
   const newestGeneration = useRef(-1);
+  // The selected country: shared by the country control, the station list and (M4) the map,
+  // so it lives here, not in either. Not persisted yet — a launch starts on PT (the dev list's
+  // default, kept until Rust remembers the choice). The measurement harness may name one.
+  const [selected, setSelected] = useState<string>(measureParam("cc") ?? "PT");
+  // Counts effective shows. The lists re-request on every show (an expired list is refreshed
+  // by the service only when asked for again — M3a acceptance item 6, carried to M3b). The
+  // getter's answer on mount is generation 0 and is not a show, so the mount request is the
+  // effects' own first run, not a bump.
+  const [showGeneration, setShowGeneration] = useState(0);
 
   useEffect(() => {
     // One entry point for both channels. The getter's answer and the event are separate IPC
@@ -40,7 +51,10 @@ export default function Panel() {
       // no `resize`, so the last reading is whatever the window was when it was last visible —
       // taller, after a show on a shorter display or after a cancelled collapse. Take Rust's word
       // for it (`/code-review` C2). On a resize the window has not changed yet; leave it.
-      if (l.transition === "show") setWindowHeight(l.height);
+      if (l.transition === "show") {
+        setWindowHeight(l.height);
+        if (l.generation > 0) setShowGeneration((g) => g + 1);
+      }
     };
     const unlisten = onPanelLayout(apply);
     // An emit before this listener existed was dropped by Tauri, so ask for the current layout.
@@ -76,6 +90,9 @@ export default function Panel() {
   const generation = layout?.generation;
   useEffect(() => {
     if (generation !== undefined && generation > 0) void panel.layoutCommitted(generation);
+    // The measurement harness (debug builds under `?measure=fit` only): every block's box at
+    // this commit — `src/measure.ts`.
+    if (measureMode() === "fit") reportBlocks(document, { trigger: "layout", generation });
   }, [generation]);
 
   useEffect(() => {
@@ -100,12 +117,14 @@ export default function Panel() {
 
   // The transport stays mounted while About is up (`hidden`, not unmounted): its stream info,
   // title, volume and selected preset are event-driven or local state with no Rust getter, and
-  // unmounting it reset them on every return (`/code-review` finding 1, 2026-09-17).
+  // unmounting it reset them on every return (`/code-review` finding 1, 2026-09-17). The lists
+  // stay mounted for the same reason.
   return (
-    <main className={styles.panel}>
-      <div hidden={view === "about"}>
+    <main className={styles.panel} data-measure="panel">
+      <div className={styles.body} hidden={view === "about"}>
         <Transport />
-        <DevStations />
+        <CountryControl selected={selected} onSelect={setSelected} showGeneration={showGeneration} />
+        <StationList selected={selected} showGeneration={showGeneration} />
       </div>
       {view === "about" && (
         <About
@@ -120,7 +139,7 @@ export default function Panel() {
           resize from About regardless, `reason=view`). Decision D4: when expansion is refused
           (D1's floor) it stays, disabled, so the chrome is the same on every display. */}
       {view === "transport" && (
-        <div className={styles.row}>
+        <div className={styles.row} data-measure="expand_row">
           <button
             type="button"
             aria-expanded={expanded}
