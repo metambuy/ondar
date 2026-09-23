@@ -70,14 +70,16 @@ onda/
 │   │                             the expanded pane, reports Esc),
 │   │                             NowPlaying.tsx (name, the reserved ICY title line, `flag · codec ·
 │   │                             bitrate` + the state as text; mirrors `playback:*`; M3b 1c),
-│   │                             CountryControl.tsx (native select over the countries list + its
-│   │                             provenance line; M3b 1b), StationList.tsx (the ranked rows, one line
-│   │                             each, scrolling in the collapsed pane; click → play; the wrong-country
-│   │                             guard and the re-request rules, pinned by StationList.test.tsx — vitest,
-│   │                             jsdom), provenance.ts (the `cached N h ago · refreshing…` text),
-│   │                             Transport.tsx (dev transport: presets, play/pause/stop, volume — no
-│   │                             EQ, no Now Playing since 1c; presets retire at M3b), About.tsx
-│   │                             (name, version, credits),
+│   │                             CountryControl.tsx (native select: ★ Favourites, Recents, then the
+│   │                             countries; its provenance line; M3b 1b/4), StationList.tsx (the rows
+│   │                             of the selected source — a country's ranked list, the favourites or
+│   │                             the recents (source.ts) — one line each, scrolling in the collapsed
+│   │                             pane; click → play; the wrong-source guard and the re-request rules,
+│   │                             pinned by StationList.test.tsx — vitest, jsdom), source.ts (the
+│   │                             ListSource type and the select's value encoding), provenance.ts (the
+│   │                             `cached N h ago · refreshing…` text), Transport.tsx (play/pause,
+│   │                             stop, the ★ favourite toggle, volume — no EQ; the presets retired at
+│   │                             M3b commit 4), About.tsx (name, version, credits),
 │   │                             panel.module.css
 │   ├── styles/tokens.css         THE only file with colour/size literals, light + dark together
 │   ├── measure.ts                the page half of the dev-only measurement harness (M3b 1a): inert
@@ -173,8 +175,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 162 tests `cargo test --workspace`
-reports break down as **143 hand-written + 19 ts-rs-generated** (audio 65, shell 40, stations 57):
+export_bindings_<type>` that writes the `.ts` file. So the 163 tests `cargo test --workspace`
+reports break down as **144 hand-written + 19 ts-rs-generated** (audio 65, shell 40, stations 58):
 
 | | |
 |---|---|
@@ -192,7 +194,7 @@ reports break down as **143 hand-written + 19 ts-rs-generated** (audio 65, shell
 | `client::tests` | 14 — `limit=` always sent; an empty countries answer refused (`EmptyCountries`); the three truncation rules with the F6 boundary pair (1171/1172) and rule 3's floor (expected 3, rows 1 accepted; the 1999/2000 pair — finding 6); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
 | `cache::tests` | 7 — `LIKE` metacharacters in a search query match literally (`Radio_1`, `%`; finding 9); migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
 | `store::tests` | 4 — replay to top without duplicate; the recents cap; a favourite survives its list's replacement; idempotent add |
-| `service::tests` | 12 — an empty `200 []` countries answer is an error for every waiter and a `failed` refresh, never `Closed` (finding 3); a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
+| `service::tests` | 13 — a recorded play emits `RecentsUpdated` once (M3b 4; fails if the arm emits nothing, or on a failed write); an empty `200 []` countries answer is an error for every waiter and a `failed` refresh, never `Closed` (finding 3); a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
 | `model::export_bindings_*` | 7 — generated, stations crate (`RefreshOutcome` since 2026-09-22) |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
 | `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
@@ -200,14 +202,16 @@ reports break down as **143 hand-written + 19 ts-rs-generated** (audio 65, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 143 and will not reconcile with the runner's 162
+Counting `#[test]` attributes in source gives 144 and will not reconcile with the runner's 163
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 **The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
-(vitest, jsdom) runs `src/**/*.test.tsx` — **4** today, `StationList.test.tsx` (the wrong-country
-guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show re-requests).
-Every "tests" figure in this project is written as the two numbers, `162 + 4`, never their sum:
+(vitest, jsdom) runs `src/**/*.test.tsx` — **7** today, `StationList.test.tsx` (the wrong-source
+guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show re-requests,
+the favourites source with the country reply left behind dropped, `recents:updated` re-requests
+only the recents, a favourite toggle only the favourites).
+Every "tests" figure in this project is written as the two numbers, `163 + 7`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -223,8 +227,8 @@ pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.de
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
-                              # tests, 4 today (StationList.test.tsx). Its count is reported BESIDE
-                              # the Rust count — "162 + 4", never "166" — and CI runs it as its own step
+                              # tests, 7 today (StationList.test.tsx). Its count is reported BESIDE
+                              # the Rust count — "163 + 7", never "170" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types
@@ -233,7 +237,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 162 tests: 65 in the ondar_audio binary, 57 in ondar_stations and
+cargo test --workspace       # 163 tests: 65 in the ondar_audio binary, 58 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this
@@ -295,7 +299,9 @@ Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `stations:updated` (a `StationsUpdated { country_code, outcome }`: a background refresh of that
 country's list ended — `outcome` `"landed"`: re-request it; `"failed"`: the expired list stays,
 clear `refreshing` and do **not** re-request, since a re-request starts another refresh),
-`countries:updated` (a `CountriesUpdated { outcome }`, same rule for the countries list), and
+`countries:updated` (a `CountriesUpdated { outcome }`, same rule for the countries list),
+`recents:updated` (no payload: a play was recorded, so a page showing the recents re-requests
+`list_recents`; M3b commit 4), and
 `panel:layout` (a `PanelLayout`: `transition` `"show"` | `"resize"` — on a show the hidden frame is
 already at the size, on a resize it changes after the page's commit — `generation`, `view`
 `"about"` | `"transport"`, `state` `"collapsed"` | `"expanded"`, `width`/`height` in points,

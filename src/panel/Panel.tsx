@@ -4,13 +4,14 @@
 // of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
 // a click on the control is a report, answered by the next `panel:layout`.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { onPanelLayout, panel } from "../api";
+import { onPanelLayout, panel, stations } from "../api";
 import type { PanelLayout, PanelView, Station } from "../api";
 import { measureMode, measureParam, report, reportBlocks } from "../measure";
 import About from "./About";
 import CountryControl from "./CountryControl";
 import NowPlaying from "./NowPlaying";
 import styles from "./panel.module.css";
+import type { ListSource } from "./source";
 import StationList from "./StationList";
 import Transport from "./Transport";
 
@@ -34,10 +35,11 @@ export default function Panel() {
   const [windowHeight, setWindowHeight] = useState(window.innerHeight);
   // The newest generation applied, so an older layout arriving late is ignored (below).
   const newestGeneration = useRef(-1);
-  // The selected country: shared by the country control, the station list and (M4) the map,
-  // so it lives here, not in either. Not persisted yet — a launch starts on PT (the dev list's
-  // default, kept until Rust remembers the choice). The measurement harness may name one.
-  const [selected, setSelected] = useState<string>(measureParam("cc") ?? "PT");
+  // What the list shows — a country, the favourites or the recents (`source.ts`): shared by
+  // the country control, the station list and (M4) the map, so it lives here, not in either.
+  // Not persisted yet — a launch starts on PT (the dev list's default, kept until Rust
+  // remembers the choice). The measurement harness may name a country.
+  const [source, setSource] = useState<ListSource>({ kind: "country", cc: measureParam("cc") ?? "PT" });
   // Counts effective shows. The lists re-request on every show (an expired list is refreshed
   // by the service only when asked for again — M3a acceptance item 6, carried to M3b). The
   // getter's answer on mount is generation 0 and is not a show, so the mount request is the
@@ -46,6 +48,10 @@ export default function Panel() {
   // The station the page last asked to play — what Now Playing names. View state: whether
   // anything is audible is Rust's (`playback:state`), and a preset play clears this.
   const [playing, setPlaying] = useState<Station | null>(null);
+  // The favourites' uuids, from Rust, so the transport's ★ shows the playing station's state;
+  // re-read on every show and after every toggle. `storeGeneration` tells the list.
+  const [favourites, setFavourites] = useState<Set<string>>(new Set());
+  const [storeGeneration, setStoreGeneration] = useState(0);
   // The harness (perf mode): which mount repetition is up (0 = the list is mounted normally;
   // in `m=mount` it starts unmounted and cycles), and when the last layout event arrived.
   const [mountRep, setMountRep] = useState(0);
@@ -80,6 +86,26 @@ export default function Panel() {
       unlisten.then((un) => un());
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    stations.listFavourites().then(
+      (f) => {
+        if (!cancelled) setFavourites(new Set(f.map((s) => s.uuid)));
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [showGeneration, storeGeneration]);
+
+  const toggleFavourite = () => {
+    if (playing === null) return;
+    const done = () => setStoreGeneration((g) => g + 1);
+    if (favourites.has(playing.uuid)) void stations.removeFavourite(playing.uuid).then(done, done);
+    else void stations.addFavourite(playing).then(done, done);
+  };
 
   useEffect(() => {
     const onResize = () => setWindowHeight(window.innerHeight);
@@ -165,13 +191,18 @@ export default function Panel() {
     <main className={styles.panel} data-measure="panel">
       <div className={styles.body} hidden={view === "about"}>
         <NowPlaying station={playing} />
-        <Transport onPlayPreset={() => setPlaying(null)} />
-        <CountryControl selected={selected} onSelect={setSelected} showGeneration={showGeneration} />
+        <Transport
+          station={playing}
+          isFavourite={playing !== null && favourites.has(playing.uuid)}
+          onToggleFavourite={toggleFavourite}
+        />
+        <CountryControl source={source} onSelect={setSource} showGeneration={showGeneration} />
         {listMounted && (
           <StationList
             key={mountRep}
-            selected={selected}
+            source={source}
             showGeneration={showGeneration}
+            storeGeneration={storeGeneration}
             onPlay={setPlaying}
             measureRep={mountRep}
           />

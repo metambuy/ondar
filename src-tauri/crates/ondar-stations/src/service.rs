@@ -42,6 +42,9 @@ pub enum Event {
     },
     /// The same for the countries list.
     CountriesUpdated { outcome: RefreshOutcome },
+    /// A play was recorded (`record_played` succeeded): the recents list changed. Carries
+    /// nothing — the page re-requests `list_recents` if it is showing them (M3b commit 4).
+    RecentsUpdated,
 }
 
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
@@ -338,8 +341,11 @@ impl Service {
                 let _ = reply.send(store::list_recents(&self.cache).map_err(ServiceError::from));
             }
             Msg::RecordPlayed(station, reply) => {
-                let _ = reply
-                    .send(store::record_played(&self.cache, &station).map_err(ServiceError::from));
+                let result = store::record_played(&self.cache, &station);
+                if result.is_ok() {
+                    (self.sink)(Event::RecentsUpdated);
+                }
+                let _ = reply.send(result.map_err(ServiceError::from));
             }
         }
     }
@@ -609,6 +615,21 @@ mod tests {
             assert_eq!(us.source, CacheSource::Fresh);
             assert_eq!(us.items.len(), 3);
             assert!(!us.refreshing);
+        });
+    }
+
+    #[test]
+    fn a_recorded_play_emits_recents_updated_once() {
+        // M3b commit 4: the page showing recents learns of a play from this event, not by
+        // polling. Fails if the RecordPlayed arm emits nothing, or emits on a failed write.
+        let transport = FakeTransport::new(vec![]);
+        let (h, _, log, _) = service(transport, T0);
+        block_on(async {
+            within(1000, h.record_played(st("u1", 1))).await.unwrap();
+            let events = log.lock().unwrap().clone();
+            assert_eq!(events, vec![Event::RecentsUpdated]);
+            let recents = within(1000, h.list_recents()).await.unwrap();
+            assert_eq!(recents.len(), 1);
         });
     }
 

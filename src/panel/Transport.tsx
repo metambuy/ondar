@@ -1,26 +1,24 @@
-// Dev transport (M2c, decision 1): the M1 bench folded into the popover so the audio path and
-// the tray's playing glyph stay exercisable by hand. Visibly a placeholder: the presets retire
-// with M3b's later commits, the buttons and the volume become the product's transport row. Its
-// Now Playing lines moved to `NowPlaying.tsx` (M3b 1c). Renders state and sends commands; holds
-// no logic.
+// The transport row (M3b commit 4; the M1 bench's controls folded in at M2c, the presets
+// retired here): play or pause, stop, the favourite toggle, the volume. Renders state and
+// sends commands; holds no logic. Rust is the source of playback state (`playback:state`);
+// whether the playing station is a favourite comes from `Panel`, which asks Rust.
 //
 // Not carried over from the bench, deliberately: the custom-URL field, the on-page event log
 // (Rust's log has every event) and the EQ sliders (EQ UI is M5; the engine claim is held by
 // `eq::tests` and `eq_headroom_sweep`).
 import { useEffect, useState } from "react";
 import { audio, onState } from "../api";
-import type { PlaybackState } from "../api";
+import type { PlaybackState, Station } from "../api";
 import styles from "./panel.module.css";
 
-// Known-good public streams. URLs rot; swap freely.
-const PRESETS: { name: string; url: string }[] = [
-  { name: "Radio Swiss Jazz (MP3 128k)", url: "https://stream.srg-ssr.ch/m/rsj/mp3_128" },
-  { name: "FIP (AAC)", url: "https://icecast.radiofrance.fr/fip-hifi.aac" },
-  { name: "SomaFM Groove Salad (MP3)", url: "https://ice1.somafm.com/groovesalad-128-mp3" },
-];
+type Props = {
+  /** The station Now Playing names (`Panel`'s `playing`); Play replays it. */
+  station: Station | null;
+  isFavourite: boolean;
+  onToggleFavourite: () => void;
+};
 
-export default function Transport({ onPlayPreset }: { onPlayPreset: () => void }) {
-  const [url, setUrl] = useState(PRESETS[0].url);
+export default function Transport({ station, isFavourite, onToggleFavourite }: Props) {
   const [state, setState] = useState<PlaybackState>({ kind: "idle" });
   const [volume, setVolume] = useState(1);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -36,50 +34,46 @@ export default function Transport({ onPlayPreset }: { onPlayPreset: () => void }
   // A command's rejection is argument validation only (CLAUDE.md, IPC contract); playback
   // outcomes arrive as `playback:state` events.
   const report = (what: string) => (e: unknown) => setLastError(`${what}: ${JSON.stringify(e)}`);
-  const play = () => {
-    // A preset is not a station record: Now Playing falls back to the server's `icy-name`.
-    onPlayPreset();
-    return audio.play(url, "manual").catch(report("play"));
-  };
+  const active = state.kind !== "idle" && state.kind !== "error";
 
   return (
-    <section aria-label="Dev transport" className={styles.section} data-measure="transport_controls">
+    <section aria-label="Transport" className={styles.section} data-measure="transport_controls">
       {lastError && (
         <p className={`${styles.muted} ${styles.clamp}`} role="alert">
           {lastError}
         </p>
       )}
-
-        <label className={styles.field}>
-          Preset
-          <select value={url} onChange={(e) => setUrl(e.target.value)}>
-            {PRESETS.map((p) => (
-              <option key={p.url} value={p.url}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className={styles.row}>
-          <button type="button" onClick={play}>
+      <div className={styles.row}>
+        {state.kind === "playing" || state.kind === "buffering" || state.kind === "connecting" ? (
+          <button type="button" onClick={() => audio.pause()} disabled={state.kind !== "playing"}>
+            Pause
+          </button>
+        ) : state.kind === "paused" ? (
+          <button type="button" onClick={() => audio.resume()}>
+            Resume
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={station === null}
+            onClick={() => station && audio.play(station.url, station.uuid).catch(report("play"))}
+          >
             Play
           </button>
-          {state.kind === "paused" ? (
-            <button type="button" onClick={() => audio.resume()}>
-              Resume
-            </button>
-          ) : (
-            <button type="button" onClick={() => audio.pause()} disabled={state.kind !== "playing"}>
-              Pause
-            </button>
-          )}
-          <button type="button" onClick={() => audio.stop()} disabled={state.kind === "idle"}>
-            Stop
-          </button>
-        </div>
-
-        <label className={styles.field}>
+        )}
+        <button type="button" onClick={() => audio.stop()} disabled={!active}>
+          Stop
+        </button>
+        <button
+          type="button"
+          aria-pressed={isFavourite}
+          aria-label={isFavourite ? "Remove from favourites" : "Add to favourites"}
+          disabled={station === null}
+          onClick={onToggleFavourite}
+        >
+          {isFavourite ? "★" : "☆"}
+        </button>
+        <label className={`${styles.field} ${styles.grow}`}>
           Volume
           <input
             type="range"
@@ -95,6 +89,7 @@ export default function Transport({ onPlayPreset }: { onPlayPreset: () => void }
             }}
           />
         </label>
+      </div>
     </section>
   );
 }

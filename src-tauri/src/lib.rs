@@ -44,6 +44,9 @@ pub mod events {
     pub const STATIONS_UPDATED: &str = "stations:updated";
     /// The same for the countries list. Payload `CountriesUpdated { outcome }`.
     pub const COUNTRIES_UPDATED: &str = "countries:updated";
+    /// A play was recorded in the recents (M3b commit 4). No payload: the page showing the
+    /// recents re-requests `list_recents`; any other page ignores it.
+    pub const RECENTS_UPDATED: &str = "recents:updated";
 }
 
 /// Payload of `stations:updated`.
@@ -134,6 +137,7 @@ pub fn run() {
                     StationsEvent::CountriesUpdated { outcome } => {
                         sink_handle.emit(events::COUNTRIES_UPDATED, CountriesUpdated { outcome })
                     }
+                    StationsEvent::RecentsUpdated => sink_handle.emit(events::RECENTS_UPDATED, ()),
                 };
                 if let Err(e) = result {
                     log::warn!("failed to emit stations event: {e}");

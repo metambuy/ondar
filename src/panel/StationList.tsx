@@ -1,24 +1,26 @@
-// The station list (M3b 1b): the ranked rows Rust serves for the selected country, one line
-// each (decision 2, R1: name, then codec and bitrate; a long name is clamped with an ellipsis),
-// scrolling inside the collapsed pane. A click plays the station through the existing `play`.
-// Renders what Rust answers and reports clicks; holds no logic beyond which reply to apply:
+// The station list (M3b 1b): the rows Rust serves for the selected source — one country's
+// ranked list, the favourites or the recents (commit 4, `source.ts`) — one line each (decision
+// 2, R1: name, then codec and bitrate; a long name is clamped with an ellipsis), scrolling
+// inside the collapsed pane. A click plays the station through the existing `play`. Renders
+// what Rust answers and reports clicks; holds no logic beyond which reply to apply:
 //
-// - **The wrong-country guard** (`/code-review` finding 7, 2026-09-22; BUILD_PLAN M3b): a reply
-//   is applied only if its `country_code` is the selection at the moment it lands. A missing
+// - **The wrong-source guard** (`/code-review` finding 7, 2026-09-22; BUILD_PLAN M3b): a reply
+//   is applied only if it is for the source selected at the moment it lands. A missing country
 //   list can wait on the network for up to the client's 200 s budget and land after a fast
-//   reply for the next selection; the promise callback captured an older render's `selected`,
-//   so the guard reads a ref the effect keeps current. `StationList.test.tsx` pins it.
+//   reply for the next selection; the promise callback captured an older render's `source`, so
+//   the guard reads a ref the effect keeps current. `StationList.test.tsx` pins it.
 // - **Re-request on show** (M3a acceptance item 6, carried): `showGeneration` changes on every
 //   effective show, and the effect re-requests; the service refreshes only an expired list, so
-//   a fresh one costs a cache read.
+//   a fresh one costs a cache read. `storeGeneration` does the same for a favourite toggled by
+//   the transport, and `recents:updated` for a recorded play, each only for its own source.
 // - **After a refresh:** `landed` → ask again; `failed` → Rust says the expired list stays, so
 //   clear the flag it set and do not ask again (an offline page would otherwise loop).
 //
 // `record_played` is called here on the click, as the dev list did, until the click endpoint's
 // commit moves both to the first `Playing` of the session (M3b plan, commit 5).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { audio, onStationsUpdated, stations } from "../api";
-import type { ListedStations, Station } from "../api";
+import { audio, onRecentsUpdated, onStationsUpdated, stations } from "../api";
+import type { Station } from "../api";
 import {
   measureMode,
   measureParam,
@@ -31,11 +33,18 @@ import {
 import type { MountMarks } from "../measure";
 import styles from "./panel.module.css";
 import { describeError, provenance } from "./provenance";
+import { sourceKey } from "./source";
+import type { ListSource } from "./source";
+
+/** A list as this component holds it: the rows and their provenance line. */
+type Shown = { key: string; items: Station[]; status: string; bytes: number };
 
 type Props = {
-  selected: string;
+  source: ListSource;
   /** Bumped by `Panel` on every effective show; a change re-requests the list. */
   showGeneration: number;
+  /** Bumped by `Panel` when it added or removed a favourite; the favourites re-request. */
+  storeGeneration: number;
   /** A row was clicked: `Panel` hands the station to Now Playing. */
   onPlay: (s: Station) => void;
   /** The measurement harness's mount repetition (`?measure=perf&m=mount`); `Panel` keys on it. */
@@ -60,46 +69,82 @@ function meta(s: Station): string {
   return `${s.codec}${bitrate}${s.hls ? " hls" : ""}${s.video ? " video" : ""}`;
 }
 
-function StationList({ selected, showGeneration, onPlay, measureRep = 0 }: Props) {
-  const [list, setList] = useState<ListedStations | null>(null);
+function StationList({ source, showGeneration, storeGeneration, onPlay, measureRep = 0 }: Props) {
+  const [list, setList] = useState<Shown | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selectedRef = useRef(selected);
+  const key = sourceKey(source);
+  const sourceRef = useRef(source);
   const listRef = useRef<HTMLUListElement>(null);
   const autoPlayed = useRef(false);
   // The harness's mount marks (`?measure=perf&m=mount`): request → reply → commit → paint.
   const marks = useRef<Partial<MountMarks>>({});
 
-  const load = (cc: string) => {
+  // One request for the source; the reply is applied only if that source is still selected.
+  const load = (s: ListSource) => {
+    const k = sourceKey(s);
     if (measureMode() === "perf") marks.current = { t_request: performance.now() };
-    return stations.listStations(cc).then(
-      (l) => {
-        if (l.country_code !== selectedRef.current) return;
+    const request: Promise<Shown> =
+      s.kind === "country"
+        ? stations.listStations(s.cc).then((l) => ({
+            key: sourceKey({ kind: "country", cc: l.country_code }),
+            items: l.items,
+            status: `${l.items.length} stations · ${provenance(l)}`,
+            bytes: JSON.stringify(l).length,
+          }))
+        : (s.kind === "favourites" ? stations.listFavourites() : stations.listRecents()).then(
+            (items) => ({
+              key: k,
+              items,
+              status: `${items.length} ${s.kind}`,
+              bytes: JSON.stringify(items).length,
+            }),
+          );
+    return request.then(
+      (shown) => {
+        if (shown.key !== sourceKey(sourceRef.current)) return;
         if (measureMode() === "perf") {
           marks.current.t_reply = performance.now();
-          marks.current.reply_bytes = JSON.stringify(l).length;
+          marks.current.reply_bytes = shown.bytes;
         }
-        setList(l);
+        setList(shown);
         setError(null);
       },
       (e) => {
-        if (cc === selectedRef.current) setError(describeError(e));
+        if (k === sourceKey(sourceRef.current)) setError(describeError(e));
       },
     );
   };
 
   useEffect(() => {
-    selectedRef.current = selected;
-    load(selected);
-  }, [selected, showGeneration]);
+    sourceRef.current = source;
+    load(source);
+    // `key` stands for `source` (same list, same key), so a re-render with an equal source
+    // does not re-request; `load` reads only refs and the module-level API.
+  }, [key, showGeneration]);
+
+  // A favourite was toggled: only the favourites list changes.
+  useEffect(() => {
+    if (storeGeneration > 0 && sourceRef.current.kind === "favourites") load(sourceRef.current);
+  }, [storeGeneration]);
 
   useEffect(() => {
-    const unlisten = onStationsUpdated((u) => {
-      if (u.country_code !== selectedRef.current) return;
-      if (u.outcome === "landed") load(u.country_code);
-      else setList((l) => (l && l.country_code === u.country_code ? { ...l, refreshing: false } : l));
+    const un1 = onStationsUpdated((u) => {
+      const current = sourceRef.current;
+      if (current.kind !== "country" || u.country_code !== current.cc) return;
+      if (u.outcome === "landed") load(current);
+      else
+        setList((l) =>
+          l && l.key === sourceKey(current) && l.status.endsWith(" · refreshing…")
+            ? { ...l, status: l.status.slice(0, -" · refreshing…".length) }
+            : l,
+        );
+    });
+    const un2 = onRecentsUpdated(() => {
+      if (sourceRef.current.kind === "recents") load(sourceRef.current);
     });
     return () => {
-      unlisten.then((un) => un());
+      un1.then((un) => un());
+      un2.then((un) => un());
     };
   }, []);
 
@@ -107,12 +152,12 @@ function StationList({ selected, showGeneration, onPlay, measureRep = 0 }: Props
   // after every show, every block's box and the rows that fit — `src/measure.ts`.
   useEffect(() => {
     if (measureMode() !== "fit" || listRef.current === null) return;
-    const cc = list?.country_code ?? "none";
+    const cc = list?.key ?? "none";
     reportBlocks(document, { trigger: "list", cc });
     reportList(listRef.current, "li", `.${styles.stationName}`, { cc, show_generation: showGeneration });
   }, [list, showGeneration]);
 
-  const shown = list !== null && list.country_code === selected ? list : null;
+  const shown = list !== null && list.key === key ? list : null;
   const rows = perfRows();
   const items = shown === null ? [] : rows === null ? shown.items : shown.items.slice(0, rows);
 
@@ -171,9 +216,7 @@ function StationList({ selected, showGeneration, onPlay, measureRep = 0 }: Props
     void audio.play(first.url, first.uuid);
   }, [shown, onPlay]);
 
-  const status = shown
-    ? `${shown.items.length} stations · ${provenance(shown)}`
-    : (error ?? "loading…");
+  const status = shown ? shown.status : (error ?? "loading…");
   const cue =
     measureMode() === "perf" && measureParam("m") === "scroll-hand" ? " · SCROLL BY HAND from +10 s to +22 s" : "";
 
@@ -185,7 +228,13 @@ function StationList({ selected, showGeneration, onPlay, measureRep = 0 }: Props
       </p>
       <ul ref={listRef} className={styles.list} data-measure="list_viewport">
         {shown && shown.items.length === 0 && (
-          <li className={styles.muted}>No stations for {selected} after filtering.</li>
+          <li className={styles.muted}>
+            {source.kind === "country"
+              ? `No stations for ${source.cc} after filtering.`
+              : source.kind === "favourites"
+                ? "No favourites yet — ★ on the transport adds the playing station."
+                : "Nothing played yet."}
+          </li>
         )}
         {items.map((s) => (
           <li key={s.uuid}>

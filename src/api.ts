@@ -109,3 +109,6 @@ export const onStationsUpdated = (cb: (u: StationsUpdated) => void): Promise<Unl
   listen<StationsUpdated>("stations:updated", (e) => cb(e.payload));
 export const onCountriesUpdated = (cb: (u: CountriesUpdated) => void): Promise<UnlistenFn> =>
   listen<CountriesUpdated>("countries:updated", (e) => cb(e.payload));
+// A play was recorded (M3b commit 4): the recents changed; no payload.
+export const onRecentsUpdated = (cb: () => void): Promise<UnlistenFn> =>
+  listen<null>("recents:updated", () => cb());
