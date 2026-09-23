@@ -1,5 +1,6 @@
 // The station list (M3b 1b): the rows Rust serves for the selected source — one country's
-// ranked list, the favourites or the recents (commit 4, `source.ts`) — one line each (decision
+// ranked list, or with ★ on the favourites then the recents not among them (`source.ts`) — one
+// line each (decision
 // 2, R1: name, then codec and bitrate; a long name is clamped with an ellipsis), scrolling
 // inside the collapsed pane. A click plays the station through the existing `play`. Renders
 // what Rust answers and reports clicks; holds no logic beyond which reply to apply:
@@ -12,7 +13,9 @@
 // - **Re-request on show** (M3a acceptance item 6, carried): `showGeneration` changes on every
 //   effective show, and the effect re-requests; the service refreshes only an expired list, so
 //   a fresh one costs a cache read. `storeGeneration` does the same for a favourite toggled by
-//   the transport, and `recents:updated` for a recorded play, each only for its own source.
+//   the transport, and `recents:updated` for a recorded play, each only while ★ is on. The two
+//   stores are asked together and land as one reply under one key, so the guard covers them
+//   whole: a late half can never mix with a newer list.
 // - **After a refresh:** `landed` → ask again; `failed` → Rust says the expired list stays, so
 //   clear the flag it set and do not ask again (an offline page would otherwise loop).
 //
@@ -38,8 +41,9 @@ import { describeError, provenance } from "./provenance";
 import { sourceKey } from "./source";
 import type { ListSource } from "./source";
 
-/** A list as this component holds it: the rows and their provenance line. */
-type Shown = { key: string; items: Station[]; status: string; bytes: number };
+/** A list as this component holds it: the rows, their provenance line, and (★ on) which
+ * rows are favourites — marked ★ in the list. */
+type Shown = { key: string; items: Station[]; status: string; bytes: number; starred: Set<string> };
 
 type Props = {
   source: ListSource;
@@ -102,15 +106,18 @@ function StationList({
             items: l.items,
             status: `${l.items.length} stations · ${provenance(l)}`,
             bytes: JSON.stringify(l).length,
+            starred: new Set<string>(),
           }))
-        : (s.kind === "favourites" ? stations.listFavourites() : stations.listRecents()).then(
-            (items) => ({
+        : Promise.all([stations.listFavourites(), stations.listRecents()]).then(([favourites, recents]) => {
+            const starred = new Set(favourites.map((f) => f.uuid));
+            return {
               key: k,
-              items,
-              status: `${items.length} ${s.kind}`,
-              bytes: JSON.stringify(items).length,
-            }),
-          );
+              items: [...favourites, ...recents.filter((r) => !starred.has(r.uuid))],
+              status: `${favourites.length} favourites · ${recents.length} recents`,
+              bytes: JSON.stringify(favourites).length + JSON.stringify(recents).length,
+              starred,
+            };
+          });
     return request.then(
       (shown) => {
         if (shown.key !== sourceKey(sourceRef.current)) return;
@@ -134,9 +141,9 @@ function StationList({
     // does not re-request; `load` reads only refs and the module-level API.
   }, [key, showGeneration]);
 
-  // A favourite was toggled: only the favourites list changes.
+  // A favourite was toggled: only the ★ list changes.
   useEffect(() => {
-    if (storeGeneration > 0 && sourceRef.current.kind === "favourites") load(sourceRef.current);
+    if (storeGeneration > 0 && sourceRef.current.kind === "mine") load(sourceRef.current);
   }, [storeGeneration]);
 
   useEffect(() => {
@@ -159,7 +166,7 @@ function StationList({
         );
     });
     const un2 = onRecentsUpdated(() => {
-      if (sourceRef.current.kind === "recents") load(sourceRef.current);
+      if (sourceRef.current.kind === "mine") load(sourceRef.current);
     });
     return () => {
       un1.then((un) => un());
@@ -250,9 +257,7 @@ function StationList({
           <li className={styles.muted}>
             {source.kind === "country"
               ? `No stations for ${source.cc} after filtering.`
-              : source.kind === "favourites"
-                ? "No favourites yet — ★ on the transport adds the playing station."
-                : "Nothing played yet."}
+              : "No favourites or recents yet — ☆ on the transport adds the playing station."}
           </li>
         )}
         {items.map((s) => (
@@ -271,7 +276,9 @@ function StationList({
                 void audio.play(s.url, s.uuid, s.bitrate_kbps);
               }}
             >
-              <span className={styles.stationName}>{s.name}</span>
+              <span className={styles.stationName}>
+                {shown?.starred.has(s.uuid) ? `★ ${s.name}` : s.name}
+              </span>
               <span className={`${styles.muted} ${styles.nowrap}`}>{meta(s)}</span>
             </button>
           </li>

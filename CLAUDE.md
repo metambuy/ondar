@@ -70,13 +70,14 @@ onda/
 │   │                             the expanded pane, reports Esc),
 │   │                             NowPlaying.tsx (name, the reserved ICY title line, `flag · codec ·
 │   │                             bitrate` + the state as text; mirrors `playback:*`; M3b 1c),
-│   │                             CountryControl.tsx (native select: ★ Favourites, Recents, then the
-│   │                             countries; its provenance line; M3b 1b/4), StationList.tsx (the rows
-│   │                             of the selected source — a country's ranked list, the favourites or
-│   │                             the recents (source.ts) — one line each, scrolling in the collapsed
-│   │                             pane; click → play; the wrong-source guard and the re-request rules,
+│   │                             CountryControl.tsx (the ★ toggle for favourites and recents, then the
+│   │                             native country select; its provenance line, an error on a line of its
+│   │                             own; never disabled; M3b 1b, fixes B/C), StationList.tsx (the rows
+│   │                             of the selected source — a country's ranked list, or with ★ on the
+│   │                             favourites then the recents not among them (source.ts) — one line
+│   │                             each, scrolling in the collapsed pane; click → play; the wrong-source guard and the re-request rules,
 │   │                             pinned by StationList.test.tsx — vitest, jsdom), source.ts (the
-│   │                             ListSource type and the select's value encoding), provenance.ts (the
+│   │                             ListSource type and its key), provenance.ts (the
 │   │                             `cached N h ago · refreshing…` text), Transport.tsx (play/pause,
 │   │                             stop, the ★ favourite toggle, volume — no EQ; the presets retired at
 │   │                             M3b commit 4), About.tsx (name, version, credits),
@@ -209,14 +210,14 @@ until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ':
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 **The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
-(vitest, jsdom) runs `src/**/*.test.tsx` — **9** today: 8 in `StationList.test.tsx` (the wrong-source
-guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show re-requests,
-the favourites source with the country reply left behind dropped, `recents:updated` re-requests
-only the recents, a favourite toggle only the favourites, a click on the playing row does
-nothing and on the paused row resumes — M3b 5, F2) and 1 in `Panel.test.tsx` (offline with no
-countries list and a favourite stored, the country control is enabled and the favourite one
-choice away — acceptance item 9, finding B).
-Every "tests" figure in this project is written as the two numbers, `177 + 9`, never their sum:
+(vitest, jsdom) runs `src/**/*.test.tsx` — **10** today: 9 in `StationList.test.tsx` (the
+wrong-source guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show
+re-requests, ★ on lists favourites then recents with the country reply left behind dropped, a ★
+reply landing after ★ off dropped, `recents:updated` and a favourite toggle re-request only the ★
+list, a click on the playing row does nothing and on the paused row resumes — M3b 5, F2) and 1
+in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
+toggle are enabled and ★ lists the favourite — acceptance findings B and C).
+Every "tests" figure in this project is written as the two numbers, `177 + 10`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -232,8 +233,8 @@ pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.de
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
-                              # tests, 9 today (StationList + Panel). Its count is reported BESIDE
-                              # the Rust count — "177 + 9", never "186" — and CI runs it as its own step
+                              # tests, 10 today (StationList + Panel). Its count is reported BESIDE
+                              # the Rust count — "177 + 10", never "187" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types

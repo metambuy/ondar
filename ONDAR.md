@@ -667,6 +667,13 @@ number cited to a run in `_handover/m3b-measure/`), `_handover/last-report-2026-
   brief, taken by Code and flagged: ★ Favourites and Recents are the select's first entries —
   no height taken, one control); the transport row is Play/Pause/Resume, Stop, ★, Volume in
   one row; the presets retired; `recents:updated` from the service on a recorded play.
+  **Reversed after acceptance (2026-09-23, Martín, finding C):** by hand the two entries sat
+  above ~240 countries, out of view in a native menu that opens at the selected country, and
+  were not found unaided (acceptance item 2). They left the menu for a **★ toggle before the
+  select**: ★ on shows one list — the favourites, then the recents not among them, favourite
+  rows marked ★, status `N favourites · M recents`; choosing a country turns it off. Chosen by
+  Martín over a select that swaps its contents, a three-state cycle, and two buttons. Same
+  collapsed geometry (fit `m3b-bc-fit-02`: 8 rows, `country_row overflow=false`).
 - **5 `33400f5` — the click endpoint** (plan § F6, reviewed with F1–F4): the rule lives in the
   engine's `Shared::set_state`, where all four `Playing` sites converge — `begin_session`
   (from `play`) lowers a flag, the first `Playing` that finds it down sends

@@ -3,7 +3,7 @@
 // control and the placeholder for the expanded pane, and reports Escape to Rust. It decides none
 // of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
 // a click on the control is a report, answered by the next `panel:layout`.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { onPanelLayout, panel, stations } from "../api";
 import type { PanelLayout, PanelView, Station } from "../api";
 import { measureMode, measureParam, report, reportBlocks } from "../measure";
@@ -35,11 +35,17 @@ export default function Panel() {
   const [windowHeight, setWindowHeight] = useState(window.innerHeight);
   // The newest generation applied, so an older layout arriving late is ignored (below).
   const newestGeneration = useRef(-1);
-  // What the list shows — a country, the favourites or the recents (`source.ts`): shared by
-  // the country control, the station list and (M4) the map, so it lives here, not in either.
+  // What the list shows — the selected country, or with ★ on the favourites and recents
+  // (`source.ts`): shared by the country control, the station list and (M4) the map, so it
+  // lives here, not in either. The country is kept while ★ is on, so ★ off returns to it.
   // Not persisted yet — a launch starts on PT (the dev list's default, kept until Rust
   // remembers the choice). The measurement harness may name a country.
-  const [source, setSource] = useState<ListSource>({ kind: "country", cc: measureParam("cc") ?? "PT" });
+  const [country, setCountry] = useState(measureParam("cc") ?? "PT");
+  const [mine, setMine] = useState(false);
+  const source = useMemo<ListSource>(
+    () => (mine ? { kind: "mine" } : { kind: "country", cc: country }),
+    [mine, country],
+  );
   // Counts effective shows. The lists re-request on every show (an expired list is refreshed
   // by the service only when asked for again — M3a acceptance item 6, carried to M3b). The
   // getter's answer on mount is generation 0 and is not a show, so the mount request is the
@@ -196,7 +202,16 @@ export default function Panel() {
           isFavourite={playing !== null && favourites.has(playing.uuid)}
           onToggleFavourite={toggleFavourite}
         />
-        <CountryControl source={source} onSelect={setSource} showGeneration={showGeneration} />
+        <CountryControl
+          country={country}
+          onSelect={(cc) => {
+            setCountry(cc);
+            setMine(false);
+          }}
+          mine={mine}
+          onToggleMine={() => setMine((m) => !m)}
+          showGeneration={showGeneration}
+        />
         {listMounted && (
           <StationList
             key={mountRep}

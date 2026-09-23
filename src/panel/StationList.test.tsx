@@ -8,13 +8,16 @@
 // 3. `stations:updated` failed → `refreshing…` clears and nothing is requested (fails if the
 //    flag stays, or if a request follows);
 // 4. a show re-requests the selected source (fails if `showGeneration` changes nothing);
-// 5. the favourites source lists `list_favourites`, and a late reply for the country left
-//    behind is dropped (fails if the country's rows show over the favourites);
-// 6. `recents:updated` re-requests the recents only while they are shown (fails if a country
-//    list is re-requested on it, or if the recents are not);
-// 7. a favourite toggle (`storeGeneration`) re-requests the favourites only (fails if it
+// 5. ★ on lists the favourites, then the recents not among them, marked and counted, and a late
+//    reply for the country left behind is dropped (fails if the country's rows show over the ★
+//    list, if a favourite shows twice, or if the order is not favourites first);
+// 6. the guard the other way: a ★ reply landing after ★ was turned off is dropped (fails if the
+//    stores' rows replace the country's — finding C: the guard covers whichever list shows);
+// 7. `recents:updated` re-requests the ★ list only while it is shown (fails if a country list
+//    is re-requested on it, or if the ★ list is not);
+// 8. a favourite toggle (`storeGeneration`) re-requests the ★ list only (fails if it
 //    re-requests a country list);
-// 8. a click on the playing row does nothing, on the paused row resumes, on another row plays
+// 9. a click on the playing row does nothing, on the paused row resumes, on another row plays
 //    (fails if the row always plays — F6 review F2).
 //
 // `../api` is mocked whole: nothing reaches Tauri, and every request is a deferred promise
@@ -116,6 +119,7 @@ function listed(cc: string, names: string[], refreshing = false): ListedStations
 }
 
 const country = (cc: string): ListSource => ({ kind: "country", cc });
+const mine: ListSource = { kind: "mine" };
 const requests = (): Deferred[] => mock.requests as unknown as Deferred[];
 const whats = () => requests().map((r) => r.what);
 const resolve = (r: Deferred, l: unknown) => act(async () => r.resolve(l));
@@ -187,39 +191,59 @@ describe("StationList", () => {
     expect(requests()).toHaveLength(2);
   });
 
-  it("lists the favourites and drops the country reply left behind", async () => {
+  it("lists the favourites then the recents with ★ on, and drops the country reply left behind", async () => {
     const view = render(list(country("PT")));
-    view.rerender(list({ kind: "favourites" }));
-    expect(whats()).toEqual(["cc:PT", "favourites"]);
+    view.rerender(list(mine));
+    expect(whats()).toEqual(["cc:PT", "favourites", "recents"]);
     await resolve(requests()[1], [station("Jazz FM", "GB")]);
-    expect(screen.getByText("Jazz FM")).toBeTruthy();
-    expect(screen.getByText(/1 favourites/)).toBeTruthy();
+    expect(screen.queryByText(/Jazz FM/)).toBeNull();
+    await resolve(requests()[2], [station("FIP", "FR"), station("Jazz FM", "GB")]);
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      expect.stringMatching(/^★ Jazz FM/),
+      expect.stringMatching(/^FIP/),
+    ]);
+    expect(screen.getByText("1 favourites · 2 recents")).toBeTruthy();
     await resolve(requests()[0], listed("PT", ["Antena 1"]));
     expect(screen.queryByText("Antena 1")).toBeNull();
-    expect(screen.getByText("Jazz FM")).toBeTruthy();
+    expect(screen.getByText("★ Jazz FM")).toBeTruthy();
   });
 
-  it("re-requests the recents on recents:updated, and only the recents", async () => {
+  it("drops a ★ reply that lands after ★ was turned off", async () => {
+    const view = render(list(mine));
+    expect(whats()).toEqual(["favourites", "recents"]);
+    view.rerender(list(country("FR")));
+    expect(whats()).toEqual(["favourites", "recents", "cc:FR"]);
+    await resolve(requests()[2], listed("FR", ["France Inter"]));
+    await resolve(requests()[0], [station("Jazz FM", "GB")]);
+    await resolve(requests()[1], [station("FIP", "FR")]);
+    expect(screen.getByText("France Inter")).toBeTruthy();
+    expect(screen.queryByText(/Jazz FM/)).toBeNull();
+    expect(screen.queryByText("FIP")).toBeNull();
+    expect(screen.getByText(/1 stations/)).toBeTruthy();
+  });
+
+  it("re-requests the ★ list on recents:updated, and only while it shows", async () => {
     const view = render(list(country("FR")));
     await resolve(requests()[0], listed("FR", ["FIP"]));
     await emitRecents();
     expect(requests()).toHaveLength(1);
-    view.rerender(list({ kind: "recents" }));
-    expect(whats()).toEqual(["cc:FR", "recents"]);
-    await resolve(requests()[1], [station("FIP", "FR")]);
+    view.rerender(list(mine));
+    expect(whats()).toEqual(["cc:FR", "favourites", "recents"]);
+    await resolve(requests()[1], []);
+    await resolve(requests()[2], [station("FIP", "FR")]);
     await emitRecents();
-    expect(whats()).toEqual(["cc:FR", "recents", "recents"]);
+    expect(whats()).toEqual(["cc:FR", "favourites", "recents", "favourites", "recents"]);
   });
 
-  it("re-requests the favourites on a toggle, and only the favourites", async () => {
+  it("re-requests the ★ list on a favourite toggle, and only the ★ list", async () => {
     const view = render(list(country("FR")));
     await resolve(requests()[0], listed("FR", ["FIP"]));
     view.rerender(list(country("FR"), 0, 1));
     expect(requests()).toHaveLength(1);
-    view.rerender(list({ kind: "favourites" }, 0, 1));
-    expect(whats()).toEqual(["cc:FR", "favourites"]);
-    view.rerender(list({ kind: "favourites" }, 0, 2));
-    expect(whats()).toEqual(["cc:FR", "favourites", "favourites"]);
+    view.rerender(list(mine, 0, 1));
+    expect(whats()).toEqual(["cc:FR", "favourites", "recents"]);
+    view.rerender(list(mine, 0, 2));
+    expect(whats()).toEqual(["cc:FR", "favourites", "recents", "favourites", "recents"]);
   });
 
   it("does nothing on the playing row, resumes the paused one, plays another", async () => {

@@ -2,8 +2,8 @@
 // `pnpm test`). With `list_countries` failing and a favourite in the store, the country control
 // stays enabled and the favourites are one choice away: the stores need no network, so the one
 // thing a person can still use offline must not sit behind the countries list. Fails if the
-// select is disabled while the countries are missing (the code before this test), or if the
-// favourite never reaches the list.
+// select is disabled while the countries are missing (the code before this test), if the ★
+// toggle is (finding C moved the stores behind it), or if the favourite never reaches the list.
 //
 // `../api` is mocked whole: nothing reaches Tauri.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -90,11 +90,15 @@ describe("Panel offline", () => {
     render(<Panel />);
     await settle();
     const select = screen.getByRole("combobox") as HTMLSelectElement;
+    const star = screen.getByRole("button", { name: "Favourites and recents" }) as HTMLButtonElement;
     expect(select.disabled).toBe(false);
+    expect(star.disabled).toBe(false);
+    expect(star.getAttribute("aria-pressed")).toBe("false");
     expect(screen.getAllByText(/radio-browser unreachable/).length).toBeGreaterThan(0);
-    fireEvent.change(select, { target: { value: "favourites" } });
+    fireEvent.click(star);
     await settle();
-    expect(screen.getByText("ORBITAL")).toBeTruthy();
-    expect(screen.getByText(/1 favourites/)).toBeTruthy();
+    expect(star.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("★ ORBITAL")).toBeTruthy();
+    expect(screen.getByText("1 favourites · 0 recents")).toBeTruthy();
   });
 });
