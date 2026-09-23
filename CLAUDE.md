@@ -68,13 +68,16 @@ onda/
 │   │                             selected country and the show counter the lists re-request on, hosts
 │   │                             the expand control (disabled when refused, D4) and the placeholder for
 │   │                             the expanded pane, reports Esc),
+│   │                             NowPlaying.tsx (name, the reserved ICY title line, `flag · codec ·
+│   │                             bitrate` + the state as text; mirrors `playback:*`; M3b 1c),
 │   │                             CountryControl.tsx (native select over the countries list + its
 │   │                             provenance line; M3b 1b), StationList.tsx (the ranked rows, one line
 │   │                             each, scrolling in the collapsed pane; click → play; the wrong-country
 │   │                             guard and the re-request rules, pinned by StationList.test.tsx — vitest,
 │   │                             jsdom), provenance.ts (the `cached N h ago · refreshing…` text),
 │   │                             Transport.tsx (dev transport: presets, play/pause/stop, volume — no
-│   │                             EQ; presets retire at M3b), About.tsx (name, version, credits),
+│   │                             EQ, no Now Playing since 1c; presets retire at M3b), About.tsx
+│   │                             (name, version, credits),
 │   │                             panel.module.css
 │   ├── styles/tokens.css         THE only file with colour/size literals, light + dark together
 │   ├── measure.ts                the page half of the dev-only measurement harness (M3b 1a): inert

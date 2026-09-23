@@ -19,7 +19,7 @@
 import { useEffect, useRef, useState } from "react";
 import { audio, onStationsUpdated, stations } from "../api";
 import type { ListedStations, Station } from "../api";
-import { measureMode, reportBlocks, reportList } from "../measure";
+import { measureMode, measureParam, reportBlocks, reportList } from "../measure";
 import styles from "./panel.module.css";
 import { describeError, provenance } from "./provenance";
 
@@ -27,6 +27,8 @@ type Props = {
   selected: string;
   /** Bumped by `Panel` on every effective show; a change re-requests the list. */
   showGeneration: number;
+  /** A row was clicked: `Panel` hands the station to Now Playing. */
+  onPlay: (s: Station) => void;
 };
 
 function meta(s: Station): string {
@@ -34,11 +36,12 @@ function meta(s: Station): string {
   return `${s.codec}${bitrate}${s.hls ? " hls" : ""}${s.video ? " video" : ""}`;
 }
 
-export default function StationList({ selected, showGeneration }: Props) {
+export default function StationList({ selected, showGeneration, onPlay }: Props) {
   const [list, setList] = useState<ListedStations | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedRef = useRef(selected);
   const listRef = useRef<HTMLUListElement>(null);
+  const autoPlayed = useRef(false);
 
   const load = (cc: string) =>
     stations.listStations(cc).then(
@@ -78,6 +81,18 @@ export default function StationList({ selected, showGeneration }: Props) {
   }, [list, showGeneration]);
 
   const shown = list !== null && list.country_code === selected ? list : null;
+
+  // The measurement harness (debug builds under `?measure=…&play=first` only): play the first
+  // row once the list is in, so Now Playing is measured with a real title and stream info.
+  // Straight to `play`, not the row's click: no recents entry from a measurement.
+  useEffect(() => {
+    const first = shown?.items[0];
+    if (measureParam("play") !== "first" || autoPlayed.current || first === undefined) return;
+    autoPlayed.current = true;
+    onPlay(first);
+    void audio.play(first.url, first.uuid);
+  }, [shown, onPlay]);
+
   const status = shown
     ? `${shown.items.length} stations · ${provenance(shown)}`
     : (error ?? "loading…");
@@ -98,6 +113,7 @@ export default function StationList({ selected, showGeneration }: Props) {
               className={styles.station}
               aria-label={`Play ${s.name}`}
               onClick={() => {
+                onPlay(s);
                 void audio.play(s.url, s.uuid);
                 void stations.recordPlayed(s);
               }}

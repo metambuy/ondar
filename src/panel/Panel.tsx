@@ -5,10 +5,11 @@
 // a click on the control is a report, answered by the next `panel:layout`.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { onPanelLayout, panel } from "../api";
-import type { PanelLayout, PanelView } from "../api";
+import type { PanelLayout, PanelView, Station } from "../api";
 import { measureMode, measureParam, reportBlocks } from "../measure";
 import About from "./About";
 import CountryControl from "./CountryControl";
+import NowPlaying from "./NowPlaying";
 import styles from "./panel.module.css";
 import StationList from "./StationList";
 import Transport from "./Transport";
@@ -35,6 +36,9 @@ export default function Panel() {
   // getter's answer on mount is generation 0 and is not a show, so the mount request is the
   // effects' own first run, not a bump.
   const [showGeneration, setShowGeneration] = useState(0);
+  // The station the page last asked to play — what Now Playing names. View state: whether
+  // anything is audible is Rust's (`playback:state`), and a preset play clears this.
+  const [playing, setPlaying] = useState<Station | null>(null);
 
   useEffect(() => {
     // One entry point for both channels. The getter's answer and the event are separate IPC
@@ -122,9 +126,10 @@ export default function Panel() {
   return (
     <main className={styles.panel} data-measure="panel">
       <div className={styles.body} hidden={view === "about"}>
-        <Transport />
+        <NowPlaying station={playing} />
+        <Transport onPlayPreset={() => setPlaying(null)} />
         <CountryControl selected={selected} onSelect={setSelected} showGeneration={showGeneration} />
-        <StationList selected={selected} showGeneration={showGeneration} />
+        <StationList selected={selected} showGeneration={showGeneration} onPlay={setPlaying} />
       </div>
       {view === "about" && (
         <About

@@ -158,6 +158,13 @@
   outline: var(--hairline) solid var(--color-accent);
 }
 
+/* One line, ellipsis at the end: Now Playing's name and title lines keep their height. */
+.nowrapClamp {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* One line; a long name ends in an ellipsis rather than wrapping (decision 2, R1). */
 .stationName {
   flex: 1;

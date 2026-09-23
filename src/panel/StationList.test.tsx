@@ -85,9 +85,9 @@ afterEach(() => {
 
 describe("StationList", () => {
   it("drops a reply for a country that is no longer selected", async () => {
-    const view = render(<StationList selected="PT" showGeneration={0} />);
+    const view = render(<StationList selected="PT" showGeneration={0} onPlay={() => {}} />);
     expect(requests().map((r) => r.cc)).toEqual(["PT"]);
-    view.rerender(<StationList selected="FR" showGeneration={0} />);
+    view.rerender(<StationList selected="FR" showGeneration={0} onPlay={() => {}} />);
     expect(requests().map((r) => r.cc)).toEqual(["PT", "FR"]);
     await resolve(requests()[1], listed("FR", ["FIP"]));
     expect(screen.getByText("FIP")).toBeTruthy();
@@ -98,7 +98,7 @@ describe("StationList", () => {
   });
 
   it("re-requests the selected country when its refresh landed, and ignores another's", async () => {
-    render(<StationList selected="FR" showGeneration={0} />);
+    render(<StationList selected="FR" showGeneration={0} onPlay={() => {}} />);
     await resolve(requests()[0], listed("FR", ["FIP"], true));
     expect(screen.getByText(/refreshing…/)).toBeTruthy();
     await emit({ country_code: "PT", outcome: "landed" });
@@ -111,7 +111,7 @@ describe("StationList", () => {
   });
 
   it("clears the refreshing flag on a failed refresh without asking again", async () => {
-    render(<StationList selected="FR" showGeneration={0} />);
+    render(<StationList selected="FR" showGeneration={0} onPlay={() => {}} />);
     await resolve(requests()[0], listed("FR", ["FIP"], true));
     expect(screen.getByText(/cached 60 min ago · refreshing…/)).toBeTruthy();
     await emit({ country_code: "FR", outcome: "failed" });
@@ -121,11 +121,11 @@ describe("StationList", () => {
   });
 
   it("re-requests the selected country on every show", async () => {
-    const view = render(<StationList selected="FR" showGeneration={0} />);
+    const view = render(<StationList selected="FR" showGeneration={0} onPlay={() => {}} />);
     await resolve(requests()[0], listed("FR", ["FIP"]));
-    view.rerender(<StationList selected="FR" showGeneration={1} />);
+    view.rerender(<StationList selected="FR" showGeneration={1} onPlay={() => {}} />);
     expect(requests().map((r) => r.cc)).toEqual(["FR", "FR"]);
-    view.rerender(<StationList selected="FR" showGeneration={1} />);
+    view.rerender(<StationList selected="FR" showGeneration={1} onPlay={() => {}} />);
     expect(requests()).toHaveLength(2);
   });
 });
