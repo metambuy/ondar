@@ -99,6 +99,13 @@ pub enum ClientError {
         attempts: u32,
         elapsed: Duration,
     },
+    /// The click's one request got no answer — a transport error: connect, TLS, its own
+    /// timeout (`TOTAL_CLICK`). A click is never retried, so there is no attempt count and no
+    /// budget to report; its own shape because `Exhausted`'s "after N attempt(s) in T" would
+    /// be a fabricated number in the one log line a click gets (`/code-review` finding 7,
+    /// 2026-09-23 — the log is evidence, and evidence must not invent).
+    #[error("the click's one request got no answer: {0}")]
+    Unanswered(String),
     /// The list came back shorter than the country: rule 1, 2 or 3 of [`check_complete`].
     #[error("station list truncated: got {got} rows (expected {expected:?}) — {reason}")]
     Truncated {
@@ -285,11 +292,7 @@ impl Client {
                 body_excerpt: excerpt(&r.body),
             }),
             Ok(r) => Err(ClientError::Http { status: r.status }),
-            Err(last) => Err(ClientError::Exhausted {
-                last,
-                attempts: 1,
-                elapsed: Duration::ZERO,
-            }),
+            Err(reason) => Err(ClientError::Unanswered(reason)),
         }
     }
 
@@ -874,13 +877,23 @@ mod tests {
 
     /// M3b commit 5 (F6 test 7): a click is one request through `transport.get`, never
     /// `fetch_with_retries`. Fails if the retry loop is reused (three calls for the error
-    /// script) or the path is wrong.
+    /// script) or the path is wrong. `/code-review` finding 7 (2026-09-23): a failed click's
+    /// error is its own shape and its message names the cause and nothing a click never had —
+    /// fails if it reads "after 1 attempt(s) in 0.00s" again (the code before it).
     #[test]
     fn click_is_one_request_never_retried() {
         let transport = FakeTransport::new(vec![Err("connection reset".into())]);
         let c = Client::new(transport.clone(), FakeHosts::new(&["h"]), FakeTiming::new());
         let r = block_on(c.click("u1"));
-        assert!(r.is_err(), "the transport error is returned: {r:?}");
+        let message = r.expect_err("the transport error is returned").to_string();
+        assert_eq!(
+            message,
+            "the click's one request got no answer: connection reset"
+        );
+        assert!(
+            !message.contains("attempt") && !message.contains("0.00s"),
+            "no attempt count, no elapsed: {message}"
+        );
         assert_eq!(transport.calls(), 1, "one attempt");
         assert_eq!(transport.urls.lock().unwrap()[0], "https://h/json/url/u1");
         assert_eq!(transport.totals.lock().unwrap()[0], TOTAL_CLICK);
