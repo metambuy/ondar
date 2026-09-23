@@ -132,6 +132,13 @@ reach them from the popover.
       item 6's stale `refreshing…` fixed by a `failed` refresh event (`4d83918`); the re-request
       of an expired list on popover show / reconnect is **M3b** (page behaviour). See ONDAR.md,
       "M3a: the station directory, built", the acceptance paragraph.
+- [x] **M3a code review, 2026-09-22** (`_handover/m3a-review-findings.md`): ten findings fixed
+      one commit each — the `landed` outcome derived from the write, a cache that will not open
+      moved aside instead of stopping the launch, an empty countries answer refused, the retry
+      policy narrowed to 401/403/404/410 on the first open with `Retry-After`, rule 3 floored at
+      2 000, one non-HTTP wording table, `mms://` refused, the dev list's reply guard, `LIKE`
+      escaping, the error body text — plus three cleanups; acceptance items 5, 6, 8 re-run
+      2026-09-23 (`m3a-acc-07`/`08`). ONDAR.md, "Code review, 2026-09-22".
 
 **Exit:** country dropdown populated from Rust; selecting a country lists real stations;
 airplane mode still shows the last cached lists (**measured 2026-09-22**, acceptance item 5);

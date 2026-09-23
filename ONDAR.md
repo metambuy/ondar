@@ -752,6 +752,47 @@ plan's Verification section against the debug bundle at `b52e61c`, logs `m3a-acc
   Favourites persist by test only (`store::tests`); the dev list has no favourite control, so the
   hand check moves to M3b.
 
+**Code review, 2026-09-22** (`/code-review 0e4b5d0..f023084`, the whole branch; findings in
+`_handover/m3a-review-findings.md`, triage in `m3a-code-review-review-2026-09-22.md`; 8 finders
++ 4 verifiers, no run lost to a 429): ten findings, all fixed, one commit each, each pushed alone
+and green, each with a test that fails on the previous commit and a mutation check (exceptions
+stated below). Tests 148 → **162** (audio 65, shell 40, stations 57).
+
+- **`landed` meant "the fetch landed", not "the list was stored"** (`f3de220`, finding 1). With
+  a read-only or full disk the page's re-request on `landed` started another full-country fetch,
+  forever — the loop `4d83918` had been meant to close. One exit path per fetch (`finish`),
+  outcome derived from the write; the post-put re-read went with it.
+- **A cache that would not open stopped the app** (`693f12b`, finding 2): moved aside as
+  `ondar.sqlite.corrupt-<ts>` and recreated, else a degraded handle (`Unavailable`); nothing in
+  `setup` can refuse the launch. Measured on the bundle: the existing database opens normally
+  (`m3a-acc-07`/`08`, no `.corrupt-` file).
+- **`200 []` from `/json/countries`** (`d0b4202`, finding 3) dropped every waiter unanswered
+  (`Closed`) and announced `landed`; now refused by the client (`EmptyCountries`) → `failed`.
+- **Retry policy narrowed** (`5431a70`, finding 4): terminal for 401/403/404/410 and the ICY case
+  only, and only before a session's first open; `Retry-After` honoured (delta-seconds, ≤ 30 s).
+  Session-level tests: a 429 waits out its header; a 404 on the reconnect after a WAV stream
+  ended keeps the backoff.
+- **Rule 3 floored at 2 000** (`c6974f0`, finding 6): the plan's "cannot fire under 2 000 by
+  construction" was false — Malta, count 3, one working station, `1 < 1.5`.
+- **One non-HTTP wording table** (`6bf8114`, finding 8): "status" out of it; the 5xx branch is
+  reachable again. Its test does not compile on the prior commit; the mutation is the check.
+- Small: `mms://` → `invalid_url` before any request (`f19e776`); the dev list applies a reply
+  only for the country still selected (`eeeeb97`, **no test** — no TS runner, the list retires at
+  M3b; BUILD_PLAN carries the guard for M3b's list); `LIKE` metacharacters escaped in the offline
+  search, ASCII-only folding stated (`d5795fb`); the 4xx/5xx body text back in the message,
+  bounded to 200 chars (`73020d3`).
+- Cleanups: `CacheSource::StaleAfterFailure` removed from the IPC contract (`bacca7f`);
+  `scripts/icy-server.py` removed for `stall-server.py --mode icy200` (`e016a5d`); the `expect`
+  census in CLAUDE.md corrected to three sites (`44099b0`); `.claude/settings.local.json`
+  ignored (`6bab153`). Recorded for M3b, not fixed: the 750 cap is applied before storage, so the
+  offline search sees only the top 750 of each list.
+- **Acceptance re-run on the touched paths** (`m3a-acceptance.md`, "Re-run after the review
+  fixes"): item 8 through the replacement server (`Http` at 0.175 s, one request); items 5 and 6
+  as `m3a-acc-07` (expired PT served at once offline, refresh failed at +3.3 s and the `failed`
+  event had cleared `refreshing…` before the first open at +6.2 s; online, FR 3 652 → 750 in
+  1.28 s and PT 344 → 327 in 0.45 s through the new exit path) and `m3a-acc-08` (countries
+  240 rows refreshed at launch, `fetched_at` current). 0 `ERROR`/panic across the three runs.
+
 ### M3 Step 0: the live data, measured (2026-09-21)
 
 Before M3a, a census of radio-browser.info from this Mac with the real `User-Agent` — plan
