@@ -100,3 +100,73 @@ export function reportList(list: HTMLElement, rowSelector: string, nameSelector:
     ...extra,
   });
 }
+
+/**
+ * Commit 2's marks and sampler. The mount marks are taken where they happen (`StationList`);
+ * this is the arithmetic and the report line, so a component carries as little as possible.
+ */
+export type MountMarks = {
+  n: number;
+  rep: number;
+  reply_bytes: number;
+  t_request: number;
+  t_reply: number;
+  t_commit: number;
+  t_paint: number;
+};
+
+export function reportMount(m: MountMarks): void {
+  report("mount", {
+    n: m.n,
+    rep: m.rep,
+    reply_bytes: m.reply_bytes,
+    reply_ms: m.t_reply - m.t_request,
+    commit_ms: m.t_commit - m.t_reply,
+    paint_ms: m.t_paint - m.t_commit,
+    total_ms: m.t_paint - m.t_request,
+  });
+}
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[i];
+}
+
+/**
+ * Sample the interval between consecutive animation frames for `durationMs`, calling `step`
+ * each frame (a programmatic scroll, or nothing for a hand-driven one), then report the
+ * distribution and the raw intervals — the median is the display's effective frame period as
+ * the page saw it, and "dropped" counts intervals over twice that median.
+ */
+export function sampleFrames(kind: string, durationMs: number, step: () => void, extra: Fields = {}): void {
+  if (params === null) return;
+  const intervals: number[] = [];
+  let last = performance.now();
+  const start = last;
+  const tick = (now: number) => {
+    intervals.push(now - last);
+    last = now;
+    step();
+    if (now - start < durationMs) requestAnimationFrame(tick);
+    else finish();
+  };
+  const finish = () => {
+    const sorted = [...intervals].sort((a, b) => a - b);
+    const median = percentile(sorted, 50);
+    report(kind, {
+      frames: intervals.length,
+      duration_ms: last - start,
+      median_ms: median,
+      p95_ms: percentile(sorted, 95),
+      max_ms: sorted[sorted.length - 1] ?? 0,
+      dropped: intervals.filter((d) => d > 2 * median).length,
+      ...extra,
+      raw: intervals.map((d) => d.toFixed(1)).join(","),
+    });
+  };
+  requestAnimationFrame((t0) => {
+    last = t0;
+    requestAnimationFrame(tick);
+  });
+}

@@ -16,10 +16,19 @@
 //
 // `record_played` is called here on the click, as the dev list did, until the click endpoint's
 // commit moves both to the first `Playing` of the session (M3b plan, commit 5).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { audio, onStationsUpdated, stations } from "../api";
 import type { ListedStations, Station } from "../api";
-import { measureMode, measureParam, reportBlocks, reportList } from "../measure";
+import {
+  measureMode,
+  measureParam,
+  report,
+  reportBlocks,
+  reportList,
+  reportMount,
+  sampleFrames,
+} from "../measure";
+import type { MountMarks } from "../measure";
 import styles from "./panel.module.css";
 import { describeError, provenance } from "./provenance";
 
@@ -29,24 +38,46 @@ type Props = {
   showGeneration: number;
   /** A row was clicked: `Panel` hands the station to Now Playing. */
   onPlay: (s: Station) => void;
+  /** The measurement harness's mount repetition (`?measure=perf&m=mount`); `Panel` keys on it. */
+  measureRep?: number;
 };
+
+/** The harness's row count (`?measure=perf&n=`), or every row. */
+function perfRows(): number | null {
+  if (measureMode() !== "perf") return null;
+  const n = Number(measureParam("n"));
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** The scroll sampler's programmatic step, and its arms (`&m=scroll` | `scroll-hand`). */
+const SCROLL_STEP_PX = 4;
+const SCROLL_START_MS = 10_000;
+const SCROLL_DURATION_MS = 6_000;
+const SCROLL_HAND_DURATION_MS = 12_000;
 
 function meta(s: Station): string {
   const bitrate = s.bitrate_kbps === null ? "" : ` ${s.bitrate_kbps}k`;
   return `${s.codec}${bitrate}${s.hls ? " hls" : ""}${s.video ? " video" : ""}`;
 }
 
-export default function StationList({ selected, showGeneration, onPlay }: Props) {
+function StationList({ selected, showGeneration, onPlay, measureRep = 0 }: Props) {
   const [list, setList] = useState<ListedStations | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedRef = useRef(selected);
   const listRef = useRef<HTMLUListElement>(null);
   const autoPlayed = useRef(false);
+  // The harness's mount marks (`?measure=perf&m=mount`): request → reply → commit → paint.
+  const marks = useRef<Partial<MountMarks>>({});
 
-  const load = (cc: string) =>
-    stations.listStations(cc).then(
+  const load = (cc: string) => {
+    if (measureMode() === "perf") marks.current = { t_request: performance.now() };
+    return stations.listStations(cc).then(
       (l) => {
         if (l.country_code !== selectedRef.current) return;
+        if (measureMode() === "perf") {
+          marks.current.t_reply = performance.now();
+          marks.current.reply_bytes = JSON.stringify(l).length;
+        }
         setList(l);
         setError(null);
       },
@@ -54,6 +85,7 @@ export default function StationList({ selected, showGeneration, onPlay }: Props)
         if (cc === selectedRef.current) setError(describeError(e));
       },
     );
+  };
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -81,6 +113,52 @@ export default function StationList({ selected, showGeneration, onPlay }: Props)
   }, [list, showGeneration]);
 
   const shown = list !== null && list.country_code === selected ? list : null;
+  const rows = perfRows();
+  const items = shown === null ? [] : rows === null ? shown.items : shown.items.slice(0, rows);
+
+  // The harness's mount marks: the commit that rendered the rows (layout done, not painted)
+  // and the first frame after it — a hidden webview runs no rAF, so this needs the panel shown.
+  useLayoutEffect(() => {
+    if (measureMode() !== "perf" || measureParam("m") !== "mount" || shown === null) return;
+    const m = marks.current;
+    if (m.t_request === undefined || m.t_reply === undefined) return;
+    m.t_commit = performance.now();
+    requestAnimationFrame(() => {
+      reportMount({
+        n: items.length,
+        rep: measureRep,
+        reply_bytes: m.reply_bytes ?? 0,
+        t_request: m.t_request ?? 0,
+        t_reply: m.t_reply ?? 0,
+        t_commit: m.t_commit ?? 0,
+        t_paint: performance.now(),
+      });
+    });
+  }, [shown, items.length, measureRep]);
+
+  // The harness's scroll sampler (`&m=scroll`: the list scrolled 4 px per frame for 6 s;
+  // `&m=scroll-hand`: nothing moved by the page, the intervals sampled while a hand scrolls).
+  useEffect(() => {
+    const arm = measureMode() === "perf" ? measureParam("m") : null;
+    if ((arm !== "scroll" && arm !== "scroll-hand") || shown === null) return;
+    const el = listRef.current;
+    if (el === null) return;
+    const timer = setTimeout(
+      () => {
+        report("scroll_start", { arm, rows: items.length, scroll_height: el.scrollHeight });
+        if (arm === "scroll") {
+          sampleFrames("scroll", SCROLL_DURATION_MS, () => (el.scrollTop += SCROLL_STEP_PX), {
+            arm,
+            rows: items.length,
+          });
+        } else {
+          sampleFrames("scroll", SCROLL_HAND_DURATION_MS, () => {}, { arm, rows: items.length });
+        }
+      },
+      Math.max(0, SCROLL_START_MS - performance.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [shown, items.length]);
 
   // The measurement harness (debug builds under `?measure=…&play=first` only): play the first
   // row once the list is in, so Now Playing is measured with a real title and stream info.
@@ -96,17 +174,20 @@ export default function StationList({ selected, showGeneration, onPlay }: Props)
   const status = shown
     ? `${shown.items.length} stations · ${provenance(shown)}`
     : (error ?? "loading…");
+  const cue =
+    measureMode() === "perf" && measureParam("m") === "scroll-hand" ? " · SCROLL BY HAND from +10 s to +22 s" : "";
 
   return (
     <section className={styles.fill} aria-label="Stations">
       <p className={`${styles.muted} ${styles.clamp}`} data-measure="stations_provenance">
         {status}
+        {cue}
       </p>
       <ul ref={listRef} className={styles.list} data-measure="list_viewport">
         {shown && shown.items.length === 0 && (
           <li className={styles.muted}>No stations for {selected} after filtering.</li>
         )}
-        {(shown?.items ?? []).map((s) => (
+        {items.map((s) => (
           <li key={s.uuid}>
             <button
               type="button"
@@ -127,3 +208,8 @@ export default function StationList({ selected, showGeneration, onPlay }: Props)
     </section>
   );
 }
+
+// Not memoised, by measurement (M3b commit 2, m2: 20 shows each with 750 rows plain, 750 rows
+// behind `React.memo`, and an empty list — medians 8, 7 and 5 ms; the rows' re-render on a
+// show is not the cost, so the wrapper was deleted rather than shipped beside this).
+export default StationList;

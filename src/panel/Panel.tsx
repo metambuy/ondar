@@ -6,13 +6,20 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { onPanelLayout, panel } from "../api";
 import type { PanelLayout, PanelView, Station } from "../api";
-import { measureMode, measureParam, reportBlocks } from "../measure";
+import { measureMode, measureParam, report, reportBlocks } from "../measure";
 import About from "./About";
 import CountryControl from "./CountryControl";
 import NowPlaying from "./NowPlaying";
 import styles from "./panel.module.css";
 import StationList from "./StationList";
 import Transport from "./Transport";
+
+// The measurement harness's mount cycle (`?measure=perf&m=mount`): the list mounted fresh
+// every 3 s from +10 s, five times, so `StationList` reports its four marks per mount.
+const MOUNT_REPS = 5;
+const MOUNT_FIRST_MS = 10_000;
+const MOUNT_PERIOD_MS = 3_000;
+const MOUNT_UP_MS = 2_000;
 
 export default function Panel() {
   // What Rust last laid out. `null` until the getter answers; the control is disabled meanwhile.
@@ -39,6 +46,11 @@ export default function Panel() {
   // The station the page last asked to play — what Now Playing names. View state: whether
   // anything is audible is Rust's (`playback:state`), and a preset play clears this.
   const [playing, setPlaying] = useState<Station | null>(null);
+  // The harness (perf mode): which mount repetition is up (0 = the list is mounted normally;
+  // in `m=mount` it starts unmounted and cycles), and when the last layout event arrived.
+  const [mountRep, setMountRep] = useState(0);
+  const [listMounted, setListMounted] = useState(!(measureMode() === "perf" && measureParam("m") === "mount"));
+  const layoutAt = useRef<{ generation: number; at: number } | null>(null);
 
   useEffect(() => {
     // One entry point for both channels. The getter's answer and the event are separate IPC
@@ -49,6 +61,7 @@ export default function Panel() {
     const apply = (l: PanelLayout) => {
       if (l.generation < newestGeneration.current) return;
       newestGeneration.current = l.generation;
+      layoutAt.current = { generation: l.generation, at: performance.now() };
       setLayout(l);
       setView(l.view);
       // On a show the hidden panel's frame is already at `l.height`, and a hidden WKWebView fires
@@ -94,10 +107,35 @@ export default function Panel() {
   const generation = layout?.generation;
   useEffect(() => {
     if (generation !== undefined && generation > 0) void panel.layoutCommitted(generation);
-    // The measurement harness (debug builds under `?measure=fit` only): every block's box at
-    // this commit — `src/measure.ts`.
+    // The measurement harness (debug builds under `?measure=…` only), `src/measure.ts`: under
+    // `fit`, every block's box at this commit; under `perf`, how long this commit took from the
+    // layout event's arrival — the page's share of the show's `after_ms`.
     if (measureMode() === "fit") reportBlocks(document, { trigger: "layout", generation });
+    if (measureMode() === "perf" && generation !== undefined && generation > 0) {
+      const at = layoutAt.current;
+      report("layout_commit", {
+        generation,
+        commit_ms: at !== null && at.generation === generation ? performance.now() - at.at : -1,
+      });
+    }
   }, [generation]);
+
+  // The harness's mount cycle: five fresh mounts, two seconds up and one down each.
+  useEffect(() => {
+    if (measureMode() !== "perf" || measureParam("m") !== "mount") return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    for (let rep = 1; rep <= MOUNT_REPS; rep++) {
+      const up = MOUNT_FIRST_MS + (rep - 1) * MOUNT_PERIOD_MS - performance.now();
+      timers.push(
+        setTimeout(() => {
+          setMountRep(rep);
+          setListMounted(true);
+        }, up),
+        setTimeout(() => setListMounted(false), up + MOUNT_UP_MS),
+      );
+    }
+    return () => timers.forEach(clearTimeout);
+  }, []);
 
   useEffect(() => {
     // Escape → Rust, which hides the popover (`reason=esc`). `preventDefault()` because the key
@@ -129,7 +167,15 @@ export default function Panel() {
         <NowPlaying station={playing} />
         <Transport onPlayPreset={() => setPlaying(null)} />
         <CountryControl selected={selected} onSelect={setSelected} showGeneration={showGeneration} />
-        <StationList selected={selected} showGeneration={showGeneration} onPlay={setPlaying} />
+        {listMounted && (
+          <StationList
+            key={mountRep}
+            selected={selected}
+            showGeneration={showGeneration}
+            onPlay={setPlaying}
+            measureRep={mountRep}
+          />
+        )}
       </div>
       {view === "about" && (
         <About
