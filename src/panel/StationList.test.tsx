@@ -26,7 +26,10 @@
 // 11. the previous source's error does not outlive a source change: PT's failure is not shown
 //    as FR's status while FR's reply is on its way (`/code-review` finding 4, 2026-09-23; fails
 //    on the code before it, where `error` was cleared only by a reply). On a show with the same
-//    source the last answer stays until the new one lands — that is a re-request, not a change.
+//    source the last answer stays until the new one lands — that is a re-request, not a change;
+// 12. a reply is not serialised outside the measurement harness: `JSON.stringify` of a 750-row
+//    list (~319 KB) fed only `?measure=perf`'s `reply_bytes` (`/code-review` finding 5,
+//    2026-09-23; fails on the code before it, where every reply paid it).
 //
 // `../api` is mocked whole: nothing reaches Tauri, and every request is a deferred promise
 // the test resolves in the order it chooses — which is the point.
@@ -297,5 +300,17 @@ describe("StationList", () => {
     expect(screen.getByText("FIP")).toBeTruthy();
     await reject(requests()[1], offline);
     expect(screen.queryByText(/radio-browser unreachable/)).toBeNull();
+  });
+
+  it("does not serialise a reply outside the measurement harness", async () => {
+    render(list(country("FR")));
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      await resolve(requests()[0], listed("FR", ["FIP"]));
+      expect(screen.getByText("FIP")).toBeTruthy();
+      expect(stringify).not.toHaveBeenCalled();
+    } finally {
+      stringify.mockRestore();
+    }
   });
 });

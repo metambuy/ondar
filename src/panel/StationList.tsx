@@ -61,6 +61,14 @@ type Props = {
   measureRep?: number;
 };
 
+/** The reply's size as the harness reports it (`?measure=perf`'s `reply_bytes`): serialised
+ * only under that mode — a 750-row list is ~319 KB, and every show re-requests
+ * (`/code-review` finding 5, 2026-09-23). */
+function replyBytes(...parts: unknown[]): number {
+  if (measureMode() !== "perf") return 0;
+  return parts.reduce<number>((n, p) => n + JSON.stringify(p).length, 0);
+}
+
 /** The harness's row count (`?measure=perf&n=`), or every row. */
 function perfRows(): number | null {
   if (measureMode() !== "perf") return null;
@@ -107,7 +115,7 @@ function StationList({
             key: sourceKey({ kind: "country", cc: l.country_code }),
             items: l.items,
             status: `${l.items.length} stations · ${provenance(l)}`,
-            bytes: JSON.stringify(l).length,
+            bytes: replyBytes(l),
             starred: new Set<string>(),
           }))
         : Promise.all([stations.listFavourites(), stations.listRecents()]).then(([favourites, recents]) => {
@@ -116,7 +124,7 @@ function StationList({
               key: k,
               items: [...favourites, ...recents.filter((r) => !starred.has(r.uuid))],
               status: `${favourites.length} favourites · ${recents.length} recents`,
-              bytes: JSON.stringify(favourites).length + JSON.stringify(recents).length,
+              bytes: replyBytes(favourites, recents),
               starred,
             };
           });
