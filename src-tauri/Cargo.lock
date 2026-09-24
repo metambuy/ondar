@@ -2998,7 +2998,9 @@ name = "ondar-audio"
 version = "0.1.0"
 dependencies = [
  "biquad",
+ "bytes",
  "flate2",
+ "futures-core",
  "hyper",
  "log",
  "reqwest",

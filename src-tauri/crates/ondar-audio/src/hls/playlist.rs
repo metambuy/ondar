@@ -452,6 +452,13 @@ fn clamp_wait(d: Duration) -> Duration {
     d.clamp(MIN_WAIT, MAX_WAIT)
 }
 
+/// The stall bound for a target duration: [`STALL_TARGET_DURATIONS`] × the **clamped** TD, so a
+/// `TARGETDURATION:0` playlist gets 3 s rather than a bound of zero that would declare a stall
+/// on its first reload, and an hour-long one 90 s. The fetch layer sizes its idle timeout on it.
+pub fn stall_bound(target_duration: Duration) -> Duration {
+    clamp_wait(target_duration) * STALL_TARGET_DURATIONS
+}
+
 impl Planner {
     /// Start on a freshly fetched media playlist: emit from [`START_BEHIND`] segments before
     /// the end (or the first, when the window is that short).
@@ -487,9 +494,7 @@ impl Planner {
     /// The outcome of a playlist reload: `Some` when it was fetched and parsed, `None` when it
     /// failed (the loop retries at the next tick, until the stall bound).
     pub fn reload(&mut self, reloaded: Option<&MediaPlaylist>, now: Instant) -> Step {
-        // On the clamped target duration, so a `TARGETDURATION:0` playlist gets 3 s rather
-        // than a bound of zero that would declare a stall on its first reload.
-        let stall = clamp_wait(self.target_duration) * STALL_TARGET_DURATIONS;
+        let stall = stall_bound(self.target_duration);
         let Some(media) = reloaded else {
             return if now.duration_since(self.last_new_at) >= stall {
                 Step::End(EndCause::Stall)

@@ -18,8 +18,16 @@ reqwest = { version = "0.13", default-features = false }
 # reqwest; no new crate enters Cargo.lock.
 hyper = { version = "1", default-features = false }
 # `time` for the connect-phase bound (`tokio::time::timeout` around the headers phase, M3a G4b).
-tokio = { version = "1.52", features = ["rt-multi-thread", "time"] }
+# `sync` + `macros` for HLS (M3c): the fetch task hands segments to the reader over a bounded
+# `mpsc`, and `select!` is how every await in it also watches the receiver closing.
+tokio = { version = "1.52", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tokio-util = "0.7"
+# HLS (M3c): `HlsSource` implements stream-download's `SourceStream`, which is a
+# `futures_core::Stream` of `bytes::Bytes` — the trait names both, so the impl has to. Both are
+# already in the tree at these versions through stream-download and reqwest; no new crate
+# enters Cargo.lock.
+futures-core = "0.3"
+bytes = "1"
 # HLS (M3c): a playlist's relative URIs are joined against the URL it was fetched from (RFC
 # 3986 reference resolution — `../`, absolute paths, queries), which std has no notion of.
 # Already in the tree at this version via ondar-stations' resolver; no new crate enters

@@ -1159,6 +1159,8 @@ mod session_tests {
         events: Receiver<EngineEvent>,
         /// Every `Started` id seen while draining, in order.
         started: Mutex<Vec<String>>,
+        /// Every `StreamInfo` seen while draining, as (sample_rate, channels), in order.
+        infos: Mutex<Vec<(u32, u16)>>,
         // Dropping the runtime while `run_session` still holds its handle would abort the
         // open; kept for the harness's lifetime.
         _rt: tokio::runtime::Runtime,
@@ -1220,6 +1222,7 @@ mod session_tests {
             ctx,
             events: ev_rx,
             started: Mutex::new(Vec::new()),
+            infos: Mutex::new(Vec::new()),
             _rt: rt,
         }
     }
@@ -1239,6 +1242,11 @@ mod session_tests {
                     EngineEvent::Started { station_id } => {
                         h.started.lock().unwrap().push(station_id)
                     }
+                    EngineEvent::StreamInfo(info) => h
+                        .infos
+                        .lock()
+                        .unwrap()
+                        .push((info.sample_rate, info.channels)),
                     _ => {}
                 }
             }
@@ -1659,6 +1667,443 @@ mod session_tests {
             (l - 1.0).abs() < 0.05 && (r - 1.0).abs() < 0.05 && worst < 1e-6,
             "mono after stereo: ratios L {l:.3} R {r:.3}, max |L-R| {worst:.4}; expected 1.00, 1.00, 0"
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // HLS (M3c commit 4): T12–T17 against a path-routed server serving the census fixtures.
+    //
+    // The server hands out playlists byte for byte (10's media as the gzip bytes it was
+    // served) and synthesises segments from the fixture heads by repeating a head's 16 ADTS
+    // frames to the `EXTINF` duration (plan §4, R3): the decoder sees ordinary segments, and the
+    // prefetch, the fill target and the pacing are production's. Nothing in this block names
+    // `crate::hls`, so the same text ran on `b7e050a` for the recorded failures.
+
+    const HLS_FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/hls/");
+
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(format!("{HLS_FIXTURES}{name}"))
+            .unwrap_or_else(|e| panic!("fixture {name}: {e}"))
+    }
+
+    struct Routed {
+        status: u16,
+        content_type: &'static str,
+        gzip: bool,
+        body: Vec<u8>,
+    }
+
+    fn routed(content_type: &'static str, body: Vec<u8>) -> Routed {
+        Routed {
+            status: 200,
+            content_type,
+            gzip: false,
+            body,
+        }
+    }
+
+    /// A path-routed HTTP/1.0 server on 127.0.0.1: `handler(path_and_query)` answers each
+    /// request (or `None` → 404), and every path is recorded in order. Connections close after
+    /// one response, as `scripted_server`'s do.
+    fn routed_server(
+        handler: impl Fn(&str) -> Option<Routed> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let seen = paths.clone();
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = head
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                seen.lock().unwrap().push(path.clone());
+                let response = handler(&path).unwrap_or(Routed {
+                    status: 404,
+                    content_type: "text/plain",
+                    gzip: false,
+                    body: b"not found".to_vec(),
+                });
+                let mut out = format!(
+                    "HTTP/1.0 {} X\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    response.status,
+                    response.content_type,
+                    response.body.len()
+                )
+                .into_bytes();
+                if response.gzip {
+                    out.extend_from_slice(b"content-encoding: gzip\r\n");
+                }
+                out.extend_from_slice(b"\r\n");
+                out.extend_from_slice(&response.body);
+                let _ = sock.write_all(&out);
+                let _ = sock.flush();
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        (format!("http://{addr}"), paths)
+    }
+
+    /// The offset after every leading ID3v2 tag (the test-side copy; the crate's own lives in
+    /// `hls::segment`, which this block must not name).
+    fn test_id3_end(b: &[u8]) -> usize {
+        let mut off = 0;
+        while b.len() >= off + 10 && &b[off..off + 3] == b"ID3" {
+            let size = ((b[off + 6] as usize & 0x7F) << 21)
+                | ((b[off + 7] as usize & 0x7F) << 14)
+                | ((b[off + 8] as usize & 0x7F) << 7)
+                | (b[off + 9] as usize & 0x7F);
+            off += 10 + size + if b[off + 5] & 0x10 != 0 { 10 } else { 0 };
+        }
+        off.min(b.len())
+    }
+
+    /// A segment of `secs` seconds synthesised from a fixture head: its ID3 tag(s), then its
+    /// 16 frames repeated `ceil(secs × rate / 1024 / 16)` times. Repeated ADTS frames are a
+    /// valid stream — each frame is self-contained.
+    fn synth_segment(head: &[u8], secs: f64) -> Vec<u8> {
+        const RATES: [f64; 13] = [
+            96000., 88200., 64000., 48000., 44100., 32000., 24000., 22050., 16000., 12000., 11025.,
+            8000., 7350.,
+        ];
+        let tags = test_id3_end(head);
+        let frames = &head[tags..];
+        let sri = ((frames[2] >> 2) & 0x0F) as usize;
+        let rate = RATES[sri];
+        let k = (secs * rate / 1024.0 / 16.0).ceil() as usize;
+        let mut out = head[..tags].to_vec();
+        for _ in 0..k {
+            out.extend_from_slice(frames);
+        }
+        out
+    }
+
+    /// A live media playlist as a server would publish it at `elapsed` since it started: one
+    /// segment of `dur` seconds per `dur` elapsed, a sliding window of `window` segments ending
+    /// at the current sequence number, URIs `seg-<seq>.aac`.
+    fn live_playlist(
+        td: u64,
+        dur: f64,
+        first_seq: u64,
+        window: usize,
+        elapsed: Duration,
+    ) -> String {
+        let now_seq = first_seq + (elapsed.as_secs_f64() / dur).floor() as u64;
+        let from = now_seq.saturating_sub(window as u64 - 1).max(first_seq);
+        let mut s = format!(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{td}\n#EXT-X-MEDIA-SEQUENCE:{from}\n"
+        );
+        for seq in from..=now_seq {
+            s.push_str(&format!("#EXTINF:{dur:.3},\nseg-{seq}.aac\n"));
+        }
+        s
+    }
+
+    fn seg_seq(path: &str) -> Option<u64> {
+        path.rsplit('/')
+            .next()?
+            .strip_prefix("seg-")?
+            .strip_suffix(".aac")?
+            .parse()
+            .ok()
+    }
+
+    fn is_playing(s: &PlaybackState) -> bool {
+        matches!(s, PlaybackState::Playing)
+    }
+
+    fn error_message(s: &PlaybackState) -> String {
+        match s {
+            PlaybackState::Error { message, .. } => message.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn count_prefix(paths: &[String], prefix: &str) -> usize {
+        paths.iter().filter(|p| p.starts_with(prefix)).count()
+    }
+
+    /// T12: Antena 1's shape as captured — a master with a relative variant URI, a media
+    /// playlist served gzip, ADTS segments — reaches `Playing` with `StreamInfo` 48 000 / 2
+    /// and one `Started`. The master is requested **twice** (the `HttpStream` GET, then
+    /// `hls::open`'s own — review R1), then the media playlist, then the start segments
+    /// 97880–97882 (three from the end, D5). On `b7e050a`: `Error { UnsupportedFormat }`
+    /// after one request, no `Playing` (F7). Fails without gunzip (the media playlist's
+    /// compressed bytes read as garbage URIs, the census's run-1 bug) or without the
+    /// dispatch.
+    #[test]
+    fn t12_adts_hls_behind_a_gzipped_media_playlist_plays() {
+        let master = fixture("10-master.m3u8");
+        let media_gz = fixture("10-media.m3u8.gz");
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = routed_server(move |path| match path {
+            "/liveradio/antena180a/playlist.m3u8" => {
+                Some(routed("application/vnd.apple.mpegurl", master.clone()))
+            }
+            "/liveradio/antena180a/chunklist.m3u8" => Some(Routed {
+                status: 200,
+                content_type: "application/vnd.apple.mpegurl",
+                gzip: true,
+                body: media_gz.clone(),
+            }),
+            p if p.starts_with("/liveradio/antena180a/media_") && p.ends_with(".aac") => {
+                Some(routed("audio/x-aac", synth_segment(&head, 4.0)))
+            }
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/liveradio/antena180a/playlist.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(8), is_playing);
+        let state = h.ctx.shared.state();
+        assert_eq!(state, PlaybackState::Playing, "states: {seen:?}");
+        assert!(reconnecting(&seen).is_empty(), "no backoff: {seen:?}");
+        assert_eq!(*h.infos.lock().unwrap(), vec![(48_000, 2)], "StreamInfo");
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            vec!["u1".to_string()],
+            "one Started"
+        );
+        let paths = paths.lock().unwrap().clone();
+        assert_eq!(
+            &paths[..4],
+            &[
+                "/liveradio/antena180a/playlist.m3u8".to_string(),
+                "/liveradio/antena180a/playlist.m3u8".to_string(),
+                "/liveradio/antena180a/chunklist.m3u8".to_string(),
+                "/liveradio/antena180a/media_97880.aac".to_string(),
+            ],
+            "two requests for the master (R1), then the media playlist, then the start segment: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"/liveradio/antena180a/media_97882.aac".to_string()),
+            "the three start segments are fetched: {paths:?}"
+        );
+        h.ctx.cancel();
+    }
+
+    /// T13: a media playlist given directly whose segments are MPEG-TS (Известия, 09) → one
+    /// terminal `Error { UnsupportedFormat, "…MPEG-TS…" }`, no `Reconnecting`, **3** requests
+    /// (the playlist twice — R1 — and one segment, read only to its head), no `Started`. On
+    /// `b7e050a`: the state passes, the count is 1 and the message the generic one (F7).
+    /// Fails if the refusal is not terminal (`Reconnecting { 1 }` inside the window), or if a
+    /// third playlist request is made.
+    #[test]
+    fn t13_mpeg_ts_segments_are_refused_terminally_after_one_segment_head() {
+        let media = fixture("09-media.m3u8");
+        let ts = fixture("09-seg-head.mpegts");
+        let (base, paths) = routed_server(move |path| match path {
+            "/igi/radio1/tracks-a1/mono.m3u8" => {
+                Some(routed("application/vnd.apple.mpegurl", media.clone()))
+            }
+            p if p.contains("-06016.ts?hls_proxy_host=") => Some(routed("video/MP2T", ts.clone())),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let state = h.ctx.shared.state();
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::UnsupportedFormat,
+                    ..
+                }
+            ),
+            "state: {state:?}"
+        );
+        assert_eq!(
+            error_message(&state),
+            "HLS with MPEG-TS segments is not supported yet"
+        );
+        assert!(
+            reconnecting(&seen).is_empty(),
+            "terminal, no backoff: {seen:?}"
+        );
+        assert!(h.started.lock().unwrap().is_empty(), "no vote");
+        thread::sleep(Duration::from_millis(300));
+        let paths = paths.lock().unwrap().clone();
+        assert_eq!(paths.len(), 3, "2 playlist + 1 segment head: {paths:?}");
+        assert_eq!(count_prefix(&paths, "/igi/radio1/tracks-a1/mono.m3u8"), 2);
+        assert!(paths[2].contains(".ts?hls_proxy_host="), "{paths:?}");
+    }
+
+    /// T14: a master whose variants are all video (Fox, 03) → `Error { UnsupportedFormat,
+    /// "…video only…" }` after **2** requests (the master twice, R1) and none for a media
+    /// playlist. On `b7e050a`: 1 request, the generic message. Fails with the video-only filter
+    /// dropped: a media playlist (on the real host — the fixture's URIs are absolute) and its
+    /// segment would be fetched.
+    #[test]
+    fn t14_a_video_only_master_is_refused_after_two_requests() {
+        let master = fixture("03-master.m3u8");
+        let (base, paths) = routed_server(move |path| match path {
+            "/hls/live/2020027/fncv3preview/primary.m3u8" => {
+                Some(routed("application/x-mpegURL", master.clone()))
+            }
+            _ => None,
+        });
+        let h = start_session(&format!(
+            "{base}/hls/live/2020027/fncv3preview/primary.m3u8"
+        ));
+        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let state = h.ctx.shared.state();
+        assert_eq!(
+            error_message(&state),
+            "HLS stream has no audio variant (video only: avc1.42c020)",
+            "state: {state:?}"
+        );
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert!(h.started.lock().unwrap().is_empty());
+        thread::sleep(Duration::from_millis(300));
+        let paths = paths.lock().unwrap().clone();
+        assert_eq!(paths.len(), 2, "the master twice, nothing else: {paths:?}");
+    }
+
+    /// A live server: `live_playlist` at the elapsed time (frozen at `freeze_after` if set),
+    /// segments synthesised from the head `head_for(seq)` picks.
+    fn live_server(
+        td: u64,
+        dur: f64,
+        window: usize,
+        freeze_after: Option<Duration>,
+        head_for: impl Fn(u64) -> Vec<u8> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let started = Instant::now();
+        routed_server(move |path| {
+            if path == "/live/playlist.m3u8" {
+                let mut elapsed = started.elapsed();
+                if let Some(f) = freeze_after {
+                    elapsed = elapsed.min(f);
+                }
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(td, dur, 1, window, elapsed).into_bytes(),
+                ));
+            }
+            let seq = seg_seq(path)?;
+            Some(routed("audio/aac", synth_segment(&head_for(seq), dur)))
+        })
+    }
+
+    /// T15 (finding F4): a live playlist with 6 s segments, refreshed every 6 s, plays 13 s
+    /// with **no** internal reconnect and no `Reconnecting`. With the ICY `Settings` (a 5 s
+    /// `retry_timeout` and its `on_reconnect`) every normal wait between segments would count
+    /// as an internal reconnect and bump `reconnect_count` — the mutation. Costs 13 s.
+    #[test]
+    fn t15_a_normal_hls_wait_is_not_an_internal_reconnect() {
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = live_server(6, 6.0, 5, None, move |_| head.clone());
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(13), |_| false);
+        assert_eq!(
+            h.ctx.shared.state(),
+            PlaybackState::Playing,
+            "states: {seen:?}"
+        );
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert_eq!(
+            h.ctx.reconnect_count.load(Ordering::Relaxed),
+            0,
+            "stream-download's idle timeout fired during a normal HLS wait"
+        );
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        let paths = paths.lock().unwrap().clone();
+        let reloads = count_prefix(&paths, "/live/playlist.m3u8");
+        assert!(
+            (3..=5).contains(&reloads),
+            "2 for the open + about 2 refreshes in 13 s at TD 6: {reloads} ({paths:?})"
+        );
+        h.ctx.cancel();
+    }
+
+    /// T16: the window stops advancing → the stall bound (3 × TD) ends the source → the
+    /// session's own backoff, `Reconnecting { 1 }` → the playlist is requested again → `Playing`
+    /// — and **one `Started` in total**: a reopen is inside the session. On `b7e050a`:
+    /// `Error`, 0 `Started`. Fails without the stall bound (the task waits for ever; nothing
+    /// ends the source, and the watchdog does not see a full ring under `Playing`).
+    #[test]
+    fn t16_a_stalled_window_reopens_inside_the_session_with_one_started() {
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = live_server(1, 1.0, 4, Some(Duration::from_secs(2)), move |_| {
+            head.clone()
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(8), is_playing);
+        assert_eq!(
+            h.ctx.shared.state(),
+            PlaybackState::Playing,
+            "first play: {seen:?}"
+        );
+        let opens_before = count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8");
+        // Wait for the stall → Reconnecting → Playing again.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut all = seen;
+        let mut saw_reconnecting = false;
+        loop {
+            let more = states_until(&h, Duration::from_millis(500), |_| false);
+            saw_reconnecting |= !reconnecting(&more).is_empty();
+            all.extend(more);
+            if saw_reconnecting && h.ctx.shared.state() == PlaybackState::Playing {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no reopen in 20 s: {all:?}");
+        }
+        assert_eq!(reconnecting(&all), vec![1], "one backoff step: {all:?}");
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            vec!["u1".to_string()],
+            "one Started across the reopen"
+        );
+        let paths = paths.lock().unwrap().clone();
+        let opens_after = count_prefix(&paths, "/live/playlist.m3u8");
+        assert!(
+            opens_after >= opens_before + 2,
+            "the reopen requested the playlist again (twice, R1): {opens_before} → {opens_after}"
+        );
+        h.ctx.cancel();
+    }
+
+    /// T17: a segment whose ADTS format differs from the session's first (48 000 / 2, then
+    /// 08's 22 050 / 2) ends the source; the reopen builds a new decoder, ring and converter,
+    /// so `StreamInfo` is emitted twice — 48 000 then 22 050 — and `Started` once. Fails with
+    /// the guard off: one `StreamInfo`, and the 22 050 frames play through a 48 000 ring.
+    #[test]
+    fn t17_a_format_change_reopens_with_a_new_stream_info_and_one_started() {
+        let head48 = fixture("10-seg-head.aac");
+        let head22 = fixture("08-seg-head.aac");
+        // A one-segment window, so the reopen (three from the end = the newest) lands past the
+        // switch at seq 4; with a wider window it starts inside the old 48 000 segments and
+        // sees a third `StreamInfo` (measured: `[48000, 48000, 22050]` with a window of 4).
+        let (base, _paths) = live_server(1, 1.0, 1, None, move |seq| {
+            if seq < 4 {
+                head48.clone()
+            } else {
+                head22.clone()
+            }
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut all = Vec::new();
+        loop {
+            all.extend(states_until(&h, Duration::from_millis(500), |_| false));
+            if h.infos.lock().unwrap().len() >= 2 && h.ctx.shared.state() == PlaybackState::Playing
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no second StreamInfo in 20 s: {all:?} infos {:?}",
+                h.infos.lock().unwrap()
+            );
+        }
+        assert_eq!(*h.infos.lock().unwrap(), vec![(48_000, 2), (22_050, 2)]);
+        assert_eq!(reconnecting(&all), vec![1], "{all:?}");
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        h.ctx.cancel();
     }
 }
 

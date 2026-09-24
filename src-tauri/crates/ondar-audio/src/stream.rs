@@ -257,7 +257,7 @@ pub async fn open(
     reconnect_count: Arc<AtomicU64>,
     prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
-    let stream = match HttpStream::new(client.clone(), url).await {
+    let stream = match HttpStream::new(client.clone(), url.clone()).await {
         Ok(s) => s,
         Err(e) => return Err(classify_open_error(e).await),
     };
@@ -274,6 +274,19 @@ pub async fn open(
         .content_type()
         .as_ref()
         .map(|ct| format!("{}/{}", ct.r#type, ct.subtype));
+
+    // HLS (M3c): decided by the response, never by the station record's `hls` flag. The
+    // playlist just fetched is dropped and `hls::open` fetches it again itself — `HttpStream`
+    // keeps the URL it was *given*, not the final one after redirects, and the playlist's
+    // relative URIs must join against the final one. So every HLS open is two requests for the
+    // first playlist (plan review R1); the tests pin the count.
+    if content_type
+        .as_deref()
+        .is_some_and(crate::hls::is_hls_content_type)
+    {
+        drop(stream);
+        return crate::hls::open(client, url, reconnect_count, prefetch_bytes).await;
+    }
 
     let storage = BoundedStorageProvider::new(
         MemoryStorageProvider,
@@ -386,7 +399,7 @@ fn excerpt(s: &str, max: usize) -> String {
 /// The statuses that mean "not for you, not now, not later": no stream at this URL for us.
 /// Everything else — 5xx, 408, 429, the rest of 4xx — may read differently on the next
 /// attempt, so it keeps the backoff.
-fn status_is_terminal(status: reqwest::StatusCode) -> bool {
+pub(crate) fn status_is_terminal(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 401 | 403 | 404 | 410)
 }
 
@@ -396,7 +409,7 @@ fn is_client_error(e: &reqwest::Error) -> bool {
 }
 
 /// `Retry-After` in its delta-seconds form; `None` for an absent, HTTP-date or unparsable value.
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
@@ -444,7 +457,7 @@ fn root_looks_like_parse(e: &reqwest::Error) -> bool {
 
 /// "top: cause: root" — every link of the `source()` chain, so the UI and the log see the
 /// reason and not reqwest's outer wrapper alone.
-fn chain_message(e: &reqwest::Error) -> String {
+pub(crate) fn chain_message(e: &reqwest::Error) -> String {
     let mut parts = vec![e.to_string()];
     let mut cur = e.source();
     while let Some(err) = cur {
