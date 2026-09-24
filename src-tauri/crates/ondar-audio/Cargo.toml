@@ -20,6 +20,11 @@ hyper = { version = "1", default-features = false }
 # `time` for the connect-phase bound (`tokio::time::timeout` around the headers phase, M3a G4b).
 tokio = { version = "1.52", features = ["rt-multi-thread", "time"] }
 tokio-util = "0.7"
+# HLS (M3c): a playlist's relative URIs are joined against the URL it was fetched from (RFC
+# 3986 reference resolution — `../`, absolute paths, queries), which std has no notion of.
+# Already in the tree at this version via ondar-stations' resolver; no new crate enters
+# Cargo.lock.
+url = "2"
 # DSP
 biquad = "0.6"
 # Real-time-safe SPSC ring buffer between the decode thread and the audio callback.
@@ -35,3 +40,8 @@ log = "0.4"
 # subscriber to see stream-download's internal reconnect/retry logs (see src-tauri's
 # lib.rs::run for why tracing-subscriber, not env_logger).
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Station 10 (Antena 1) serves its media playlists gzip-compressed without being asked; the
+# fixture is the bytes as sent, and the T3/T5/T6 tests gunzip it. A dev-dependency here; the
+# HLS fetch layer promotes it (segment normalisation, M3c commit 3). Already in Cargo.lock at
+# this version via tauri's icon codegen; no new crate enters the lock.
+flate2 = "1"

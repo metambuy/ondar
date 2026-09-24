@@ -2998,6 +2998,7 @@ name = "ondar-audio"
 version = "0.1.0"
 dependencies = [
  "biquad",
+ "flate2",
  "hyper",
  "log",
  "reqwest",
@@ -3010,6 +3011,7 @@ dependencies = [
  "tokio-util",
  "tracing-subscriber",
  "ts-rs",
+ "url",
 ]
 
 [[package]]

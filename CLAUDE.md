@@ -133,11 +133,25 @@ onda/
     │                             get_panel_layout (the layout last emitted, for the page to mirror
     │                             on mount)
     └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
+        ├── fixtures/hls/         the M3 Step 0 census's P4 playlists byte for byte + segment heads
+        │                         only (ID3 + 16 ADTS frames; 4 TS packets, named `.mpegts`);
+        │                         PROVENANCE.md has the table
         ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
         ├── stream.rs             stream-download open, ICY headers, timeout invariant
         ├── icy.rs                in-band ICY title stripping
         ├── ring.rs               rtrb ring → rodio Source (never blocks the audio callback)
         ├── eq.rs                 10-band biquad peaking EQ + soft-clip, as a rodio Source adapter
+        ├── hls/                  HLS, the ADTS half (M3c; in progress on branch `m3c`)
+        │   ├── mod.rs            the module doc: what is built and what follows
+        │   └── playlist.rs       pure: the m3u8 parser (9 tags; quote-aware attribute lists; the
+        │                         `EXTINF` duration up to the first comma; relative URIs joined
+        │                         against the fetched-from URL; a plain M3U refused as NotHls —
+        │                         R2; MAP / KEY≠NONE / BYTERANGE refused), `choose_variant` (D1:
+        │                         audio-only LC before HE then highest bandwidth, then no-CODECS,
+        │                         then muxed lowest; video-only never) and the refresh `Planner`
+        │                         (D5: start 3 from the end; identity = sequence > last emitted;
+        │                         waits last `EXTINF` / TD÷2 clamped [1 s, 30 s]; stall at 3 × TD
+        │                         on the clamped TD; sequence backwards = Restarted; ENDLIST)
         ├── reconnect.rs          Backoff: 1/2/4/8/16 s, 5 attempts, reset after 30 s stable
         ├── types.rs              IPC types (ts-rs `#[ts(export)]`)
         └── examples/
@@ -178,8 +192,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 182 tests `cargo test --workspace`
-reports break down as **163 hand-written + 19 ts-rs-generated** (audio 78, shell 40, stations 64):
+export_bindings_<type>` that writes the `.ts` file. So the 201 tests `cargo test --workspace`
+reports break down as **182 hand-written + 19 ts-rs-generated** (audio 97, shell 40, stations 64):
 
 | | |
 |---|---|
@@ -191,6 +205,7 @@ reports break down as **163 hand-written + 19 ts-rs-generated** (audio 78, shell
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
 | `reconnect::tests` | 1 |
+| `hls::playlist::tests` | 19 — **M3c commit 2**, T1–T6 of the plan on the census fixtures; the module does not exist on `b7e050a`, so each is mutation-checked (the failing output is in `_handover/m3c-plan.md`, "Commit 2 landed"). T1: masters parse, 10's relative `chunklist.m3u8` joins against the base it is given (a redirected base moves it; fails with the join skipped), 04's `CODECS="avc1…,mp4a.40.2"` is one attribute and the CRLF fixture parses (fails on a comma split that ignores quotes). T2: 03 → `NoAudio("avc1.42c020")` (fails with the video-only filter dropped), 04 → the lowest muxed 1 061 313, LC 96 k over HE 128 k, 256 k over 48 k among LC, no-CODECS before muxed, an empty master. T3: 01 (TD 10, 244198, 10), 02 (a discontinuity; titles with quoted commas → 10.0 — fails on `split(',').last()`), 07, 10 after gunzip (TD 5, 97863, 20), 06 and 09 given directly with absolute-path and query URIs. T4: `EXT-X-MAP` → fMP4, `KEY METHOD=AES-128`/`SAMPLE-AES` → encrypted (fails with the check removed), `BYTERANGE`, `METHOD=NONE` accepted; **a plain M3U (`#EXTINF:-1,Name` + an Icecast URL) → `NotHls`, its own test** (R2; fails with the EXT-X presence check dropped — as `Malformed`, since a `-1` duration is deferred behind the HLS decision); no `#EXTM3U` → `NotPlaylist`; bad numbers → `Malformed`. T5: 01 → 244205–244207, 10 → 97880–97882, 07 → 1–3 (fails starting at the last: `[244207]`). T6: 01's real refresh emits exactly 244208–244210 then TD÷2; **10's refresh, whose window starts at 97866 before `next_seq` 97883, emits only 97883–97885** (gate amendment 6; a "seen" identity re-emits 244201–244204 on 01); waits clamped to [1 s, 30 s] and the stall bound on the clamped TD (TD 0 → a stall at 3 s, not at once); a window past `next_seq` → `Fetch { skipped: 4 }`; unchanged 15 s at TD 5 → `Stall` (fails without the bound: `Wait(2.5s)`); a failed reload waits TD÷2 until the bound and a good one resets it; `MEDIA-SEQUENCE` lower than the last accepted → `Restarted`; `ENDLIST` → `EndList`; and the quote-aware attribute splitter alone |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
 | `normalise::tests` | 6 — **stations** crate, from here to `service`: the countries fixture parses 250 → 240 with DE's merged count; the PT-60 slice's edge rows pinned by an independent Python pass; codec mapping; the geo rule |
 | `filter::tests` | 5 — bitrate 0 sorts last among equal votes (fails on `Option`'s natural order); dedupe keeps the higher votes; broken/empty-url dropped; the cap cuts after sorting; the PT-60 slice ranks to 44 |
@@ -206,7 +221,7 @@ reports break down as **163 hand-written + 19 ts-rs-generated** (audio 78, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 163 and will not reconcile with the runner's 182
+Counting `#[test]` attributes in source gives 182 and will not reconcile with the runner's 201
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -225,7 +240,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `182 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `201 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -242,7 +257,7 @@ pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
                               # tests, 15 today (StationList + Transport + Panel). Its count is reported BESIDE
-                              # the Rust count — "182 + 15", never "197" — and CI runs it as its own step
+                              # the Rust count — "201 + 15", never "216" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types
@@ -251,7 +266,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 182 tests: 78 in the ondar_audio binary, 64 in ondar_stations and
+cargo test --workspace       # 201 tests: 97 in the ondar_audio binary, 64 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this
