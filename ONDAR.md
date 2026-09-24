@@ -120,6 +120,22 @@ not crates.io lookups):
   `set_effects` wraps it; see the `tauri-nspanel` spike note below.
 - `tracing-subscriber` 0.3.23 (env-filter; replaces `env_logger` — its `init()` installs
   a `LogTracer` itself, so `tracing-log` is not a direct dependency)
+- **Read for M3c (2026-09-24), from the registry sources at these lock versions:**
+  `stream-download` 0.24.4 — `SourceStream` is `TryStream<Ok = Bytes> + Stream + Unpin + Send +
+  Sync + 'static` with `create`, `content_length`, `seek_range`, `reconnect`, `supports_seek`
+  (`source/mod.rs:42-92`); the download loop wraps every `stream.next()` in
+  `timeout(retry_timeout)` (`:203`) and on elapse calls `reconnect` then `on_reconnect`
+  (`:272-290`); an `Err` item is logged and skipped (`:365-378`), `None` completes; `HttpStream`
+  stores the URL it was **given** (`http/mod.rs:185`, set at `:250`) and exposes no final URL;
+  `StreamDownload<P>` is generic over storage only, so `from_stream` (`lib.rs:343`) returns the
+  same `Reader` type as `new`. **No HLS support in any 0.23–0.24 release; no 0.25.**
+  `symphonia-codec-aac` 0.5.5 — the ADTS probe marker is `[0xff, 0xf1]` (`adts.rs:46`) and
+  `AdtsHeader::sync` scans byte by byte for `0xFFF1` before every frame (`:66-74`); SBR is read
+  only from an AudioSpecificConfig (`aac/mod.rs:101-112`), never from ADTS.
+  Direct since M3c, all already in the lock: `url` 2.5.8 (via ondar-stations' resolver),
+  `flate2` 1.1.10 (via tauri's icon codegen), `futures-core` 0.3.34 and `bytes` 1.12.1 (via
+  stream-download and reqwest); tokio 1.53.1 gains the `sync` and `macros` features. The lock's
+  package list is unchanged by M3c.
 
 **Not yet a dependency** (M2+; last-checked crates.io/GitHub state, *not* locked — re-verify
 before actually adding):
@@ -636,6 +652,136 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M3c: HLS, the ADTS half — built, measured (2026-09-24)
+
+Branch `m3c` off `main` `b7e050a` (`defect-a-done`). Commits, each pushed alone and CI green
+before the next: `7b19720` `chore(lint): ignore _handover/`, `659950d` fixtures, `ce6a247` the
+playlist module, `c37963b` segment normalisation, `a3ec612` the fetch layer; docs in the closing
+commit. Records in `_handover/`: brief `m3c-brief.md`, plan `m3c-plan.md` (its review
+`m3c-plan-review-2026-09-24.md`, the Step 0 gate `m3c-gate-review-2026-09-24.md`, and the
+"Commit N landed" sections with every mutation and the `b7e050a` recordings), Step 0
+`m3c-step0-report.md` (logs `m3c-step0/`), acceptance `m3c-acceptance.md` (logs
+`m3c-acceptance/`), the per-commit logs `m3c-commits/`.
+
+**What ships.** An HLS station whose media playlist carries **ADTS-AAC** segments plays through
+the same decoder, ring, converter and EQ as an Icecast stream. The engine detects HLS **by the
+response's content type** (four spellings, never the record's `hls` flag — two census `.m3u8`
+URLs flagged `hls == 0` answered plain ADTS), fetches the playlist again on its **final** URL
+(stream-download's `HttpStream` keeps the URL it was given, and relative URIs must join against
+the one after redirects — so every HLS open is two requests for the first playlist), chooses the
+**audio-only variant, LC before HE, highest bandwidth** (D1), refreshes the media playlist on
+`MEDIA-SEQUENCE` — the identity is "sequence greater than the last emitted", never "URI not yet
+seen", because every live reload still lists segments already fetched — starting **three
+segments behind the live edge** (D5), waiting the last segment's `EXTINF` after new segments and
+half the target duration otherwise, clamped to [1 s, 30 s]. Each segment's ID3 tags are skipped
+and its ADTS frames walked: the **MPEG-2 ID bit (`FFF9`) is cleared** to the `FFF1` Symphonia
+syncs on (F1, D7), a CRC is dropped, a partial tail dropped, and a segment whose sample-rate
+index or channel configuration differs from the session's first ends the source (`FormatChanged`)
+so the reopen builds a ring and converter for the new format — defect A's lesson applied
+forward. **MPEG-TS, fMP4, encrypted and byte-range playlists, video-only masters and plain M3U
+files are refused terminally** with a message the page renders (`error [unsupported_format]:
+HLS with MPEG-TS segments is not supported yet`, …), after one chain of requests, no backoff, no
+vote; the first segment is sniffed after its ID3 tags plus 376 bytes and dropped there. The source
+never yields an error into stream-download: a stall (3 × TD with no new segment), a sequence
+restart, a format change or `ENDLIST` closes the channel, the decoder sees EOF, and the session's
+own backoff reopens — one `Started`, one vote, per session. **No IPC change**: no command, event,
+argument or type; the vitest count stays 15.
+
+**Findings while planning** (F1–F7, `m3c-plan.md`) **and what Step 0 made of them:**
+- **F1** Symphonia's ADTS reader syncs only on `FFF1`; iHeart (census 02) sends `FFF9`. Confirmed
+  that it fails, refuted on the shape: not `UnrecognizedFormat` but — depending on how many bytes
+  the sync scan reads before EOF — `UnrecognizedFormat` under about 8 KB and `IoError("end of
+  stream")` from 16 KB (measured at commit 3), so on `b7e050a` a short `FFF9` file was terminal, a
+  long one ran the backoff, and a **live mount held the engine in `Connecting` for as long as the
+  mount stayed up** (Step 0 § (e): 34 s, released only by the server's EOF; the watchdog covers
+  `Buffering` only). That last shape is **defect B**, below.
+- **F2** the ADTS header's rate is not the rate ffprobe reports for HE-AAC. Confirmed, and **D9
+  did not fire**: Symphonia decodes the LC core only — 1 024 samples per frame at 22 050 where
+  ffmpeg synthesises 2 048 at 44 100 (ratio 2.00, duration 1.00) — and plays it at speed 1.0000
+  (RFM live, 111 windows, sd 0.0112; 08 replayed, 1.0003). **An HE-AAC station plays at the
+  correct speed with nothing above ~11 kHz**: a quality limit of Symphonia 0.5.5 on the census's
+  `AAC+` share (3 982 stations), recorded, not M3c's to fix; any fix is a stack decision.
+- **F3** every captured segment is whole frames; **F5** `HttpStream` keeps the requested URL;
+  **F6** Antena 1 gzips its media playlists unasked (`content-encoding: gzip` on a request with no
+  `Accept-Encoding`) — inflated by the response header, never requested, so no Icecast request
+  changes; **F4** stream-download's idle timeout (5 s) is shorter than a normal HLS wait, so the
+  HLS `Settings` set `retry_timeout` **above** `read_timeout` (stall bound + segment timeout +
+  5 s; 55 s at TD 10) — CLAUDE.md invariant 4 now says which path it guards.
+- **F7** on `b7e050a` an HLS URL was one request and `Error { UnsupportedFormat, "could not
+  identify the audio format (application/vnd.apple.mpegurl)" }`: confirmed on four live
+  stations, four fixture shapes and the app. TS was already "one terminal error, zero clicks"
+  (D4); M3c keeps it so with a better message and adds the ADTS half.
+- **Segment boundaries are clean**: 22 boundaries over four stations, zero sample loss, boundary
+  steps inside each stream's own range; **ID3 stripping is hygiene**, the decoder's scan skips
+  the tags itself (gate amendment 1). **Crates**: no crate covers live refresh; `m3u8-rs` 6.0.1
+  mis-parses 02's comma-bearing `EXTINF` titles (its #80, open) and brings `chrono`; hand-written.
+- **R2 (plan review): a plain M3U is not HLS.** `audio/x-mpegurl` is also served for a file that
+  lists an Icecast URL with no `EXT-X-*` tag; refused as `playlist is not HLS (no EXT-X tags)`,
+  the URL not followed. Census: 0 of 148 `hls == 0` stations answered an `mpegurl` type;
+  53 of 25 236 `url_resolved` end in `.m3u`/`.pls` (0.21 %, an upper bound by file name).
+
+**Acceptance (`m3c-acceptance.md`, 2026-09-24, at `a3ec612`; `rate_probe` and the app under
+`ONDAR_MEASURE` — no run voted):**
+
+| | measured |
+|---|---|
+| X1 Antena 1 in-app, 18 min | mean speed **1.0000**, sd 0.0128, 1 038 clean windows, cumulative 1.0000 (1071.355 / 1071.326 s), **0 underruns**; 267 refreshes, 264 `new=1`, sequence 10508 → 10774 never non-advancing; 539 requests all 200; 0 gaps; 0 reconnect; one click line (suppressed); 111 ms from `play` to `Playing` |
+| X2 08 HE-AAC / 02 `FFF9` | 22 050/2 at **1.0000** (sd 0.0125, 111 windows) / 24 000/1 at **0.9998** (sd 0.0133, 114); 0 underruns; **02 plays** — it could not on `b7e050a` |
+| X3 France Inter (TS) / Fox (video) | `Error` in 0.24 s / 0.70 s with the two messages; **3 / 2 requests**, exact on the fixture server and matching the live `hls request` lines; 0 `Reconnecting`, 0 `Started`, 0 clicks |
+| X4 click = play | in-app one play → one click line; HLS → Icecast → HLS through the probe: 3 plays, 3 `Started`, 0 reopens; the HLS task `ended reason=closed` at each switch and made 0 requests during the Icecast play |
+| X5 Stop during a wait | `hls task ended reason=closed` in the same millisecond as the switch; the host saw **no request for 31 s** with the process alive |
+| X7 | on the reverted clean tree: fmt, clippy (0 warnings), **217 + 15**, typecheck, lint all 0; `pnpm tauri:dev` clean (X1's run was one; a second launch on the clean tree, `x7-devlaunch.*`) |
+
+X6 (Wi-Fi off 20 s) is Martín's. The in-app HLS → Icecast → HLS switch was not clicked (one
+auto-play per launch); the probe's `Started` count stands in, with the shell's `Started` → click
+mapping pinned by `service::tests`. One instrument note: the X1 stop was scheduled at 10 min and
+the `pkill` pattern missed, so X1 ran 18 min and X2/X4 overlapped its last six — with 0 underruns
+throughout.
+
+**Tests: 217 + 15** (audio 113): `hls::playlist::tests` 19 (T1–T6), `hls::segment::tests` 8
+(T7–T11), `hls::tests` 2, and six in `engine::session_tests` (T12–T17) against a path-routed
+server that synthesises segments from the fixture heads. The `hls` modules do not exist on
+`b7e050a`, so T1–T11 are mutation-checked (28 mutations, each applied alone and reverted; every
+one fails at least one test, tables in the plan); T12–T17 were **run on `b7e050a`** through the
+same test block in a detached worktree: all six fail as F7 predicts. Two exceptions recorded
+rather than hidden: T14's mutation was not run (it would request the real Fox host — the
+fixture's variant URIs are absolute), and T17's guard-off mutation passes because Symphonia's
+ADTS reader ends the stream on a mid-stream rate change by itself; the guard is the first line
+(T10 pins it), T17 pins the outcome.
+
+**Fixtures** (`crates/ondar-audio/fixtures/hls/`, D6 as amended by R3): the census's P4 playlists
+byte for byte (Antena 1's media as the gzip bytes it was served; DW's master CRLF as served) and
+**heads only** of the segments — the ID3 tag(s) plus 16 ADTS frames, 0.34–0.74 s, 02 keeping its
+`FFF9`; four TS packets, named `.mpegts` because `eslint .` parses `.ts` as TypeScript. No second
+of broadcast audio is committed; the engine tests synthesise whole segments by repeating a head's
+frames, so the prefetch, the fill target and the pacing under test are production's.
+
+**Decisions** (Martín, 2026-09-24, `m3c-plan.md` § 6): D1 variant = audio-only, LC before HE,
+highest bandwidth (the brief said lowest); D2 a reload failure retries at the cadence to the stall
+bound before the session backoff; D3 a segment failure retries within its TD then is a logged gap;
+D4 the TS exit was already true on `b7e050a`, kept as a non-regression check with a better
+message; D5 start three segments behind live; D6 head-only fixtures; D7 the `FFF9` rewrite is in
+the HLS path only — the Icecast path's is defect B; D8 invariant 4 gains its scope; D9 (stop M3c
+on a speed defect) not fired.
+
+**Defect B — an unbounded `Connecting` — opened, not M3c's** (the gate review, 2026-09-24). Any
+live stream whose bytes the decoder cannot sync on keeps `main` in `Connecting` indefinitely:
+`build()` scans the arriving bytes, the watchdog covers `Buffering` only (`engine.rs:1063-1076`),
+`read_timeout` never fires while bytes arrive, and Stop is the only exit. `FFF9` on an Icecast
+mount is one trigger (measured: 34 s on a paced fixture, unbounded live); a mislabelled or garbage
+mount is another. Sequenced **after the M3c merge, before M4**, as its own measured piece like
+defect A: bound the build phase (a test that fails on `main` with the paced `FFF9` fixture), then
+the `FFF9` → `FFF1` rewrite on the Icecast path as a streaming wrapper over `hls::segment`, sized
+by the still-unmade count of Icecast AAC stations that send it (≈ 36 header reads over P5's
+`audio/aac*` rows). OPEN.md carries it.
+
+**Out of scope, recorded:** the MPEG-TS demux (5 of the census's 10 HLS stations, 3 with video)
+stays after M4 as decided 2026-09-21; `EXT-X-MEDIA` audio renditions are not followed; there is no
+adaptive switching; a lagging origin that serves an older `MEDIA-SEQUENCE` would read as a
+restart (not seen in P4, where origins differed per request and the sequence still advanced);
+`StreamInfo.bitrate_kbps` for an HLS station is the variant's `BANDWIDTH` / 1000 (185/176 for
+Antena 1 across opens), not the record's 167 that sized the prefetch.
 
 ### Defect A: the output kept the first session's sample rate — measured, fixed (2026-09-24)
 
