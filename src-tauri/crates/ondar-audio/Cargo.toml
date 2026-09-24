@@ -25,6 +25,13 @@ tokio-util = "0.7"
 # Already in the tree at this version via ondar-stations' resolver; no new crate enters
 # Cargo.lock.
 url = "2"
+# HLS (M3c): station 10 (Antena 1) serves its playlists gzip-compressed without being asked
+# (`content-encoding: gzip` on a request with no `Accept-Encoding`), and the census's probe
+# parsed the compressed bytes as playlist lines. Inflated by the response header, never
+# requested — reqwest's `gzip` feature would add `Accept-Encoding` to every Icecast request
+# too. Already in Cargo.lock at this version via tauri's icon codegen; no new crate enters the
+# lock.
+flate2 = "1"
 # DSP
 biquad = "0.6"
 # Real-time-safe SPSC ring buffer between the decode thread and the audio callback.
@@ -40,8 +47,3 @@ log = "0.4"
 # subscriber to see stream-download's internal reconnect/retry logs (see src-tauri's
 # lib.rs::run for why tracing-subscriber, not env_logger).
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# Station 10 (Antena 1) serves its media playlists gzip-compressed without being asked; the
-# fixture is the bytes as sent, and the T3/T5/T6 tests gunzip it. A dev-dependency here; the
-# HLS fetch layer promotes it (segment normalisation, M3c commit 3). Already in Cargo.lock at
-# this version via tauri's icon codegen; no new crate enters the lock.
-flate2 = "1"

@@ -7,9 +7,11 @@
 //! - [`playlist`]: the parser for the nine tags the player needs, the variant choice, and the
 //!   refresh planner that decides which sequence numbers to fetch and how long to wait. No I/O,
 //!   no clock of its own — instants are injected — so every decision is unit-tested.
+//! - [`segment`]: per-segment normalisation — the ID3 skip, the ADTS walk that clears the
+//!   MPEG-2 ID bit and drops a CRC, the format guard, the container sniff, and gunzip.
 //!
-//! What follows in later commits: segment normalisation (the ID3 skip, the ADTS walk with the
-//! ID-bit rewrite, the container sniff) and the fetch task that turns the planner's steps into
-//! HTTP requests and a `SourceStream` below `stream-download`. See `_handover/m3c-plan.md`.
+//! What follows in a later commit: the fetch task that turns the planner's steps into HTTP
+//! requests and a `SourceStream` below `stream-download`. See `_handover/m3c-plan.md`.
 
 pub mod playlist;
+pub mod segment;
