@@ -109,12 +109,14 @@ const OCCLUSION_SETTLE: Duration = Duration::from_millis(100);
 /// observed" rule `OCCLUSION_SETTLE` uses. Every completion logs `after_ms`.
 ///
 /// **Measured at acceptance, 2026-09-21** (`m2d-acc-02`, `m2d-acc-03`, bundled build `57bc490`):
-/// visible resizes 1–4 ms, n = 32; hidden shows 2–13 ms and one 100 ms, n = 8. 250 ms is 2.5× that
-/// maximum, so the value stands — **still provisional**, because n = 8 is short of the ≥ 20 hidden
-/// shows the plan asked for; a later run with that n rewrites this comment, and the constant only
-/// if the rule (≥ 2× the observed maximum, rounded to a frame) then says so. No fallback fired on a
-/// healthy page in either run. **A `trigger=fallback` on a healthy page is a defect, not a tuning
-/// knob.**
+/// visible resizes 1–4 ms, n = 32; hidden shows 2–13 ms and one 100 ms, n = 8. **Re-measured at
+/// M3b, 2026-09-23** (`_handover/m3b-measure.md`, 60 driven shows with a 750-row list mounted,
+/// memoised, or empty, plus six single first shows): 5–27 ms, max 27, p95 10. The combined
+/// distribution is **n = 74, max 100 ms** (the one M2d sample), and 250 ms is 2.5× that maximum,
+/// so the value stands (decided 2026-09-23: recorded here rather than re-derived downward from
+/// the newer, luckier sample — the rule is ≥ 2× the observed maximum, rounded to a frame, and the
+/// observed maximum is the 100 ms). No fallback fired on a healthy page in any run. **A
+/// `trigger=fallback` on a healthy page is a defect, not a tuning knob.**
 const LAYOUT_FALLBACK: Duration = Duration::from_millis(250);
 
 tauri_panel! {
@@ -127,6 +129,16 @@ tauri_panel! {
     })
 }
 
+/// The popover's page. A debug build may carry the measurement harness's query
+/// (`measure.rs`, `ONDAR_MEASURE`); a release build has no other URL than the plain one.
+fn panel_url() -> WebviewUrl {
+    #[cfg(debug_assertions)]
+    if let Some(url) = crate::measure::panel_url() {
+        return url;
+    }
+    WebviewUrl::App("panel.html".into())
+}
+
 /// Build the popover, hidden. Call from `setup`, before `tray::setup`.
 pub fn setup(app: &mut App) -> tauri::Result<()> {
     // Must precede `PanelBuilder::build()`. With `no_activate(true)` the builder forces
@@ -136,7 +148,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     app.manage(PanelState::default());
 
     let panel = PanelBuilder::<_, OndarPanel<_>>::new(app.handle(), PANEL_LABEL)
-        .url(WebviewUrl::App("panel.html".into()))
+        .url(panel_url())
         .size(Size::Logical(LogicalSize::new(
             PANEL_WIDTH,
             COLLAPSED_HEIGHT,
@@ -199,6 +211,13 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let on_resign = app.handle().clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
+            // The measurement harness (debug builds only) keeps the popover up so a measurement
+            // can be watched from Terminal or the Web Inspector; logged, never silent.
+            #[cfg(debug_assertions)]
+            if crate::measure::keep_open() {
+                log::info!("panel hide reason=resign_key SUPPRESSED measure_keep_open=1");
+                return;
+            }
             hide(&on_resign, HideReason::ResignKey);
         }
     });

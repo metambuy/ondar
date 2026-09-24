@@ -3,13 +3,24 @@
 // control and the placeholder for the expanded pane, and reports Escape to Rust. It decides none
 // of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
 // a click on the control is a report, answered by the next `panel:layout`.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { onPanelLayout, panel } from "../api";
-import type { PanelLayout, PanelView } from "../api";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { onPanelLayout, panel, stations } from "../api";
+import type { PanelLayout, PanelView, Station } from "../api";
+import { measureMode, measureParam, report, reportBlocks } from "../measure";
 import About from "./About";
-import DevStations from "./DevStations";
+import CountryControl from "./CountryControl";
+import NowPlaying from "./NowPlaying";
 import styles from "./panel.module.css";
+import type { ListSource } from "./source";
+import StationList from "./StationList";
 import Transport from "./Transport";
+
+// The measurement harness's mount cycle (`?measure=perf&m=mount`): the list mounted fresh
+// every 3 s from +10 s, five times, so `StationList` reports its four marks per mount.
+const MOUNT_REPS = 5;
+const MOUNT_FIRST_MS = 10_000;
+const MOUNT_PERIOD_MS = 3_000;
+const MOUNT_UP_MS = 2_000;
 
 export default function Panel() {
   // What Rust last laid out. `null` until the getter answers; the control is disabled meanwhile.
@@ -24,6 +35,34 @@ export default function Panel() {
   const [windowHeight, setWindowHeight] = useState(window.innerHeight);
   // The newest generation applied, so an older layout arriving late is ignored (below).
   const newestGeneration = useRef(-1);
+  // What the list shows — the selected country, or with ★ on the favourites and recents
+  // (`source.ts`): shared by the country control, the station list and (M4) the map, so it
+  // lives here, not in either. The country is kept while ★ is on, so ★ off returns to it.
+  // Not persisted yet — a launch starts on PT (the dev list's default, kept until Rust
+  // remembers the choice). The measurement harness may name a country.
+  const [country, setCountry] = useState(measureParam("cc") ?? "PT");
+  const [mine, setMine] = useState(false);
+  const source = useMemo<ListSource>(
+    () => (mine ? { kind: "mine" } : { kind: "country", cc: country }),
+    [mine, country],
+  );
+  // Counts effective shows. The lists re-request on every show (an expired list is refreshed
+  // by the service only when asked for again — M3a acceptance item 6, carried to M3b). The
+  // getter's answer on mount is generation 0 and is not a show, so the mount request is the
+  // effects' own first run, not a bump.
+  const [showGeneration, setShowGeneration] = useState(0);
+  // The station the page last asked to play — what Now Playing names. View state: whether
+  // anything is audible is Rust's (`playback:state`), and a preset play clears this.
+  const [playing, setPlaying] = useState<Station | null>(null);
+  // The favourites' uuids, from Rust, so the transport's ★ shows the playing station's state;
+  // re-read on every show and after every toggle. `storeGeneration` tells the list.
+  const [favourites, setFavourites] = useState<Set<string>>(new Set());
+  const [storeGeneration, setStoreGeneration] = useState(0);
+  // The harness (perf mode): which mount repetition is up (0 = the list is mounted normally;
+  // in `m=mount` it starts unmounted and cycles), and when the last layout event arrived.
+  const [mountRep, setMountRep] = useState(0);
+  const [listMounted, setListMounted] = useState(!(measureMode() === "perf" && measureParam("m") === "mount"));
+  const layoutAt = useRef<{ generation: number; at: number } | null>(null);
 
   useEffect(() => {
     // One entry point for both channels. The getter's answer and the event are separate IPC
@@ -34,13 +73,17 @@ export default function Panel() {
     const apply = (l: PanelLayout) => {
       if (l.generation < newestGeneration.current) return;
       newestGeneration.current = l.generation;
+      layoutAt.current = { generation: l.generation, at: performance.now() };
       setLayout(l);
       setView(l.view);
       // On a show the hidden panel's frame is already at `l.height`, and a hidden WKWebView fires
       // no `resize`, so the last reading is whatever the window was when it was last visible —
       // taller, after a show on a shorter display or after a cancelled collapse. Take Rust's word
       // for it (`/code-review` C2). On a resize the window has not changed yet; leave it.
-      if (l.transition === "show") setWindowHeight(l.height);
+      if (l.transition === "show") {
+        setWindowHeight(l.height);
+        if (l.generation > 0) setShowGeneration((g) => g + 1);
+      }
     };
     const unlisten = onPanelLayout(apply);
     // An emit before this listener existed was dropped by Tauri, so ask for the current layout.
@@ -49,6 +92,26 @@ export default function Panel() {
       unlisten.then((un) => un());
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    stations.listFavourites().then(
+      (f) => {
+        if (!cancelled) setFavourites(new Set(f.map((s) => s.uuid)));
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [showGeneration, storeGeneration]);
+
+  const toggleFavourite = () => {
+    if (playing === null) return;
+    const done = () => setStoreGeneration((g) => g + 1);
+    if (favourites.has(playing.uuid)) void stations.removeFavourite(playing.uuid).then(done, done);
+    else void stations.addFavourite(playing).then(done, done);
+  };
 
   useEffect(() => {
     const onResize = () => setWindowHeight(window.innerHeight);
@@ -76,7 +139,35 @@ export default function Panel() {
   const generation = layout?.generation;
   useEffect(() => {
     if (generation !== undefined && generation > 0) void panel.layoutCommitted(generation);
+    // The measurement harness (debug builds under `?measure=…` only), `src/measure.ts`: under
+    // `fit`, every block's box at this commit; under `perf`, how long this commit took from the
+    // layout event's arrival — the page's share of the show's `after_ms`.
+    if (measureMode() === "fit") reportBlocks(document, { trigger: "layout", generation });
+    if (measureMode() === "perf" && generation !== undefined && generation > 0) {
+      const at = layoutAt.current;
+      report("layout_commit", {
+        generation,
+        commit_ms: at !== null && at.generation === generation ? performance.now() - at.at : -1,
+      });
+    }
   }, [generation]);
+
+  // The harness's mount cycle: five fresh mounts, two seconds up and one down each.
+  useEffect(() => {
+    if (measureMode() !== "perf" || measureParam("m") !== "mount") return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    for (let rep = 1; rep <= MOUNT_REPS; rep++) {
+      const up = MOUNT_FIRST_MS + (rep - 1) * MOUNT_PERIOD_MS - performance.now();
+      timers.push(
+        setTimeout(() => {
+          setMountRep(rep);
+          setListMounted(true);
+        }, up),
+        setTimeout(() => setListMounted(false), up + MOUNT_UP_MS),
+      );
+    }
+    return () => timers.forEach(clearTimeout);
+  }, []);
 
   useEffect(() => {
     // Escape → Rust, which hides the popover (`reason=esc`). `preventDefault()` because the key
@@ -100,12 +191,38 @@ export default function Panel() {
 
   // The transport stays mounted while About is up (`hidden`, not unmounted): its stream info,
   // title, volume and selected preset are event-driven or local state with no Rust getter, and
-  // unmounting it reset them on every return (`/code-review` finding 1, 2026-09-17).
+  // unmounting it reset them on every return (`/code-review` finding 1, 2026-09-17). The lists
+  // stay mounted for the same reason.
   return (
-    <main className={styles.panel}>
-      <div hidden={view === "about"}>
-        <Transport />
-        <DevStations />
+    <main className={styles.panel} data-measure="panel">
+      <div className={styles.body} hidden={view === "about"}>
+        <NowPlaying station={playing} />
+        <Transport
+          station={playing}
+          isFavourite={playing !== null && favourites.has(playing.uuid)}
+          onToggleFavourite={toggleFavourite}
+        />
+        <CountryControl
+          country={country}
+          onSelect={(cc) => {
+            setCountry(cc);
+            setMine(false);
+          }}
+          mine={mine}
+          onToggleMine={() => setMine((m) => !m)}
+          showGeneration={showGeneration}
+        />
+        {listMounted && (
+          <StationList
+            key={mountRep}
+            source={source}
+            showGeneration={showGeneration}
+            storeGeneration={storeGeneration}
+            playingUuid={playing?.uuid ?? null}
+            onPlay={setPlaying}
+            measureRep={mountRep}
+          />
+        )}
       </div>
       {view === "about" && (
         <About
@@ -120,7 +237,7 @@ export default function Panel() {
           resize from About regardless, `reason=view`). Decision D4: when expansion is refused
           (D1's floor) it stays, disabled, so the chrome is the same on every display. */}
       {view === "transport" && (
-        <div className={styles.row}>
+        <div className={styles.row} data-measure="expand_row">
           <button
             type="button"
             aria-expanded={expanded}

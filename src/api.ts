@@ -35,7 +35,9 @@ export type {
 export type OndarError = { code: string; message: string };
 
 export const audio = {
-  play: (url: string, stationId: string) => invoke<void>("play", { url, stationId }),
+  // `bitrateKbps`: the station record's, or null — Rust sizes the stream's prefetch from it.
+  play: (url: string, stationId: string, bitrateKbps: number | null) =>
+    invoke<void>("play", { url, stationId, bitrateKbps }),
   pause: () => invoke<void>("pause"),
   resume: () => invoke<void>("resume"),
   stop: () => invoke<void>("stop"),
@@ -94,10 +96,20 @@ export const stations = {
   addFavourite: (station: Station) => invoke<void>("add_favourite", { station }),
   removeFavourite: (uuid: string) => invoke<boolean>("remove_favourite", { uuid }),
   listRecents: () => invoke<Station[]>("list_recents"),
-  recordPlayed: (station: Station) => invoke<void>("record_played", { station }),
+};
+
+// The dev-only measurement harness's one command (M3b 1a; `src/measure.ts`). The command is
+// compiled into debug builds only, and the page calls it only when loaded with `?measure=…`,
+// which a release build never is.
+export const measure = {
+  report: (kind: string, fields: string, tPage: number) =>
+    invoke<void>("measure_report", { kind, fields, tPage }),
 };
 
 export const onStationsUpdated = (cb: (u: StationsUpdated) => void): Promise<UnlistenFn> =>
   listen<StationsUpdated>("stations:updated", (e) => cb(e.payload));
 export const onCountriesUpdated = (cb: (u: CountriesUpdated) => void): Promise<UnlistenFn> =>
   listen<CountriesUpdated>("countries:updated", (e) => cb(e.payload));
+// A play was recorded (M3b commit 4): the recents changed; no payload.
+export const onRecentsUpdated = (cb: () => void): Promise<UnlistenFn> =>
+  listen<null>("recents:updated", () => cb());

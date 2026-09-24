@@ -8,6 +8,12 @@
      Rust's, in the points the webview's CSS px are. */
   height: var(--panel-height, 100%);
   box-sizing: border-box;
+  /* A column, so the station list (`.fill` → `.list`) can take the height the fixed blocks
+     leave and scroll inside it (M3b: 8 rows of a 750-row list fit in the collapsed pane, measured at commit 4),
+     with the rhythm's gap between its blocks. */
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   /* The page is transparent, so nothing here needs clipping today; content that later paints
      near a corner is clipped to the same shape the effect view is rounded to (`panel.rs`,
      `PANEL_CORNER_RADIUS`, pinned to `--radius-panel` by a shell test). */
@@ -75,4 +81,95 @@
 .row {
   display: flex;
   gap: var(--space-2);
+}
+
+/* The transport-pane body: a column that fills the panel above the expand row. `hidden` must
+   still hide it — an element's own `display` beats the attribute's UA rule, so the attribute
+   is restated here at higher specificity. */
+.body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space-2);
+}
+
+.body[hidden] {
+  display: none;
+}
+
+/* A `.section` that takes the remaining height and lets its list scroll. */
+.fill {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--hairline) solid var(--color-separator);
+}
+
+/* A flex item that may shrink below its content's width — a `<label>` around a native select
+   cannot otherwise, and the select's intrinsic width (the widest country name) pushed the
+   provenance span off the panel's right edge (M3a acceptance items 6/10). */
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+/* The station list: the scrolling band. One row per `<li>`, one gap between rows, so the row
+   pitch is the row's line height plus `--space-2`. */
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A station row is a button (keyboard reachable, labelled) drawn as a line of text, not as a
+   push button: a native button's own height would set the row pitch. */
+.station {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  cursor: default;
+}
+
+.station:focus-visible {
+  outline: var(--hairline) solid var(--color-accent);
+}
+
+/* One line, ellipsis at the end: Now Playing's name and title lines keep their height. */
+.nowrapClamp {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One line; a long name ends in an ellipsis rather than wrapping (decision 2, R1). */
+.stationName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

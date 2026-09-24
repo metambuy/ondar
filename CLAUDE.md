@@ -36,7 +36,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
 | M2 | Tray + NSPanel popover | **done** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) merged 2026-09-21 (`2a9bae9`, tagged `m2d-done`) |
-| M3 | Station API + SQLite cache + country/station UI | **in progress** — Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); awaiting merge |
+| M3 | Station API + SQLite cache + country/station UI | **in progress** — **M3b built** on branch `m3b` from 2026-09-23 (plan `_handover/m3b-plan.md`; Step 0 folded into the commits: 1a `fbb0a79` harness · 1b `de87005` country control + station list + the TS runner · 1c `b4bbfbc` Now Playing · 2 `d1129a3` the list measured at 50/327/750, no virtualisation · 4 `bb2452d` favourites/recents, presets retired · 5 `33400f5` the click endpoint · 6 `155d14d` prefetch from bitrate · 7 docs `e23e48d`; **acceptance run 2026-09-23** — 10 items, 7 as built; B `f829b1e` and C `298c342` fixed and re-run PASS; **A, the output keeping the first session's sample rate, is M1's defect and is deferred to its own measured work after the merge, before M4**; **`/code-review` 2026-09-23**: eight findings fixed, one commit each, `3631085`…`f8f8c59` plus the closing docs commit — ONDAR.md, "M3b: the collapsed view…", its acceptance and "Code review, 2026-09-23" paragraphs; **awaiting merge**); Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); **merged 2026-09-23** (`92cfe3f`, tagged `m3a-done`) |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
 | M6 | Signing, notarisation, DMG | |
@@ -63,15 +63,29 @@ onda/
 ├── package.json                  pnpm; pnpm-workspace.yaml carries `allowBuilds: esbuild`
 ├── src/                          React renderer for the popover (renderer only)
 │   ├── panel.tsx, vite-env.d.ts  entry (mounts panel/Panel.tsx); Vite's client types for CSS modules
-│   ├── panel/                    DevStations.tsx (dev station list: country select, first 50 ranked rows,
-│   │                             Play, the provenance line from Rust; retired at M3b),
-│   │                             Panel.tsx (root: mirrors the layout from Rust — pane, height state,
-│   │                             height in points, expandable — sets the root height from it, hosts the
-│   │                             expand control (disabled when refused, D4) and the placeholder for the
-│   │                             expanded pane, reports Esc),
-│   │                             Transport.tsx (dev transport: presets, play/pause/stop, volume — no
-│   │                             EQ; replaced at M3), About.tsx (name, version, credits), panel.module.css
+│   ├── panel/                    Panel.tsx (root: mirrors the layout from Rust — pane, height state,
+│   │                             height in points, expandable — sets the root height from it, owns the
+│   │                             selected country and the show counter the lists re-request on, hosts
+│   │                             the expand control (disabled when refused, D4) and the placeholder for
+│   │                             the expanded pane, reports Esc),
+│   │                             NowPlaying.tsx (name, the reserved ICY title line, `flag · codec ·
+│   │                             bitrate` + the state as text; mirrors `playback:*`; M3b 1c),
+│   │                             CountryControl.tsx (the ★ toggle for favourites and recents, then the
+│   │                             native country select; its provenance line, an error on a line of its
+│   │                             own; never disabled; M3b 1b, fixes B/C), StationList.tsx (the rows
+│   │                             of the selected source — a country's ranked list, or with ★ on the
+│   │                             favourites then the recents not among them (source.ts) — one line
+│   │                             each, scrolling in the collapsed pane; click → play; the wrong-source guard and the re-request rules,
+│   │                             pinned by StationList.test.tsx — vitest, jsdom), source.ts (the
+│   │                             ListSource type and its key), provenance.ts (the
+│   │                             `cached N h ago · refreshing…` text), Transport.tsx (play/pause,
+│   │                             stop, the ★ favourite toggle, volume — no EQ; the presets retired at
+│   │                             M3b commit 4; `reconnecting` offers no Play, as the row reads it —
+│   │                             pinned by Transport.test.tsx), About.tsx (name, version, credits),
+│   │                             panel.module.css
 │   ├── styles/tokens.css         THE only file with colour/size literals, light + dark together
+│   ├── measure.ts                the page half of the dev-only measurement harness (M3b 1a): inert
+│   │                             unless the page was loaded as `panel.html?measure=…`
 │   ├── api.ts                    THE Rust boundary: invoke wrappers + event listeners
 │   └── bindings/                 GENERATED by ts-rs — do not edit by hand
 └── src-tauri/
@@ -100,10 +114,16 @@ onda/
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
     │   │                         flood; holds 3 of the shell's 38 tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
+    │   ├── measure.rs            dev-only measurement harness (M3b 1a), `#[cfg(debug_assertions)]`
+    │   │                         whole: `ONDAR_MEASURE` → `panel.html?measure=…`, `_KEEP_OPEN`,
+    │   │                         `_SEQ=show|shows:<n>` through the production show/hide paths, and
+    │   │                         the `measure_report` command → `measure[<mode>] …` log lines.
+    │   │                         `strings` on a release binary finds no `measure[`
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
-    │   ├── commands/stations.rs  8 thin async commands (list_countries, list_stations, search_stations,
-    │   │                         favourites, recents, record_played): forward to the stations service's
-    │   │                         handle and map the error; none blocks main (M3a)
+    │   ├── commands/stations.rs  7 thin async commands (list_countries, list_stations, search_stations,
+    │   │                         favourites, recents): forward to the stations service's handle and
+    │   │                         map the error; none blocks main (M3a; `record_played` left with M3b
+    │   │                         commit 5 — Rust records a play itself)
     │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
     │                             panel_set_expanded (the page reports a click on the expand control;
     │                             Rust lays out, applies or refuses), panel_layout_committed (the page
@@ -158,14 +178,15 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 162 tests `cargo test --workspace`
-reports break down as **143 hand-written + 19 ts-rs-generated** (audio 65, shell 40, stations 57):
+export_bindings_<type>` that writes the `.ts` file. So the 180 tests `cargo test --workspace`
+reports break down as **161 hand-written + 19 ts-rs-generated** (audio 76, shell 40, stations 64):
 
 | | |
 |---|---|
 | `engine::tick_tests` | 20 |
-| `engine::session_tests` | 5 — the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }`. Review finding 4: a 429 with `Retry-After: 3` → `Reconnecting { 1 }` and no second request inside 2 s (fails if every 4xx is terminal, or if the header is ignored); a 404 on the reconnect after a 1.5 s WAV stream ended → `Reconnecting { 2 }`, no `Error` (fails if a reconnect's 4xx is terminal) |
-| `stream::tests` | 10 — a 404's body text reaches the message, bounded to 200 chars (finding 10); `parse_url` refuses a non-http scheme as `invalid_url` before any request (finding 5); real sockets on 127.0.0.1, asserting `(code, terminal)`, plus one on the shared `NON_HTTP_WORDING` table (a 503's "status" wording is not terminal, hyper's version wording is — finding 8): an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 and a 403 are `Http` and terminal, a 429 is `Http`, retriable and carries its `Retry-After` (finding 4), a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
+| `engine::started_tests` | 7 — the click rule's pure part on `Shared::write_state` (M3b 5): once per session whatever the route back to `Playing` (fails on a per-`Playing` or previous-state rule); a second `play` for the same station starts again; a reconnect before ever playing starts on its first `Playing`; paused while buffering starts on resume, `Started` after `State(Playing)`; a repeated `Playing` is a no-op; **a stale session's `Playing` cannot take the new session's `Started`** (`/code-review` finding 1, 2026-09-23 — the write and its liveness are decided under one lock; fails on a flag read before the lock, which was the code: mutation-checked, the gate disabled sends `Started { u2 }` for a station that has not opened); a cancelled session's late write is dropped before any successor (fails if only `begin_session` moves the generation) |
+| `engine::session_tests` | 6 — a WAV played twice across a reconnect is one session: one `Started`, with the id (fails if per-`Playing`; found the harness needed a mixer drain thread, since `Player::clear()` waits for a queued source); the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }`. Review finding 4: a 429 with `Retry-After: 3` → `Reconnecting { 1 }` and no second request inside 2 s (fails if every 4xx is terminal, or if the header is ignored); a 404 on the reconnect after a 1.5 s WAV stream ended → `Reconnecting { 2 }`, no `Error` (fails if a reconnect's 4xx is terminal) |
+| `stream::tests` | 13 — the prefetch is the larger of the floor and the knee (M3b 6; fails if the `max` is dropped — 64 kbit/s would get 16 000 — or the knee's arithmetic is off), **capped at half the buffer** (`/code-review` finding 2, 2026-09-23: 10 000 kbit/s and FLAC's 1411 give the ceiling, 524/525 kbit/s straddle it; fails if the upper bound is dropped, which was the code), the env override replaces the whole value; a 404's body text reaches the message, bounded to 200 chars (finding 10); `parse_url` refuses a non-http scheme as `invalid_url` before any request (finding 5); real sockets on 127.0.0.1, asserting `(code, terminal)`, plus one on the shared `NON_HTTP_WORDING` table (a 503's "status" wording is not terminal, hyper's version wording is — finding 8): an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 and a 403 are `Http` and terminal, a 429 is `Http`, retriable and carries its `Retry-After` (finding 4), a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
 | `eq::tests` | 17 |
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
@@ -174,10 +195,10 @@ reports break down as **143 hand-written + 19 ts-rs-generated** (audio 65, shell
 | `normalise::tests` | 6 — **stations** crate, from here to `service`: the countries fixture parses 250 → 240 with DE's merged count; the PT-60 slice's edge rows pinned by an independent Python pass; codec mapping; the geo rule |
 | `filter::tests` | 5 — bitrate 0 sorts last among equal votes (fails on `Option`'s natural order); dedupe keeps the higher votes; broken/empty-url dropped; the cap cuts after sorting; the PT-60 slice ranks to 44 |
 | `srv::tests` | 2 — priority/weight order; no records → the measured fallbacks only |
-| `client::tests` | 14 — `limit=` always sent; an empty countries answer refused (`EmptyCountries`); the three truncation rules with the F6 boundary pair (1171/1172) and rule 3's floor (expected 3, rows 1 accepted; the 1999/2000 pair — finding 6); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
-| `cache::tests` | 7 — `LIKE` metacharacters in a search query match literally (`Radio_1`, `%`; finding 9); migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
+| `client::tests` | 15 — a click is one `transport.get` on `/json/url/<uuid>` with `TOTAL_CLICK`, never retried (fails if `fetch_with_retries` is reused), and a failed click's error is its own shape, `Unanswered`, its message naming the cause and no attempt count or elapsed (`/code-review` finding 7, 2026-09-23 — fails on the old "after 1 attempt(s) in 0.00s"); `limit=` always sent; an empty countries answer refused (`EmptyCountries`); the three truncation rules with the F6 boundary pair (1171/1172) and rule 3's floor (expected 3, rows 1 accepted; the 1999/2000 pair — finding 6); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
+| `cache::tests` | 8 — schema v2's `stations_uuid` index: a v1 database migrates to 2, a second `migrate` is a no-op, `station_by_uuid` finds a row under any country (M3b 5, F3); `LIKE` metacharacters in a search query match literally (`Radio_1`, `%`; finding 9); migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
 | `store::tests` | 4 — replay to top without duplicate; the recents cap; a favourite survives its list's replacement; idempotent add |
-| `service::tests` | 12 — an empty `200 []` countries answer is an error for every waiter and a `failed` refresh, never `Closed` (finding 3); a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
+| `service::tests` | 17 — `started(uuid)` records the recent from the cached snapshot, emits `RecentsUpdated` once and clicks once (M3b 5); a failed click is one log line (recent kept, no retry, nothing on the sink); `"manual"` neither records nor clicks and an uncached uuid clicks without a recent; a held click does not delay `list_favourites`; a measurement run (`clicks_suppressed`) records and does not vote (F1); an empty `200 []` countries answer is an error for every waiter and a `failed` refresh, never `Closed` (finding 3); a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
 | `model::export_bindings_*` | 7 — generated, stations crate (`RefreshOutcome` since 2026-09-22) |
 | `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
 | `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
@@ -185,9 +206,27 @@ reports break down as **143 hand-written + 19 ts-rs-generated** (audio 65, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 143 and will not reconcile with the runner's 162
+Counting `#[test]` attributes in source gives 161 and will not reconcile with the runner's 180
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
+
+**The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
+(vitest, jsdom) runs `src/**/*.test.tsx` — **15** today: 12 in `StationList.test.tsx` (the
+wrong-source guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show
+re-requests, ★ on lists favourites then recents with the country reply left behind dropped, a ★
+reply landing after ★ off dropped, `recents:updated` and a favourite toggle re-request only the ★
+list, a click on the playing row does nothing and on the paused row resumes — M3b 5, F2; and
+does nothing while `reconnecting`, the row's reading pinned beside the transport's —
+`/code-review` finding 3, 2026-09-23; the previous source's error does not outlive a source
+change while the last answer stays across a show — finding 4; a reply is not serialised outside
+`?measure=perf`, a `JSON.stringify` spy — finding 5), 2 in `Transport.test.tsx` (`reconnecting` offers no
+Play — Pause disabled, Stop enabled, as `connecting` does; a Play there would be a new session,
+a reset backoff and a second vote — finding 3; fails on the code before it; a rejected `play`
+renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
+in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
+toggle are enabled and ★ lists the favourite — acceptance findings B and C).
+Every "tests" figure in this project is written as the two numbers, `180 + 15`, never their sum:
+the two runners count different things and neither can see the other's.
 
 ## Commands
 
@@ -201,6 +240,9 @@ pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.de
                               # `pnpm tauri build` never merges the overlay: bundles keep the real id.
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
+pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
+                              # tests, 15 today (StationList + Transport + Panel). Its count is reported BESIDE
+                              # the Rust count — "180 + 15", never "195" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types
@@ -209,7 +251,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 162 tests: 65 in the ondar_audio binary, 57 in ondar_stations and
+cargo test --workspace       # 180 tests: 76 in the ondar_audio binary, 64 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this
@@ -224,14 +266,14 @@ cargo run -p ondar-audio --example stall_bench    # against scripts/stall-server
 ```
 
 Before declaring any task done: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test --workspace`, `pnpm typecheck`, and `pnpm tauri:dev` (not the bare form, which hands
-off to a running bundle and exits — a vacuous pass) launching without a console
-error.
+`cargo test --workspace`, `pnpm typecheck`, `pnpm test`, `pnpm lint`, and `pnpm tauri:dev` (not
+the bare form, which hands off to a running bundle and exits — a vacuous pass) launching without
+a console error.
 
 ## The IPC contract
 
 Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
-`play(url, stationId)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
+`play(url, stationId, bitrateKbps)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
 `set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus two **panel** commands
 (`commands/panel.rs`): `panel_escape()` (`panel.escape()`) — the page reports an Escape `keydown`
 and Rust hides the popover through `panel::hide` with `reason=esc`; and `panel_set_expanded(expanded)`
@@ -243,7 +285,7 @@ the user's choice survives it and Back restores it — decided 2026-09-21), logg
 effect after the render that used it, and Rust completes the visible change then — orders a
 pending show in, or changes the visible panel's frame — if that generation is still pending. A
 stale, superseded or cancelled generation is a logged no-op; a hide cancels; and a fallback
-timer (`LAYOUT_FALLBACK`, 250 ms provisional, provenance in its doc comment) completes without
+timer (`LAYOUT_FALLBACK`, 250 ms, kept at n = 74 on 2026-09-23 — provenance in its doc comment) completes without
 the report so a dead page cannot wedge the popover — `trigger=fallback` on a healthy page is a
 defect. A fourth, `panel_view_back()` (`panel.viewBack()`): the page's Back button left the About
 pane — the one page-local transition — and reports it, so the pane a later layout event carries
@@ -253,7 +295,8 @@ is the one on screen (`/code-review` C1). And one panel getter, `get_panel_layou
 
 **Stations** commands (`commands/stations.rs`, wrapped in `src/api.ts`'s `stations` object, M3a):
 `list_countries()`, `list_stations(countryCode)`, `search_stations(query)`, `list_favourites()`,
-`add_favourite(station)`, `remove_favourite(uuid)`, `list_recents()`, `record_played(station)`.
+`add_favourite(station)`, `remove_favourite(uuid)`, `list_recents()`. (`record_played` is gone
+since M3b commit 5: a play is recorded by Rust, on the session's first `Playing`, with the click.)
 All `async`: each sends a message to the `ondar-stations` service's DB thread and awaits a
 `oneshot` reply — a fetch in flight never delays a cache read or a store call. A list comes back
 as `ListedCountries` / `ListedStations` with its provenance: `source` (`fresh` | `cached`),
@@ -271,7 +314,9 @@ Events (names defined once, in `src-tauri/src/lib.rs::events`):
 `stations:updated` (a `StationsUpdated { country_code, outcome }`: a background refresh of that
 country's list ended — `outcome` `"landed"`: re-request it; `"failed"`: the expired list stays,
 clear `refreshing` and do **not** re-request, since a re-request starts another refresh),
-`countries:updated` (a `CountriesUpdated { outcome }`, same rule for the countries list), and
+`countries:updated` (a `CountriesUpdated { outcome }`, same rule for the countries list),
+`recents:updated` (no payload: a play was recorded, so a page showing the recents re-requests
+`list_recents`; M3b commit 4), and
 `panel:layout` (a `PanelLayout`: `transition` `"show"` | `"resize"` — on a show the hidden frame is
 already at the size, on a resize it changes after the page's commit — `generation`, `view`
 `"about"` | `"transport"`, `state` `"collapsed"` | `"expanded"`, `width`/`height` in points,
@@ -417,7 +462,34 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    `SOFT_CLIP_THRESHOLD` = 0.95 and asymptotic to `SOFT_CLIP_CEILING` = 1.0, applied inside
    `Equalizer` as the last operation on every sample so it cannot be bypassed. See ONDAR.md,
    "EQ output is bounded by a soft-clip stage".
-8. Call the radio-browser click endpoint exactly once, when playback actually starts (M3).
+9. **Prefetch from bitrate** (M3b commit 6): `play` carries the station record's
+   `bitrate_kbps` (or none) and the engine sizes the stream's prefetch as the knee,
+   `RING_SECONDS × bitrate / 8`, bounded below by `PREFETCH_FLOOR_BYTES` (one decoder read) and
+   above by `PREFETCH_CEILING_BYTES` (half of `BUFFER_BYTES`, 131 072 — a prefetch at or over
+   the buffer is met only when the buffer is full, and the record's `bitrate` is user-entered:
+   1411, 1536 and a `128000` typo exist; `/code-review` finding 2, 2026-09-23) —
+   `stream::prefetch_for`, pure and tested (the floor wins up to 131 kbit/s; 320 kbit/s is
+   80 000 B; the ceiling from 525 kbit/s; no bitrate is the floor). `ONDAR_PREFETCH_BYTES`
+   still overrides the whole value.
+   Logged per play: `play station_id=… bitrate_kbps=… prefetch_bytes=…`.
+8. Call the radio-browser click endpoint exactly once, when playback actually starts — built at
+   M3b commit 5: `Shared::write_state` in the engine sends `EngineEvent::Started { station_id }`
+   on the **first `Playing` of the session a `play` began** (`begin_session` resets the flag;
+   an underrun's refill, a resume and a reconnect of a session that already played find it
+   set; a session that reconnected before ever playing, or was paused while buffering, fires
+   on its first `Playing`). **The write, its liveness and the flag are decided under one lock**
+   (`/code-review` finding 1, 2026-09-23): every `begin_session` and every session end move a
+   generation, a `SessionCtx` carries the one it was born with, and a write from a stale
+   decode thread is dropped there — a flag checked before the lock left a window for the engine
+   thread's `cancel` + `begin_session`, in which the stale `Playing` took the new session's
+   `Started` (a vote and a recent for a station that had not opened, and nothing on its real
+   first `Playing`). The shell's forwarder hands the id to the stations service, whose DB
+   thread records the recent from the cached snapshot (`station_by_uuid`, schema v2's index)
+   and spawns **one** `GET /json/url/{uuid}` (`Client::click`, `TOTAL_CLICK` 10 s, never
+   retried — a retry could be a second vote) whose outcome is one log line and nothing else.
+   The page's row does nothing on the station already playing (a paused one resumes), so a
+   double click is not two votes; a replay is stop, then the row. With the measurement harness
+   active the click is suppressed (`suppressed=measurement`) and the recent still recorded.
 
 ## macOS specifics (as built through M2b)
 

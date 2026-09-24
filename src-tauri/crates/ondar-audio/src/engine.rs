@@ -41,7 +41,13 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
-    Play { url: String, station_id: String },
+    /// `bitrate_kbps`: the station record's, for the prefetch (M3b commit 6); `None` when the
+    /// record has none (the floor applies).
+    Play {
+        url: String,
+        station_id: String,
+        bitrate_kbps: Option<u32>,
+    },
     Pause,
     Resume,
     Stop,
@@ -63,6 +69,7 @@ impl AudioEngine {
         let shared = Shared {
             state: Arc::new(Mutex::new(PlaybackState::Idle)),
             events: ev_tx,
+            session: Arc::new(Mutex::new(Session::default())),
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
         };
@@ -95,10 +102,70 @@ struct Shared {
     events: Sender<EngineEvent>,
     gains: EqGains,
     paused: Arc<AtomicBool>,
+    /// The session the last `Play` began — its generation, the id `Started` will carry, and
+    /// whether it has reached `Playing` yet — under **one** lock with every state write that
+    /// comes from a session, so the write and the decision it feeds cannot interleave with
+    /// the engine thread's `cancel` + `begin_session` (`/code-review` finding 1, 2026-09-23).
+    session: Arc<Mutex<Session>>,
+}
+
+/// The engine's record of the live session. `generation` counts every `begin_session` and
+/// every session end; a [`SessionCtx`] carries the generation it was born with, and a write
+/// through it is dropped once the number has moved on. Compared under the lock that also
+/// decides `started`, so a stale decode thread's `Playing` can neither overwrite the successor's
+/// state nor consume its `Started` (a vote and a recent for a station that has not opened).
+#[derive(Default)]
+struct Session {
+    generation: u64,
+    station_id: Option<String>,
+    /// `Started` is emitted on the first `Playing` of a session — whatever route led there —
+    /// and never again until the next `Play` (M3b commit 5, the click endpoint's rule: once per
+    /// `play` call, on the first `Playing` after it; not on a resume or a reconnect of a session
+    /// that already played).
+    started: bool,
 }
 
 impl Shared {
+    /// A new session, on `Play`: the id `Started` will carry, the flag down, and a fresh
+    /// generation, returned for the session's [`SessionCtx`]. Called on the engine thread after
+    /// the previous session is cancelled and before `Connecting`; a write from the previous
+    /// session's decode thread carries the old generation and is dropped by [`Self::write_state`]
+    /// however late it lands.
+    fn begin_session(&self, station_id: String) -> u64 {
+        let mut session = self.session.lock().unwrap();
+        session.generation += 1;
+        session.station_id = Some(station_id);
+        session.started = false;
+        session.generation
+    }
+
+    /// The session `generation` is over: its writes are dropped from here on, even before a
+    /// successor begins (a stale `Playing` between `stop`'s cancel and its `Idle`). A generation
+    /// that is already not the live one changes nothing.
+    fn end_session(&self, generation: u64) {
+        let mut session = self.session.lock().unwrap();
+        if session.generation == generation {
+            session.generation += 1;
+        }
+    }
+
+    /// The engine thread's own state writes: `Connecting`, `Paused`, `Idle`, `Error` — never
+    /// gated on a session.
     fn set_state(&self, s: PlaybackState) {
+        self.write_state(None, s);
+    }
+
+    /// One state write. With `from`, the write belongs to a session and lands only while that
+    /// generation is the live one — decided under the same lock as the write, the `State` event
+    /// and the `Started` decision, so nothing from the engine thread can slip between them.
+    /// `State(Playing)` is sent before `Started`, so a listener sees the state first; every
+    /// entry into `Playing` after the first (an underrun's refill, a resume, a reconnect after
+    /// playback) finds `started` set.
+    fn write_state(&self, from: Option<u64>, s: PlaybackState) {
+        let mut session = self.session.lock().unwrap();
+        if from.is_some_and(|generation| generation != session.generation) {
+            return;
+        }
         {
             let mut guard = self.state.lock().unwrap();
             if *guard == s {
@@ -106,7 +173,13 @@ impl Shared {
             }
             *guard = s.clone();
         }
+        let playing = s == PlaybackState::Playing;
         let _ = self.events.send(EngineEvent::State(s));
+        if playing && !session.started {
+            session.started = true;
+            let station_id = session.station_id.clone().unwrap_or_default();
+            let _ = self.events.send(EngineEvent::Started { station_id });
+        }
     }
 
     fn state(&self) -> PlaybackState {
@@ -139,6 +212,9 @@ struct SessionCtx {
     /// `Settings::on_reconnect` callback attached in `stream::open`, read by `Engine::tick`
     /// to emit `EngineEvent::Reconnect` when it changes.
     reconnect_count: Arc<AtomicU64>,
+    /// The [`Session`] generation this context was born with (`Shared::begin_session`); every
+    /// state write through it is checked against the live one, under the lock.
+    generation: u64,
     shared: Shared,
 }
 
@@ -152,14 +228,16 @@ impl SessionCtx {
         if let Some(token) = self.download.lock().unwrap().take() {
             token.cancel();
         }
+        self.shared.end_session(self.generation);
     }
 
-    /// State updates from a cancelled session are dropped so a stale decode thread cannot
-    /// overwrite the state of its successor.
+    /// A state update from this session, dropped once the session is over so a stale decode
+    /// thread can neither overwrite the state of its successor nor take its `Started`. The
+    /// decision is `Shared::write_state`'s, under its lock — a flag read here and a write there
+    /// left a window for the engine thread's `cancel` + `begin_session` between the two
+    /// (`/code-review` finding 1, 2026-09-23).
     fn set_state(&self, s: PlaybackState) {
-        if !self.cancelled() {
-            self.shared.set_state(s);
-        }
+        self.shared.write_state(Some(self.generation), s);
     }
 
     fn sleep_cancellable(&self, d: Duration) {
@@ -259,7 +337,11 @@ impl Engine {
     fn run(mut self, rx: Receiver<AudioCommand>) {
         loop {
             match rx.recv_timeout(TICK_INTERVAL) {
-                Ok(AudioCommand::Play { url, station_id }) => self.play(url, station_id),
+                Ok(AudioCommand::Play {
+                    url,
+                    station_id,
+                    bitrate_kbps,
+                }) => self.play(url, station_id, bitrate_kbps),
                 Ok(AudioCommand::Pause) => self.pause(),
                 Ok(AudioCommand::Resume) => self.resume(),
                 Ok(AudioCommand::Stop) => self.stop(),
@@ -442,8 +524,9 @@ impl Engine {
         Ok(player)
     }
 
-    fn play(&mut self, url: String, station_id: String) {
+    fn play(&mut self, url: String, station_id: String, bitrate_kbps: Option<u32>) {
         self.cancel_session();
+        let generation = self.shared.begin_session(station_id.clone());
         self.shared.paused.store(false, Ordering::Relaxed);
         if let Some(p) = &self.player {
             // Silence the previous station now, not when the new one has buffered.
@@ -477,6 +560,7 @@ impl Engine {
             ring: Arc::new(Mutex::new(None)),
             backoff: Arc::new(Mutex::new(Backoff::default())),
             reconnect_count: Arc::new(AtomicU64::new(0)),
+            generation,
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
@@ -484,9 +568,13 @@ impl Engine {
 
         let client = self.client.clone();
         let handle = self.rt.handle().clone();
+        let prefetch = stream::prefetch_bytes(bitrate_kbps);
+        log::info!(
+            "play station_id={station_id} bitrate_kbps={bitrate_kbps:?} prefetch_bytes={prefetch}"
+        );
         thread::Builder::new()
             .name(format!("ondar-decode:{station_id}"))
-            .spawn(move || run_session(ctx, url, client, handle, player))
+            .spawn(move || run_session(ctx, url, client, handle, player, prefetch))
             .expect("spawn decode thread");
     }
 
@@ -547,6 +635,7 @@ fn run_session(
     client: reqwest::Client,
     rt: tokio::runtime::Handle,
     player: Arc<Player>,
+    prefetch_bytes: u64,
 ) {
     // Whether this session has ever opened its stream. A terminal answer ends the session
     // only before that: afterwards the same 404 is a mount mid-restart, and the backoff
@@ -562,6 +651,7 @@ fn run_session(
             &client,
             url.clone(),
             ctx.reconnect_count.clone(),
+            prefetch_bytes,
         )) {
             Ok(o) => o,
             Err(e) => {
@@ -991,9 +1081,8 @@ mod session_tests {
     }
 
     /// A playable stream that ends: an HTTP 200 carrying `secs` of 16-bit mono 44.1 kHz WAV
-    /// silence, then the connection closes. Shorter than the 2 s ring on purpose — nothing
-    /// drains the device-less `Player`, so a longer file would block the decode loop on a full
-    /// ring instead of reaching EOF.
+    /// silence, then the connection closes. Shorter than the 2 s ring, so the decode loop
+    /// reaches EOF without depending on the harness's drain thread to make room.
     fn wav_response(secs: f32) -> Vec<u8> {
         let rate = 44_100u32;
         let data_len = (rate as f32 * secs) as u32 * 2;
@@ -1020,15 +1109,19 @@ mod session_tests {
     struct Harness {
         ctx: SessionCtx,
         events: Receiver<EngineEvent>,
+        /// Every `Started` id seen while draining, in order.
+        started: Mutex<Vec<String>>,
         // Dropping the runtime while `run_session` still holds its handle would abort the
         // open; kept for the harness's lifetime.
         _rt: tokio::runtime::Runtime,
-        // The mixer's output end; dropping it would end the `Player`'s mixer.
-        _mixer_out: rodio::mixer::MixerSource,
     }
 
     /// Start `run_session` against `url` on its own thread, as `Engine::play` does, minus the
-    /// device: the `Player` is connected to a bare mixer that nothing drains.
+    /// device: the `Player` is connected to a bare mixer whose output a thread pulls at about
+    /// twice real time — the device's stand-in. Without that pull nothing ever drops a queued
+    /// source, and `Player::clear()` on a second open (a reconnect after playback) waits for
+    /// the mixer forever (found by `started_is_sent_once_per_session_across_a_reconnect`,
+    /// M3b commit 5: the second stream reached its fill target and never left `clear()`).
     fn start_session(url: &str) -> Harness {
         let (ev_tx, ev_rx) = mpsc::channel();
         let shared = Shared {
@@ -1036,13 +1129,16 @@ mod session_tests {
             events: ev_tx,
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(Session::default())),
         };
+        let generation = shared.begin_session("u1".into());
         let ctx = SessionCtx {
             cancel: Arc::new(AtomicBool::new(false)),
             download: Arc::new(Mutex::new(None)),
             ring: Arc::new(Mutex::new(None)),
             backoff: Arc::new(Mutex::new(Backoff::default())),
             reconnect_count: Arc::new(AtomicU64::new(0)),
+            generation,
             shared,
         };
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1055,16 +1151,24 @@ mod session_tests {
             std::num::NonZero::new(44_100).expect("44100"),
         );
         let player = Arc::new(Player::connect_new(&mixer));
+        thread::spawn(move || {
+            let mut out = mixer_out;
+            loop {
+                for _ in out.by_ref().take(4410) {}
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
         let url = stream::parse_url(url).expect("url");
         let client = stream::build_client("Ondar/test");
         let handle = rt.handle().clone();
         let session = ctx.clone();
-        thread::spawn(move || run_session(session, url, client, handle, player));
+        let prefetch = stream::prefetch_bytes(None);
+        thread::spawn(move || run_session(session, url, client, handle, player, prefetch));
         Harness {
             ctx,
             events: ev_rx,
+            started: Mutex::new(Vec::new()),
             _rt: rt,
-            _mixer_out: mixer_out,
         }
     }
 
@@ -1076,10 +1180,14 @@ mod session_tests {
     ) -> Vec<PlaybackState> {
         let deadline = Instant::now() + within;
         let mut seen = Vec::new();
-        let mut drain = |seen: &mut Vec<PlaybackState>| {
+        let drain = |seen: &mut Vec<PlaybackState>| {
             while let Ok(ev) = h.events.try_recv() {
-                if let EngineEvent::State(s) = ev {
-                    seen.push(s);
+                match ev {
+                    EngineEvent::State(s) => seen.push(s),
+                    EngineEvent::Started { station_id } => {
+                        h.started.lock().unwrap().push(station_id)
+                    }
+                    _ => {}
                 }
             }
         };
@@ -1256,6 +1364,204 @@ mod session_tests {
             requests.load(Ordering::SeqCst)
         );
         h.ctx.cancel();
+    }
+
+    /// M3b commit 5, the click rule at session level: a stream that plays, ends and plays
+    /// again through the backoff is **one** session, so `Started` is sent once — on the first
+    /// `Playing` — with the id `begin_session` was given. Fails if `Started` is per-`Playing`
+    /// (two ids), or if the id is lost (an empty string).
+    #[test]
+    fn started_is_sent_once_per_session_across_a_reconnect() {
+        let (url, requests) = counting_server_owned(wav_response(1.5));
+        let h = start_session(&url);
+        let seen = states_until(&h, Duration::from_secs(10), |s| {
+            matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
+        });
+        let playing = seen
+            .iter()
+            .filter(|s| **s == PlaybackState::Playing)
+            .count();
+        assert!(
+            playing >= 2,
+            "the WAV played twice across the reconnect ({seen:?})"
+        );
+        assert!(requests.load(Ordering::SeqCst) >= 2, "two requests");
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            vec!["u1".to_string()],
+            "one Started, with the session's id, across {playing} Playing states"
+        );
+        h.ctx.cancel();
+    }
+
+    /// `counting_server` for a response built at runtime (a WAV is not a `&'static [u8]`).
+    fn counting_server_owned(response: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+        scripted_server(vec![response])
+    }
+}
+
+#[cfg(test)]
+mod started_tests {
+    //! The click rule's pure part (M3b commit 5): `Shared::write_state` sends `Started` on the
+    //! first `Playing` of a session and never again until `begin_session`, and only for a
+    //! write from the live session (`/code-review` finding 1, 2026-09-23). Each test names
+    //! what makes it fail.
+    use std::sync::mpsc::Receiver;
+
+    use super::*;
+
+    fn shared() -> (Shared, Receiver<EngineEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let s = Shared {
+            state: Arc::new(Mutex::new(PlaybackState::Idle)),
+            events: tx,
+            gains: EqGains::default(),
+            paused: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(Session::default())),
+        };
+        (s, rx)
+    }
+
+    /// A decode thread's handle on the session `generation`, as `Engine::play` builds it.
+    fn ctx(s: &Shared, generation: u64) -> SessionCtx {
+        SessionCtx {
+            cancel: Arc::new(AtomicBool::new(false)),
+            download: Arc::new(Mutex::new(None)),
+            ring: Arc::new(Mutex::new(None)),
+            backoff: Arc::new(Mutex::new(Backoff::default())),
+            reconnect_count: Arc::new(AtomicU64::new(0)),
+            generation,
+            shared: s.clone(),
+        }
+    }
+
+    fn drive(s: &Shared, states: &[PlaybackState]) {
+        for st in states {
+            s.set_state(st.clone());
+        }
+    }
+
+    fn started_ids(rx: &Receiver<EngineEvent>) -> Vec<String> {
+        let mut ids = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let EngineEvent::Started { station_id } = ev {
+                ids.push(station_id);
+            }
+        }
+        ids
+    }
+
+    use PlaybackState::{Buffering, Connecting, Paused, Playing, Reconnecting};
+
+    /// Fails if the flag is missing (four `Started`), or if the decision looks at the previous
+    /// state instead of the flag (a resume or a reconnect's `Playing` would count).
+    #[test]
+    fn started_fires_once_per_session_whatever_the_route_back_to_playing() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Playing]);
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+        drive(&s, &[Buffering, Playing]); // an underrun's refill
+        drive(&s, &[Paused, Playing]); // a resume
+        drive(&s, &[Reconnecting { attempt: 1 }, Buffering, Playing]); // a reconnect
+        assert_eq!(started_ids(&rx), Vec::<String>::new());
+    }
+
+    /// Fails if `begin_session` skips the reset when the id is unchanged.
+    #[test]
+    fn a_second_play_for_the_same_station_starts_again() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Playing, Paused]);
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Playing]);
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+    }
+
+    /// Fails if `Reconnecting` anywhere in the history suppresses the click.
+    #[test]
+    fn a_session_that_reconnected_before_ever_playing_starts_on_its_first_playing() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(
+            &s,
+            &[Connecting, Reconnecting { attempt: 1 }, Buffering, Playing],
+        );
+        assert_eq!(started_ids(&rx), vec!["u1"]);
+    }
+
+    /// Fails if `Paused → Playing` is excluded categorically, or if `Started` is sent before
+    /// `State(Playing)`.
+    #[test]
+    fn paused_while_buffering_starts_on_resume() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Connecting, Buffering, Paused, Playing]);
+        let events: Vec<EngineEvent> = rx.try_iter().collect();
+        let playing_at = events
+            .iter()
+            .position(|e| matches!(e, EngineEvent::State(Playing)))
+            .expect("State(Playing)");
+        let started_at = events
+            .iter()
+            .position(|e| matches!(e, EngineEvent::Started { .. }))
+            .expect("one Started");
+        assert!(started_at > playing_at, "Started after State(Playing)");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, EngineEvent::Started { .. }))
+                .count(),
+            1
+        );
+    }
+
+    /// Fails if the setter's no-op return is bypassed for the flag check (a second `State`
+    /// or `Started` for the same state).
+    #[test]
+    fn a_repeated_playing_is_a_no_op() {
+        let (s, rx) = shared();
+        s.begin_session("u1".into());
+        drive(&s, &[Playing, Playing]);
+        let events: Vec<EngineEvent> = rx.try_iter().collect();
+        assert_eq!(events.len(), 2, "one State and one Started: {events:?}");
+    }
+
+    /// `/code-review` finding 1 (2026-09-23): the engine thread's `cancel` + `begin_session`
+    /// can run between a decode thread's cancel check and its write. Modelled from the
+    /// writer's side — its check passed, so the write reaches `Shared` — with the next session
+    /// already begun. Fails if the write is gated on a flag read before the lock (the code
+    /// before this test: the stale `Playing` lands, `Started { "u2" }` goes out for a station
+    /// that has not opened, and the real first `Playing` then sends nothing), or if
+    /// `begin_session` does not move the generation.
+    #[test]
+    fn a_stale_sessions_playing_cannot_take_the_new_sessions_started() {
+        let (s, rx) = shared();
+        let stale = ctx(&s, s.begin_session("u1".into()));
+        stale.set_state(Connecting);
+        let live = ctx(&s, s.begin_session("u2".into()));
+        s.set_state(Connecting); // the engine thread, as `play` does
+        stale.set_state(Playing); // the race: its cancel check passed before `begin_session`
+        assert_eq!(s.state(), Connecting, "the stale write is dropped");
+        assert_eq!(started_ids(&rx), Vec::<String>::new());
+        live.set_state(Buffering);
+        live.set_state(Playing);
+        assert_eq!(started_ids(&rx), vec!["u2"]);
+    }
+
+    /// A session that ended with no successor (`stop`: cancel, then the engine's `Idle`): its
+    /// late write is dropped too. Fails if only `begin_session` moves the generation.
+    #[test]
+    fn a_cancelled_sessions_write_is_dropped_before_any_successor() {
+        let (s, rx) = shared();
+        let old = ctx(&s, s.begin_session("u1".into()));
+        old.set_state(Connecting);
+        old.cancel();
+        s.set_state(PlaybackState::Idle);
+        old.set_state(Playing);
+        assert_eq!(s.state(), PlaybackState::Idle, "the late write is dropped");
+        assert_eq!(started_ids(&rx), Vec::<String>::new());
     }
 }
 

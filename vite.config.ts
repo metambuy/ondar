@@ -1,4 +1,6 @@
-import { defineConfig } from "vite";
+// `vitest/config` re-exports Vite's `defineConfig` with the `test` key typed — one config for
+// the build and the TypeScript tests (M3b 1b: vitest under jsdom; `pnpm test`).
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // Tauri dev server settings: fixed port, no clearing of Rust errors from the terminal.
@@ -17,5 +19,11 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     watch: { ignored: ["**/src-tauri/**"] },
+  },
+  // The renderer's tests render components into jsdom with `../api` mocked; nothing reaches
+  // Tauri. Reported as their own count beside the Rust one (CLAUDE.md), never added to it.
+  test: {
+    environment: "jsdom",
+    include: ["src/**/*.test.tsx"],
   },
 });

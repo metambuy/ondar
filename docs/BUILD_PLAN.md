@@ -103,7 +103,9 @@ reach them from the popover.
       dedupe, sort and cap **750** locally — never let the server cap before the filter
 - [x] Endpoints: `/json/countries?hidebroken=true`,
       `/json/stations/bycountrycodeexact/{cc}?hidebroken=true&limit=…`,
-      `/json/url/{uuid}` (click, M3b), `/json/stations/search` (search only)
+      `/json/url/{uuid}` (click — **M3b commit 5, 2026-09-23**: once per `play`, on the
+      session's first `Playing`, from Rust, never retried; a measurement run never votes),
+      `/json/stations/search` (search only)
 - [x] `stations::model` — `Station`, `Country`; normalise `url_resolved`, codec, bitrate;
       merge the 9 lowercase country codes into their uppercase rows, drop `XX`
 - [x] Filtering: drop `lastcheckok == 0` (= `hidebroken`), drop empty `url_resolved`,
@@ -119,13 +121,15 @@ reach them from the popover.
       demux and audio-variant selection move to after M4 (decided 2026-09-21 from Step 0's
       sample: 5/10 ADTS, 5/10 TS of which 3 carry video)
 - [x] Commands: `list_countries`, `list_stations(country_code)`, `search_stations(query)` (+ favourites, recents; **M3a, 2026-09-22**)
-- [ ] UI: searchable country dropdown wired to `list_countries`; station list wired to
-      `list_stations`, click-to-play through the existing `play` command. **Requirement carried
-      from the M3a review (finding 7, 2026-09-22):** a `list_stations` reply is applied only if
-      its `country_code` is the selection at the moment it lands — a missing list can wait on
-      the network for up to 200 s and land after a fast reply for the next selection (the dev
-      list has the guard; the real list must too). Also: re-request an expired list on popover
-      show / reconnect (carried from acceptance item 6).
+- [x] UI: country dropdown (a native select, searchable by type-ahead — a custom list is a
+      later commit if it proves poor by hand) wired to `list_countries`; station list wired to
+      `list_stations`, click-to-play through the existing `play` command; ★ Favourites and
+      Recents behind a toggle beside the select (acceptance finding C, `298c342` — they began
+      as the select's first entries and were not found unaided); Now Playing; the transport
+      row (**M3b commits 1b–4, 2026-09-23**). **The requirement carried from the M3a review (finding 7):** the
+      real list applies a reply only for the source still selected — pinned by
+      `StationList.test.tsx` (vitest, the first TS tests). The re-request on popover show
+      (acceptance item 6) is built and tested the same way.
 - [x] Tests: response parsing from recorded fixtures, filter/dedupe logic, cache TTL
 - [x] **M3a acceptance, 2026-09-22** (`_handover/m3a-acceptance.md`): 10 items, 8 passed as
       built; item 8 (ICY → `Http` in one attempt) fixed by a retry policy by cause (`3ab7ec2`),
@@ -139,6 +143,19 @@ reach them from the popover.
       2 000, one non-HTTP wording table, `mms://` refused, the dev list's reply guard, `LIKE`
       escaping, the error body text — plus three cleanups; acceptance items 5, 6, 8 re-run
       2026-09-23 (`m3a-acc-07`/`08`). ONDAR.md, "Code review, 2026-09-22".
+- [x] **M3b acceptance, 2026-09-23** (`_handover/m3b-acceptance.md`): 10 items, 7 passed as
+      built; B (the country control unusable offline) fixed `f829b1e`, C (★ discoverability →
+      a toggle beside the select) fixed `298c342`, items 2 and 9 re-run PASS. **A — the output
+      keeps the first session's sample rate — is M1's defect, already on `main`, deferred by
+      decision to its own measured work after the merge, before M4**; items 4 and 6 pass on
+      clicks and prefetch and fail on A, not re-run. ONDAR.md, "M3b: the collapsed view…", the
+      acceptance paragraph.
+- [x] **M3b code review, 2026-09-23** (`_handover/code-review-2026-09-23.md`): eight findings
+      fixed one commit each — the `started` race decided under one lock, the prefetch ceiling,
+      the transport's reading of `reconnecting`, the error cleared on a source change, the
+      reply serialised only under `?measure=perf`, the failed click's own error shape,
+      `describeError` in the transport, and the three drifted document lines (this commit).
+      ONDAR.md, "Code review, 2026-09-23".
 
 **Exit:** country dropdown populated from Rust; selecting a country lists real stations;
 airplane mode still shows the last cached lists (**measured 2026-09-22**, acceptance item 5);

@@ -1,133 +1,91 @@
-// Dev transport (M2c, decision 1): the M1 bench folded into the popover so the audio path and
-// the tray's playing glyph stay exercisable by hand until the M3 country/station UI replaces
-// this. Visibly a placeholder. Renders state and sends commands; holds no logic.
+// The transport row (M3b commit 4; the M1 bench's controls folded in at M2c, the presets
+// retired here): play or pause, stop, the favourite toggle, the volume. Renders state and
+// sends commands; holds no logic. Rust is the source of playback state (`playback:state`);
+// whether the playing station is a favourite comes from `Panel`, which asks Rust.
 //
 // Not carried over from the bench, deliberately: the custom-URL field, the on-page event log
 // (Rust's log has every event) and the EQ sliders (EQ UI is M5; the engine claim is held by
 // `eq::tests` and `eq_headroom_sweep`).
 import { useEffect, useState } from "react";
-import { audio, onMetadata, onState, onStreamInfo } from "../api";
-import type { PlaybackState, StreamInfo } from "../api";
+import { audio, onState } from "../api";
+import type { PlaybackState, Station } from "../api";
 import styles from "./panel.module.css";
+import { describeError } from "./provenance";
 
-// Known-good public streams. URLs rot; swap freely.
-const PRESETS: { name: string; url: string }[] = [
-  { name: "Radio Swiss Jazz (MP3 128k)", url: "https://stream.srg-ssr.ch/m/rsj/mp3_128" },
-  { name: "FIP (AAC)", url: "https://icecast.radiofrance.fr/fip-hifi.aac" },
-  { name: "SomaFM Groove Salad (MP3)", url: "https://ice1.somafm.com/groovesalad-128-mp3" },
-];
+type Props = {
+  /** The station Now Playing names (`Panel`'s `playing`); Play replays it. */
+  station: Station | null;
+  isFavourite: boolean;
+  onToggleFavourite: () => void;
+};
 
-function describe(s: PlaybackState): string {
-  switch (s.kind) {
-    case "reconnecting":
-      return `reconnecting (attempt ${s.attempt})`;
-    case "error":
-      return `error [${s.code}]: ${s.message}`;
-    default:
-      return s.kind;
-  }
-}
-
-function describeStream(i: StreamInfo | null): string {
-  if (!i) return "no stream open";
-  const codec = i.content_type ?? "unknown codec";
-  const rate = `${i.sample_rate} Hz`;
-  const channels = i.channels === 1 ? "mono" : i.channels === 2 ? "stereo" : `${i.channels} ch`;
-  const bitrate = i.bitrate_kbps === null ? "" : ` · ${i.bitrate_kbps} kbps`;
-  return `${codec} · ${rate} · ${channels}${bitrate}`;
-}
-
-export default function Transport() {
-  const [url, setUrl] = useState(PRESETS[0].url);
-  // The URL handed to `play`, kept apart from the dropdown: the dropdown can change without a
-  // Play, and the Now Playing name must describe what is audible, not what is selected
-  // (`/code-review` finding 4, 2026-09-17).
-  const [playingUrl, setPlayingUrl] = useState<string | null>(null);
+export default function Transport({ station, isFavourite, onToggleFavourite }: Props) {
   const [state, setState] = useState<PlaybackState>({ kind: "idle" });
-  const [info, setInfo] = useState<StreamInfo | null>(null);
-  const [title, setTitle] = useState<string | null>(null);
   const [volume, setVolume] = useState(1);
   const [lastError, setLastError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unlisteners: Promise<() => void>[] = [
-      onState((s) => {
-        setState(s);
-        if (s.kind === "connecting") {
-          setInfo(null);
-          setTitle(null);
-        }
-      }),
-      onStreamInfo(setInfo),
-      onMetadata((m) => setTitle(m.title)),
-    ];
+    const unlisten = onState(setState);
     audio.getPlaybackState().then(setState);
     return () => {
-      unlisteners.forEach((p) => p.then((un) => un()));
+      unlisten.then((un) => un());
     };
   }, []);
 
   // A command's rejection is argument validation only (CLAUDE.md, IPC contract); playback
   // outcomes arrive as `playback:state` events.
-  const report = (what: string) => (e: unknown) => setLastError(`${what}: ${JSON.stringify(e)}`);
-  const play = () => {
-    setPlayingUrl(url);
-    return audio.play(url, "manual").catch(report("play"));
-  };
-
-  // `icy-name` when the server sends one (its absence is normal); otherwise the preset that was
-  // actually played; otherwise nothing is playing.
-  const stationName =
-    info?.station_name ??
-    (playingUrl === null
-      ? "nothing playing"
-      : (PRESETS.find((p) => p.url === playingUrl)?.name ?? playingUrl));
+  //
+  // `reconnecting` reads as the list's row reads it — audible, Rust's to recover (the backoff,
+  // CLAUDE.md invariant 5): Pause offered but disabled, Stop offered, no Play. A Play here would
+  // be a new `play` call — a new session, a reset backoff and a second vote on its first
+  // `Playing` (`/code-review` finding 3, 2026-09-23; Transport.test.tsx).
+  const report = (what: string) => (e: unknown) => setLastError(`${what}: ${describeError(e)}`);
+  const active = state.kind !== "idle" && state.kind !== "error";
 
   return (
-    <section aria-label="Dev transport" className={styles.stack}>
-      <h1 className={styles.heading}>Now Playing</h1>
-      <p className={styles.line}>{stationName}</p>
-      <p className={styles.line}>{title ?? "—"}</p>
-      <p className={`${styles.muted} ${styles.clamp}`}>
-        {describe(state)} · {describeStream(info)}
-      </p>
+    <section aria-label="Transport" className={styles.section} data-measure="transport_controls">
       {lastError && (
         <p className={`${styles.muted} ${styles.clamp}`} role="alert">
           {lastError}
         </p>
       )}
-
-      <div className={styles.section}>
-        <label className={styles.field}>
-          Preset
-          <select value={url} onChange={(e) => setUrl(e.target.value)}>
-            {PRESETS.map((p) => (
-              <option key={p.url} value={p.url}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className={styles.row}>
-          <button type="button" onClick={play}>
+      <div className={styles.row}>
+        {state.kind === "playing" ||
+        state.kind === "buffering" ||
+        state.kind === "connecting" ||
+        state.kind === "reconnecting" ? (
+          <button type="button" onClick={() => audio.pause()} disabled={state.kind !== "playing"}>
+            Pause
+          </button>
+        ) : state.kind === "paused" ? (
+          <button type="button" onClick={() => audio.resume()}>
+            Resume
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={station === null}
+            onClick={() =>
+              station &&
+              audio.play(station.url, station.uuid, station.bitrate_kbps).catch(report("play"))
+            }
+          >
             Play
           </button>
-          {state.kind === "paused" ? (
-            <button type="button" onClick={() => audio.resume()}>
-              Resume
-            </button>
-          ) : (
-            <button type="button" onClick={() => audio.pause()} disabled={state.kind !== "playing"}>
-              Pause
-            </button>
-          )}
-          <button type="button" onClick={() => audio.stop()} disabled={state.kind === "idle"}>
-            Stop
-          </button>
-        </div>
-
-        <label className={styles.field}>
+        )}
+        <button type="button" onClick={() => audio.stop()} disabled={!active}>
+          Stop
+        </button>
+        <button
+          type="button"
+          aria-pressed={isFavourite}
+          aria-label={isFavourite ? "Remove from favourites" : "Add to favourites"}
+          disabled={station === null}
+          onClick={onToggleFavourite}
+        >
+          {isFavourite ? "★" : "☆"}
+        </button>
+        <label className={`${styles.field} ${styles.grow}`}>
           Volume
           <input
             type="range"

@@ -39,6 +39,7 @@ fn main() {
     engine.send(AudioCommand::Play {
         url,
         station_id: "stall-bench".to_string(),
+        bitrate_kbps: None,
     });
 
     let deadline = start + Duration::from_secs(duration_secs);
@@ -53,6 +54,9 @@ fn main() {
                 let t = start.elapsed().as_secs_f64();
                 match &ev {
                     EngineEvent::State(s) => println!("[{t:7.3}s] state    {s:?}"),
+                    EngineEvent::Started { station_id } => {
+                        println!("[{t:7.3}s] started  station_id={station_id}")
+                    }
                     EngineEvent::StreamInfo(i) => println!("[{t:7.3}s] stream   {i:?}"),
                     EngineEvent::Metadata(m) => println!("[{t:7.3}s] metadata {m:?}"),
                     EngineEvent::Reconnect(r) => {
@@ -80,7 +84,7 @@ fn main() {
     // dependency bump can break this silently. Checked here because this is where the evidence
     // was found, and it costs nothing.
     let max_read = ondar_audio::icy::MAX_OBSERVED_READ.load(Ordering::Relaxed) as u64;
-    let prefetch = ondar_audio::stream::prefetch_bytes();
+    let prefetch = ondar_audio::stream::prefetch_bytes(None);
     if max_read > prefetch {
         println!(
             "!!! PREFETCH TOO SMALL: decoder asked for {max_read} B, prefetch is {prefetch} B. \
