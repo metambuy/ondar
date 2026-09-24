@@ -25,14 +25,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rodio::decoder::{DecoderBuilder, DecoderError};
-use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+use rodio::source::UniformSourceIterator;
+use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source};
 use rtrb::PushError;
 use tokio_util::sync::CancellationToken;
 
 use crate::eq::{EqGains, Equalizer};
 use crate::icy::IcyReader;
 use crate::reconnect::{Backoff, STABLE_AFTER};
-use crate::ring::{self, RingStats};
+use crate::ring::{self, RingSource, RingStats};
 use crate::stream;
 use crate::types::{EngineEvent, ErrorCode, IcyMetadata, PlaybackState, ReconnectInfo, StreamInfo};
 
@@ -252,12 +253,47 @@ impl SessionCtx {
     }
 }
 
+/// The one format every session is converted to before the EQ: the output sink's own rate and
+/// channel count, read from `MixerDeviceSink::config()` when the sink opens (rodio 0.22.2 builds
+/// the mixer from that config, `stream.rs:497`). Fixed for the life of the sink.
+///
+/// Why a session converts itself (defect A, measured 2026-09-24, ONDAR.md): rodio's mixer wraps
+/// the `Player`'s whole queue in **one** `UniformSourceIterator` (`mixer.rs:62`), which reads its
+/// input's rate and channels only when a span ends. `RingSource` has no span end, so that
+/// converter kept the first station's format for the whole process, and every later station
+/// played at the wrong speed. Every chain now reports this format, so the mixer's converter
+/// is an identity whatever it locked to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OutputFormat {
+    channels: ChannelCount,
+    sample_rate: SampleRate,
+}
+
+/// A session's source chain: the ring, converted to the output's fixed format, then the EQ. The
+/// converter sits **before** the EQ so the EQ (and, from M5, the spectrum) always runs at one
+/// rate. Built per ring, at attach, on the decode thread: `UniformSourceIterator` bootstraps once
+/// from the ring's rate and channels (its span is `None`), which is right precisely because it
+/// is per session; when the rates differ, its construction reads two frames, and the ring is at
+/// `fill_target` here, so it never reads an empty ring or counts a false underrun.
+fn output_chain(
+    src: RingSource,
+    out: OutputFormat,
+    gains: EqGains,
+) -> Equalizer<UniformSourceIterator<RingSource>> {
+    Equalizer::new(
+        UniformSourceIterator::new(src, out.channels, out.sample_rate),
+        gains,
+    )
+}
+
 struct Engine {
     shared: Shared,
     client: reqwest::Client,
     rt: tokio::runtime::Runtime,
     sink: Option<MixerDeviceSink>,
     player: Option<Arc<Player>>,
+    /// The sink's format, set with `sink`; see [`OutputFormat`].
+    output: Option<OutputFormat>,
     session: Option<SessionCtx>,
     volume: f32,
     /// When the current session last transitioned into `Playing`, as observed by `tick()`.
@@ -316,6 +352,7 @@ impl Engine {
             rt,
             sink: None,
             player: None,
+            output: None,
             session: None,
             volume: 1.0,
             playing_since: None,
@@ -511,17 +548,27 @@ impl Engine {
 
     /// Open the output device on first use so a missing device is reported as a playback
     /// error rather than a crash at startup.
-    fn ensure_player(&mut self) -> Result<Arc<Player>, String> {
-        if let Some(p) = &self.player {
-            return Ok(p.clone());
+    fn ensure_player(&mut self) -> Result<(Arc<Player>, OutputFormat), String> {
+        if let (Some(p), Some(out)) = (&self.player, self.output) {
+            return Ok((p.clone(), out));
         }
         let mut sink = DeviceSinkBuilder::open_default_sink().map_err(|e| e.to_string())?;
         sink.log_on_drop(false);
+        let out = OutputFormat {
+            channels: sink.config().channel_count(),
+            sample_rate: sink.config().sample_rate(),
+        };
+        log::info!(
+            "output opened sample_rate={} channels={}",
+            out.sample_rate,
+            out.channels
+        );
         let player = Arc::new(Player::connect_new(sink.mixer()));
         player.set_volume(self.volume);
         self.sink = Some(sink);
         self.player = Some(player.clone());
-        Ok(player)
+        self.output = Some(out);
+        Ok((player, out))
     }
 
     fn play(&mut self, url: String, station_id: String, bitrate_kbps: Option<u32>) {
@@ -543,7 +590,7 @@ impl Engine {
                 return;
             }
         };
-        let player = match self.ensure_player() {
+        let (player, output) = match self.ensure_player() {
             Ok(p) => p,
             Err(message) => {
                 self.shared.set_state(PlaybackState::Error {
@@ -574,7 +621,7 @@ impl Engine {
         );
         thread::Builder::new()
             .name(format!("ondar-decode:{station_id}"))
-            .spawn(move || run_session(ctx, url, client, handle, player, prefetch))
+            .spawn(move || run_session(ctx, url, client, handle, player, prefetch, output))
             .expect("spawn decode thread");
     }
 
@@ -636,6 +683,7 @@ fn run_session(
     rt: tokio::runtime::Handle,
     player: Arc<Player>,
     prefetch_bytes: u64,
+    output: OutputFormat,
 ) {
     // Whether this session has ever opened its stream. A terminal answer ends the session
     // only before that: afterwards the same 404 is a mount mid-restart, and the backoff
@@ -774,7 +822,7 @@ fn run_session(
 
             if let Some(src) = source.take_if(|_| filled >= fill_target) {
                 player.clear();
-                player.append(Equalizer::new(src, ctx.shared.gains.clone()));
+                player.append(output_chain(src, output, ctx.shared.gains.clone()));
                 if ctx.shared.paused.load(Ordering::Relaxed) {
                     ctx.set_state(PlaybackState::Paused);
                 } else {
@@ -1163,7 +1211,11 @@ mod session_tests {
         let handle = rt.handle().clone();
         let session = ctx.clone();
         let prefetch = stream::prefetch_bytes(None);
-        thread::spawn(move || run_session(session, url, client, handle, player, prefetch));
+        let output = OutputFormat {
+            channels: std::num::NonZero::new(2).expect("2"),
+            sample_rate: std::num::NonZero::new(44_100).expect("44100"),
+        };
+        thread::spawn(move || run_session(session, url, client, handle, player, prefetch, output));
         Harness {
             ctx,
             events: ev_rx,
@@ -1397,6 +1449,216 @@ mod session_tests {
     /// `counting_server` for a response built at runtime (a WAV is not a `&'static [u8]`).
     fn counting_server_owned(response: Vec<u8>) -> (String, Arc<AtomicUsize>) {
         scripted_server(vec![response])
+    }
+    // ---- Defect A: every session plays at its own rate and channel count ----
+
+    /// An HTTP 200 carrying `secs` of a 16-bit sine at `hz`, amplitude 0.5, `channels` identical
+    /// channels at `rate`, then the connection closes.
+    fn tone_wav_response(rate: u32, channels: u16, hz: f32, secs: f32) -> Vec<u8> {
+        let frames = (rate as f32 * secs) as u32;
+        let block = 2 * channels as u32;
+        let data_len = frames * block;
+        let mut w = Vec::new();
+        w.extend_from_slice(
+            b"HTTP/1.0 200 OK\r\ncontent-type: audio/wav\r\nconnection: close\r\n\r\n",
+        );
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(36 + data_len).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        w.extend_from_slice(&channels.to_le_bytes());
+        w.extend_from_slice(&rate.to_le_bytes());
+        w.extend_from_slice(&(rate * block).to_le_bytes()); // byte rate
+        w.extend_from_slice(&(block as u16).to_le_bytes()); // block align
+        w.extend_from_slice(&16u16.to_le_bytes()); // bits
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data_len.to_le_bytes());
+        for i in 0..frames {
+            let t = i as f32 / rate as f32;
+            let v = (16_384.0 * (2.0 * std::f32::consts::PI * hz * t).sin()) as i16;
+            for _ in 0..channels {
+                w.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        w
+    }
+
+    /// Two stations in a row on **one** `Player` and one bare mixer, as `Engine::play` does for
+    /// the second: the first session cancelled, a new generation, `clear()`, a new decode
+    /// thread. Returns `frames` frames of the mixer's output from the second session's
+    /// `Playing` on. The pull runs at about twice real time, like `start_session`'s.
+    fn two_sessions(
+        first: Vec<u8>,
+        second: Vec<u8>,
+        mixer_rate: u32,
+        mixer_ch: u16,
+        frames: usize,
+    ) -> Vec<f32> {
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let shared = Shared {
+            state: Arc::new(Mutex::new(PlaybackState::Idle)),
+            events: ev_tx,
+            gains: EqGains::default(),
+            paused: Arc::new(AtomicBool::new(false)),
+            session: Arc::new(Mutex::new(Session::default())),
+        };
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (mixer, mixer_out) = rodio::mixer::mixer(
+            std::num::NonZero::new(mixer_ch).expect("channels"),
+            std::num::NonZero::new(mixer_rate).expect("rate"),
+        );
+        let player = Arc::new(Player::connect_new(&mixer));
+        let capture: Arc<Mutex<Option<Vec<f32>>>> = Arc::new(Mutex::new(None));
+        let cap = capture.clone();
+        let chunk = mixer_rate as usize * mixer_ch as usize / 20;
+        thread::spawn(move || {
+            let mut out = mixer_out;
+            loop {
+                let pulled: Vec<f32> = out.by_ref().take(chunk).collect();
+                if let Some(v) = cap.lock().unwrap().as_mut() {
+                    v.extend_from_slice(&pulled);
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        });
+        let client = stream::build_client("Ondar/test");
+        let start = |body: Vec<u8>, station: &str| -> SessionCtx {
+            let (url, _) = scripted_server(vec![body]);
+            let generation = shared.begin_session(station.into());
+            player.clear();
+            let ctx = SessionCtx {
+                cancel: Arc::new(AtomicBool::new(false)),
+                download: Arc::new(Mutex::new(None)),
+                ring: Arc::new(Mutex::new(None)),
+                backoff: Arc::new(Mutex::new(Backoff::default())),
+                reconnect_count: Arc::new(AtomicU64::new(0)),
+                generation,
+                shared: shared.clone(),
+            };
+            shared.set_state(PlaybackState::Connecting);
+            let session = ctx.clone();
+            let url = stream::parse_url(&url).expect("url");
+            let client = client.clone();
+            let handle = rt.handle().clone();
+            let player = player.clone();
+            let prefetch = stream::prefetch_bytes(None);
+            let output = OutputFormat {
+                channels: std::num::NonZero::new(mixer_ch).expect("channels"),
+                sample_rate: std::num::NonZero::new(mixer_rate).expect("rate"),
+            };
+            thread::spawn(move || {
+                run_session(session, url, client, handle, player, prefetch, output)
+            });
+            ctx
+        };
+        let wait_playing = |what: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while shared.state() != PlaybackState::Playing {
+                assert!(Instant::now() < deadline, "{what} never reached Playing");
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        let one = start(first, "first");
+        wait_playing("the first session");
+        thread::sleep(Duration::from_millis(300));
+        one.cancel();
+        let _two = start(second, "second");
+        wait_playing("the second session");
+        *capture.lock().unwrap() = Some(Vec::new());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let got = capture.lock().unwrap().as_ref().map_or(0, Vec::len);
+            if got >= frames * mixer_ch as usize {
+                break;
+            }
+            assert!(Instant::now() < deadline, "captured only {got} samples");
+            thread::sleep(Duration::from_millis(20));
+        }
+        capture.lock().unwrap().take().expect("capture")
+    }
+
+    const WINDOW: usize = 12_000;
+
+    /// The window the tone is read over: `channel`'s samples from the first non-silent frame
+    /// (found on channel 0, so every channel's window is aligned) plus 1 000 frames, past any
+    /// converter onset, `WINDOW` frames long.
+    fn tone_window(out: &[f32], ch: usize, channel: usize) -> Vec<f32> {
+        let frames: Vec<f32> = out.iter().skip(channel).step_by(ch).copied().collect();
+        let onset = out
+            .iter()
+            .step_by(ch)
+            .position(|v| v.abs() > 0.05)
+            .expect("no tone in the capture");
+        assert!(
+            frames.len() >= onset + 1_000 + WINDOW,
+            "capture too short: onset {onset}, {} frames",
+            frames.len()
+        );
+        frames[onset + 1_000..onset + 1_000 + WINDOW].to_vec()
+    }
+
+    /// The tone's frequency from rising zero crossings over the window, in Hz at `rate`.
+    /// 1 kHz at 48 kHz is 250 cycles in 12 000 frames; ±1 crossing is ±4 Hz (0.4 %).
+    fn tone_hz(window: &[f32], rate: u32) -> f64 {
+        let rising = window
+            .windows(2)
+            .filter(|p| p[0] < 0.0 && p[1] >= 0.0)
+            .count();
+        rising as f64 * rate as f64 / window.len() as f64
+    }
+
+    /// Defect A. The second station's output tone over its source tone is the pulled-to-output
+    /// ratio, read as heard. Fails at ~0.50 when the mixer's one resampler keeps the first
+    /// station's 22 050 Hz: 44 100 Hz content consumed at 22 050 frames/s plays at half speed,
+    /// 1 000 Hz heard as 500. The tolerance (±5 %) is ten times the window's resolution and a
+    /// tenth of the failing error.
+    #[test]
+    fn a_later_session_plays_at_its_own_rate() {
+        let out = two_sessions(
+            tone_wav_response(22_050, 2, 440.0, 1.5),
+            tone_wav_response(44_100, 2, 1_000.0, 1.5),
+            48_000,
+            2,
+            28_800,
+        );
+        let ratio = tone_hz(&tone_window(&out, 2, 0), 48_000) / 1_000.0;
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "second station's output/source frequency ratio {ratio:.3}, expected 1.00"
+        );
+    }
+
+    /// Defect A, the channel count. A mono station after a stereo one: fails at ~2.0 per
+    /// channel, with L ≠ R, when the mixer's resampler keeps the first station's two channels
+    /// and reads the mono samples as interleaved pairs, each channel taking every other one.
+    #[test]
+    fn a_mono_session_after_stereo_is_not_read_as_stereo() {
+        let out = two_sessions(
+            tone_wav_response(48_000, 2, 440.0, 1.5),
+            tone_wav_response(48_000, 1, 1_000.0, 1.5),
+            48_000,
+            2,
+            28_800,
+        );
+        let left = tone_window(&out, 2, 0);
+        let right = tone_window(&out, 2, 1);
+        let l = tone_hz(&left, 48_000) / 1_000.0;
+        let r = tone_hz(&right, 48_000) / 1_000.0;
+        let worst = left
+            .iter()
+            .zip(&right)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            (l - 1.0).abs() < 0.05 && (r - 1.0).abs() < 0.05 && worst < 1e-6,
+            "mono after stereo: ratios L {l:.3} R {r:.3}, max |L-R| {worst:.4}; expected 1.00, 1.00, 0"
+        );
     }
 }
 

@@ -36,7 +36,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 |---|---|---|
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
 | M2 | Tray + NSPanel popover | **done** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) merged 2026-09-21 (`2a9bae9`, tagged `m2d-done`) |
-| M3 | Station API + SQLite cache + country/station UI | **in progress** — **M3b built** on branch `m3b` from 2026-09-23 (plan `_handover/m3b-plan.md`; Step 0 folded into the commits: 1a `fbb0a79` harness · 1b `de87005` country control + station list + the TS runner · 1c `b4bbfbc` Now Playing · 2 `d1129a3` the list measured at 50/327/750, no virtualisation · 4 `bb2452d` favourites/recents, presets retired · 5 `33400f5` the click endpoint · 6 `155d14d` prefetch from bitrate · 7 docs `e23e48d`; **acceptance run 2026-09-23** — 10 items, 7 as built; B `f829b1e` and C `298c342` fixed and re-run PASS; **A, the output keeping the first session's sample rate, is M1's defect and is deferred to its own measured work after the merge, before M4**; **`/code-review` 2026-09-23**: eight findings fixed, one commit each, `3631085`…`f8f8c59` plus the closing docs commit — ONDAR.md, "M3b: the collapsed view…", its acceptance and "Code review, 2026-09-23" paragraphs; **awaiting merge**); Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); **merged 2026-09-23** (`92cfe3f`, tagged `m3a-done`) |
+| M3 | Station API + SQLite cache + country/station UI | **in progress** — **M3b built** on branch `m3b` from 2026-09-23 (plan `_handover/m3b-plan.md`; Step 0 folded into the commits: 1a `fbb0a79` harness · 1b `de87005` country control + station list + the TS runner · 1c `b4bbfbc` Now Playing · 2 `d1129a3` the list measured at 50/327/750, no virtualisation · 4 `bb2452d` favourites/recents, presets retired · 5 `33400f5` the click endpoint · 6 `155d14d` prefetch from bitrate · 7 docs `e23e48d`; **acceptance run 2026-09-23** — 10 items, 7 as built; B `f829b1e` and C `298c342` fixed and re-run PASS; **A, the output keeping the first session's sample rate, is M1's defect and is deferred to its own measured work after the merge, before M4**; **`/code-review` 2026-09-23**: eight findings fixed, one commit each, `3631085`…`f8f8c59` plus the closing docs commit — ONDAR.md, "M3b: the collapsed view…", its acceptance and "Code review, 2026-09-23" paragraphs; **merged 2026-09-24** (`f7af9dc`, tagged `m3b-done`)); Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); **merged 2026-09-23** (`92cfe3f`, tagged `m3a-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) fixed on branch `a-sample-rate` (`ebb414f`), acceptance A1–A4 PASS 2026-09-24 (ONDAR.md, "Defect A"); **awaiting merge** — Martín's, `--no-ff`, tag `defect-a-done` |
 | M4 | Map (tile pyramid, Leaflet, markers) | |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
 | M6 | Signing, notarisation, DMG | |
@@ -178,14 +178,14 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 180 tests `cargo test --workspace`
-reports break down as **161 hand-written + 19 ts-rs-generated** (audio 76, shell 40, stations 64):
+export_bindings_<type>` that writes the `.ts` file. So the 182 tests `cargo test --workspace`
+reports break down as **163 hand-written + 19 ts-rs-generated** (audio 78, shell 40, stations 64):
 
 | | |
 |---|---|
 | `engine::tick_tests` | 20 |
 | `engine::started_tests` | 7 — the click rule's pure part on `Shared::write_state` (M3b 5): once per session whatever the route back to `Playing` (fails on a per-`Playing` or previous-state rule); a second `play` for the same station starts again; a reconnect before ever playing starts on its first `Playing`; paused while buffering starts on resume, `Started` after `State(Playing)`; a repeated `Playing` is a no-op; **a stale session's `Playing` cannot take the new session's `Started`** (`/code-review` finding 1, 2026-09-23 — the write and its liveness are decided under one lock; fails on a flag read before the lock, which was the code: mutation-checked, the gate disabled sends `Started { u2 }` for a station that has not opened); a cancelled session's late write is dropped before any successor (fails if only `begin_session` moves the generation) |
-| `engine::session_tests` | 6 — a WAV played twice across a reconnect is one session: one `Started`, with the id (fails if per-`Playing`; found the harness needed a mixer drain thread, since `Player::clear()` waits for a queued source); the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }`. Review finding 4: a 429 with `Retry-After: 3` → `Reconnecting { 1 }` and no second request inside 2 s (fails if every 4xx is terminal, or if the header is ignored); a 404 on the reconnect after a 1.5 s WAV stream ended → `Reconnecting { 2 }`, no `Error` (fails if a reconnect's 4xx is terminal) |
+| `engine::session_tests` | 8 — **defect A** (2026-09-24): two stations on one `Player` and one bare 48 kHz mixer, read by the output tone over the source tone (the pulled-to-output ratio, as heard): a 44.1 kHz station after a 22.05 kHz one plays at 1.00, and a mono station after a stereo one plays at 1.00 on both channels with L = R. Both failed on `f7af9dc`, at 0.500 and at 2.000 with \|L−R\| 0.0654, because the mixer's one converter kept the first station's format. Also: a WAV played twice across a reconnect is one session: one `Started`, with the id (fails if per-`Playing`; found the harness needed a mixer drain thread, since `Player::clear()` waits for a queued source); the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }`. Review finding 4: a 429 with `Retry-After: 3` → `Reconnecting { 1 }` and no second request inside 2 s (fails if every 4xx is terminal, or if the header is ignored); a 404 on the reconnect after a 1.5 s WAV stream ended → `Reconnecting { 2 }`, no `Error` (fails if a reconnect's 4xx is terminal) |
 | `stream::tests` | 13 — the prefetch is the larger of the floor and the knee (M3b 6; fails if the `max` is dropped — 64 kbit/s would get 16 000 — or the knee's arithmetic is off), **capped at half the buffer** (`/code-review` finding 2, 2026-09-23: 10 000 kbit/s and FLAC's 1411 give the ceiling, 524/525 kbit/s straddle it; fails if the upper bound is dropped, which was the code), the env override replaces the whole value; a 404's body text reaches the message, bounded to 200 chars (finding 10); `parse_url` refuses a non-http scheme as `invalid_url` before any request (finding 5); real sockets on 127.0.0.1, asserting `(code, terminal)`, plus one on the shared `NON_HTTP_WORDING` table (a 503's "status" wording is not terminal, hyper's version wording is — finding 8): an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 and a 403 are `Http` and terminal, a 429 is `Http`, retriable and carries its `Retry-After` (finding 4), a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
 | `eq::tests` | 17 |
 | `icy::tests` | 3 |
@@ -206,7 +206,7 @@ reports break down as **161 hand-written + 19 ts-rs-generated** (audio 76, shell
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 161 and will not reconcile with the runner's 180
+Counting `#[test]` attributes in source gives 163 and will not reconcile with the runner's 182
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -225,7 +225,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `180 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `182 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -242,7 +242,7 @@ pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
                               # tests, 15 today (StationList + Transport + Panel). Its count is reported BESIDE
-                              # the Rust count — "180 + 15", never "195" — and CI runs it as its own step
+                              # the Rust count — "182 + 15", never "197" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types
@@ -251,7 +251,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 180 tests: 76 in the ondar_audio binary, 64 in ondar_stations and
+cargo test --workspace       # 182 tests: 78 in the ondar_audio binary, 64 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this
@@ -432,7 +432,8 @@ weekly drift audit does not cover this class.
 
 ```
 HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [decode thread]
-  → rtrb ring (RING_SECONDS = 2) → Equalizer (10 × biquad peaking) → Player → MixerDeviceSink
+  → rtrb ring (RING_SECONDS = 2) → UniformSourceIterator (to the output's format)
+  → Equalizer (10 × biquad peaking) → Player → MixerDeviceSink
 ```
 
 1. One `AudioEngine`, owned by Tauri state, created once at startup.
@@ -490,6 +491,16 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    The page's row does nothing on the station already playing (a paused one resumes), so a
    double click is not two votes; a replay is stop, then the row. With the measurement harness
    active the click is suppressed (`suppressed=measurement`) and the recent still recorded.
+10. **One output format per process; every session converts to it before the EQ** (defect A,
+   2026-09-24). `ensure_player` reads the sink's rate and channels from
+   `MixerDeviceSink::config()` into `OutputFormat`. At attach, `output_chain` builds, per ring,
+   `ring → UniformSourceIterator(to that format) → Equalizer`. So the EQ always runs at the sink's
+   rate. rodio's mixer still wraps the `Player` queue in its own converter, which reads its
+   input's format only at a span end. `RingSource`'s span is `None`, so that converter kept the
+   **first** station's rate and channels for the whole process. Now every chain reports the
+   sink's format, so that converter is an identity. Do not give `RingSource` a finite span to
+   "fix" this: every boundary would rebuild the converter and discard its interpolation state.
+   See ONDAR.md, "Defect A".
 
 ## macOS specifics (as built through M2b)
 

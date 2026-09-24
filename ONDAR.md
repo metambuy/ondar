@@ -90,7 +90,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; no visual confirmation.** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
 | Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
 | Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
-| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
+| Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
 | Station API | **Rust** `reqwest` client for radio-browser.info; **`hickory-resolver`** for the SRV lookup | `reqwest` cannot do SRV; a resolver crate is required |
@@ -637,6 +637,125 @@ M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed a
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
 
+### Defect A: the output kept the first session's sample rate — measured, fixed (2026-09-24)
+
+Branch `a-sample-rate` off `main` `f7af9dc`. Fix `ebb414f`. Records in `_handover/`: Step 0
+`a-step0-report.md` (logs `a-step0-logs/`), its review `a-step0-review-2026-09-24.md`, the plan
+`a-plan.md` and its review `a-plan-review-2026-09-24.md`, and acceptance `a-acceptance.md` (logs
+`a-acceptance/`). **M1's defect, on `main` since M1**, found at M3b acceptance, items 4e and 6.
+
+**The mechanism** (rodio 0.22.2, read from source):
+- `Player::connect_new` is `Player::new()` + `mixer.add(queue)` (`player.rs:73-82`, the queue built
+  `keep_alive_if_empty = true`). `Mixer::add` wraps that whole queue in **one**
+  `UniformSourceIterator` (`mixer.rs:62`).
+- That converter reads its input's `current_span_len`, `channels` and `sample_rate` only when it
+  bootstraps (`source/uniform.rs:49-68`). It bootstraps again only when its `Take { n: span }`
+  runs out (`uniform.rs:77-88`).
+- The queue reports the current source's span (`queue.rs:151`). `Equalizer` forwards
+  `RingSource`'s span (`eq.rs:247`), and that is `None` (`ring.rs:144`): "this span never ends".
+- So the converter's last bootstrap happened a few milliseconds after the **first** station's
+  source attached. It kept that station's rate **and channel count** for the life of the process.
+  The device and the mixer were 48 000 and correct throughout.
+
+**Measured at Step 0.** Five points were logged at every session start and state change, in one
+process with three live stations and then a WAV run.
+
+| station, in order | decoder | ring | mixer's converter reads | mixer | device |
+|---|---|---|---|---|---|
+| France Info (aac 192) | 48 000 | 48 000 | 48 000 (58 reads, all in the first 0.77 s) | 48 000 | 48 000 |
+| RFI Afrique (mp3 64) | 22 050 | 22 050 | **48 000** (still 58) | 48 000 | 48 000 |
+| ORBITAL (mp3 192) | 44 100 | 44 100 | **48 000** (still 58) | 48 000 | 48 000 |
+
+Speed was measured as pulls from the ring per wall-clock second over the decoder's rate. Only
+one-second windows that stayed in `Playing` with no new underrun count. The first station of
+each run is the control.
+
+| run | station | mean speed | expected |
+|---|---|---|---|
+| live | France Info 48 000 | 1.0003 | 1.0000 |
+| live | RFI Afrique 22 050 | 2.1779 | 2.1769 |
+| live | ORBITAL 44 100 | 1.0877 | 1.0884 |
+| WAV | 44 100 first | 1.0005 | 1.0000 |
+| WAV | 48 000 | 0.9188 | 0.9187 |
+| WAV | 22 050 | 1.9925 | 2.0000 |
+
+The WAV run locked to 44 100, not to the device's 48 000: **the lock is to the first station.**
+
+**The fix.** Each session converts its own ring to the sink's format before the EQ:
+`ring → UniformSourceIterator(OutputFormat) → Equalizer → Player`. `OutputFormat` is read once
+from `MixerDeviceSink::config()`; the mixer is built from it, `stream.rs:497`. The converter is
+built per ring at attach, on the decode thread, with the ring at `fill_target`. When the rates
+differ, its construction reads two frames, so it never reads an empty ring or counts a false
+underrun. It bootstraps once from the ring's format, which is right precisely because it is per
+session. Every chain now reports the sink's format, so the mixer's own converter locks to
+48 000 / 2 and is an identity: `SampleRateConverter` with `from == to` returns `input.next()`,
+and `ChannelCountConverter` 2 → 2 passes through. rodio gives no way to remove that converter.
+The fix makes it harmless.
+
+**Converted before the EQ, not at `append` after it** (the Step 0 review's decision), so the EQ,
+and from M5 the spectrum, run at one rate forever: one set of biquad coefficients, one FFT bin map.
+
+**Rejected, with reasons:**
+- **Re-opening the sink per session.** It works only as a side effect of rebuilding the `Player`,
+  and the device was never wrong.
+- **A new `Player` per session on the same sink.** It moves volume, pause and the mixer's handle
+  onto a new object at every station change, for no gain over converting explicitly.
+- **A finite `current_span_len` on `RingSource`.** The mixer would re-bootstrap at every boundary
+  and discard its interpolation state, a candidate click. Unmeasured; rejected rather than left to
+  be rediscovered.
+- **Converting at `append`, after the EQ.** It fixes the speed but leaves the EQ's coefficients
+  and M5's bin map varying per station.
+
+**Side effects, stated:**
+- **The EQ always runs at the sink's rate.** Its bypass above 0.45 fs (`eq.rs:125-128`) no
+  longer disables the 16 kHz band on a 22 050 station. Linear interpolation leaves images above
+  11 kHz, and a boost at 16 kHz would lift them. **Unreachable today:** no EQ UI ships until M5
+  and every gain defaults to 0 dB, so no boost exists to lift anything. M5 owns the measurement
+  and the choice: bypass by the source's Nyquist rather than the output's, or accept it.
+- **Quality is unchanged.** It is the same linear interpolation, with no anti-alias filter, that
+  the mixer applied before. Downsampling, for example 96 kHz FLAC to 48 kHz, aliases. That is rare
+  in the directory and not a regression. Channels beyond two are dropped, not mixed down, as before.
+- **The converter is rodio's, read and not owned.** At 0.22.2 it reuses its `Vec`/`VecDeque`
+  capacity after the first frame, so it does not allocate in steady state. That is read, not a
+  contract, and the code already ran on the audio thread inside the mixer. **Re-verify on any rodio
+  bump**, like the prefetch floor above.
+
+**Tests** (`engine::session_tests`, device-less, on the harness's bare mixer at 48 000 / 2). Each
+drives two stations through `run_session` on one `Player`, as `Engine::play` does, and reads the
+second station's **output tone over its source tone**. For a tone that is the pulled-to-output
+ratio, as heard.
+- A 44 100 station after a 22 050 one reads 1.00. It read **0.500** on `f7af9dc`.
+- A mono station after a stereo one reads 1.00 on both channels with L = R. It read **2.000 / 2.000
+  with |L−R| 0.0654** on `f7af9dc`, which measured the Step 0 report's channel prediction rather
+  than leaving it a guess.
+
+Both failures were recorded on `f7af9dc` in a detached worktree, four runs, identical, before any
+fix code existed.
+
+**The speed instrument stays at the ring pop.** It counts `RingSource::next`. The new converter sits
+downstream of that pop, so the counter still measures source frames consumed per wall-clock second,
+which is playback speed whatever converts afterwards. Step 0's warning applied to a resampler
+placed *before* the ring. The Step 0 review's requirement 3 said otherwise and was withdrawn at
+the plan review. The instrument is not in the product. It lives in
+`_handover/a-acceptance/probe-accept.patch`.
+
+**Acceptance, 2026-09-24** (`_handover/a-acceptance.md`, logs `a-acceptance/`), read by measured
+ratio, never by ear. Pass was |mean − 1| < 0.01; the defect's smallest error is 8.1 %.
+- **A1, live, one process:** France Info 0.9998, RFI Afrique 1.0005, ORBITAL 1.0005, with no
+  underruns. The chain's output was 48 000 frames/s and the mixer's converter locked to 48 000 / 2.
+- **A2, 20.000 s WAVs:** 44 100 → 48 000 → 22 050 → mono 44 100, at 0.9993 / 1.0022 / 0.9992 /
+  0.9993. Each file took 19.965–19.986 s. The ring term comes from its fill, so this is independent
+  of the counter.
+- **A3, starvation:**
+  - On `f7af9dc`, ORBITAL after France Info starved at **T₀ ≈ 133.5 s**. The ring drained over
+    about 3 s with no stall or reconnect. The check can fail.
+  - On the fix it ran **600 s with 0 underruns, cumulative 1.0000**: 597.417 s of content in
+    597.421 s of wall clock.
+- **A4, the app, Martín's hands, one session:** France Info (midfi MP3, 48 000), RFI Afrique and
+  ORBITAL all read **1.0000**, with 0 underruns.
+
+**To be merged by Martín, `--no-ff`, and tagged `defect-a-done`.**
+
 ### M3b: the collapsed view, the click endpoint, prefetch from bitrate — built (2026-09-23)
 
 Branch `m3b` from `92cfe3f`, seven commits each pushed alone (plan `_handover/m3b-plan.md`;
@@ -737,7 +856,7 @@ max; recorded in the constant's comment rather than re-derived downward from the
 luckier sample. The hand-driven scroll runs once at M3b acceptance.
 
 **Observed, not criteria:** one `stream_download` DEBUG line per play under `RUST_LOG=info`
-(M3a saw six) — cause still open at build time; acceptance below correlated it with A; the Web
+(M3a saw six) — cause still open at build time; acceptance below correlated it with A *(corrected 2026-09-24: the line counts the reader's live-edge waits — 14 at correct speed, 1 at ×1.09 — and is not a measure of A; see "Defect A")*; the Web
 Inspector was not used (a GUI session Code cannot drive; the screen capture stood in); the
 selected country is not persisted (a launch starts on PT).
 
@@ -761,7 +880,7 @@ list served at once, refreshed on show. Three findings, each a thing a log canno
   run, read which of the four stops changing; only then choose between re-opening the sink per
   session and resampling to a fixed rate. The `stream_download` DEBUG line above is its clue —
   66 in the run where playback outran the download, one per station otherwise: 44.1 kHz
-  content through a 48 kHz path drains the buffer ~9 % faster than it fills. Items 4 (clicks:
+  content through a 48 kHz path drains the buffer ~9 % faster than it fills. *(Corrected 2026-09-24: the line is not a measure of A — 14 at correct speed, 1 at ×1.09 in the Step 0 run; it counts live-edge waits, which a healthy stream has too. The ~9 % drain is real and was measured directly. See "Defect A".)* Items 4 (clicks:
   3 plays → 3 votes; none on pause, resume or the playing row; Recents in order) and 6 (the
   prefetch lines: 64 → 32 768, 192 → 48 000, 320 → 80 000) **pass on their own quantities**
   and were not re-run.
@@ -945,7 +1064,7 @@ plan's Verification section against the debug bundle at `b52e61c`, logs `m3a-acc
   are now run by Martín himself from Terminal (Code lists the commands, ends its turn), online
   ones by Code's launcher with the handshake.
 - **Observations, not criteria:** six `stream_download` DEBUG lines per play under `RUST_LOG=info`
-  (the shell's filter should not pass them; cause not identified); the first popover show of a
+  (the shell's filter should not pass them; cause not identified — they are the reader's live-edge waits and do not measure playback speed, see "Defect A", 2026-09-24); the first popover show of a
   session with the 327-row list mounted takes 51–83 ms against M2d's 2–13 ms, later shows 2–35 ms
   (`LAYOUT_FALLBACK` 250 ms still 3× the worst); the dev list's country `<select>` is wider than
   the panel (its label is a flex item that cannot shrink below the select's intrinsic width), which
@@ -2116,7 +2235,9 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
    click endpoint, cache TTLs, favourites/recents. **M3a built 2026-09-22 on branch `m3a`** (the
    crate, cache, store, commands, a dev list) — see "M3a: the station directory, built"; M3b (UI,
-   click, prefetch from bitrate) and M3c (HLS, ADTS only) follow.
+   click, prefetch from bitrate) and M3c (HLS, ADTS only) follow. **Defect A**, M1's sample-rate
+   defect found at M3b acceptance, was fixed before M4 on branch `a-sample-rate` (`ebb414f`),
+   accepted 2026-09-24; Martín merges it and tags it `defect-a-done`. See "Defect A".
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
    coordinate DB merge. Record measured bundle size.
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
@@ -2345,6 +2466,11 @@ rather than assumed closed.
   from this document. Update "Verified versions" when you do.
 - **Keep this document current.** When a decision is made or reversed, update the relevant
   section here rather than burying it in a chat.
+- **Playback acceptance reads speed from a measured ratio, and plays one station past its head
+  start** (defect A, 2026-09-24). A 9 % speed error ran clean for 133 s before its first underrun:
+  the ring and the server's burst hid it. By ear, 44.1 ↔ 48 kHz is easy to miss. So a check that
+  plays each station for ten seconds and listens can pass a station that starves later. Play one
+  station for at least 10 min, or 3 × a measured time-to-starve, and read the pull ratio.
 - Martín prefers concise, factual answers with reputable sources. Skip the preamble.
 
 ## Glossary
