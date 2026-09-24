@@ -1,0 +1,10 @@
+#EXTM3U
+#EXT-X-TARGETDURATION:10
+#EXT-X-MEDIA-SEQUENCE:179287668
+#EXT-X-DISCONTINUITY
+#EXTINF:10,title="Ohio",artist="Crosby, Stills, Nash & Young",url="song_spot=\"M\" spotInstanceId=\"-1\" length=\"00:02:59\" MediaBaseId=\"1091040\" TAID=\"0\" TPID=\"1077808\" cartcutId=\"760171\" amgArtworkURL=\"http://image.iheart.com/content/music/prod/WMG2/Thumb_Content/Full_PC/WMG/Sept/cat4/603497968350/075678264825.jpg\" spEventID=\"5aa00cb0-76b2-f111-8385-0242c86e7629\" "
+http://cloud-proxy-hls.revma.ihrhls.com/zc6951/29_1q6zwms8wshwa02/main/179287666.aac?rj-org=n1db-e2
+#EXTINF:10,title="Ohio",artist="Crosby, Stills, Nash & Young",url="song_spot=\"M\" spotInstanceId=\"-1\" length=\"00:02:59\" MediaBaseId=\"1091040\" TAID=\"0\" TPID=\"1077808\" cartcutId=\"760171\" amgArtworkURL=\"http://image.iheart.com/content/music/prod/WMG2/Thumb_Content/Full_PC/WMG/Sept/cat4/603497968350/075678264825.jpg\" spEventID=\"5aa00cb0-76b2-f111-8385-0242c86e7629\" "
+http://cloud-proxy-hls.revma.ihrhls.com/zc6951/29_1q6zwms8wshwa02/main/179287667.aac?rj-org=n1db-e2
+#EXTINF:10,title="Ohio",artist="Crosby, Stills, Nash & Young",url="song_spot=\"M\" spotInstanceId=\"-1\" length=\"00:02:59\" MediaBaseId=\"1091040\" TAID=\"0\" TPID=\"1077808\" cartcutId=\"760171\" amgArtworkURL=\"http://image.iheart.com/content/music/prod/WMG2/Thumb_Content/Full_PC/WMG/Sept/cat4/603497968350/075678264825.jpg\" spEventID=\"5aa00cb0-76b2-f111-8385-0242c86e7629\" "
+http://cloud-proxy-hls.revma.ihrhls.com/zc6951/29_1q6zwms8wshwa02/main/179287668.aac?rj-org=n1db-e2
