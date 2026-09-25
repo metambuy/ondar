@@ -1834,8 +1834,10 @@ mod session_tests {
     /// and one `Started`. The master is requested **twice** (the `HttpStream` GET, then
     /// `hls::open`'s own — review R1), then the media playlist, then the start segments
     /// 97880–97882 (three from the end, D5). On `b7e050a`: `Error { UnsupportedFormat }`
-    /// after one request, no `Playing` (F7). Fails without gunzip (the media playlist's
-    /// compressed bytes read as garbage URIs, the census's run-1 bug) or without the
+    /// after one request, no `Playing` (F7). Fails without gunzip — the parser refuses the
+    /// media playlist's compressed bytes as `NotPlaylist` ("not a playlist (no #EXTM3U)"), so
+    /// the session ends `Error { UnsupportedFormat }` (the census probe's run-1 bug was the
+    /// other shape: garbage URIs, because its parser had no `#EXTM3U` check) — or without the
     /// dispatch.
     #[test]
     fn t12_adts_hls_behind_a_gzipped_media_playlist_plays() {

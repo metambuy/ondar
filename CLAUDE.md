@@ -665,7 +665,12 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
 - **CI gates every *push*, verifying that push's head commit — not every commit.** The rule
   above is yours to keep, not something CI enforces: a multi-commit push leaves every commit
   but the last unverified. **So a commit that has to stand on its own has to be pushed on its
-  own.** See ONDAR.md, "CI verifies the head of each push, not every commit".
+  own.** See ONDAR.md, "CI verifies the head of each push, not every commit". **Code waits for
+  CI with a single `gh run watch --exit-status`, never a polling loop; one push per green**
+  (decided 2026-09-25): after each push, in the background, `sleep 15; gh run watch "$(gh run
+  list --branch <b> --commit <sha> --limit 1 --json databaseId -q '.[0].databaseId')"
+  --exit-status`, with the sha captured at push time; green → the next commit; red or no run →
+  stop and report the run URL. `gh auth status` first in a session.
 - When a decision is made or reversed, it goes into **ONDAR.md**, not just the chat.
 - If a documented approach turns out to be wrong, stop and say so before improvising.
 - **The author of a block is frequently wrong about the code — verify before applying, and say

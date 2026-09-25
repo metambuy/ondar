@@ -731,7 +731,7 @@ argument or type; the vitest count stays 15.
 | X3 France Inter (TS) / Fox (video) | `Error` in 0.24 s / 0.70 s with the two messages; **3 / 2 requests**, exact on the fixture server and matching the live `hls request` lines; 0 `Reconnecting`, 0 `Started`, 0 clicks |
 | X4 click = play | in-app one play → one click line; HLS → Icecast → HLS through the probe: 3 plays, 3 `Started`, 0 reopens; the HLS task `ended reason=closed` at each switch and made 0 requests during the Icecast play |
 | X5 Stop during a wait | `hls task ended reason=closed` in the same millisecond as the switch; the host saw **no request for 31 s** with the process alive |
-| X6 Wi-Fi off 20 s (Martín, 2026-09-25) | twice: `Buffering` 7 s after the last segment → the hung reload's 10 s timeout → the retry's DNS error → `hls task ended reason=stall` 16.5 s after the last new segment → `Reconnecting { 1..4 }` → `Playing` — **20.7 s of silence for a ~20 s outage**; a second toggle 12 s after the recovery ran the same chain as `Reconnecting { 5 }` (24 s of stable play, under the 30 s reset) and recovered at 21.7 s; **one click line**, no `Started` on a reopen; after recovery mean 1.0001, 0 underruns |
+| X6 Wi-Fi off 20 s (Martín, 2026-09-25) | (its `hls request … kind=master` failure lines at 13:11:09 and 13:11:49 were **media** reloads — the log's `kind=` was wrong on failures until review fix D, `005cc62`; the log is evidence and is annotated, not edited) twice: `Buffering` 7 s after the last segment → the hung reload's 10 s timeout → the retry's DNS error → `hls task ended reason=stall` 16.5 s after the last new segment → `Reconnecting { 1..4 }` → `Playing` — **20.7 s of silence for a ~20 s outage**; a second toggle 12 s after the recovery ran the same chain as `Reconnecting { 5 }` (24 s of stable play, under the 30 s reset) and recovered at 21.7 s; **one click line**, no `Started` on a reopen; after recovery mean 1.0001, 0 underruns |
 | X7 | on the reverted clean tree: fmt, clippy (0 warnings), **217 + 15**, typecheck, lint all 0; `pnpm tauri:dev` clean (X1's run was one; a second launch on the clean tree, `x7-devlaunch.*`) |
 
 X6's second outage is a note on **M1's policy, not M3c's**: two outages inside `STABLE_AFTER`
@@ -779,6 +779,32 @@ defect A: bound the build phase (a test that fails on `main` with the paced `FFF
 the `FFF9` → `FFF1` rewrite on the Icecast path as a streaming wrapper over `hls::segment`, sized
 by the still-unmade count of Icecast AAC stations that send it (≈ 36 header reads over P5's
 `audio/aac*` rows). OPEN.md carries it.
+
+**Code review, 2026-09-25** (`_handover/m3c-review-findings.md`, verified; triage
+`m3c-review-triage-2026-09-25.md`; the single-agent local `/code-review` on the seven-commit
+branch at `102c114`). Nine findings, all accepted, fixed in five commits pushed one per green
+CI run plus this docs commit:
+
+| # | finding | fix |
+|---|---|---|
+| 1–3 | **three panics reachable from a remote playlist on the decode thread** — a `CODECS` value with a multi-byte char at byte 5 or 8 (`c[..5]`: "byte index 5 is not a char boundary"), an `EXTINF` of `1e30` (`Duration::from_secs_f64`: "cannot convert float seconds to Duration"), a `MEDIA-SEQUENCE` or `TARGETDURATION` at u64::MAX ("attempt to add with overflow"; "overflow when multiplying duration by scalar"). **The release profile is `panic = "abort"`**, so each was a whole-app abort from one playlist; in dev the thread died and the session sat in `Connecting` (defect B's shape) | A `cce9ffa`: byte-wise prefix compares, `try_from_secs_f64` into the parser's deferred `Malformed`, `checked_add` with u64::MAX refused, saturating `+ 1`, the timeouts on the planner's bounded TD, the bitrate cast capped; a hostile-playlist table test with every row's panic recorded first; **and a sweep** of every arithmetic op, cast, index/slice, `Duration` constructor and `unwrap`/`expect`/`unreachable!` in `hls/` outside tests, each listed in the commit message as fixed or safe-and-why (22 sites: 8 fixed, 12 safe by a checked bound or a `find`-derived index, 2 left for E) |
+| 4 | the first segment's HTTP failure took the playlist policy (terminal for 401/403/404/410) where every later segment's is retry-then-gap: a just-evicted start segment ended the session with `Error { http }` | B `28f7098`, reshaped by the triage: 404/410 = eviction → the next pending start segment, then a retriable `Network` error (the backoff reopens on a fresher window); **401/403 stay terminal** — access denial does not change with a retry. T18–T20 |
+| 5 | a gzip-encoded first segment was never sniffed (one flag served the early and the post-inflate sniff) — a gzipped TS segment read the generic message | C `938944c`: two states; T21 |
+| 6, 8 | a second `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `hls::open` outside CLAUDE.md's exhaustive list; two "for the type" arms guarding a `remove(0)` on a list they made empty | E `adf8af7`: `stream::bounded_storage()` shared by both opens; a typed `Network` error for an empty start and an iterator for the start candidates — `hls/mod.rs` has no `expect` and no index left |
+| 7 | every playlist-fetch failure logged `kind=master`, media reloads included (X6's log) | D `005cc62`: the kind the caller asked for on a failure, the parsed kind on success; `logged_kind` pure + tested |
+| 9 | T12's comment described a failure shape the parser cannot produce | this commit |
+
+**Invariant, from finding 1–3: no code path from network bytes may panic.** `panic = "abort"`
+is the right release setting — an audio-thread panic must not leave a half-dead app — and it
+is exactly why a panic reachable from a playlist, a segment, an ICY header or a station record
+is a crash from the network. Every value parsed from the network is bounded before it is used
+in arithmetic, indexing, slicing or a `Duration`; string prefixes are compared byte-wise; and a
+value that cannot be bounded is a typed refusal. The review's sweep is the method: list every
+site and say why each cannot fire. A later `/code-review` checks against this invariant.
+
+**Recorded from the triage:** the review was a single agent again; it found three real crashes,
+so it was not thin in effect, but the sweep is what closes the class. Ultra stays reserved for
+M4 and M6. Tests after the fixes: **224 + 15** (audio 120: +2 in A, +3 in B, +1 in C, +1 in D).
 
 **Out of scope, recorded:** the MPEG-TS demux (5 of the census's 10 HLS stations, 3 with video)
 stays after M4 as decided 2026-09-21; `EXT-X-MEDIA` audio renditions are not followed; there is no
