@@ -864,6 +864,18 @@ review 2: **233 + 15** (audio 129: +3 in `0f045b3`, +4 in `b07e04e`, +1 in `d61d
 merge; the merge needs no crash or user-visible behaviour finding, and test-determinism or doc
 findings from it are fixed on `main` after the merge.
 
+**Code review 3, 2026-09-25** (`_handover/m3c-review3-findings.md`, verified; the last scoped
+round, `fe120a2..9a6a059`). No crash. Three findings, triaged by Martín:
+
+| # | finding | decision |
+|---|---|---|
+| 1 | since `0f045b3` an Icecast open's error-body excerpt is read only when `Content-Length` is declared and ≤ 64 KiB, so a chunked or close-delimited error page loses its excerpt — 2026-09-22 finding 10's `<h2>Mount point not found</h2>` for such servers | **accepted loss.** The bound stays: an endless error body cannot be read. A bounded prefix is not possible through stream-download 0.24.4 (`FetchError` gives `&reqwest::Response` and `decode_error(self)` = `text()` in full). **Revisit in defect B** with a measured Icecast missing-mount response: if it declares a length, nothing is lost; if not, a separate GET read to 64 KiB for the excerpt is the option on the table |
+| 2 | one `retries` counter across failure kinds: 503, 503, 404 skipped the 404 with no retry — an audible gap in the CDN-lag case | **fixed**, `4a6e3a7`: the 404 retries counted apart; T27 (on `9a6a059`: `[3, 4, 4, 4, 5]`) |
+| 3 | the session-test harness's `grace` can overwrite a held state when `states_while_waiting_for` enters with its condition already true, losing a state | **carried to `main`** after the merge (test determinism, per the stop rule): `grace` returns when a state is held, or the held slot becomes a queue |
+
+Tests after round 3: **234 + 15** (audio 130). The merge criterion — no crash or user-visible
+behaviour finding outstanding — is met.
+
 ### Defect A: the output kept the first session's sample rate — measured, fixed (2026-09-24)
 
 Branch `a-sample-rate` off `main` `f7af9dc`. Fix `ebb414f`. Records in `_handover/`: Step 0
