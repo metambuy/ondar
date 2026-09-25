@@ -2677,6 +2677,29 @@ mod session_tests {
         );
     }
 
+    /// Round-3 review (2026-09-25), finding 2: the two 404 retries are counted apart from other
+    /// failures. Seq 4 answers 503, 503, then 404 for good: two transient retries, then the
+    /// first 404 and its **two** retries — five requests — then the gap and seq 5. On
+    /// `9a6a059` one counter served both, so the first 404 found it at 2 and skipped at once:
+    /// three requests, and no retry for a CDN edge that was about to have the segment.
+    #[test]
+    fn t27_404_retries_are_not_used_up_by_earlier_transient_failures() {
+        let (base, paths) = task_segment_server(|seq, n| match (seq, n) {
+            (4, 1 | 2) => Some(503),
+            (4, _) => Some(404),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, GUARD);
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            5,
+            "503, 503, 404 + two 404 retries: {segs:?}"
+        );
+    }
+
     /// Finding 4: a 404 that does not heal is a gap after the two retries — three requests,
     /// then the next segment — never a whole-TD retry. On `0f045b3`: ten requests over the
     /// TD of 10 s.

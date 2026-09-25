@@ -890,7 +890,10 @@ impl FetchTask {
             log::info!("hls discontinuity before seq={}", seg.seq);
         }
         let first_try = Instant::now();
-        let mut retries = 0u32;
+        // 404 retries only: a transient failure's retries are bounded by the TD window, and
+        // must not use up a later 404's (round-3 review, finding 2: 503, 503, 404 skipped the
+        // 404 with none).
+        let mut not_found_retries = 0u32;
         let bytes = loop {
             let fetched = tokio::select! {
                 _ = self.tx.closed() => return Err(Ended::Closed),
@@ -908,14 +911,21 @@ impl FetchTask {
                 Ok(SegmentFetch::Evicted { status, .. }) => Failure::NotFound(status),
                 Err(e) => Failure::Transient(e.message),
             };
-            match after_failure(&failure, retries, first_try.elapsed(), self.target_duration) {
+            match after_failure(
+                &failure,
+                not_found_retries,
+                first_try.elapsed(),
+                self.target_duration,
+            ) {
                 AfterFailure::Retry => {
                     log::warn!(
                         "hls segment seq={} failed, retrying: {}",
                         seg.seq,
                         failure.cause()
                     );
-                    retries += 1;
+                    if matches!(failure, Failure::NotFound(_)) {
+                        not_found_retries += 1;
+                    }
                     if self.wait(SEGMENT_RETRY_STEP).await.is_err() {
                         return Err(Ended::Closed);
                     }
@@ -978,19 +988,20 @@ enum AfterFailure {
 }
 
 /// The fetch task's rule for a failed segment, pure (review 2, 2026-09-25, findings 2 and 4):
-/// a 410 is skipped at once; a 404 is retried [`NOT_FOUND_RETRIES`] times, then skipped; any
+/// a 410 is skipped at once; a 404 is retried [`NOT_FOUND_RETRIES`] times — `not_found_retries`
+/// counts 404 retries alone (round-3 review, finding 2) — then skipped; any
 /// other failure is retried at [`SEGMENT_RETRY_STEP`] while the next try still falls within
 /// one target duration of the first (D3). The TD is bounded here, as [`segment_timeout`]
 /// bounds its own, so the window is at most 30 s whatever the playlist says.
 fn after_failure(
     failure: &Failure,
-    retries: u32,
+    not_found_retries: u32,
     since_first_try: Duration,
     target_duration: Duration,
 ) -> AfterFailure {
     let retry = match failure {
         Failure::Gone => false,
-        Failure::NotFound(_) => retries < NOT_FOUND_RETRIES,
+        Failure::NotFound(_) => not_found_retries < NOT_FOUND_RETRIES,
         Failure::Transient(_) => {
             since_first_try + SEGMENT_RETRY_STEP
                 <= playlist::bounded_target_duration(target_duration)
