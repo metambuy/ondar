@@ -1818,6 +1818,8 @@ mod session_tests {
         status: u16,
         content_type: &'static str,
         gzip: bool,
+        /// Extra header lines, each ending in `\r\n`.
+        headers: &'static str,
         body: Vec<u8>,
     }
 
@@ -1826,6 +1828,7 @@ mod session_tests {
             status: 200,
             content_type,
             gzip: false,
+            headers: "",
             body,
         }
     }
@@ -1858,6 +1861,7 @@ mod session_tests {
                     status: 404,
                     content_type: "text/plain",
                     gzip: false,
+                    headers: "",
                     body: b"not found".to_vec(),
                 });
                 let mut out = format!(
@@ -1870,6 +1874,7 @@ mod session_tests {
                 if response.gzip {
                     out.extend_from_slice(b"content-encoding: gzip\r\n");
                 }
+                out.extend_from_slice(response.headers.as_bytes());
                 out.extend_from_slice(b"\r\n");
                 out.extend_from_slice(&response.body);
                 let _ = sock.write_all(&out);
@@ -1982,6 +1987,7 @@ mod session_tests {
                 status: 200,
                 content_type: "application/vnd.apple.mpegurl",
                 gzip: true,
+                headers: "",
                 body: media_gz.clone(),
             }),
             p if p.starts_with("/liveradio/antena180a/media_") && p.ends_with(".aac") => {
@@ -2250,6 +2256,7 @@ mod session_tests {
                     status,
                     content_type: "text/plain",
                     gzip: false,
+                    headers: "",
                     body: b"gone".to_vec(),
                 }),
                 None => Some(routed("audio/aac", synth_segment(&head, 1.0))),
@@ -2305,6 +2312,50 @@ mod session_tests {
         h.ctx.cancel();
     }
 
+    /// Review 2 (2026-09-25), finding 5: every start segment gone is an answer the server
+    /// sent, so the open's error is `Http` — retriable (`terminal: false`, the backoff reopens
+    /// on a fresher window) and carrying the server's `Retry-After` — not `Network`, which put
+    /// `network: … 404 …` on the page after the fifth attempt, code and message disagreeing.
+    /// `hls::open` is called directly: `run_session` shows its error only after 31 s of
+    /// backoff. On `b07e04e`: `code: Network`, `retry_after: None`.
+    #[test]
+    fn t26_start_segments_gone_is_a_retriable_http_error_with_its_retry_after() {
+        let (base, _paths) = routed_server(|path| {
+            if path == "/live/playlist.m3u8" {
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(1, 1.0, 1, 5, Duration::from_secs(4)).into_bytes(),
+                ));
+            }
+            seg_seq(path).map(|_| Routed {
+                status: 410,
+                content_type: "text/plain",
+                gzip: false,
+                headers: "retry-after: 7\r\n",
+                body: b"gone".to_vec(),
+            })
+        });
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let client = stream::build_client("Ondar/test");
+        let url = stream::parse_url(&format!("{base}/live/playlist.m3u8")).expect("url");
+        let e = match rt.block_on(crate::hls::open(
+            &client,
+            url,
+            Arc::new(AtomicU64::new(0)),
+            stream::PREFETCH_FLOOR_BYTES,
+        )) {
+            Ok(_) => panic!("open succeeded with every start segment gone"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            (e.code, e.terminal, e.retry_after),
+            (ErrorCode::Http, false, Some(Duration::from_secs(7))),
+            "{}",
+            e.message
+        );
+        assert!(e.message.contains("410"), "{}", e.message);
+    }
+
     /// Fix B keeps 401/403 terminal: access denial (a geo-block) does not change with a retry,
     /// and five backoff attempts before the same answer would be worse than the honest error
     /// now. One chain: the playlist twice, the segment once. Unchanged from `cce9ffa`.
@@ -2356,6 +2407,7 @@ mod session_tests {
                 status: 200,
                 content_type: "video/MP2T",
                 gzip: true,
+                headers: "",
                 body: gz.clone(),
             }),
             _ => None,
@@ -2398,6 +2450,7 @@ mod session_tests {
                 status: 200,
                 content_type: "application/vnd.apple.mpegurl",
                 gzip: true,
+                headers: "",
                 body: gz.clone(),
             }),
             p if seg_seq(p).is_some() => Some(routed("audio/aac", synth_segment(&head, 1.0))),
@@ -2453,6 +2506,7 @@ mod session_tests {
                     status,
                     content_type: "text/plain",
                     gzip: false,
+                    headers: "",
                     body: b"gone".to_vec(),
                 }),
                 None => Some(routed("audio/aac", synth_segment(&head, 1.0))),

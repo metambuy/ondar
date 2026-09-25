@@ -393,8 +393,12 @@ enum SegmentFetch {
     /// 404, the edge does not have it yet). Not an error of the station: `open` tries the next
     /// pending segment; the task skips a 410 at once and a 404 after [`NOT_FOUND_RETRIES`]
     /// (review 2026-09-25, finding 4; review 2, finding 4). 401/403 are not this: access
-    /// denial is a `StreamError`, terminal at open, as for a playlist.
-    Evicted(u16),
+    /// denial is a `StreamError`, terminal at open, as for a playlist. The server's
+    /// `Retry-After`, if any, is carried for the open's error (review 2, finding 5).
+    Evicted {
+        status: u16,
+        retry_after: Option<Duration>,
+    },
 }
 
 /// GET a segment. With `sniff_first`, a plain body is read only to the ID3 tags plus
@@ -429,7 +433,10 @@ async fn fetch_segment(
         let status = response.status();
         if matches!(status.as_u16(), 404 | 410) {
             log_request(Kind::Segment, &seg.uri, status.as_str(), "0", started);
-            return Ok(SegmentFetch::Evicted(status.as_u16()));
+            return Ok(SegmentFetch::Evicted {
+                status: status.as_u16(),
+                retry_after: stream::retry_after(response.headers()),
+            });
         }
         let e = status_error(Kind::Segment, &response);
         log_request(
@@ -630,17 +637,23 @@ pub async fn open(
     // The first segment decides the container and the session's format. A 404/410 on it is
     // an eviction — the window moved on between the playlist and the request — so the next
     // pending segment is tried; only when every start segment is gone does the open fail, and
-    // then as a retriable `Network` error: the session's backoff reopens on a fresher window
-    // (review 2026-09-25, finding 4).
+    // then as a retriable `Http` error — the server answered, so the code the page shows says
+    // so, and its `Retry-After` stretches the backoff — which reopens on a fresher window
+    // (review 2026-09-25, finding 4; review 2, finding 5: it was `Network`).
     let mut candidates = pending.into_iter();
-    let mut last_evicted: Option<(u64, u16)> = None;
+    let mut last_evicted: Option<(u64, u16, Option<Duration>)> = None;
     let (first, first_bytes, content_type) = loop {
         // Running out of candidates is the typed "all gone" answer; no index, no panic shape.
         let Some(candidate) = candidates.next() else {
-            let (seq, status) = last_evicted.unwrap_or((0, 0));
-            return Err(network(format!(
-                "HLS start segments are gone ({status} at seq {seq}); the window moved on"
-            )));
+            let (seq, status, retry_after) = last_evicted.unwrap_or((0, 0, None));
+            return Err(StreamError {
+                code: ErrorCode::Http,
+                message: format!(
+                    "HLS start segments are gone (HTTP {status} at seq {seq}); the window moved on"
+                ),
+                terminal: false,
+                retry_after,
+            });
         };
         match fetch_segment(client, &candidate, media.target_duration, true).await? {
             SegmentFetch::Refused(c) => return Err(refused_container(c)),
@@ -648,12 +661,15 @@ pub async fn open(
                 bytes,
                 content_type,
             } => break (candidate, bytes, content_type),
-            SegmentFetch::Evicted(status) => {
+            SegmentFetch::Evicted {
+                status,
+                retry_after,
+            } => {
                 log::warn!(
                     "hls start segment seq={} evicted ({status}); trying the next",
                     candidate.seq
                 );
-                last_evicted = Some((candidate.seq, status));
+                last_evicted = Some((candidate.seq, status, retry_after));
             }
         }
     };
@@ -888,8 +904,8 @@ impl FetchTask {
                     log::warn!("hls segment seq={} refused: {c:?}", seg.seq);
                     break None;
                 }
-                Ok(SegmentFetch::Evicted(410)) => Failure::Gone,
-                Ok(SegmentFetch::Evicted(status)) => Failure::NotFound(status),
+                Ok(SegmentFetch::Evicted { status: 410, .. }) => Failure::Gone,
+                Ok(SegmentFetch::Evicted { status, .. }) => Failure::NotFound(status),
                 Err(e) => Failure::Transient(e.message),
             };
             match after_failure(&failure, retries, first_try.elapsed(), self.target_duration) {
