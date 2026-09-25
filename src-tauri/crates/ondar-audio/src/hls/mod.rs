@@ -346,7 +346,6 @@ async fn read_body(
     Ok(Some(body))
 }
 
-/// Parse a fetched body as a playlist, logging the request with the kind it turned out to be.
 /// Parse a fetched body as a playlist, logging the request with the kind it turned out to be
 /// on success and the kind the caller asked for on a refusal (review 2026-09-25, finding 7).
 fn parse_fetched(
@@ -389,7 +388,7 @@ enum SegmentFetch {
         content_type: Option<String>,
     },
     /// Sniffed on its first bytes and dropped: not ADTS.
-    Refused(Container),
+    Refused(Refusal),
     /// 404 or 410: the origin no longer has this segment — the window moved on (or, for a
     /// 404, the edge does not have it yet). Not an error of the station: `open` tries the next
     /// pending segment; the task skips a 410 at once and a 404 after [`NOT_FOUND_RETRIES`]
@@ -461,11 +460,10 @@ async fn fetch_segment(
             // needs `SNIFF_LEN` bytes after them.
             if tags < body.len() && body.len() >= tags + segment::SNIFF_LEN {
                 sniffed_early = true;
-                let container = segment::sniff(&body[tags..]);
-                if container != Container::Adts {
+                if let Some(refusal) = Refusal::of(segment::sniff(&body[tags..])) {
                     log_request(Kind::Segment, &seg.uri, "200", "head", started);
                     drop(response);
-                    return Ok(SegmentFetch::Refused(container));
+                    return Ok(SegmentFetch::Refused(refusal));
                 }
             }
         }
@@ -502,10 +500,9 @@ async fn fetch_segment(
         // The body ended before the sniff had its bytes (a short segment), or it was gzipped
         // and is only now inflated: sniff whatever there is.
         let tags = segment::id3_end(&body);
-        let container = segment::sniff(&body[tags..]);
-        if container != Container::Adts {
+        if let Some(refusal) = Refusal::of(segment::sniff(&body[tags..])) {
             log_request(Kind::Segment, &seg.uri, "200", "head", started);
-            return Ok(SegmentFetch::Refused(container));
+            return Ok(SegmentFetch::Refused(refusal));
         }
     }
     log_request(
@@ -521,12 +518,33 @@ async fn fetch_segment(
     })
 }
 
-fn refused_container(c: Container) -> StreamError {
-    unsupported(match c {
-        Container::MpegTs => "HLS with MPEG-TS segments is not supported yet",
-        Container::Fmp4 => "HLS with fMP4 segments is not supported yet",
-        Container::Unknown => "HLS segment format not recognised",
-        Container::Adts => unreachable!("an ADTS segment is not refused"),
+/// A container the first segment is refused for: every [`Container`] but ADTS, so the
+/// message below is total — no arm for a container that is never refused (review 2,
+/// 2026-09-25, finding 3: it was `Container::Adts => unreachable!`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusal {
+    MpegTs,
+    Fmp4,
+    Unknown,
+}
+
+impl Refusal {
+    /// `None` for ADTS, the one container that plays.
+    fn of(c: Container) -> Option<Refusal> {
+        match c {
+            Container::Adts => None,
+            Container::MpegTs => Some(Refusal::MpegTs),
+            Container::Fmp4 => Some(Refusal::Fmp4),
+            Container::Unknown => Some(Refusal::Unknown),
+        }
+    }
+}
+
+fn refused_container(r: Refusal) -> StreamError {
+    unsupported(match r {
+        Refusal::MpegTs => "HLS with MPEG-TS segments is not supported yet",
+        Refusal::Fmp4 => "HLS with fMP4 segments is not supported yet",
+        Refusal::Unknown => "HLS segment format not recognised",
     })
 }
 
@@ -972,6 +990,42 @@ fn after_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review 2 (2026-09-25), finding 3: no panic shape in the non-test code of `hls/` — no
+    /// `unreachable!`, `panic!`, `todo!`, `unimplemented!`, `.unwrap()` or `.expect(`. Every
+    /// value there comes from the network or is derived from it, and the release profile is
+    /// `panic = "abort"`. Fails on `b07e04e` at `refused_container`'s `Container::Adts =>
+    /// unreachable!`, and on `fe120a2` also at the task's `unreachable!("matched above")`. A
+    /// source scan: a new site fails the build's tests, not a reviewer's memory.
+    #[test]
+    fn hls_code_outside_tests_has_no_panic_shape() {
+        const SHAPES: [&str; 6] = [
+            "unreachable!",
+            "panic!",
+            "todo!",
+            "unimplemented!",
+            ".unwrap()",
+            ".expect(",
+        ];
+        for (name, src) in [
+            ("mod.rs", include_str!("mod.rs")),
+            ("playlist.rs", include_str!("playlist.rs")),
+            ("segment.rs", include_str!("segment.rs")),
+        ] {
+            let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+            for (n, line) in code.lines().enumerate() {
+                let line = line.split("//").next().unwrap_or(line);
+                for shape in SHAPES {
+                    assert!(
+                        !line.contains(shape),
+                        "hls/{name}:{}: `{shape}` outside tests: {}",
+                        n + 1,
+                        line.trim()
+                    );
+                }
+            }
+        }
+    }
 
     /// Review 2 (2026-09-25), findings 2 and 4: the task's retry rule. A transient failure is
     /// retried within one **bounded** TD — at `TARGETDURATION:3600` the window closes at 30 s.
