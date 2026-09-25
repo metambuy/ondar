@@ -297,10 +297,15 @@ async fn fetch_playlist(
         )));
     };
     let bytes = if gzipped {
-        segment::gunzip(&body).map_err(|e| {
-            unsupported(format!(
+        // Capped as the compressed body is: a body that inflates past the cap is refused as
+        // an over-cap body is (review 2, finding 1).
+        segment::gunzip(&body, PLAYLIST_MAX_BYTES).map_err(|e| match e {
+            segment::GunzipError::TooLarge(_) => unsupported(format!(
+                "HLS playlist {final_url} is over {PLAYLIST_MAX_BYTES} bytes inflated"
+            )),
+            segment::GunzipError::Invalid(e) => unsupported(format!(
                 "HLS playlist {final_url}: content-encoding gzip but {e}"
-            ))
+            )),
         })?
     } else {
         body
@@ -388,9 +393,12 @@ enum SegmentFetch {
     Evicted(u16),
 }
 
-/// GET a segment. With `sniff_first`, only the ID3 tags plus [`segment::SNIFF_LEN`] bytes are
-/// read before the container is named, and a segment that is not ADTS is dropped there — the
-/// body is never downloaded. The `Content-Encoding` is honoured for segments too.
+/// GET a segment. With `sniff_first`, a plain body is read only to the ID3 tags plus
+/// [`segment::SNIFF_LEN`] bytes before the container is named, and a segment that is not ADTS
+/// is dropped there. A **gzipped** refused segment is downloaded whole, ≤ `SEGMENT_MAX_BYTES`
+/// compressed and inflated, before its sniff: the container is only visible after inflating
+/// (review 2, 2026-09-25, finding 1 — P4 saw no gzipped segment, so no streaming inflate).
+/// The `Content-Encoding` is honoured for segments too.
 async fn fetch_segment(
     client: &Client,
     seg: &Segment,
@@ -480,7 +488,7 @@ async fn fetch_segment(
         body.extend_from_slice(&chunk);
     }
     let body = if gzipped {
-        segment::gunzip(&body)
+        segment::gunzip(&body, SEGMENT_MAX_BYTES)
             .map_err(|e| network(format!("HLS segment {}: gzip: {e}", seg.uri)))?
     } else {
         body

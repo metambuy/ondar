@@ -2260,6 +2260,58 @@ mod session_tests {
         thread::sleep(Duration::from_millis(300));
         assert_eq!(paths.lock().unwrap().len(), 3);
     }
+
+    /// Review 2 (2026-09-25), finding 1, through a caller: a gzip-encoded media playlist
+    /// whose body is a few KB but inflates past `PLAYLIST_MAX_BYTES` (a 2 MiB comment line) is
+    /// refused as the over-cap body already was — terminal, after the two requests of R1. On
+    /// `fe120a2` the inflate had no bound and the session played. Fails if a caller passes a
+    /// cap other than the playlist's.
+    #[test]
+    fn t22_a_gzipped_playlist_that_inflates_past_the_cap_is_refused() {
+        let head = fixture("10-seg-head.aac");
+        let text = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#{}\n#EXTINF:1.0,\nseg-1.aac\n#EXTINF:1.0,\nseg-2.aac\n#EXTINF:1.0,\nseg-3.aac\n",
+            " ".repeat(2 * 1024 * 1024)
+        );
+        let gz = {
+            use std::io::Write;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            e.write_all(text.as_bytes()).unwrap();
+            e.finish().unwrap()
+        };
+        assert!(gz.len() < 64 * 1024, "compressed {} bytes", gz.len());
+        let (base, paths) = routed_server(move |path| match path {
+            "/live/playlist.m3u8" => Some(Routed {
+                status: 200,
+                content_type: "application/vnd.apple.mpegurl",
+                gzip: true,
+                body: gz.clone(),
+            }),
+            p if seg_seq(p).is_some() => Some(routed("audio/aac", synth_segment(&head, 1.0))),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(5), |s| is_error(s) || is_playing(s));
+        let state = h.ctx.shared.state();
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::UnsupportedFormat,
+                    ..
+                }
+            ),
+            "state: {state:?} after {seen:?}"
+        );
+        assert!(
+            error_message(&state).contains("over 1048576 bytes"),
+            "{state:?}"
+        );
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(paths.lock().unwrap().len(), 2, "the playlist twice (R1)");
+        h.ctx.cancel();
+    }
 }
 
 #[cfg(test)]

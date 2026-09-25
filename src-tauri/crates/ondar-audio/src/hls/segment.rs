@@ -259,13 +259,42 @@ impl FormatGuard {
 // ---------------------------------------------------------------------------------------------
 // gzip
 
-/// Inflate a gzip body. Decided by the response's `Content-Encoding: gzip`, never requested:
-/// station 10 gzips its playlists unasked (finding F6), and asking would change the request
-/// for every Icecast station too.
-pub fn gunzip(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(bytes.len() * 4);
-    flate2::read::GzDecoder::new(bytes).read_to_end(&mut out)?;
+/// Inflate a gzip body, refusing one that inflates past `max` bytes. Decided by the response's
+/// `Content-Encoding: gzip`, never requested: station 10 gzips its playlists unasked (finding
+/// F6), and asking would change the request for every Icecast station too.
+///
+/// `max` is the caller's cap on the body — the same cap its compressed bytes already met. The
+/// inflate reads at most `max + 1` bytes, so a body of zeros (~1000:1, measured) cannot become
+/// a multi-gigabyte `Vec` (review 2, 2026-09-25, finding 1: on `fe120a2` there was no bound).
+pub fn gunzip(bytes: &[u8], max: usize) -> Result<Vec<u8>, GunzipError> {
+    let mut out = Vec::with_capacity(bytes.len().saturating_mul(4).min(max));
+    let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
+    flate2::read::GzDecoder::new(bytes)
+        .take(limit)
+        .read_to_end(&mut out)
+        .map_err(GunzipError::Invalid)?;
+    if out.len() > max {
+        return Err(GunzipError::TooLarge(max));
+    }
     Ok(out)
+}
+
+/// Why a body did not inflate.
+#[derive(Debug)]
+pub enum GunzipError {
+    /// It inflates past the caller's cap (the cap is carried).
+    TooLarge(usize),
+    /// It is not gzip, or is truncated.
+    Invalid(io::Error),
+}
+
+impl std::fmt::Display for GunzipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GunzipError::TooLarge(max) => write!(f, "inflates past {max} bytes"),
+            GunzipError::Invalid(e) => write!(f, "not gzip: {e}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -633,8 +662,34 @@ mod tests {
     #[test]
     fn gunzip_inflates_the_gzip_fixture_and_refuses_plain_text() {
         let gz = head!("10-media.m3u8.gz");
-        let text = String::from_utf8(gunzip(gz).unwrap()).unwrap();
+        let text = String::from_utf8(gunzip(gz, 1024 * 1024).unwrap()).unwrap();
         assert!(text.starts_with("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n"));
-        assert!(gunzip(b"#EXTM3U\n").is_err());
+        assert!(matches!(
+            gunzip(b"#EXTM3U\n", 1024),
+            Err(GunzipError::Invalid(_))
+        ));
+    }
+
+    /// Review 2 (2026-09-25), finding 1: the inflated body is bounded by the caller's cap, as
+    /// the compressed one already was. 64 KiB of zeros gzips to about a hundred bytes; with a
+    /// cap one byte short it is refused, at the cap it inflates whole. On `fe120a2` there was no
+    /// cap: the same ~1000:1 ratio made a 4 MB compressed segment a ~4 GB `Vec`.
+    #[test]
+    fn gunzip_refuses_a_body_that_inflates_past_its_cap() {
+        use std::io::Write;
+        let zeros = vec![0u8; 64 * 1024];
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        e.write_all(&zeros).unwrap();
+        let gz = e.finish().unwrap();
+        assert!(gz.len() < 1024, "the fixture is a bomb: {} bytes", gz.len());
+        assert_eq!(gunzip(&gz, zeros.len()).unwrap().len(), zeros.len());
+        assert!(matches!(
+            gunzip(&gz, zeros.len() - 1),
+            Err(GunzipError::TooLarge(_))
+        ));
+        assert!(matches!(
+            gunzip(&gz, 16 * 1024),
+            Err(GunzipError::TooLarge(_))
+        ));
     }
 }
