@@ -80,6 +80,10 @@ const CHANNEL_SEGMENTS: usize = 2;
 /// A failed segment fetch is retried at this step while the segment is still within its
 /// target duration of the first try; after that it is a logged gap (decision D3).
 const SEGMENT_RETRY_STEP: Duration = Duration::from_secs(1);
+/// A 404 on a segment the playlist listed is retried this many times at
+/// [`SEGMENT_RETRY_STEP`], then skipped: at the live edge it is often a CDN that has not yet
+/// received a segment the origin already published (review 2, 2026-09-25, finding 4).
+const NOT_FOUND_RETRIES: u32 = 2;
 /// Headroom added to the HLS `retry_timeout` above the longest silence the task can be in.
 const RETRY_TIMEOUT_HEADROOM: Duration = Duration::from_secs(5);
 
@@ -386,10 +390,11 @@ enum SegmentFetch {
     },
     /// Sniffed on its first bytes and dropped: not ADTS.
     Refused(Container),
-    /// 404 or 410: the origin no longer has this segment — the window moved on. Not an error
-    /// of the station: `open` tries the next pending segment, the task retries then skips it
-    /// (review 2026-09-25, finding 4). 401/403 are not this: access denial is a `StreamError`,
-    /// terminal at open, as for a playlist.
+    /// 404 or 410: the origin no longer has this segment — the window moved on (or, for a
+    /// 404, the edge does not have it yet). Not an error of the station: `open` tries the next
+    /// pending segment; the task skips a 410 at once and a 404 after [`NOT_FOUND_RETRIES`]
+    /// (review 2026-09-25, finding 4; review 2, finding 4). 401/403 are not this: access
+    /// denial is a `StreamError`, terminal at open, as for a playlist.
     Evicted(u16),
 }
 
@@ -648,7 +653,10 @@ pub async fn open(
     let task = FetchTask {
         client: client.clone(),
         media_url,
-        target_duration: media.target_duration,
+        // Bounded as the planner's is: the retry window is compared against it, and a raw
+        // `TARGETDURATION:3600` retried a failed segment every second for an hour (review 2,
+        // finding 2).
+        target_duration: playlist::bounded_target_duration(media.target_duration),
         planner,
         guard,
         tx,
@@ -702,6 +710,7 @@ fn log_normalised(seq: u64, n: &Normalised) {
 struct FetchTask {
     client: Client,
     media_url: Url,
+    /// The playlist's TD through [`playlist::bounded_target_duration`]: [1 s, 30 s].
     target_duration: Duration,
     planner: Planner,
     guard: FormatGuard,
@@ -840,19 +849,20 @@ impl FetchTask {
         }
     }
 
-    /// Fetch one segment (retrying within its target duration), normalise it, check its
-    /// format, and send it. `Err` ends the task.
+    /// Fetch one segment (retrying by [`after_failure`]), normalise it, check its format, and
+    /// send it. `Err` ends the task.
     async fn fetch_and_send(&mut self, seg: &Segment) -> Result<(), Ended> {
         if seg.discontinuity {
             log::info!("hls discontinuity before seq={}", seg.seq);
         }
         let first_try = Instant::now();
+        let mut retries = 0u32;
         let bytes = loop {
             let fetched = tokio::select! {
                 _ = self.tx.closed() => return Err(Ended::Closed),
                 r = fetch_segment(&self.client, seg, self.target_duration, false) => r,
             };
-            match fetched {
+            let failure = match fetched {
                 Ok(SegmentFetch::Body { bytes, .. }) => break Some(bytes),
                 Ok(SegmentFetch::Refused(c)) => {
                     // Only the first segment is sniffed; this arm is unreachable while
@@ -860,24 +870,28 @@ impl FetchTask {
                     log::warn!("hls segment seq={} refused: {c:?}", seg.seq);
                     break None;
                 }
-                // An evicted segment and a failed request take the same path: retry within
-                // the target duration, then a logged gap (D3).
-                other => {
-                    let cause = match other {
-                        Ok(SegmentFetch::Evicted(status)) => format!("HTTP {status}"),
-                        Err(e) => e.message,
-                        Ok(SegmentFetch::Body { .. } | SegmentFetch::Refused(_)) => {
-                            unreachable!("matched above")
-                        }
-                    };
-                    if first_try.elapsed() + SEGMENT_RETRY_STEP <= self.target_duration {
-                        log::warn!("hls segment seq={} failed, retrying: {}", seg.seq, cause);
-                        if self.wait(SEGMENT_RETRY_STEP).await.is_err() {
-                            return Err(Ended::Closed);
-                        }
-                        continue;
+                Ok(SegmentFetch::Evicted(410)) => Failure::Gone,
+                Ok(SegmentFetch::Evicted(status)) => Failure::NotFound(status),
+                Err(e) => Failure::Transient(e.message),
+            };
+            match after_failure(&failure, retries, first_try.elapsed(), self.target_duration) {
+                AfterFailure::Retry => {
+                    log::warn!(
+                        "hls segment seq={} failed, retrying: {}",
+                        seg.seq,
+                        failure.cause()
+                    );
+                    retries += 1;
+                    if self.wait(SEGMENT_RETRY_STEP).await.is_err() {
+                        return Err(Ended::Closed);
                     }
-                    log::warn!("hls gap skipped=1 seq={} cause={cause}", seg.seq);
+                }
+                AfterFailure::Skip => {
+                    log::warn!(
+                        "hls gap skipped=1 seq={} cause={}",
+                        seg.seq,
+                        failure.cause()
+                    );
                     break None;
                 }
             }
@@ -902,9 +916,103 @@ impl FetchTask {
     }
 }
 
+/// A segment fetch that failed, as the retry rule reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Failure {
+    /// 410: permanent by definition.
+    Gone,
+    /// 404: evicted, or not at the edge yet.
+    NotFound(u16),
+    /// A network error or any other status: D3's transient failure.
+    Transient(String),
+}
+
+impl Failure {
+    fn cause(&self) -> String {
+        match self {
+            Failure::Gone => "HTTP 410".to_string(),
+            Failure::NotFound(status) => format!("HTTP {status}"),
+            Failure::Transient(message) => message.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterFailure {
+    Retry,
+    Skip,
+}
+
+/// The fetch task's rule for a failed segment, pure (review 2, 2026-09-25, findings 2 and 4):
+/// a 410 is skipped at once; a 404 is retried [`NOT_FOUND_RETRIES`] times, then skipped; any
+/// other failure is retried at [`SEGMENT_RETRY_STEP`] while the next try still falls within
+/// one target duration of the first (D3). The TD is bounded here, as [`segment_timeout`]
+/// bounds its own, so the window is at most 30 s whatever the playlist says.
+fn after_failure(
+    failure: &Failure,
+    retries: u32,
+    since_first_try: Duration,
+    target_duration: Duration,
+) -> AfterFailure {
+    let retry = match failure {
+        Failure::Gone => false,
+        Failure::NotFound(_) => retries < NOT_FOUND_RETRIES,
+        Failure::Transient(_) => {
+            since_first_try + SEGMENT_RETRY_STEP
+                <= playlist::bounded_target_duration(target_duration)
+        }
+    };
+    if retry {
+        AfterFailure::Retry
+    } else {
+        AfterFailure::Skip
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review 2 (2026-09-25), findings 2 and 4: the task's retry rule. A transient failure is
+    /// retried within one **bounded** TD — at `TARGETDURATION:3600` the window closes at 30 s.
+    /// On `fe120a2` the rule was inline, `elapsed + 1 s <= self.target_duration` on the raw
+    /// TD, which answers Retry at 29.001 s (and at 3 599 s); this test fails the same way if
+    /// the bound is dropped. A 410 is never retried; a 404 twice, whatever the TD.
+    #[test]
+    fn after_failure_bounds_every_retry() {
+        let td = Duration::from_secs(3600);
+        let t = Failure::Transient("HTTP 503".into());
+        assert_eq!(
+            after_failure(&t, 28, Duration::from_secs(29), td),
+            AfterFailure::Retry
+        );
+        assert_eq!(
+            after_failure(&t, 29, Duration::from_millis(29_001), td),
+            AfterFailure::Skip
+        );
+        assert_eq!(
+            after_failure(&Failure::Gone, 0, Duration::ZERO, td),
+            AfterFailure::Skip
+        );
+        let nf = Failure::NotFound(404);
+        assert_eq!(
+            after_failure(&nf, 0, Duration::ZERO, td),
+            AfterFailure::Retry
+        );
+        assert_eq!(
+            after_failure(&nf, 1, Duration::from_secs(1), td),
+            AfterFailure::Retry
+        );
+        assert_eq!(
+            after_failure(&nf, 2, Duration::from_secs(2), td),
+            AfterFailure::Skip
+        );
+        // A 404 is retried twice even where the TD is shorter than the two steps.
+        assert_eq!(
+            after_failure(&nf, 1, Duration::from_secs(1), Duration::from_secs(1)),
+            AfterFailure::Retry
+        );
+    }
 
     #[test]
     fn hls_content_types_match_case_insensitively_without_parameters() {

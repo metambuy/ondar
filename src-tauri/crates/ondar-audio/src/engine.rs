@@ -2425,6 +2425,108 @@ mod session_tests {
         assert_eq!(paths.lock().unwrap().len(), 2, "the playlist twice (R1)");
         h.ctx.cancel();
     }
+
+    /// A static window 1..=5 of one-second segments under `TARGETDURATION:10`: the open takes
+    /// seq 3 (three from the end), the fetch task seq 4 then 5. `status_for(seq, n)` answers
+    /// the `n`th request (from 1) for `seq`, `None` for a segment.
+    fn task_segment_server(
+        status_for: impl Fn(u64, usize) -> Option<u16> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let head = fixture("10-seg-head.aac");
+        let counts: Mutex<std::collections::HashMap<u64, usize>> = Mutex::default();
+        routed_server(move |path| {
+            if path == "/live/playlist.m3u8" {
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(10, 1.0, 1, 5, Duration::from_secs(4)).into_bytes(),
+                ));
+            }
+            let seq = seg_seq(path)?;
+            let n = {
+                let mut c = counts.lock().unwrap();
+                let n = c.entry(seq).or_insert(0);
+                *n += 1;
+                *n
+            };
+            match status_for(seq, n) {
+                Some(status) => Some(Routed {
+                    status,
+                    content_type: "text/plain",
+                    gzip: false,
+                    body: b"gone".to_vec(),
+                }),
+                None => Some(routed("audio/aac", synth_segment(&head, 1.0))),
+            }
+        })
+    }
+
+    /// The segment sequence numbers requested once seq 5 has been, or after `within`.
+    fn segs_until_seq5(paths: &Arc<Mutex<Vec<String>>>, within: Duration) -> Vec<u64> {
+        let deadline = Instant::now() + within;
+        loop {
+            let segs: Vec<u64> = paths
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|p| seg_seq(p))
+                .collect();
+            if segs.contains(&5) || Instant::now() >= deadline {
+                return segs;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Review 2 (2026-09-25), finding 4 as triaged: a **410** in the fetch task is permanent —
+    /// one request, then the next segment. On `0f045b3` a 410 took the transient path and was
+    /// retried at 1 s steps for the whole TD (10 s here) before the gap.
+    #[test]
+    fn t23_a_gone_segment_in_the_task_is_skipped_after_one_request() {
+        let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(410));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, Duration::from_secs(15));
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            1,
+            "410 → one request: {segs:?}"
+        );
+    }
+
+    /// Finding 4, the 404 half: a 404 at the live edge is often CDN propagation lag, so it is
+    /// retried — at most twice, at 1 s. Answered 404 twice then 200, the segment plays: three
+    /// requests, no gap. Fails if a 404 is skipped at once (one request).
+    #[test]
+    fn t24_a_404_that_heals_on_the_second_retry_is_not_a_gap() {
+        let (base, paths) = task_segment_server(|seq, n| (seq == 4 && n <= 2).then_some(404));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, Duration::from_secs(15));
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            3,
+            "404, 404, 200: {segs:?}"
+        );
+    }
+
+    /// Finding 4: a 404 that does not heal is a gap after the two retries — three requests,
+    /// then the next segment — never a whole-TD retry. On `0f045b3`: ten requests over the
+    /// TD of 10 s.
+    #[test]
+    fn t25_a_404_that_stays_is_a_gap_after_two_retries() {
+        let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(404));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, Duration::from_secs(15));
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            3,
+            "404 ×3, then the gap: {segs:?}"
+        );
+    }
 }
 
 #[cfg(test)]
