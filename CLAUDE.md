@@ -205,8 +205,8 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 223 tests `cargo test --workspace`
-reports break down as **204 hand-written + 19 ts-rs-generated** (audio 119, shell 40, stations 64):
+export_bindings_<type>` that writes the `.ts` file. So the 224 tests `cargo test --workspace`
+reports break down as **205 hand-written + 19 ts-rs-generated** (audio 120, shell 40, stations 64):
 
 | | |
 |---|---|
@@ -218,7 +218,7 @@ reports break down as **204 hand-written + 19 ts-rs-generated** (audio 119, shel
 | `icy::tests` | 3 |
 | `ring::tests` | 3 |
 | `reconnect::tests` | 1 |
-| `hls::tests` | 3 — the four HLS content types match case-insensitively without `; charset`; `retry_timeout_for` is 55 s at TD 10 / 30 s at TD 5 (both above `read_timeout`), `segment_timeout` max(2 × TD, 10 s); **a `TARGETDURATION` at u64::MAX gives 60 s / 155 s, not a panic** (review 2026-09-25, finding 3: `Duration * 2` on the raw value overflowed) |
+| `hls::tests` | 4 — **review fix D (2026-09-25, finding 7):** the `kind=` a playlist request logs is what the body turned out to be, and on a failure what the caller asked for (`logged_kind`; on `938944c` every failure logged `kind=master`, media reloads included — X6's log at 13:11:09/49); the four HLS content types match case-insensitively without `; charset`; `retry_timeout_for` is 55 s at TD 10 / 30 s at TD 5 (both above `read_timeout`), `segment_timeout` max(2 × TD, 10 s); **a `TARGETDURATION` at u64::MAX gives 60 s / 155 s, not a panic** (review 2026-09-25, finding 3: `Duration * 2` on the raw value overflowed) |
 | `hls::playlist::tests` | 20 — **M3c commit 2** (+ the review's hostile-playlist table, 2026-09-25: every row panicked on `102c114` — `CODECS="mp4aé"` "byte index 5 is not a char boundary", `mp4a.40é` the same at byte 8, `#EXTINF:1e30,` "cannot convert float seconds to Duration", `MEDIA-SEQUENCE:u64::MAX` "attempt to add with overflow" at the segment add and again at the planner's `+ 1` — and now reads `NoAudio` / audio-not-HE / `Malformed` / a clamped wait), T1–T6 of the plan on the census fixtures; the module does not exist on `b7e050a`, so each is mutation-checked (the failing output is in `_handover/m3c-plan.md`, "Commit 2 landed"). T1: masters parse, 10's relative `chunklist.m3u8` joins against the base it is given (a redirected base moves it; fails with the join skipped), 04's `CODECS="avc1…,mp4a.40.2"` is one attribute and the CRLF fixture parses (fails on a comma split that ignores quotes). T2: 03 → `NoAudio("avc1.42c020")` (fails with the video-only filter dropped), 04 → the lowest muxed 1 061 313, LC 96 k over HE 128 k, 256 k over 48 k among LC, no-CODECS before muxed, an empty master. T3: 01 (TD 10, 244198, 10), 02 (a discontinuity; titles with quoted commas → 10.0 — fails on `split(',').last()`), 07, 10 after gunzip (TD 5, 97863, 20), 06 and 09 given directly with absolute-path and query URIs. T4: `EXT-X-MAP` → fMP4, `KEY METHOD=AES-128`/`SAMPLE-AES` → encrypted (fails with the check removed), `BYTERANGE`, `METHOD=NONE` accepted; **a plain M3U (`#EXTINF:-1,Name` + an Icecast URL) → `NotHls`, its own test** (R2; fails with the EXT-X presence check dropped — as `Malformed`, since a `-1` duration is deferred behind the HLS decision); no `#EXTM3U` → `NotPlaylist`; bad numbers → `Malformed`. T5: 01 → 244205–244207, 10 → 97880–97882, 07 → 1–3 (fails starting at the last: `[244207]`). T6: 01's real refresh emits exactly 244208–244210 then TD÷2; **10's refresh, whose window starts at 97866 before `next_seq` 97883, emits only 97883–97885** (gate amendment 6; a "seen" identity re-emits 244201–244204 on 01); waits clamped to [1 s, 30 s] and the stall bound on the clamped TD (TD 0 → a stall at 3 s, not at once); a window past `next_seq` → `Fetch { skipped: 4 }`; unchanged 15 s at TD 5 → `Stall` (fails without the bound: `Wait(2.5s)`); a failed reload waits TD÷2 until the bound and a good one resets it; `MEDIA-SEQUENCE` lower than the last accepted → `Restarted`; `ENDLIST` → `EndList`; and the quote-aware attribute splitter alone |
 | `hls::segment::tests` | 8 — **M3c commit 3**, T7–T11 on the fixture heads, mutation-checked (the record in `m3c-plan.md`, "Commit 3 landed"). T7: the five ADTS heads sniff ADTS after their tags and Unknown on the tag itself (fails with the sniff before the skip), the four TS heads sniff TS with no leading ID3, a synthetic `ftyp` is fMP4, HTML/empty/one byte are Unknown, `0x47` at 0 alone (one packet, or a second that does not sync) is not TS, `FFF9` sniffs as ADTS and MP3's `FFFB` does not. T8: 01's two tags end at 153 with `FF F1` there and the second tag at 73 (fails skipping once), 07/08 1 122, 10 73, 02 759 then `FFF9`; a synthetic footer tag is 10 + size + 10 (fails ignoring the flag); no tag → 0, a truncated header → 0, an overrunning size clamps. T9: 02's sixteen `FFF9` headers come out `FFF1` with every other byte identical and format 24 000/1 (fails skipping the rewrite); 01/07/08/10 unchanged, 16 frames, 48 000/2 and 08's core 22 050/2; a synthetic CRC frame → 7-byte header, `protection_absent` set, `frame_length` − 2, payload intact; ID bit + CRC together; a third frame cut short is dropped and counted (fails emitting it), a sub-header tail too; garbage after a frame is a sync loss at its offset; a `frame_length` below the header is a sync loss, not a zero-length loop. T10: `sri 3` then `sri 7` → `FormatChanged 48000/2 → 22050/2`, a channel change likewise, the same format twice is fine, the first format is kept after a refusal, a reserved index prints `sri13`. T11: the decoder built as `run_session` builds it on the normalised heads — 01/07/10 → 48 000/2, **08 → 22 050/2 (the HE-AAC core; 44 100 would mean a Symphonia bump decodes SBR, F2)**, 02 → 24 000/1, and 01 with its tags left in still builds (the skip is hygiene); **the raw `FFF9` head does not build** — `UnrecognizedFormat` at 4 849 B, `IoError("end of stream")` from 16 KB of the same data (measured 2026-09-24; the shape is length-dependent and not asserted, only "does not build"). Plus `gunzip` on the gzip fixture, refusing plain text |
 | `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
@@ -236,7 +236,7 @@ reports break down as **204 hand-written + 19 ts-rs-generated** (audio 119, shel
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 
-Counting `#[test]` attributes in source gives 204 and will not reconcile with the runner's 223
+Counting `#[test]` attributes in source gives 205 and will not reconcile with the runner's 224
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -255,7 +255,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `223 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `224 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -272,7 +272,7 @@ pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
                               # tests, 15 today (StationList + Transport + Panel). Its count is reported BESIDE
-                              # the Rust count — "223 + 15", never "238" — and CI runs it as its own step
+                              # the Rust count — "224 + 15", never "239" — and CI runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types
@@ -281,7 +281,7 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 223 tests: 119 in the ondar_audio binary, 64 in ondar_stations and
+cargo test --workspace       # 224 tests: 120 in the ondar_audio binary, 64 in ondar_stations and
                               # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (40 tests) and silently skips both crates; this

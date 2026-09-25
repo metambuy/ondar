@@ -265,6 +265,7 @@ struct FetchedPlaylist {
 async fn fetch_playlist(
     client: &Client,
     url: &Url,
+    expected: Kind,
 ) -> Result<(FetchedPlaylist, Instant), StreamError> {
     let started = Instant::now();
     let response = client
@@ -274,17 +275,17 @@ async fn fetch_playlist(
         .await
         .map_err(|e| {
             log_request(
-                Kind::Master,
+                expected,
                 url,
                 &format!("err:{}", stream::chain_message(&e)),
                 "0",
                 started,
             );
-            classify(Kind::Master, url, &e)
+            classify(expected, url, &e)
         })?;
     if !response.status().is_success() {
-        let e = status_error(Kind::Master, &response);
-        log_request(Kind::Master, url, response.status().as_str(), "0", started);
+        let e = status_error(expected, &response);
+        log_request(expected, url, response.status().as_str(), "0", started);
         return Err(e);
     }
     let final_url = response.url().clone();
@@ -339,32 +340,32 @@ async fn read_body(
 }
 
 /// Parse a fetched body as a playlist, logging the request with the kind it turned out to be.
-fn parse_fetched(fetched: &FetchedPlaylist, started: Instant) -> Result<Playlist, StreamError> {
-    match playlist::parse(&fetched.text, &fetched.url) {
-        Ok(p) => {
-            let kind = match &p {
-                Playlist::Master(_) => Kind::Master,
-                Playlist::Media(_) => Kind::Media,
-            };
-            log_request(
-                kind,
-                &fetched.url,
-                "200",
-                &fetched.text.len().to_string(),
-                started,
-            );
-            Ok(p)
-        }
-        Err(e) => {
-            log_request(
-                Kind::Master,
-                &fetched.url,
-                "200",
-                &fetched.text.len().to_string(),
-                started,
-            );
-            Err(playlist_refused(e))
-        }
+/// Parse a fetched body as a playlist, logging the request with the kind it turned out to be
+/// on success and the kind the caller asked for on a refusal (review 2026-09-25, finding 7).
+fn parse_fetched(
+    fetched: &FetchedPlaylist,
+    started: Instant,
+    expected: Kind,
+) -> Result<Playlist, StreamError> {
+    let parsed = playlist::parse(&fetched.text, &fetched.url);
+    log_request(
+        logged_kind(expected, parsed.as_ref().ok()),
+        &fetched.url,
+        "200",
+        &fetched.text.len().to_string(),
+        started,
+    );
+    parsed.map_err(playlist_refused)
+}
+
+/// The `kind=` a playlist request logs: what the body turned out to be when it parsed, and
+/// otherwise what the caller asked for — never a fixed `master` for a media reload's failure
+/// (review 2026-09-25, finding 7: X6's log showed its media reload failures as `kind=master`).
+fn logged_kind(expected: Kind, parsed: Option<&Playlist>) -> Kind {
+    match parsed {
+        Some(Playlist::Master(_)) => Kind::Master,
+        Some(Playlist::Media(_)) => Kind::Media,
+        None => expected,
     }
 }
 
@@ -533,10 +534,10 @@ pub async fn open(
     reconnect_count: Arc<AtomicU64>,
     prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
-    let (fetched, started) = fetch_playlist(client, &url).await?;
+    let (fetched, started) = fetch_playlist(client, &url, Kind::Master).await?;
     let mut bitrate_kbps = None;
     let media_url;
-    let media = match parse_fetched(&fetched, started)? {
+    let media = match parse_fetched(&fetched, started, Kind::Master)? {
         Playlist::Media(m) => {
             media_url = fetched.url.clone();
             m
@@ -554,8 +555,8 @@ pub async fn open(
             bitrate_kbps = variant
                 .bandwidth
                 .map(|b| u32::try_from(b / 1000).unwrap_or(u32::MAX));
-            let (fetched, started) = fetch_playlist(client, &variant.uri).await?;
-            match parse_fetched(&fetched, started)? {
+            let (fetched, started) = fetch_playlist(client, &variant.uri, Kind::Media).await?;
+            match parse_fetched(&fetched, started, Kind::Media)? {
                 Playlist::Media(m) => {
                     media_url = fetched.url.clone();
                     m
@@ -803,10 +804,10 @@ impl FetchTask {
     async fn reload(&self) -> Result<MediaPlaylist, ()> {
         let fetched = tokio::select! {
             _ = self.tx.closed() => return Err(()),
-            r = fetch_playlist(&self.client, &self.media_url) => r,
+            r = fetch_playlist(&self.client, &self.media_url, Kind::Media) => r,
         };
         match fetched {
-            Ok((fetched, started)) => match parse_fetched(&fetched, started) {
+            Ok((fetched, started)) => match parse_fetched(&fetched, started, Kind::Media) {
                 Ok(Playlist::Media(m)) => Ok(m),
                 Ok(Playlist::Master(_)) => {
                     log::warn!(
@@ -935,6 +936,29 @@ mod tests {
             segment_timeout(Duration::from_secs(13)),
             Duration::from_secs(26)
         );
+    }
+
+    /// Review 2026-09-25, finding 7: the `kind=` a playlist request logs is what the body
+    /// turned out to be, and on a failure what the caller asked for. On `938944c` every
+    /// failure logged `kind=master`, media reloads included (X6's log, 13:11:09 and 13:11:49).
+    /// Fails on that rule: `logged_kind(Kind::Media, None)` would read `Master`.
+    #[test]
+    fn a_failed_playlist_request_logs_the_kind_it_asked_for() {
+        let base = Url::parse("http://h/p.m3u8").unwrap();
+        let media = playlist::parse(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\ns.aac\n",
+            &base,
+        )
+        .unwrap();
+        let master = playlist::parse(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS=\"mp4a.40.2\"\nv.m3u8\n",
+            &base,
+        )
+        .unwrap();
+        assert_eq!(logged_kind(Kind::Media, None), Kind::Media);
+        assert_eq!(logged_kind(Kind::Master, None), Kind::Master);
+        assert_eq!(logged_kind(Kind::Master, Some(&media)), Kind::Media);
+        assert_eq!(logged_kind(Kind::Media, Some(&master)), Kind::Master);
     }
 
     /// Review 2026-09-25, finding 3: a `TARGETDURATION` at u64::MAX reached `Duration * 2`
