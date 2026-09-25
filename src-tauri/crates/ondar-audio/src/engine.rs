@@ -2105,6 +2105,118 @@ mod session_tests {
         assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
         h.ctx.cancel();
     }
+
+    /// A static media playlist of `n` one-second segments from `first_seq`, segments
+    /// synthesised from `head` unless `status_for(seq)` says otherwise.
+    fn eviction_server(
+        first_seq: u64,
+        n: usize,
+        head: Vec<u8>,
+        status_for: impl Fn(u64) -> Option<u16> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        routed_server(move |path| {
+            if path == "/live/playlist.m3u8" {
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(1, 1.0, first_seq, n, Duration::from_secs(n as u64 - 1))
+                        .into_bytes(),
+                ));
+            }
+            let seq = seg_seq(path)?;
+            match status_for(seq) {
+                Some(status) => Some(Routed {
+                    status,
+                    content_type: "text/plain",
+                    gzip: false,
+                    body: b"gone".to_vec(),
+                }),
+                None => Some(routed("audio/aac", synth_segment(&head, 1.0))),
+            }
+        })
+    }
+
+    /// Review 2026-09-25, finding 4 (fix B): a 404 on the **first** segment means the origin
+    /// evicted it — the next pending segment is tried and plays. On `cce9ffa`: the playlist
+    /// policy applied and the session ended `Error { Http }`, terminal, after one chain.
+    #[test]
+    fn t18_an_evicted_first_segment_is_skipped_for_the_next_one() {
+        let head = fixture("10-seg-head.aac");
+        // Window 1..5; the start is three from the end = 3; 3 is gone, 4 and 5 are there.
+        let (base, paths) = eviction_server(1, 5, head, |seq| (seq == 3).then_some(404));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(8), is_playing);
+        assert_eq!(
+            h.ctx.shared.state(),
+            PlaybackState::Playing,
+            "states: {seen:?}"
+        );
+        assert!(
+            reconnecting(&seen).is_empty(),
+            "no backoff for one evicted segment: {seen:?}"
+        );
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        let paths = paths.lock().unwrap().clone();
+        let segs: Vec<u64> = paths.iter().filter_map(|p| seg_seq(p)).collect();
+        assert_eq!(&segs[..2], &[3, 4], "3 tried (404), then 4: {paths:?}");
+        h.ctx.cancel();
+    }
+
+    /// Fix B, the other half: every start segment evicted → not terminal — the session's
+    /// backoff reopens (`Reconnecting { 1 }`), and once the window has moved on it plays. On
+    /// `cce9ffa`: `Error { Http }` at once, no `Reconnecting`.
+    #[test]
+    fn t19_all_start_segments_evicted_reopens_through_the_backoff() {
+        let head = fixture("10-seg-head.aac");
+        let opened = Instant::now();
+        let (base, _paths) = eviction_server(1, 5, head, move |_| {
+            // Gone for 0.8 s: the first open fails at once, the backoff's first sleep is 1 s,
+            // and the reopen finds the segments. (At 1.5 s the second reopen was needed:
+            // `[1, 2]`.)
+            (opened.elapsed() < Duration::from_millis(800)).then_some(410)
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(10), is_playing);
+        assert_eq!(
+            h.ctx.shared.state(),
+            PlaybackState::Playing,
+            "states: {seen:?}"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            vec![1],
+            "one backoff step, then it plays: {seen:?}"
+        );
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        h.ctx.cancel();
+    }
+
+    /// Fix B keeps 401/403 terminal: access denial (a geo-block) does not change with a retry,
+    /// and five backoff attempts before the same answer would be worse than the honest error
+    /// now. One chain: the playlist twice, the segment once. Unchanged from `cce9ffa`.
+    #[test]
+    fn t20_a_forbidden_first_segment_is_terminal_after_one_chain() {
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = eviction_server(1, 5, head, |_| Some(403));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let state = h.ctx.shared.state();
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::Http,
+                    ..
+                }
+            ),
+            "state: {state:?}"
+        );
+        assert!(error_message(&state).contains("403"), "{state:?}");
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert!(h.started.lock().unwrap().is_empty());
+        thread::sleep(Duration::from_millis(300));
+        let paths = paths.lock().unwrap().clone();
+        assert_eq!(paths.len(), 3, "playlist ×2 + one segment: {paths:?}");
+    }
 }
 
 #[cfg(test)]

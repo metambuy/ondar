@@ -382,6 +382,11 @@ enum SegmentFetch {
     },
     /// Sniffed on its first bytes and dropped: not ADTS.
     Refused(Container),
+    /// 404 or 410: the origin no longer has this segment — the window moved on. Not an error
+    /// of the station: `open` tries the next pending segment, the task retries then skips it
+    /// (review 2026-09-25, finding 4). 401/403 are not this: access denial is a `StreamError`,
+    /// terminal at open, as for a playlist.
+    Evicted(u16),
 }
 
 /// GET a segment. With `sniff_first`, only the ID3 tags plus [`segment::SNIFF_LEN`] bytes are
@@ -410,6 +415,11 @@ async fn fetch_segment(
             classify(Kind::Segment, &seg.uri, &e)
         })?;
     if !response.status().is_success() {
+        let status = response.status();
+        if matches!(status.as_u16(), 404 | 410) {
+            log_request(Kind::Segment, &seg.uri, status.as_str(), "0", started);
+            return Ok(SegmentFetch::Evicted(status.as_u16()));
+        }
         let e = status_error(Kind::Segment, &response);
         log_request(
             Kind::Segment,
@@ -579,16 +589,33 @@ pub async fn open(
         pending.first().map(|s| s.seq).unwrap_or(0)
     );
 
-    // The first segment decides the container and the session's format.
-    let first = pending.remove(0);
-    let (first_bytes, content_type) =
-        match fetch_segment(client, &first, media.target_duration, true).await? {
+    // The first segment decides the container and the session's format. A 404/410 on it is
+    // an eviction — the window moved on between the playlist and the request — so the next
+    // pending segment is tried; only when every start segment is gone does the open fail, and
+    // then as a retriable `Network` error: the session's backoff reopens on a fresher window
+    // (review 2026-09-25, finding 4).
+    let (first, first_bytes, content_type) = loop {
+        let candidate = pending.remove(0);
+        match fetch_segment(client, &candidate, media.target_duration, true).await? {
             SegmentFetch::Refused(c) => return Err(refused_container(c)),
             SegmentFetch::Body {
                 bytes,
                 content_type,
-            } => (bytes, content_type),
-        };
+            } => break (candidate, bytes, content_type),
+            SegmentFetch::Evicted(status) => {
+                log::warn!(
+                    "hls start segment seq={} evicted ({status}); trying the next",
+                    candidate.seq
+                );
+                if pending.is_empty() {
+                    return Err(network(format!(
+                        "HLS start segments are gone ({status} at seq {}); the window moved on",
+                        candidate.seq
+                    )));
+                }
+            }
+        }
+    };
     let normalised = segment::normalise(&first_bytes);
     let Some(format) = normalised.format else {
         return Err(unsupported("HLS segment format not recognised"));
@@ -817,19 +844,24 @@ impl FetchTask {
                     log::warn!("hls segment seq={} refused: {c:?}", seg.seq);
                     break None;
                 }
-                Err(e) => {
+                // An evicted segment and a failed request take the same path: retry within
+                // the target duration, then a logged gap (D3).
+                other => {
+                    let cause = match other {
+                        Ok(SegmentFetch::Evicted(status)) => format!("HTTP {status}"),
+                        Err(e) => e.message,
+                        Ok(SegmentFetch::Body { .. } | SegmentFetch::Refused(_)) => {
+                            unreachable!("matched above")
+                        }
+                    };
                     if first_try.elapsed() + SEGMENT_RETRY_STEP <= self.target_duration {
-                        log::warn!(
-                            "hls segment seq={} failed, retrying: {}",
-                            seg.seq,
-                            e.message
-                        );
+                        log::warn!("hls segment seq={} failed, retrying: {}", seg.seq, cause);
                         if self.wait(SEGMENT_RETRY_STEP).await.is_err() {
                             return Err(Ended::Closed);
                         }
                         continue;
                     }
-                    log::warn!("hls gap skipped=1 seq={} cause={}", seg.seq, e.message);
+                    log::warn!("hls gap skipped=1 seq={} cause={cause}", seg.seq);
                     break None;
                 }
             }
