@@ -1157,6 +1157,9 @@ mod session_tests {
     struct Harness {
         ctx: SessionCtx,
         events: Receiver<EngineEvent>,
+        /// A state event received during a helper's grace period, handed to the next helper
+        /// call first so no state is lost between calls.
+        held: Mutex<Option<PlaybackState>>,
         /// Every `Started` id seen while draining, in order.
         started: Mutex<Vec<String>>,
         /// Every `StreamInfo` seen while draining, as (sample_rate, channels), in order.
@@ -1221,13 +1224,61 @@ mod session_tests {
         Harness {
             ctx,
             events: ev_rx,
+            held: Mutex::new(None),
             started: Mutex::new(Vec::new()),
             infos: Mutex::new(Vec::new()),
             _rt: rt,
         }
     }
 
-    /// Wait up to `within` for the shared state to satisfy `done`; returns every state seen.
+    /// Record one engine event: a state is returned, `Started` and `StreamInfo` are kept on
+    /// the harness in order.
+    fn record(h: &Harness, ev: EngineEvent) -> Option<PlaybackState> {
+        match ev {
+            EngineEvent::State(s) => return Some(s),
+            EngineEvent::Started { station_id } => h.started.lock().unwrap().push(station_id),
+            EngineEvent::StreamInfo(info) => h
+                .infos
+                .lock()
+                .unwrap()
+                .push((info.sample_rate, info.channels)),
+            _ => {}
+        }
+        None
+    }
+
+    /// After a helper's stopping point: pick up the events the engine sends right behind a
+    /// state — `Started` follows `State(Playing)` under the same lock — until the next state,
+    /// which is held for the next call, or 50 ms of quiet.
+    fn grace(h: &Harness) {
+        while let Ok(ev) = h.events.recv_timeout(Duration::from_millis(50)) {
+            if let Some(s) = record(h, ev) {
+                *h.held.lock().unwrap() = Some(s);
+                return;
+            }
+        }
+    }
+
+    /// The next engine event within `left`, the held state first. What is already queued is
+    /// taken at once; `poll_delay` runs before each wait on an empty channel — a consumer that
+    /// wakes late, as the old sampling loop did per poll. A late consumer loses nothing: the
+    /// channel keeps every event, in order.
+    fn next_event(h: &Harness, left: Duration) -> Option<EngineEvent> {
+        if let Some(s) = h.held.lock().unwrap().take() {
+            return Some(EngineEvent::State(s));
+        }
+        if let Ok(ev) = h.events.try_recv() {
+            return Some(ev);
+        }
+        poll_delay();
+        h.events.recv_timeout(left).ok()
+    }
+
+    /// Every state the session emitted, in order, up to and including the first one `done`
+    /// accepts — or until `within` elapses. Decided on the **event stream**, not on a sample of
+    /// the current state: a state that begins and ends between two samples cannot be missed
+    /// (review 2, 2026-09-25: on a slow CI runner T18's `Playing` did, and the test read
+    /// `Reconnecting`). A test reads the state it stopped at as `seen.last()`.
     fn states_until(
         h: &Harness,
         within: Duration,
@@ -1235,31 +1286,75 @@ mod session_tests {
     ) -> Vec<PlaybackState> {
         let deadline = Instant::now() + within;
         let mut seen = Vec::new();
-        let drain = |seen: &mut Vec<PlaybackState>| {
-            while let Ok(ev) = h.events.try_recv() {
-                match ev {
-                    EngineEvent::State(s) => seen.push(s),
-                    EngineEvent::Started { station_id } => {
-                        h.started.lock().unwrap().push(station_id)
-                    }
-                    EngineEvent::StreamInfo(info) => h
-                        .infos
-                        .lock()
-                        .unwrap()
-                        .push((info.sample_rate, info.channels)),
-                    _ => {}
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Some(ev) = next_event(h, left) else {
+                return seen;
+            };
+            if let Some(s) = record(h, ev) {
+                let hit = done(&s);
+                seen.push(s);
+                if hit {
+                    grace(h);
+                    return seen;
                 }
             }
-        };
-        loop {
-            drain(&mut seen);
-            if done(&h.ctx.shared.state()) || Instant::now() >= deadline {
-                // The state is set before its event is sent; pick up the one for it.
-                thread::sleep(Duration::from_millis(20));
-                drain(&mut seen);
+            if Instant::now() >= deadline {
                 return seen;
             }
-            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Every state emitted, in order, until `cond` — a condition outside the event stream,
+    /// such as a server's request count, which only grows — holds, or `within` elapses.
+    fn states_while_waiting_for(
+        h: &Harness,
+        within: Duration,
+        cond: impl Fn() -> bool,
+    ) -> Vec<PlaybackState> {
+        let deadline = Instant::now() + within;
+        let mut seen = Vec::new();
+        loop {
+            if cond() {
+                grace(h);
+                return seen;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return seen;
+            }
+            if let Some(ev) = next_event(h, left.min(Duration::from_millis(20)))
+                && let Some(s) = record(h, ev)
+            {
+                seen.push(s);
+            }
+        }
+    }
+
+    /// The state a helper stopped at.
+    fn last(seen: &[PlaybackState]) -> PlaybackState {
+        seen.last().cloned().unwrap_or(PlaybackState::Connecting)
+    }
+
+    /// `ONDAR_TEST_POLL_DELAY_MS`: a sleep added to every step of a waiting helper, standing
+    /// in for a slow CI runner.
+    fn poll_delay() {
+        if let Some(ms) = std::env::var("ONDAR_TEST_POLL_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    /// `ONDAR_TEST_SERVER_DELAY_MS`: a sleep before every answer of `routed_server`, standing
+    /// in for a slow runner's open chain.
+    fn server_delay() {
+        if let Some(ms) = std::env::var("ONDAR_TEST_SERVER_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            thread::sleep(Duration::from_millis(ms));
         }
     }
 
@@ -1287,7 +1382,7 @@ mod session_tests {
         );
         let h = start_session(&url);
         let seen = states_until(&h, Duration::from_secs(3), is_error);
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert!(
             matches!(
                 &state,
@@ -1317,7 +1412,7 @@ mod session_tests {
         );
         let h = start_session(&url);
         let seen = states_until(&h, Duration::from_secs(3), is_error);
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert!(
             matches!(
                 &state,
@@ -1346,7 +1441,7 @@ mod session_tests {
             b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         );
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(3), |_| {
+        let seen = states_while_waiting_for(&h, Duration::from_secs(3), || {
             requests.load(Ordering::SeqCst) >= 2
         });
         assert!(
@@ -1359,7 +1454,10 @@ mod session_tests {
             Some(&1),
             "Reconnecting {{ 1 }} was emitted"
         );
-        assert!(!is_error(&h.ctx.shared.state()), "not failed after one 5xx");
+        assert!(
+            !seen.iter().any(is_error),
+            "not failed after one 5xx: {seen:?}"
+        );
         h.ctx.cancel();
     }
 
@@ -1373,7 +1471,7 @@ mod session_tests {
             b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 3\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         );
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(2), |_| {
+        let seen = states_while_waiting_for(&h, Duration::from_secs(2), || {
             requests.load(Ordering::SeqCst) >= 2
         });
         assert_eq!(
@@ -1386,8 +1484,8 @@ mod session_tests {
             Some(&1),
             "Reconnecting {{ 1 }} was emitted"
         );
-        assert!(!is_error(&h.ctx.shared.state()), "not failed on a 429");
-        let _ = states_until(&h, Duration::from_secs(4), |_| {
+        assert!(!seen.iter().any(is_error), "not failed on a 429: {seen:?}");
+        let _ = states_while_waiting_for(&h, Duration::from_secs(4), || {
             requests.load(Ordering::SeqCst) >= 2
         });
         assert!(
@@ -1411,7 +1509,7 @@ mod session_tests {
         let seen = states_until(&h, Duration::from_secs(8), |s| {
             matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
         });
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert!(!is_error(&state), "ended on the reconnect's 404: {state:?}");
         assert_eq!(
             reconnecting(&seen),
@@ -1494,8 +1592,9 @@ mod session_tests {
 
     /// Two stations in a row on **one** `Player` and one bare mixer, as `Engine::play` does for
     /// the second: the first session cancelled, a new generation, `clear()`, a new decode
-    /// thread. Returns `frames` frames of the mixer's output from the second session's
-    /// `Playing` on. The pull runs at about twice real time, like `start_session`'s.
+    /// thread. Returns the mixer's output from the second session's creation on, holding at
+    /// least `frames` frames from its tone's onset. The pull runs at about twice real time,
+    /// like `start_session`'s.
     fn two_sessions(
         first: Vec<u8>,
         second: Vec<u8>,
@@ -1503,7 +1602,7 @@ mod session_tests {
         mixer_ch: u16,
         frames: usize,
     ) -> Vec<f32> {
-        let (ev_tx, _ev_rx) = mpsc::channel();
+        let (ev_tx, ev_rx) = mpsc::channel();
         let shared = Shared {
             state: Arc::new(Mutex::new(PlaybackState::Idle)),
             events: ev_tx,
@@ -1527,8 +1626,11 @@ mod session_tests {
         thread::spawn(move || {
             let mut out = mixer_out;
             loop {
+                // Only a chunk begun while the capture was on is kept: one pulled before could
+                // carry the first station's tail, cleared by the time the capture starts.
+                let on = cap.lock().unwrap().is_some();
                 let pulled: Vec<f32> = out.by_ref().take(chunk).collect();
-                if let Some(v) = cap.lock().unwrap().as_mut() {
+                if on && let Some(v) = cap.lock().unwrap().as_mut() {
                     v.extend_from_slice(&pulled);
                 }
                 thread::sleep(Duration::from_millis(25));
@@ -1564,28 +1666,55 @@ mod session_tests {
             });
             ctx
         };
-        let wait_playing = |what: &str| {
+        // A session's first `Playing` is read off the event stream as its `Started`, which
+        // names the station: a 1.5 s tone pulled at twice real time plays for ~0.75 s, short
+        // enough for a sample of the state to miss on a slow runner, and a sample could not
+        // tell the two sessions apart.
+        let wait_started = |station: &str| {
             let deadline = Instant::now() + Duration::from_secs(5);
-            while shared.state() != PlaybackState::Playing {
-                assert!(Instant::now() < deadline, "{what} never reached Playing");
-                thread::sleep(Duration::from_millis(10));
+            loop {
+                let ev = match ev_rx.try_recv() {
+                    Ok(ev) => Ok(ev),
+                    Err(_) => {
+                        poll_delay();
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        ev_rx.recv_timeout(left)
+                    }
+                };
+                match ev {
+                    Ok(EngineEvent::Started { station_id }) if station_id == station => return,
+                    Ok(_) => {}
+                    Err(_) => panic!("the {station} session never reached Playing"),
+                }
             }
         };
 
         let one = start(first, "first");
-        wait_playing("the first session");
+        wait_started("first");
         thread::sleep(Duration::from_millis(300));
         one.cancel();
         let _two = start(second, "second");
-        wait_playing("the second session");
+        // Captured from here: `start` has already cleared the first station's source, and the
+        // second cannot sound before its prefetch. Starting at its `Started` instead made the
+        // capture depend on how soon the test woke — a late wake missed the tone.
         *capture.lock().unwrap() = Some(Vec::new());
+        wait_started("second");
+        let ch = mixer_ch as usize;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let got = capture.lock().unwrap().as_ref().map_or(0, Vec::len);
-            if got >= frames * mixer_ch as usize {
+            let after_onset = capture.lock().unwrap().as_ref().map_or(0, |v| {
+                v.iter()
+                    .step_by(ch)
+                    .position(|x| x.abs() > 0.05)
+                    .map_or(0, |onset| v.len() / ch - onset)
+            });
+            if after_onset >= frames {
                 break;
             }
-            assert!(Instant::now() < deadline, "captured only {got} samples");
+            assert!(
+                Instant::now() < deadline,
+                "captured only {after_onset} frames of the tone"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         capture.lock().unwrap().take().expect("capture")
@@ -1724,6 +1853,7 @@ mod session_tests {
                     .unwrap_or("/")
                     .to_string();
                 seen.lock().unwrap().push(path.clone());
+                server_delay();
                 let response = handler(&path).unwrap_or(Routed {
                     status: 404,
                     content_type: "text/plain",
@@ -1861,7 +1991,7 @@ mod session_tests {
         });
         let h = start_session(&format!("{base}/liveradio/antena180a/playlist.m3u8"));
         let seen = states_until(&h, Duration::from_secs(8), is_playing);
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert_eq!(state, PlaybackState::Playing, "states: {seen:?}");
         assert!(reconnecting(&seen).is_empty(), "no backoff: {seen:?}");
         assert_eq!(*h.infos.lock().unwrap(), vec![(48_000, 2)], "StreamInfo");
@@ -1907,7 +2037,7 @@ mod session_tests {
         });
         let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
         let seen = states_until(&h, Duration::from_secs(5), is_error);
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert!(
             matches!(
                 &state,
@@ -1952,7 +2082,7 @@ mod session_tests {
             "{base}/hls/live/2020027/fncv3preview/primary.m3u8"
         ));
         let seen = states_until(&h, Duration::from_secs(5), is_error);
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert_eq!(
             error_message(&state),
             "HLS stream has no audio variant (video only: avc1.42c020)",
@@ -2001,11 +2131,7 @@ mod session_tests {
         let (base, paths) = live_server(6, 6.0, 5, None, move |_| head.clone());
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
         let seen = states_until(&h, Duration::from_secs(13), |_| false);
-        assert_eq!(
-            h.ctx.shared.state(),
-            PlaybackState::Playing,
-            "states: {seen:?}"
-        );
+        assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
         assert!(reconnecting(&seen).is_empty(), "{seen:?}");
         assert_eq!(
             h.ctx.reconnect_count.load(Ordering::Relaxed),
@@ -2035,25 +2161,17 @@ mod session_tests {
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
         let seen = states_until(&h, Duration::from_secs(8), is_playing);
-        assert_eq!(
-            h.ctx.shared.state(),
-            PlaybackState::Playing,
-            "first play: {seen:?}"
-        );
+        assert_eq!(last(&seen), PlaybackState::Playing, "first play: {seen:?}");
         let opens_before = count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8");
-        // Wait for the stall → Reconnecting → Playing again.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        // The stall → Reconnecting → Playing again, read in order off the event stream: the
+        // reopen's `Playing` lasts only until the still-stalled window ends it again, and a
+        // sample of the state could miss it and see `Reconnecting { 2 }`.
         let mut all = seen;
-        let mut saw_reconnecting = false;
-        loop {
-            let more = states_until(&h, Duration::from_millis(500), |_| false);
-            saw_reconnecting |= !reconnecting(&more).is_empty();
-            all.extend(more);
-            if saw_reconnecting && h.ctx.shared.state() == PlaybackState::Playing {
-                break;
-            }
-            assert!(Instant::now() < deadline, "no reopen in 20 s: {all:?}");
-        }
+        all.extend(states_until(&h, Duration::from_secs(20), |s| {
+            matches!(s, PlaybackState::Reconnecting { .. })
+        }));
+        all.extend(states_until(&h, Duration::from_secs(20), is_playing));
+        assert_eq!(last(&all), PlaybackState::Playing, "no reopen: {all:?}");
         assert_eq!(reconnecting(&all), vec![1], "one backoff step: {all:?}");
         assert_eq!(
             *h.started.lock().unwrap(),
@@ -2088,20 +2206,18 @@ mod session_tests {
             }
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut all = Vec::new();
-        loop {
-            all.extend(states_until(&h, Duration::from_millis(500), |_| false));
-            if h.infos.lock().unwrap().len() >= 2 && h.ctx.shared.state() == PlaybackState::Playing
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "no second StreamInfo in 20 s: {all:?} infos {:?}",
-                h.infos.lock().unwrap()
-            );
-        }
+        // First play, the format change's reopen, the reopened play — in order.
+        let mut all = states_until(&h, Duration::from_secs(20), is_playing);
+        all.extend(states_until(&h, Duration::from_secs(20), |s| {
+            matches!(s, PlaybackState::Reconnecting { .. })
+        }));
+        all.extend(states_until(&h, Duration::from_secs(20), is_playing));
+        assert_eq!(
+            last(&all),
+            PlaybackState::Playing,
+            "no reopened play in time: {all:?} infos {:?}",
+            h.infos.lock().unwrap()
+        );
         assert_eq!(*h.infos.lock().unwrap(), vec![(48_000, 2), (22_050, 2)]);
         assert_eq!(reconnecting(&all), vec![1], "{all:?}");
         assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
@@ -2109,15 +2225,19 @@ mod session_tests {
     }
 
     /// A static media playlist of `n` one-second segments from `first_seq`, segments
-    /// synthesised from `head` unless `status_for(seq)` says otherwise.
+    /// synthesised from `head` unless `status_for(seq, playlist_requests)` says otherwise —
+    /// `playlist_requests` is how many times the playlist had been asked for, so a test can
+    /// key an answer to the open it belongs to rather than to a clock.
     fn eviction_server(
         first_seq: u64,
         n: usize,
         head: Vec<u8>,
-        status_for: impl Fn(u64) -> Option<u16> + Send + Sync + 'static,
+        status_for: impl Fn(u64, usize) -> Option<u16> + Send + Sync + 'static,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let playlist_requests = AtomicUsize::new(0);
         routed_server(move |path| {
             if path == "/live/playlist.m3u8" {
+                playlist_requests.fetch_add(1, Ordering::SeqCst);
                 return Some(routed(
                     "application/vnd.apple.mpegurl",
                     live_playlist(1, 1.0, first_seq, n, Duration::from_secs(n as u64 - 1))
@@ -2125,7 +2245,7 @@ mod session_tests {
                 ));
             }
             let seq = seg_seq(path)?;
-            match status_for(seq) {
+            match status_for(seq, playlist_requests.load(Ordering::SeqCst)) {
                 Some(status) => Some(Routed {
                     status,
                     content_type: "text/plain",
@@ -2144,14 +2264,10 @@ mod session_tests {
     fn t18_an_evicted_first_segment_is_skipped_for_the_next_one() {
         let head = fixture("10-seg-head.aac");
         // Window 1..5; the start is three from the end = 3; 3 is gone, 4 and 5 are there.
-        let (base, paths) = eviction_server(1, 5, head, |seq| (seq == 3).then_some(404));
+        let (base, paths) = eviction_server(1, 5, head, |seq, _| (seq == 3).then_some(404));
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
         let seen = states_until(&h, Duration::from_secs(8), is_playing);
-        assert_eq!(
-            h.ctx.shared.state(),
-            PlaybackState::Playing,
-            "states: {seen:?}"
-        );
+        assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
         assert!(
             reconnecting(&seen).is_empty(),
             "no backoff for one evicted segment: {seen:?}"
@@ -2165,24 +2281,21 @@ mod session_tests {
 
     /// Fix B, the other half: every start segment evicted → not terminal — the session's
     /// backoff reopens (`Reconnecting { 1 }`), and once the window has moved on it plays. On
-    /// `cce9ffa`: `Error { Http }` at once, no `Reconnecting`.
+    /// `cce9ffa`: `Error { Http }` at once, no `Reconnecting`. The segments are gone for the
+    /// **first open** — while the playlist has been asked for at most twice (R1: the
+    /// `HttpStream` GET, then `hls::open`'s own) — and back for the reopen, the third and
+    /// fourth requests. Keyed to requests, not to a clock (review 2, finding 6: an 800 ms window
+    /// from before `start_session` read `[]` once the open chain took longer — reproduced with
+    /// `ONDAR_TEST_SERVER_DELAY_MS=300`).
     #[test]
     fn t19_all_start_segments_evicted_reopens_through_the_backoff() {
         let head = fixture("10-seg-head.aac");
-        let opened = Instant::now();
-        let (base, _paths) = eviction_server(1, 5, head, move |_| {
-            // Gone for 0.8 s: the first open fails at once, the backoff's first sleep is 1 s,
-            // and the reopen finds the segments. (At 1.5 s the second reopen was needed:
-            // `[1, 2]`.)
-            (opened.elapsed() < Duration::from_millis(800)).then_some(410)
+        let (base, _paths) = eviction_server(1, 5, head, |_, playlist_requests| {
+            (playlist_requests <= 2).then_some(410)
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
         let seen = states_until(&h, Duration::from_secs(10), is_playing);
-        assert_eq!(
-            h.ctx.shared.state(),
-            PlaybackState::Playing,
-            "states: {seen:?}"
-        );
+        assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
         assert_eq!(
             reconnecting(&seen),
             vec![1],
@@ -2198,10 +2311,10 @@ mod session_tests {
     #[test]
     fn t20_a_forbidden_first_segment_is_terminal_after_one_chain() {
         let head = fixture("10-seg-head.aac");
-        let (base, paths) = eviction_server(1, 5, head, |_| Some(403));
+        let (base, paths) = eviction_server(1, 5, head, |_, _| Some(403));
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
         let seen = states_until(&h, Duration::from_secs(5), is_error);
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert!(
             matches!(
                 &state,
@@ -2249,7 +2362,7 @@ mod session_tests {
         });
         let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
         let seen = states_until(&h, Duration::from_secs(5), is_error);
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert_eq!(
             error_message(&state),
             "HLS with MPEG-TS segments is not supported yet",
@@ -2292,7 +2405,7 @@ mod session_tests {
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
         let seen = states_until(&h, Duration::from_secs(5), |s| is_error(s) || is_playing(s));
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert!(
             matches!(
                 &state,
