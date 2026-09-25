@@ -1104,13 +1104,26 @@ mod session_tests {
     /// (the last one repeated), the socket held briefly so the client sees a complete answer,
     /// then closed.
     fn scripted_server(responses: Vec<Vec<u8>>) -> (String, Arc<AtomicUsize>) {
+        let (url, count, _times) = timed_scripted_server(responses);
+        (url, count)
+    }
+
+    /// `scripted_server`, also recording when each connection was accepted, on the server's
+    /// own clock: a gap between two requests measured there can only grow on a slow runner,
+    /// never shrink, so a lower bound on it cannot be broken by slowness.
+    fn timed_scripted_server(
+        responses: Vec<Vec<u8>>,
+    ) -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<Instant>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
+        let times = Arc::new(Mutex::new(Vec::new()));
+        let at = times.clone();
         thread::spawn(move || {
             for sock in listener.incoming() {
                 let Ok(mut sock) = sock else { break };
+                at.lock().unwrap().push(Instant::now());
                 let n = seen.fetch_add(1, Ordering::SeqCst);
                 let response = &responses[n.min(responses.len() - 1)];
                 let mut buf = [0u8; 2048];
@@ -1120,7 +1133,7 @@ mod session_tests {
                 thread::sleep(Duration::from_millis(200));
             }
         });
-        (format!("http://{addr}/stream"), count)
+        (format!("http://{addr}/stream"), count, times)
     }
 
     /// One fixed answer for every connection.
@@ -1336,6 +1349,18 @@ mod session_tests {
         seen.last().cloned().unwrap_or(PlaybackState::Connecting)
     }
 
+    /// How long a test waits for an event it expects. A hang guard, not a claim: nothing is
+    /// asserted about when the event came, so a slow runner only makes the test slower.
+    const GUARD: Duration = Duration::from_secs(20);
+
+    /// Wait for the session's `Started`, returning the states seen meanwhile. A test that
+    /// stopped **at** a `Playing` reads `started` only after this: `write_state` sends
+    /// `Started` right behind `State(Playing)` under the session lock, so a test that stopped at
+    /// any later state has it already, but one stopped at that `Playing` may not.
+    fn await_started(h: &Harness) -> Vec<PlaybackState> {
+        states_while_waiting_for(h, GUARD, || !h.started.lock().unwrap().is_empty())
+    }
+
     /// `ONDAR_TEST_POLL_DELAY_MS`: a sleep added to every step of a waiting helper, standing
     /// in for a slow CI runner.
     fn poll_delay() {
@@ -1358,6 +1383,26 @@ mod session_tests {
         }
     }
 
+    /// `ONDAR_TEST_LATE_REQUEST_DELAY_MS`: a sleep before `routed_server` **records** the third
+    /// and every later segment request — the request arrives late, as the log sees it, while
+    /// the first two segments (enough for `Playing`) are served at once. It stands in for a
+    /// runner slow to schedule the fetch task's next request (`4a388f5`'s CI run read T12's
+    /// log at `Playing` without its third start segment).
+    fn late_request_delay() {
+        if let Some(ms) = std::env::var("ONDAR_TEST_LATE_REQUEST_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    /// A segment request as the test servers name them.
+    fn is_segment_path(path: &str) -> bool {
+        let p = path.split('?').next().unwrap_or(path);
+        p.ends_with(".aac") || p.ends_with(".ts")
+    }
+
     fn is_error(s: &PlaybackState) -> bool {
         matches!(s, PlaybackState::Error { .. })
     }
@@ -1371,9 +1416,11 @@ mod session_tests {
             .collect()
     }
 
-    /// Fails on a cause-blind policy: the state would be `Reconnecting { 1 }` inside the 3 s
-    /// window (the terminal `Error` only arrives after 31 s) and the server would see a
-    /// second request at ~1.2 s.
+    /// Fails on a cause-blind policy: the first state after the open would be
+    /// `Reconnecting { 1 }` (the terminal `Error` only arrives after 31 s) and the server would
+    /// see a second request at ~1.2 s. The request count after 1.3 s is a window that a slow
+    /// runner cannot break: after a terminal `Error` no request is ever made, so lateness can
+    /// only delay the check, never add a request.
     #[test]
     fn an_icy_server_fails_the_session_on_the_first_attempt() {
         let (url, requests) = counting_server(
@@ -1381,7 +1428,11 @@ mod session_tests {
               0123456789abcdef0123456789abcdef",
         );
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(3), is_error);
+        // Stops at the first `Error` or `Reconnecting`, whichever the engine emits first: the
+        // cause-blind policy's `Reconnecting { 1 }` is caught by order, not by a window.
+        let seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
+        });
         let state = last(&seen);
         assert!(
             matches!(
@@ -1391,7 +1442,7 @@ mod session_tests {
                     ..
                 }
             ),
-            "expected Error {{ Http }} within 3 s, got {state:?}"
+            "expected Error {{ Http }} before any Reconnecting, got {state:?}"
         );
         assert_eq!(
             reconnecting(&seen),
@@ -1411,7 +1462,11 @@ mod session_tests {
             b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         );
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(3), is_error);
+        // Stops at the first `Error` or `Reconnecting`, whichever the engine emits first: the
+        // cause-blind policy's `Reconnecting { 1 }` is caught by order, not by a window.
+        let seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
+        });
         let state = last(&seen);
         assert!(
             matches!(
@@ -1421,7 +1476,7 @@ mod session_tests {
                     ..
                 }
             ),
-            "expected Error {{ Http }} within 3 s, got {state:?}"
+            "expected Error {{ Http }} before any Reconnecting, got {state:?}"
         );
         assert_eq!(
             reconnecting(&seen),
@@ -1433,26 +1488,37 @@ mod session_tests {
         h.ctx.cancel();
     }
 
-    /// A 5xx keeps the backoff. Fails if 5xx were made terminal (one request, an `Error`
-    /// state inside the window) or if the backoff's first delay were not ~1 s.
+    /// A 5xx keeps the backoff. Fails if 5xx were made terminal (an `Error` before any
+    /// `Reconnecting`, one request) or if the backoff's first delay were under 1 s (the gap
+    /// between the two requests, on the server's clock — slowness only lengthens it).
     #[test]
     fn a_503_is_retried_through_the_backoff() {
-        let (url, requests) = counting_server(
-            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-        );
+        let (url, requests, times) = timed_scripted_server(vec![
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                .to_vec(),
+        ]);
         let h = start_session(&url);
-        let seen = states_while_waiting_for(&h, Duration::from_secs(3), || {
-            requests.load(Ordering::SeqCst) >= 2
+        let mut seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
         });
-        assert!(
-            requests.load(Ordering::SeqCst) >= 2,
-            "a second request within 3 s (saw {})",
-            requests.load(Ordering::SeqCst)
-        );
         assert_eq!(
             reconnecting(&seen).first(),
             Some(&1),
-            "Reconnecting {{ 1 }} was emitted"
+            "Reconnecting {{ 1 }} before any Error: {seen:?}"
+        );
+        seen.extend(states_while_waiting_for(&h, GUARD, || {
+            requests.load(Ordering::SeqCst) >= 2
+        }));
+        assert!(
+            requests.load(Ordering::SeqCst) >= 2,
+            "a second request (saw {})",
+            requests.load(Ordering::SeqCst)
+        );
+        let t = times.lock().unwrap().clone();
+        assert!(
+            t[1] - t[0] >= Duration::from_secs(1),
+            "the backoff's first delay: {:?}",
+            t[1] - t[0]
         );
         assert!(
             !seen.iter().any(is_error),
@@ -1462,35 +1528,39 @@ mod session_tests {
     }
 
     /// A 429 on the first open keeps the backoff, and `Retry-After` stretches its delay.
-    /// Fails on the "every 4xx is terminal" rule (`Error { Http }` at once, one request) and
-    /// if the header is ignored (the backoff alone sends the second request at ~1.1 s; the
-    /// assertion at 2 s would see two).
+    /// Fails on the "every 4xx is terminal" rule (an `Error { Http }` before any
+    /// `Reconnecting`, one request) and if the header is ignored (the backoff alone sends the
+    /// second request ~1.1 s after the first; the gap, on the server's clock, must be at least
+    /// the header's 3 s — a slow runner only lengthens it). Until 2026-09-25 this was "no second
+    /// request by 2 s", which a late check could break on a correct build.
     #[test]
     fn a_429_is_retried_after_its_retry_after() {
-        let (url, requests) = counting_server(
-            b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 3\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-        );
+        let (url, requests, times) = timed_scripted_server(vec![
+            b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 3\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                .to_vec(),
+        ]);
         let h = start_session(&url);
-        let seen = states_while_waiting_for(&h, Duration::from_secs(2), || {
-            requests.load(Ordering::SeqCst) >= 2
+        let mut seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
         });
-        assert_eq!(
-            requests.load(Ordering::SeqCst),
-            1,
-            "no second request inside the header's 3 s"
-        );
         assert_eq!(
             reconnecting(&seen).first(),
             Some(&1),
-            "Reconnecting {{ 1 }} was emitted"
+            "Reconnecting {{ 1 }} before any Error: {seen:?}"
         );
-        assert!(!seen.iter().any(is_error), "not failed on a 429: {seen:?}");
-        let _ = states_while_waiting_for(&h, Duration::from_secs(4), || {
+        seen.extend(states_while_waiting_for(&h, GUARD, || {
             requests.load(Ordering::SeqCst) >= 2
-        });
+        }));
+        assert!(!seen.iter().any(is_error), "not failed on a 429: {seen:?}");
         assert!(
             requests.load(Ordering::SeqCst) >= 2,
             "a second request once Retry-After elapsed"
+        );
+        let t = times.lock().unwrap().clone();
+        assert!(
+            t[1] - t[0] >= Duration::from_secs(3),
+            "the second request waited for Retry-After: {:?}",
+            t[1] - t[0]
         );
         h.ctx.cancel();
     }
@@ -1506,7 +1576,7 @@ mod session_tests {
             b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
         ]);
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(8), |s| {
+        let seen = states_until(&h, GUARD, |s| {
             matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
         });
         let state = last(&seen);
@@ -1532,7 +1602,7 @@ mod session_tests {
     fn started_is_sent_once_per_session_across_a_reconnect() {
         let (url, requests) = counting_server_owned(wav_response(1.5));
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(10), |s| {
+        let seen = states_until(&h, GUARD, |s| {
             matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
         });
         let playing = seen
@@ -1671,7 +1741,7 @@ mod session_tests {
         // enough for a sample of the state to miss on a slow runner, and a sample could not
         // tell the two sessions apart.
         let wait_started = |station: &str| {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + GUARD;
             loop {
                 let ev = match ev_rx.try_recv() {
                     Ok(ev) => Ok(ev),
@@ -1700,7 +1770,7 @@ mod session_tests {
         *capture.lock().unwrap() = Some(Vec::new());
         wait_started("second");
         let ch = mixer_ch as usize;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + GUARD;
         loop {
             let after_onset = capture.lock().unwrap().as_ref().map_or(0, |v| {
                 v.iter()
@@ -1843,6 +1913,7 @@ mod session_tests {
         let addr = listener.local_addr().expect("addr");
         let paths = Arc::new(Mutex::new(Vec::new()));
         let seen = paths.clone();
+        let mut segments_seen = 0usize;
         thread::spawn(move || {
             for sock in listener.incoming() {
                 let Ok(mut sock) = sock else { break };
@@ -1855,6 +1926,12 @@ mod session_tests {
                     .and_then(|l| l.split_whitespace().nth(1))
                     .unwrap_or("/")
                     .to_string();
+                if is_segment_path(&path) {
+                    if segments_seen >= 2 {
+                        late_request_delay();
+                    }
+                    segments_seen += 1;
+                }
                 seen.lock().unwrap().push(path.clone());
                 server_delay();
                 let response = handler(&path).unwrap_or(Routed {
@@ -1996,17 +2073,20 @@ mod session_tests {
             _ => None,
         });
         let h = start_session(&format!("{base}/liveradio/antena180a/playlist.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(8), is_playing);
+        let seen = states_until(&h, GUARD, is_playing);
         let state = last(&seen);
         assert_eq!(state, PlaybackState::Playing, "states: {seen:?}");
         assert!(reconnecting(&seen).is_empty(), "no backoff: {seen:?}");
         assert_eq!(*h.infos.lock().unwrap(), vec![(48_000, 2)], "StreamInfo");
+        // Stopped at `Playing`: its `Started` is awaited, not assumed.
+        let _ = await_started(&h);
         assert_eq!(
             *h.started.lock().unwrap(),
             vec!["u1".to_string()],
             "one Started"
         );
-        let paths = paths.lock().unwrap().clone();
+        let h_paths = paths;
+        let paths = h_paths.lock().unwrap().clone();
         assert_eq!(
             &paths[..4],
             &[
@@ -2017,6 +2097,16 @@ mod session_tests {
             ],
             "two requests for the master (R1), then the media playlist, then the start segment: {paths:?}"
         );
+        // The third start segment is requested once the task's two-segment channel has room —
+        // after the reader has taken one — so it is waited for, not sampled at `Playing`
+        // (4a388f5's CI run read the log with 97880 and 97881 only).
+        let log = h_paths.clone();
+        let _ = states_while_waiting_for(&h, GUARD, move || {
+            log.lock()
+                .unwrap()
+                .contains(&"/liveradio/antena180a/media_97882.aac".to_string())
+        });
+        let paths = h_paths.lock().unwrap().clone();
         assert!(
             paths.contains(&"/liveradio/antena180a/media_97882.aac".to_string()),
             "the three start segments are fetched: {paths:?}"
@@ -2042,7 +2132,7 @@ mod session_tests {
             _ => None,
         });
         let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let seen = states_until(&h, GUARD, is_error);
         let state = last(&seen);
         assert!(
             matches!(
@@ -2087,7 +2177,7 @@ mod session_tests {
         let h = start_session(&format!(
             "{base}/hls/live/2020027/fncv3preview/primary.m3u8"
         ));
-        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let seen = states_until(&h, GUARD, is_error);
         let state = last(&seen);
         assert_eq!(
             error_message(&state),
@@ -2136,21 +2226,39 @@ mod session_tests {
         let head = fixture("10-seg-head.aac");
         let (base, paths) = live_server(6, 6.0, 5, None, move |_| head.clone());
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        // A claim window: over 13 s of a healthy live playlist, no `Reconnecting`, no `Error`
+        // and no internal reconnect. Slowness cannot add one of those to a correct build; it
+        // can only delay events, which the window then does not see — never a false failure.
         let seen = states_until(&h, Duration::from_secs(13), |_| false);
-        assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
+        assert!(
+            seen.contains(&PlaybackState::Playing),
+            "it played: {seen:?}"
+        );
+        assert!(!seen.iter().any(is_error), "{seen:?}");
         assert!(reconnecting(&seen).is_empty(), "{seen:?}");
         assert_eq!(
             h.ctx.reconnect_count.load(Ordering::Relaxed),
             0,
             "stream-download's idle timeout fired during a normal HLS wait"
         );
-        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
-        let paths = paths.lock().unwrap().clone();
-        let reloads = count_prefix(&paths, "/live/playlist.m3u8");
+        // An upper bound read at the window's end — slowness only delays reloads — then the
+        // lower bound awaited: the first refresh (the third playlist request) is waited for,
+        // not expected inside the window.
+        let reloads = count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8");
         assert!(
-            (3..=5).contains(&reloads),
-            "2 for the open + about 2 refreshes in 13 s at TD 6: {reloads} ({paths:?})"
+            reloads <= 5,
+            "2 for the open + at most a refresh per ~6 s in 13 s at TD 6: {reloads}"
         );
+        let log = paths.clone();
+        let _ = states_while_waiting_for(&h, GUARD, move || {
+            count_prefix(&log.lock().unwrap(), "/live/playlist.m3u8") >= 3
+        });
+        assert!(
+            count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8") >= 3,
+            "the media playlist was refreshed"
+        );
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
         h.ctx.cancel();
     }
 
@@ -2166,17 +2274,17 @@ mod session_tests {
             head.clone()
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(8), is_playing);
+        let seen = states_until(&h, GUARD, is_playing);
         assert_eq!(last(&seen), PlaybackState::Playing, "first play: {seen:?}");
         let opens_before = count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8");
         // The stall → Reconnecting → Playing again, read in order off the event stream: the
         // reopen's `Playing` lasts only until the still-stalled window ends it again, and a
         // sample of the state could miss it and see `Reconnecting { 2 }`.
         let mut all = seen;
-        all.extend(states_until(&h, Duration::from_secs(20), |s| {
+        all.extend(states_until(&h, GUARD, |s| {
             matches!(s, PlaybackState::Reconnecting { .. })
         }));
-        all.extend(states_until(&h, Duration::from_secs(20), is_playing));
+        all.extend(states_until(&h, GUARD, is_playing));
         assert_eq!(last(&all), PlaybackState::Playing, "no reopen: {all:?}");
         assert_eq!(reconnecting(&all), vec![1], "one backoff step: {all:?}");
         assert_eq!(
@@ -2213,11 +2321,11 @@ mod session_tests {
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
         // First play, the format change's reopen, the reopened play — in order.
-        let mut all = states_until(&h, Duration::from_secs(20), is_playing);
-        all.extend(states_until(&h, Duration::from_secs(20), |s| {
+        let mut all = states_until(&h, GUARD, is_playing);
+        all.extend(states_until(&h, GUARD, |s| {
             matches!(s, PlaybackState::Reconnecting { .. })
         }));
-        all.extend(states_until(&h, Duration::from_secs(20), is_playing));
+        all.extend(states_until(&h, GUARD, is_playing));
         assert_eq!(
             last(&all),
             PlaybackState::Playing,
@@ -2273,12 +2381,14 @@ mod session_tests {
         // Window 1..5; the start is three from the end = 3; 3 is gone, 4 and 5 are there.
         let (base, paths) = eviction_server(1, 5, head, |seq, _| (seq == 3).then_some(404));
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(8), is_playing);
+        let seen = states_until(&h, GUARD, is_playing);
         assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
         assert!(
             reconnecting(&seen).is_empty(),
             "no backoff for one evicted segment: {seen:?}"
         );
+        // Stopped at `Playing`: its `Started` is awaited, not assumed.
+        let _ = await_started(&h);
         assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
         let paths = paths.lock().unwrap().clone();
         let segs: Vec<u64> = paths.iter().filter_map(|p| seg_seq(p)).collect();
@@ -2301,13 +2411,15 @@ mod session_tests {
             (playlist_requests <= 2).then_some(410)
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(10), is_playing);
+        let seen = states_until(&h, GUARD, is_playing);
         assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
         assert_eq!(
             reconnecting(&seen),
             vec![1],
             "one backoff step, then it plays: {seen:?}"
         );
+        // Stopped at `Playing`: its `Started` is awaited, not assumed.
+        let _ = await_started(&h);
         assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
         h.ctx.cancel();
     }
@@ -2364,7 +2476,7 @@ mod session_tests {
         let head = fixture("10-seg-head.aac");
         let (base, paths) = eviction_server(1, 5, head, |_, _| Some(403));
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let seen = states_until(&h, GUARD, is_error);
         let state = last(&seen);
         assert!(
             matches!(
@@ -2413,7 +2525,7 @@ mod session_tests {
             _ => None,
         });
         let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let seen = states_until(&h, GUARD, is_error);
         let state = last(&seen);
         assert_eq!(
             error_message(&state),
@@ -2457,7 +2569,7 @@ mod session_tests {
             _ => None,
         });
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let seen = states_until(&h, Duration::from_secs(5), |s| is_error(s) || is_playing(s));
+        let seen = states_until(&h, GUARD, |s| is_error(s) || is_playing(s));
         let state = last(&seen);
         assert!(
             matches!(
@@ -2538,7 +2650,7 @@ mod session_tests {
     fn t23_a_gone_segment_in_the_task_is_skipped_after_one_request() {
         let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(410));
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let segs = segs_until_seq5(&paths, Duration::from_secs(15));
+        let segs = segs_until_seq5(&paths, GUARD);
         h.ctx.cancel();
         assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
         assert_eq!(
@@ -2555,7 +2667,7 @@ mod session_tests {
     fn t24_a_404_that_heals_on_the_second_retry_is_not_a_gap() {
         let (base, paths) = task_segment_server(|seq, n| (seq == 4 && n <= 2).then_some(404));
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let segs = segs_until_seq5(&paths, Duration::from_secs(15));
+        let segs = segs_until_seq5(&paths, GUARD);
         h.ctx.cancel();
         assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
         assert_eq!(
@@ -2572,7 +2684,7 @@ mod session_tests {
     fn t25_a_404_that_stays_is_a_gap_after_two_retries() {
         let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(404));
         let h = start_session(&format!("{base}/live/playlist.m3u8"));
-        let segs = segs_until_seq5(&paths, Duration::from_secs(15));
+        let segs = segs_until_seq5(&paths, GUARD);
         h.ctx.cancel();
         assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
         assert_eq!(
