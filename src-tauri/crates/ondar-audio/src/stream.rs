@@ -181,6 +181,17 @@ pub struct OpenedStream {
     pub station_name: Option<String>,
 }
 
+/// The bounded in-memory storage every reader is built on — the Icecast open's and the HLS
+/// open's (review 2026-09-25, finding 6: two copies of this construction, and two `.expect`
+/// sites where CLAUDE.md records one). The `expect` is the documented site: `BUFFER_BYTES` is a
+/// non-zero `const`, so it cannot fire.
+pub(crate) fn bounded_storage() -> BoundedStorageProvider<MemoryStorageProvider> {
+    BoundedStorageProvider::new(
+        MemoryStorageProvider,
+        NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer"),
+    )
+}
+
 /// Build the one HTTP client the engine uses for its lifetime.
 pub fn build_client(user_agent: &str) -> reqwest::Client {
     client_builder(user_agent)
@@ -288,10 +299,7 @@ pub async fn open(
         return crate::hls::open(client, url, reconnect_count, prefetch_bytes).await;
     }
 
-    let storage = BoundedStorageProvider::new(
-        MemoryStorageProvider,
-        NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer"),
-    );
+    let storage = bounded_storage();
     let settings = Settings::default()
         .prefetch_bytes(prefetch_bytes)
         .retry_timeout(retry_timeout())

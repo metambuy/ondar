@@ -51,8 +51,6 @@ use bytes::Bytes;
 use futures_core::Stream;
 use reqwest::{Client, Url};
 use stream_download::source::SourceStream;
-use stream_download::storage::bounded::BoundedStorageProvider;
-use stream_download::storage::memory::MemoryStorageProvider;
 use stream_download::{Settings, StreamDownload};
 use tokio::sync::mpsc;
 
@@ -575,15 +573,20 @@ pub async fn open(
 
     let now = Instant::now();
     let (planner, step) = Planner::start(&media, now);
-    let (mut pending, then_wait) = match step {
+    // `start` returns `Fetch` with at least one segment for a non-empty playlist (checked
+    // above). Anything else is a typed error, not a panic shape (review 2026-09-25, finding 8:
+    // two "for the type" arms yielded an empty list that `remove(0)` would have panicked on).
+    let (pending, then_wait) = match step {
         Step::Fetch {
             segments,
             then_wait,
             ..
-        } => (segments, then_wait),
-        // `start` always returns Fetch; the arms below exist for the type.
-        Step::Wait(d) => (Vec::new(), d),
-        Step::End(_) => (Vec::new(), media.target_duration),
+        } if !segments.is_empty() => (segments, then_wait),
+        other => {
+            return Err(network(format!(
+                "HLS media playlist {media_url} gave no start segment ({other:?})"
+            )));
+        }
     };
     log::info!(
         "hls media url={media_url} td={:?} seq={}..{} start={}",
@@ -598,8 +601,16 @@ pub async fn open(
     // pending segment is tried; only when every start segment is gone does the open fail, and
     // then as a retriable `Network` error: the session's backoff reopens on a fresher window
     // (review 2026-09-25, finding 4).
+    let mut candidates = pending.into_iter();
+    let mut last_evicted: Option<(u64, u16)> = None;
     let (first, first_bytes, content_type) = loop {
-        let candidate = pending.remove(0);
+        // Running out of candidates is the typed "all gone" answer; no index, no panic shape.
+        let Some(candidate) = candidates.next() else {
+            let (seq, status) = last_evicted.unwrap_or((0, 0));
+            return Err(network(format!(
+                "HLS start segments are gone ({status} at seq {seq}); the window moved on"
+            )));
+        };
         match fetch_segment(client, &candidate, media.target_duration, true).await? {
             SegmentFetch::Refused(c) => return Err(refused_container(c)),
             SegmentFetch::Body {
@@ -611,15 +622,11 @@ pub async fn open(
                     "hls start segment seq={} evicted ({status}); trying the next",
                     candidate.seq
                 );
-                if pending.is_empty() {
-                    return Err(network(format!(
-                        "HLS start segments are gone ({status} at seq {}); the window moved on",
-                        candidate.seq
-                    )));
-                }
+                last_evicted = Some((candidate.seq, status));
             }
         }
     };
+    let pending: Vec<Segment> = candidates.collect();
     let normalised = segment::normalise(&first_bytes);
     let Some(format) = normalised.format else {
         return Err(unsupported("HLS segment format not recognised"));
@@ -643,10 +650,7 @@ pub async fn open(
     let first_payload = Bytes::from(normalised.bytes);
     tokio::spawn(async move { task.run(first_payload).await });
 
-    let storage = BoundedStorageProvider::new(
-        MemoryStorageProvider,
-        std::num::NonZeroUsize::new(stream::BUFFER_BYTES).expect("non-zero buffer"),
-    );
+    let storage = stream::bounded_storage();
     // The same counter the Icecast path bumps on stream-download's internal reconnect, so if
     // the idle timeout ever fires here it surfaces as `playback:reconnect` too. With
     // `retry_timeout_for` above the task's longest legitimate silence, a count above zero on a

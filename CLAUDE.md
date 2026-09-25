@@ -400,8 +400,10 @@ side.
   - `stream.rs::build_client`'s `.build().expect(..)`, called once from `Engine::new`. It
     fails only if the native-tls connector (Security.framework) cannot initialise or the
     user-agent is not a valid header value.
-  - `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `stream.rs`, reached from `play` on every
-    open. `BUFFER_BYTES` is a non-zero `const`, so it cannot fire.
+  - `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `stream.rs`'s `bounded_storage()`, reached
+    from `play` on every open — the Icecast open's and, since M3c, the HLS open's, both through
+    that one function (the review of 2026-09-25, finding 6, found a second copy in `hls/mod.rs`
+    and removed it). `BUFFER_BYTES` is a non-zero `const`, so it cannot fire.
   - `client.rs::ReqwestTransport::new`'s `.build().expect(..)` in `ondar-stations`, called once
     from `StationsService::start` at setup — the same reqwest builder with the same two ways
     to fail as the first site.
