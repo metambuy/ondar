@@ -98,7 +98,9 @@ pub fn is_hls_content_type(content_type: &str) -> bool {
 
 /// Whole-request bound on a segment fetch: twice the target duration, at least 10 s.
 pub fn segment_timeout(target_duration: Duration) -> Duration {
-    (target_duration * 2).max(Duration::from_secs(10))
+    // On the bounded TD: `Duration * 2` on a raw remote `TARGETDURATION` overflowed (review
+    // 2026-09-25, finding 3 — "overflow when multiplying duration by scalar" at u64::MAX).
+    (playlist::bounded_target_duration(target_duration) * 2).max(Duration::from_secs(10))
 }
 
 /// `stream-download`'s idle timeout for an HLS source: the longest the task can legitimately go
@@ -535,7 +537,10 @@ pub async fn open(
                 variant.codecs,
                 master.variants.len()
             );
-            bitrate_kbps = variant.bandwidth.map(|b| (b / 1000) as u32);
+            // A remote u64: capped, not truncated, on its way into the u32 the UI shows.
+            bitrate_kbps = variant
+                .bandwidth
+                .map(|b| u32::try_from(b / 1000).unwrap_or(u32::MAX));
             let (fetched, started) = fetch_playlist(client, &variant.uri).await?;
             match parse_fetched(&fetched, started)? {
                 Playlist::Media(m) => {
@@ -895,5 +900,16 @@ mod tests {
             segment_timeout(Duration::from_secs(13)),
             Duration::from_secs(26)
         );
+    }
+
+    /// Review 2026-09-25, finding 3: a `TARGETDURATION` at u64::MAX reached `Duration * 2`
+    /// ("overflow when multiplying duration by scalar" on `102c114`). The timeouts are computed
+    /// on the same bounded TD the planner uses, so the largest is 60 s + 90 s + 5 s.
+    #[test]
+    fn timeouts_on_an_absurd_target_duration_are_bounded() {
+        let td = Duration::from_secs(u64::MAX);
+        assert_eq!(segment_timeout(td), Duration::from_secs(60));
+        assert_eq!(retry_timeout_for(td), Duration::from_secs(90 + 60 + 5));
+        assert_eq!(segment_timeout(Duration::ZERO), Duration::from_secs(10));
     }
 }

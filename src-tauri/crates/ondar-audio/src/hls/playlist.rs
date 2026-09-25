@@ -195,8 +195,11 @@ pub fn parse(text: &str, base: &Url) -> Result<Playlist, PlaylistError> {
                         .parse::<f64>()
                         .ok()
                         .filter(|s| s.is_finite() && *s >= 0.0)
+                        // `from_secs_f64` panics on a finite value too large for a Duration
+                        // (`1e30`; review 2026-09-25, finding 2); `try_` refuses it instead.
+                        .and_then(|s| Duration::try_from_secs_f64(s).ok())
                     {
-                        Some(secs) => pending_duration = Some(Duration::from_secs_f64(secs)),
+                        Some(d) => pending_duration = Some(d),
                         // Deferred, not returned: a plain M3U writes `#EXTINF:-1,Name` and
                         // must read as NotHls below, not as a malformed HLS playlist.
                         None => {
@@ -236,7 +239,18 @@ pub fn parse(text: &str, base: &Url) -> Result<Playlist, PlaylistError> {
                 codecs,
             });
         } else if let Some(duration) = pending_duration.take() {
-            let seq = media_sequence + segments.len() as u64;
+            // Checked: `MEDIA-SEQUENCE` is a remote u64 (review 2026-09-25, finding 3). The
+            // last sequence must also leave room for the planner's `next_seq = last + 1`.
+            let Some(seq) = media_sequence
+                .checked_add(segments.len() as u64)
+                .filter(|s| *s < u64::MAX)
+            else {
+                deferred.get_or_insert(PlaylistError::Malformed(format!(
+                    "EXT-X-MEDIA-SEQUENCE:{media_sequence} overflows at segment {}",
+                    segments.len()
+                )));
+                continue;
+            };
             segments.push(Segment {
                 seq,
                 duration,
@@ -317,17 +331,25 @@ enum Kind {
 
 fn is_audio_codec(c: &str) -> bool {
     let c = c.trim();
-    c.len() >= 5 && c[..5].eq_ignore_ascii_case("mp4a.")
+    // Byte-wise: a `CODECS` value is remote text, and a byte-index slice of a `&str` panics
+    // when the index falls inside a multi-byte char (review 2026-09-25, finding 1).
+    has_prefix_ignore_case(c, b"mp4a.")
         || c.eq_ignore_ascii_case("ac-3")
         || c.eq_ignore_ascii_case("ec-3")
+}
+
+fn has_prefix_ignore_case(s: &str, prefix: &[u8]) -> bool {
+    s.as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|b| b.eq_ignore_ascii_case(prefix))
 }
 
 /// `mp4a.40.<object type>`: 5 is HE-AAC v1 (SBR), 29 is HE-AAC v2 (SBR + PS).
 fn is_he_aac(c: &str) -> bool {
     let c = c.trim();
-    c.len() > 8
-        && c[..8].eq_ignore_ascii_case("mp4a.40.")
-        && matches!(c[8..].parse::<u32>(), Ok(5) | Ok(29))
+    has_prefix_ignore_case(c, b"mp4a.40.")
+        && c.get(8..)
+            .is_some_and(|rest| matches!(rest.parse::<u32>(), Ok(5) | Ok(29)))
 }
 
 fn kind(v: &Variant) -> Kind {
@@ -452,6 +474,13 @@ fn clamp_wait(d: Duration) -> Duration {
     d.clamp(MIN_WAIT, MAX_WAIT)
 }
 
+/// A target duration bounded to [`MIN_WAIT`, `MAX_WAIT`]: what every wait, the stall bound and
+/// the fetch layer's timeouts are computed on, so a remote `TARGETDURATION` can neither hammer
+/// nor overflow anything (review 2026-09-25, finding 3).
+pub fn bounded_target_duration(target_duration: Duration) -> Duration {
+    clamp_wait(target_duration)
+}
+
 /// The stall bound for a target duration: [`STALL_TARGET_DURATIONS`] × the **clamped** TD, so a
 /// `TARGETDURATION:0` playlist gets 3 s rather than a bound of zero that would declare a stall
 /// on its first reload, and an hour-long one 90 s. The fetch layer sizes its idle timeout on it.
@@ -467,7 +496,7 @@ impl Planner {
         let segments: Vec<Segment> = media.segments[from..].to_vec();
         let next_seq = media
             .last_seq()
-            .map(|s| s + 1)
+            .map(|s| s.saturating_add(1))
             .unwrap_or(media.media_sequence);
         let then_wait = clamp_wait(
             segments
@@ -531,7 +560,10 @@ impl Planner {
         }
 
         self.last_new_at = now;
-        self.next_seq = segments.last().map(|s| s.seq + 1).unwrap_or(self.next_seq);
+        self.next_seq = segments
+            .last()
+            .map(|s| s.seq.saturating_add(1))
+            .unwrap_or(self.next_seq);
         let then_wait = clamp_wait(segments.last().map(|s| s.duration).unwrap_or(stall));
         Step::Fetch {
             segments,
@@ -1163,5 +1195,91 @@ mod tests {
             attribute_list("METHOD=NONE"),
             vec![("METHOD", "NONE".to_string())]
         );
+    }
+
+    // ---- Review 2026-09-25, findings 1–3 + the sweep: no code path from network bytes may panic
+
+    /// A table of hostile playlists. Every row **panicked on `102c114`** (the panic text is in
+    /// the commit message) and now yields the typed refusal or the safe value beside it. With
+    /// the release profile's `panic = "abort"` each row was a whole-app abort from one remote
+    /// playlist.
+    #[test]
+    fn hostile_playlists_do_not_panic() {
+        let base = url("http://h/p.m3u8");
+        // (1) a multi-byte char at byte 5 / byte 8 of a CODECS value: byte-index slicing.
+        for codecs in ["mp4aé", "é", "ac-é"] {
+            let m = master(
+                &format!(
+                    "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=96000,CODECS=\"{codecs}\"\nv.m3u8\n"
+                ),
+                "http://h/master.m3u8",
+            );
+            // Not an audio codec we know: refused as video-only rather than crashed.
+            assert!(choose_variant(&m).is_err(), "{codecs}");
+        }
+        // …and a value that is audio by prefix with a multi-byte char at byte 8 (`c[..8]`
+        // panicked at `:329`) or after it is audio, not HE, and not a crash.
+        for codecs in ["mp4a.40é", "mp4a.40.é"] {
+            let m = master(
+                &format!("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS=\"{codecs}\"\nv.m3u8\n"),
+                "http://h/master.m3u8",
+            );
+            assert!(choose_variant(&m).is_ok(), "{codecs}");
+            assert!(!is_he_aac(codecs), "{codecs}");
+        }
+
+        // (2) an EXTINF that is finite, positive and larger than a Duration can hold.
+        // (1e19 fits: a Duration holds up to u64::MAX ≈ 1.8e19 seconds, and the planner clamps
+        // the wait it would imply.)
+        for dur in ["1e30", "18446744073709551616", "1e300"] {
+            let text = format!("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:{dur},\ns.aac\n");
+            assert!(
+                matches!(parse(&text, &base), Err(PlaylistError::Malformed(_))),
+                "{dur}"
+            );
+        }
+
+        // (3) sequence numbers at the top of u64: the add for each segment, and the +1 the
+        // planner needs after the last one.
+        let text = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:{}\n#EXTINF:6,\na.aac\n#EXTINF:6,\nb.aac\n",
+            u64::MAX
+        );
+        assert!(matches!(
+            parse(&text, &base),
+            Err(PlaylistError::Malformed(_))
+        ));
+        let text = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:{}\n#EXTINF:6,\na.aac\n#EXTINF:6,\nb.aac\n",
+            u64::MAX - 1
+        );
+        // The second segment would be u64::MAX, which leaves no room for `next_seq`.
+        assert!(matches!(
+            parse(&text, &base),
+            Err(PlaylistError::Malformed(_))
+        ));
+        let text = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:{}\n#EXTINF:6,\na.aac\n",
+            u64::MAX - 1
+        );
+        let m = media(&text, "http://h/p.m3u8");
+        let (p, _) = Planner::start(&m, t0());
+        assert_eq!(p.next_seq(), u64::MAX);
+        // A reload past it is a plain "nothing new", not an overflow.
+        let mut p = p;
+        assert!(matches!(p.reload(Some(&m), t0()), Step::Wait(_)));
+
+        // A TARGETDURATION at u64::MAX parses (it is a plain u64) and the waits stay clamped.
+        let text = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:{}\n#EXTINF:1,\na.aac\n",
+            u64::MAX
+        );
+        let m = media(&text, "http://h/p.m3u8");
+        assert_eq!(
+            stall_bound(m.target_duration),
+            MAX_WAIT * STALL_TARGET_DURATIONS
+        );
+        let (mut p, _) = Planner::start(&m, t0());
+        assert_eq!(p.reload(Some(&m), t0()), Step::Wait(MAX_WAIT));
     }
 }
