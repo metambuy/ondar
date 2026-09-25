@@ -813,6 +813,57 @@ restart (not seen in P4, where origins differed per request and the sequence sti
 `StreamInfo.bitrate_kbps` for an HLS station is the variant's `BANDWIDTH` / 1000 (185/176 for
 Antena 1 across opens), not the record's 167 that sized the prefetch.
 
+**Code review 2, 2026-09-25** (`_handover/m3c-review2-findings.md`, verified; triage
+`m3c-review2-triage-2026-09-25.md`; a scoped single-agent `/code-review` of round 1's fixes,
+`102c114..fe120a2`). Seven findings, all accepted; the triage split finding 4 (410 ≠ 404) and
+widened the bound sweep to both crates. **One was a crash of the class round 1 closed:** the
+gzip inflate had no output bound.
+
+| # | finding | fix |
+|---|---|---|
+| 1 | **`segment::gunzip` inflated a remote body with no output bound** — the compressed body was capped (1 MB / 4 MB) but zeros inflate ~1000:1 (measured 1028:1 at 16 MiB), so a 4 MB segment was a ~4 GB `Vec` → allocation failure → abort under `panic = "abort"`. Also: `fetch_segment`'s "never downloaded" was false for a gzipped refused segment | `0f045b3`: `gunzip(bytes, max)` reads at most max + 1 (`GunzipError::TooLarge`), callers pass the cap their compressed body met; the doc now says a gzipped refused segment is downloaded whole, ≤ 4 MB, before its sniff (no streaming inflate — P4 saw no gzipped segment). T22 + a unit test, both recorded failing first |
+| 2 | the fetch task compared its retry window against the **raw** TD: `TARGETDURATION:3600` retried a failed segment every second for an hour | `b07e04e`: the bounded TD in `FetchTask`, and the pure `after_failure` bounds it again itself |
+| 3 | a fresh `unreachable!` in the task's match; ONDAR.md's "no index left" | the match went with `b07e04e`; `d61d524` removes the last one (`refused_container`'s ADTS arm → a `Refusal` type), corrects the row, and adds **a source scan** of `hls/`'s non-test code for `unreachable!`/`panic!`/`todo!`/`unimplemented!`/`.unwrap()`/`.expect(` |
+| 4 | an evicted segment was retried for a whole TD like a transient failure | `b07e04e`, **split by the triage**: 410 → skipped at once; 404 → at most two retries at 1 s (a CDN edge that has not yet received a segment the origin published), then the gap. T23–T25 (ten requests each on `0f045b3` for T23/T25) |
+| 5 | "start segments are gone" returned as `Network` though every candidate answered a status | `a746fe6`: `Http`, `terminal: false`, carrying `Retry-After`; T26 |
+| 6 | T19 decided its 410 window by wall clock (800 ms) | `50036ee`: keyed to playlist requests — see below |
+| 7 | `parse_fetched` carried two doc openings | `d61d524` |
+
+**The bound sweep, widened** (every `read_to_end`, remote-sized `with_capacity`, trusted
+`Content-Length` and decompression in `ondar-audio` and `ondar-stations`, in `0f045b3`'s
+message):
+
+| crate | site | verdict |
+|---|---|---|
+| audio | `hls/segment.rs` gunzip inflate + `with_capacity(len × 4)` | **fixed**: the caller's cap |
+| audio | `stream.rs` error excerpt: stream-download's `decode_error` is `response.text()` — **found by the sweep, not the review** | **fixed**: read only when the declared `Content-Length` ≤ 64 KiB (`ERROR_BODY_MAX`); on `fe120a2` an endless chunked 404 kept `open` reading — 14.3 GB sent in the test's 5 s |
+| audio | `hls/mod.rs` `read_body`, `fetch_segment`'s chunk loop | safe: stop at the cap |
+| audio | stream-download's `Content-Length` → storage | safe: `BoundedStorageProvider` takes min(content_length, `BUFFER_BYTES`) |
+| audio | `icy.rs` metadata block | safe: one length byte × 16 ≤ 4 080 |
+| audio | `segment.rs` normalise `with_capacity(b.len())` | safe: `b` is already capped |
+| both | reqwest decompression | none: no gzip/brotli/deflate feature enabled (`cargo tree -e features`) |
+| stations | `client.rs` `ReqwestTransport::get`: `resp.bytes()` | **carried**: unbounded in bytes, bounded only in time (180 / 30 / 10 s totals, 15 s idle); a bound needs a chunk loop, not one line. In `_handover/OPEN.md` |
+| stations | `normalise.rs` `with_capacity(raw.len())`, `serde_json::from_slice` | sized from the parsed body (bounded when the body is); serde's recursion limit 128 |
+
+**The commit order changed.** The first fix's CI run went red on round 1's T18
+(`states: [Buffering, Playing, Reconnecting { attempt: 1 }]`): its window holds ~2 s of audio,
+and the session tests' helper decided by **sampling** the current state every 20 ms, so on a slow
+runner `Playing` began and ended between two samples. Martín put the determinism fix next, as
+`50036ee` `test(audio): session tests assert state order, not timing`, ahead of the planned
+order (findings 2+4, 3+7, 5), and it absorbed finding 6. Every session test now reads states off
+the engine's event channel in order and stops at the first one it waits for; defect A's pair
+waits for each station's `Started` and captures from the second session's creation. Reproduced
+first with `ONDAR_TEST_POLL_DELAY_MS=1000` (T18, as CI) and `ONDAR_TEST_SERVER_DELAY_MS=300`
+(T19); all session tests pass under 1 000, 2 000 and 300 after. The two knobs stay in the harness.
+
+**Observed, not changed:** with the TD bounded at 30 s, a transient failure on a hostile TD still
+outlasts the session's 15 s watchdog, which ends the session first; the bound caps the requests at
+30 instead of 3 600. **Carried:** `ondar-stations`' response body has no byte bound. Tests after
+review 2: **233 + 15** (audio 129: +3 in `0f045b3`, +4 in `b07e04e`, +1 in `d61d524`, +1 in
+`a746fe6`). **Stop rule (triage):** a third scoped review on these commits is the last before the
+merge; the merge needs no crash or user-visible behaviour finding, and test-determinism or doc
+findings from it are fixed on `main` after the merge.
+
 ### Defect A: the output kept the first session's sample rate — measured, fixed (2026-09-24)
 
 Branch `a-sample-rate` off `main` `f7af9dc`. Fix `ebb414f`. Records in `_handover/`: Step 0
