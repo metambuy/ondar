@@ -438,14 +438,17 @@ async fn fetch_segment(
     let gzipped = is_gzip(response.headers());
 
     let mut body: Vec<u8> = Vec::new();
-    let mut sniffed = !sniff_first || gzipped; // a gzipped segment is sniffed after inflating
+    // A plain body is sniffed as it arrives, so a refused segment is dropped at its head; a
+    // gzipped body can only be sniffed after inflating, below (review 2026-09-25, finding 5:
+    // one flag served both, and the gzipped case was never sniffed).
+    let mut sniffed_early = false;
     loop {
-        if !sniffed {
+        if sniff_first && !gzipped && !sniffed_early {
             let tags = segment::id3_end(&body);
             // The tags are complete once `id3_end` lands inside the buffer, and the sniff
             // needs `SNIFF_LEN` bytes after them.
             if tags < body.len() && body.len() >= tags + segment::SNIFF_LEN {
-                sniffed = true;
+                sniffed_early = true;
                 let container = segment::sniff(&body[tags..]);
                 if container != Container::Adts {
                     log_request(Kind::Segment, &seg.uri, "200", "head", started);
@@ -483,9 +486,9 @@ async fn fetch_segment(
     } else {
         body
     };
-    if !sniffed {
-        // The body ended before the sniff had its bytes (a short segment, or gzipped): sniff
-        // whatever there is.
+    if sniff_first && !sniffed_early {
+        // The body ended before the sniff had its bytes (a short segment), or it was gzipped
+        // and is only now inflated: sniff whatever there is.
         let tags = segment::id3_end(&body);
         let container = segment::sniff(&body[tags..]);
         if container != Container::Adts {

@@ -2217,6 +2217,47 @@ mod session_tests {
         let paths = paths.lock().unwrap().clone();
         assert_eq!(paths.len(), 3, "playlist ×2 + one segment: {paths:?}");
     }
+
+    /// Review 2026-09-25, finding 5 (fix C): a **gzip-encoded** first segment must still be
+    /// sniffed after inflating. On `28f7098` the early sniff was skipped for a gzipped body and
+    /// the post-inflate sniff was guarded by the same flag, so a gzipped MPEG-TS segment read
+    /// the generic "HLS segment format not recognised" instead of the MPEG-TS message T13 pins
+    /// for the plain case.
+    #[test]
+    fn t21_a_gzipped_ts_first_segment_is_refused_as_mpeg_ts() {
+        let media = fixture("09-media.m3u8");
+        let ts = fixture("09-seg-head.mpegts");
+        let gz = {
+            use std::io::Write;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&ts).unwrap();
+            e.finish().unwrap()
+        };
+        let (base, paths) = routed_server(move |path| match path {
+            "/igi/radio1/tracks-a1/mono.m3u8" => {
+                Some(routed("application/vnd.apple.mpegurl", media.clone()))
+            }
+            p if p.contains("-06016.ts?hls_proxy_host=") => Some(Routed {
+                status: 200,
+                content_type: "video/MP2T",
+                gzip: true,
+                body: gz.clone(),
+            }),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
+        let seen = states_until(&h, Duration::from_secs(5), is_error);
+        let state = h.ctx.shared.state();
+        assert_eq!(
+            error_message(&state),
+            "HLS with MPEG-TS segments is not supported yet",
+            "state: {state:?}"
+        );
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert!(h.started.lock().unwrap().is_empty());
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(paths.lock().unwrap().len(), 3);
+    }
 }
 
 #[cfg(test)]
