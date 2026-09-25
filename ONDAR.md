@@ -731,9 +731,13 @@ argument or type; the vitest count stays 15.
 | X3 France Inter (TS) / Fox (video) | `Error` in 0.24 s / 0.70 s with the two messages; **3 / 2 requests**, exact on the fixture server and matching the live `hls request` lines; 0 `Reconnecting`, 0 `Started`, 0 clicks |
 | X4 click = play | in-app one play → one click line; HLS → Icecast → HLS through the probe: 3 plays, 3 `Started`, 0 reopens; the HLS task `ended reason=closed` at each switch and made 0 requests during the Icecast play |
 | X5 Stop during a wait | `hls task ended reason=closed` in the same millisecond as the switch; the host saw **no request for 31 s** with the process alive |
+| X6 Wi-Fi off 20 s (Martín, 2026-09-25) | twice: `Buffering` 7 s after the last segment → the hung reload's 10 s timeout → the retry's DNS error → `hls task ended reason=stall` 16.5 s after the last new segment → `Reconnecting { 1..4 }` → `Playing` — **20.7 s of silence for a ~20 s outage**; a second toggle 12 s after the recovery ran the same chain as `Reconnecting { 5 }` (24 s of stable play, under the 30 s reset) and recovered at 21.7 s; **one click line**, no `Started` on a reopen; after recovery mean 1.0001, 0 underruns |
 | X7 | on the reverted clean tree: fmt, clippy (0 warnings), **217 + 15**, typecheck, lint all 0; `pnpm tauri:dev` clean (X1's run was one; a second launch on the clean tree, `x7-devlaunch.*`) |
 
-X6 (Wi-Fi off 20 s) is Martín's. The in-app HLS → Icecast → HLS switch was not clicked (one
+X6's second outage is a note on **M1's policy, not M3c's**: two outages inside `STABLE_AFTER`
+(30 s) spend one session's five attempts, and had the network still been down at attempt 5's end
+the session would have ended in `Error`. Correct as written (invariant 5); recorded. The in-app
+HLS → Icecast → HLS switch was not clicked (one
 auto-play per launch); the probe's `Started` count stands in, with the shell's `Started` → click
 mapping pinned by `service::tests`. One instrument note: the X1 stop was scheduled at 10 min and
 the `pkill` pattern missed, so X1 ran 18 min and X2/X4 overlapped its last six — with 0 underruns

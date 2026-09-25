@@ -127,7 +127,8 @@ reach them from the popover.
       **Acceptance** (`_handover/m3c-acceptance.md`): Antena 1 in-app 18 min at speed 1.0000, 0
       underruns, 264 advancing refreshes; the HE-AAC and `FFF9` stations at 1.0000 / 0.9998; TS
       and video-only refused in < 1 s with 3 / 2 requests exactly, no vote; click = play; Stop
-      leaves no orphaned request for 31 s. X6 (Wi-Fi off) is Martín's. **217 + 15.** Defect B
+      leaves no orphaned request for 31 s; Wi-Fi off 20 s (Martín, 2026-09-25) → `Buffering` →
+      stall → `Reconnecting` → `Playing` in 20.7 s, one click. **217 + 15.** Defect B
       (an unbounded `Connecting` on `main`) opened for after the merge, before M4.
 - [x] Commands: `list_countries`, `list_stations(country_code)`, `search_stations(query)` (+ favourites, recents; **M3a, 2026-09-22**)
 - [x] UI: country dropdown (a native select, searchable by type-ahead — a custom list is a
