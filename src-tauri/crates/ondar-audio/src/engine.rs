@@ -1182,14 +1182,8 @@ mod session_tests {
         _rt: tokio::runtime::Runtime,
     }
 
-    /// Start `run_session` against `url` on its own thread, as `Engine::play` does, minus the
-    /// device: the `Player` is connected to a bare mixer whose output a thread pulls at about
-    /// twice real time — the device's stand-in. Without that pull nothing ever drops a queued
-    /// source, and `Player::clear()` on a second open (a reconnect after playback) waits for
-    /// the mixer forever (found by `started_is_sent_once_per_session_across_a_reconnect`,
-    /// M3b commit 5: the second stream reached its fill target and never left `clear()`).
-    fn start_session(url: &str) -> Harness {
-        let (ev_tx, ev_rx) = mpsc::channel();
+    /// A session context for station `u1` whose events go to `ev_tx`.
+    fn test_ctx(ev_tx: mpsc::Sender<EngineEvent>) -> SessionCtx {
         let shared = Shared {
             state: Arc::new(Mutex::new(PlaybackState::Connecting)),
             events: ev_tx,
@@ -1198,7 +1192,7 @@ mod session_tests {
             session: Arc::new(Mutex::new(Session::default())),
         };
         let generation = shared.begin_session("u1".into());
-        let ctx = SessionCtx {
+        SessionCtx {
             cancel: Arc::new(AtomicBool::new(false)),
             download: Arc::new(Mutex::new(None)),
             ring: Arc::new(Mutex::new(None)),
@@ -1206,7 +1200,18 @@ mod session_tests {
             reconnect_count: Arc::new(AtomicU64::new(0)),
             generation,
             shared,
-        };
+        }
+    }
+
+    /// Start `run_session` against `url` on its own thread, as `Engine::play` does, minus the
+    /// device: the `Player` is connected to a bare mixer whose output a thread pulls at about
+    /// twice real time — the device's stand-in. Without that pull nothing ever drops a queued
+    /// source, and `Player::clear()` on a second open (a reconnect after playback) waits for
+    /// the mixer forever (found by `started_is_sent_once_per_session_across_a_reconnect`,
+    /// M3b commit 5: the second stream reached its fill target and never left `clear()`).
+    fn start_session(url: &str) -> Harness {
+        let (ev_tx, ev_rx) = mpsc::channel();
+        let ctx = test_ctx(ev_tx);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -1262,8 +1267,13 @@ mod session_tests {
 
     /// After a helper's stopping point: pick up the events the engine sends right behind a
     /// state — `Started` follows `State(Playing)` under the same lock — until the next state,
-    /// which is held for the next call, or 50 ms of quiet.
+    /// which is held for the next call, or 50 ms of quiet. Nothing to do while a state is
+    /// already held: what the stopping state brought behind it was picked up before that
+    /// state, and reading on would overwrite it (round-3 review, finding 3).
     fn grace(h: &Harness) {
+        if h.held.lock().unwrap().is_some() {
+            return;
+        }
         while let Ok(ev) = h.events.recv_timeout(Duration::from_millis(50)) {
             if let Some(s) = record(h, ev) {
                 *h.held.lock().unwrap() = Some(s);
@@ -1359,6 +1369,52 @@ mod session_tests {
     /// any later state has it already, but one stopped at that `Playing` may not.
     fn await_started(h: &Harness) -> Vec<PlaybackState> {
         states_while_waiting_for(h, GUARD, || !h.started.lock().unwrap().is_empty())
+    }
+
+    /// The harness's own promise, "no state is lost between calls" (round-3 review, finding
+    /// 3, 2026-09-25). No session: the events are queued by hand, all before the first call,
+    /// so the order the helpers see is fixed. `states_until(Playing)` stops at `Playing`, and
+    /// its grace picks up `Started` and holds `Buffering`. `await_started` finds `Started`
+    /// already recorded, so its condition holds on entry and it runs `grace` again, which
+    /// reads `Reconnecting` within its 50 ms. Fails if that grace overwrites the held
+    /// `Buffering`: the next call then sees `[Reconnecting]` only.
+    #[test]
+    fn grace_never_overwrites_a_held_state() {
+        let (ev_tx, ev_rx) = mpsc::channel();
+        let h = Harness {
+            ctx: test_ctx(ev_tx.clone()),
+            events: ev_rx,
+            held: Mutex::new(None),
+            started: Mutex::new(Vec::new()),
+            infos: Mutex::new(Vec::new()),
+            _rt: tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("runtime"),
+        };
+        for ev in [
+            EngineEvent::State(PlaybackState::Playing),
+            EngineEvent::Started {
+                station_id: "u1".into(),
+            },
+            EngineEvent::State(PlaybackState::Buffering),
+            EngineEvent::State(PlaybackState::Reconnecting { attempt: 1 }),
+        ] {
+            ev_tx.send(ev).expect("send");
+        }
+        let mut seen = states_until(&h, GUARD, |s| *s == PlaybackState::Playing);
+        seen.extend(await_started(&h));
+        seen.extend(states_until(&h, GUARD, |s| {
+            matches!(s, PlaybackState::Reconnecting { .. })
+        }));
+        assert_eq!(
+            seen,
+            [
+                PlaybackState::Playing,
+                PlaybackState::Buffering,
+                PlaybackState::Reconnecting { attempt: 1 },
+            ]
+        );
+        assert_eq!(*h.started.lock().unwrap(), ["u1"]);
     }
 
     /// `ONDAR_TEST_POLL_DELAY_MS`: a sleep added to every step of a waiting helper, standing
