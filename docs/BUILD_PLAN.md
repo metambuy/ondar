@@ -117,9 +117,19 @@ reach them from the popover.
 - [x] `store.rs` — favourites and recently-played (SQLite), reachable from the collapsed view
 - [ ] ~~Port `cities.js` → `resources/cities.json`; load into `geo`~~ → **M4** (only the map
       consumes it; brief D4, 2026-09-21)
-- [ ] HLS (M3c): ADTS-AAC media playlists only — live refresh loop + ID3 strip; the MPEG-TS
+- [x] HLS (M3c): ADTS-AAC media playlists only — live refresh loop + ID3 strip; the MPEG-TS
       demux and audio-variant selection move to after M4 (decided 2026-09-21 from Step 0's
-      sample: 5/10 ADTS, 5/10 TS of which 3 carry video)
+      sample: 5/10 ADTS, 5/10 TS of which 3 carry video). **Built 2026-09-24 on branch `m3c`**
+      (`a3ec612` + docs): detection by content type, the playlist refetched on its final URL,
+      audio-only variant (LC before HE, highest bandwidth), refresh on `MEDIA-SEQUENCE` from
+      three segments behind live, ID3 skipped, `FFF9` → `FFF1`, format guard; TS / fMP4 / KEY /
+      BYTERANGE / video-only / plain M3U refused terminally with a rendered message.
+      **Acceptance** (`_handover/m3c-acceptance.md`): Antena 1 in-app 18 min at speed 1.0000, 0
+      underruns, 264 advancing refreshes; the HE-AAC and `FFF9` stations at 1.0000 / 0.9998; TS
+      and video-only refused in < 1 s with 3 / 2 requests exactly, no vote; click = play; Stop
+      leaves no orphaned request for 31 s; Wi-Fi off 20 s (Martín, 2026-09-25) → `Buffering` →
+      stall → `Reconnecting` → `Playing` in 20.7 s, one click. **217 + 15.** Defect B
+      (an unbounded `Connecting` on `main`) opened for after the merge, before M4.
 - [x] Commands: `list_countries`, `list_stations(country_code)`, `search_stations(query)` (+ favourites, recents; **M3a, 2026-09-22**)
 - [x] UI: country dropdown (a native select, searchable by type-ahead — a custom list is a
       later commit if it proves poor by hand) wired to `list_countries`; station list wired to

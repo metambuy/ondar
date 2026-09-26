@@ -13,6 +13,7 @@
 
 pub mod engine;
 pub mod eq;
+pub mod hls;
 pub mod icy;
 pub mod reconnect;
 pub mod ring;

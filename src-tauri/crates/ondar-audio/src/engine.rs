@@ -1104,13 +1104,26 @@ mod session_tests {
     /// (the last one repeated), the socket held briefly so the client sees a complete answer,
     /// then closed.
     fn scripted_server(responses: Vec<Vec<u8>>) -> (String, Arc<AtomicUsize>) {
+        let (url, count, _times) = timed_scripted_server(responses);
+        (url, count)
+    }
+
+    /// `scripted_server`, also recording when each connection was accepted, on the server's
+    /// own clock: a gap between two requests measured there can only grow on a slow runner,
+    /// never shrink, so a lower bound on it cannot be broken by slowness.
+    fn timed_scripted_server(
+        responses: Vec<Vec<u8>>,
+    ) -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<Instant>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
+        let times = Arc::new(Mutex::new(Vec::new()));
+        let at = times.clone();
         thread::spawn(move || {
             for sock in listener.incoming() {
                 let Ok(mut sock) = sock else { break };
+                at.lock().unwrap().push(Instant::now());
                 let n = seen.fetch_add(1, Ordering::SeqCst);
                 let response = &responses[n.min(responses.len() - 1)];
                 let mut buf = [0u8; 2048];
@@ -1120,7 +1133,7 @@ mod session_tests {
                 thread::sleep(Duration::from_millis(200));
             }
         });
-        (format!("http://{addr}/stream"), count)
+        (format!("http://{addr}/stream"), count, times)
     }
 
     /// One fixed answer for every connection.
@@ -1157,8 +1170,13 @@ mod session_tests {
     struct Harness {
         ctx: SessionCtx,
         events: Receiver<EngineEvent>,
+        /// A state event received during a helper's grace period, handed to the next helper
+        /// call first so no state is lost between calls.
+        held: Mutex<Option<PlaybackState>>,
         /// Every `Started` id seen while draining, in order.
         started: Mutex<Vec<String>>,
+        /// Every `StreamInfo` seen while draining, as (sample_rate, channels), in order.
+        infos: Mutex<Vec<(u32, u16)>>,
         // Dropping the runtime while `run_session` still holds its handle would abort the
         // open; kept for the harness's lifetime.
         _rt: tokio::runtime::Runtime,
@@ -1219,12 +1237,61 @@ mod session_tests {
         Harness {
             ctx,
             events: ev_rx,
+            held: Mutex::new(None),
             started: Mutex::new(Vec::new()),
+            infos: Mutex::new(Vec::new()),
             _rt: rt,
         }
     }
 
-    /// Wait up to `within` for the shared state to satisfy `done`; returns every state seen.
+    /// Record one engine event: a state is returned, `Started` and `StreamInfo` are kept on
+    /// the harness in order.
+    fn record(h: &Harness, ev: EngineEvent) -> Option<PlaybackState> {
+        match ev {
+            EngineEvent::State(s) => return Some(s),
+            EngineEvent::Started { station_id } => h.started.lock().unwrap().push(station_id),
+            EngineEvent::StreamInfo(info) => h
+                .infos
+                .lock()
+                .unwrap()
+                .push((info.sample_rate, info.channels)),
+            _ => {}
+        }
+        None
+    }
+
+    /// After a helper's stopping point: pick up the events the engine sends right behind a
+    /// state — `Started` follows `State(Playing)` under the same lock — until the next state,
+    /// which is held for the next call, or 50 ms of quiet.
+    fn grace(h: &Harness) {
+        while let Ok(ev) = h.events.recv_timeout(Duration::from_millis(50)) {
+            if let Some(s) = record(h, ev) {
+                *h.held.lock().unwrap() = Some(s);
+                return;
+            }
+        }
+    }
+
+    /// The next engine event within `left`, the held state first. What is already queued is
+    /// taken at once; `poll_delay` runs before each wait on an empty channel — a consumer that
+    /// wakes late, as the old sampling loop did per poll. A late consumer loses nothing: the
+    /// channel keeps every event, in order.
+    fn next_event(h: &Harness, left: Duration) -> Option<EngineEvent> {
+        if let Some(s) = h.held.lock().unwrap().take() {
+            return Some(EngineEvent::State(s));
+        }
+        if let Ok(ev) = h.events.try_recv() {
+            return Some(ev);
+        }
+        poll_delay();
+        h.events.recv_timeout(left).ok()
+    }
+
+    /// Every state the session emitted, in order, up to and including the first one `done`
+    /// accepts — or until `within` elapses. Decided on the **event stream**, not on a sample of
+    /// the current state: a state that begins and ends between two samples cannot be missed
+    /// (review 2, 2026-09-25: on a slow CI runner T18's `Playing` did, and the test read
+    /// `Reconnecting`). A test reads the state it stopped at as `seen.last()`.
     fn states_until(
         h: &Harness,
         within: Duration,
@@ -1232,27 +1299,108 @@ mod session_tests {
     ) -> Vec<PlaybackState> {
         let deadline = Instant::now() + within;
         let mut seen = Vec::new();
-        let drain = |seen: &mut Vec<PlaybackState>| {
-            while let Ok(ev) = h.events.try_recv() {
-                match ev {
-                    EngineEvent::State(s) => seen.push(s),
-                    EngineEvent::Started { station_id } => {
-                        h.started.lock().unwrap().push(station_id)
-                    }
-                    _ => {}
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Some(ev) = next_event(h, left) else {
+                return seen;
+            };
+            if let Some(s) = record(h, ev) {
+                let hit = done(&s);
+                seen.push(s);
+                if hit {
+                    grace(h);
+                    return seen;
                 }
             }
-        };
-        loop {
-            drain(&mut seen);
-            if done(&h.ctx.shared.state()) || Instant::now() >= deadline {
-                // The state is set before its event is sent; pick up the one for it.
-                thread::sleep(Duration::from_millis(20));
-                drain(&mut seen);
+            if Instant::now() >= deadline {
                 return seen;
             }
-            thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Every state emitted, in order, until `cond` — a condition outside the event stream,
+    /// such as a server's request count, which only grows — holds, or `within` elapses.
+    fn states_while_waiting_for(
+        h: &Harness,
+        within: Duration,
+        cond: impl Fn() -> bool,
+    ) -> Vec<PlaybackState> {
+        let deadline = Instant::now() + within;
+        let mut seen = Vec::new();
+        loop {
+            if cond() {
+                grace(h);
+                return seen;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return seen;
+            }
+            if let Some(ev) = next_event(h, left.min(Duration::from_millis(20)))
+                && let Some(s) = record(h, ev)
+            {
+                seen.push(s);
+            }
+        }
+    }
+
+    /// The state a helper stopped at.
+    fn last(seen: &[PlaybackState]) -> PlaybackState {
+        seen.last().cloned().unwrap_or(PlaybackState::Connecting)
+    }
+
+    /// How long a test waits for an event it expects. A hang guard, not a claim: nothing is
+    /// asserted about when the event came, so a slow runner only makes the test slower.
+    const GUARD: Duration = Duration::from_secs(20);
+
+    /// Wait for the session's `Started`, returning the states seen meanwhile. A test that
+    /// stopped **at** a `Playing` reads `started` only after this: `write_state` sends
+    /// `Started` right behind `State(Playing)` under the session lock, so a test that stopped at
+    /// any later state has it already, but one stopped at that `Playing` may not.
+    fn await_started(h: &Harness) -> Vec<PlaybackState> {
+        states_while_waiting_for(h, GUARD, || !h.started.lock().unwrap().is_empty())
+    }
+
+    /// `ONDAR_TEST_POLL_DELAY_MS`: a sleep added to every step of a waiting helper, standing
+    /// in for a slow CI runner.
+    fn poll_delay() {
+        if let Some(ms) = std::env::var("ONDAR_TEST_POLL_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    /// `ONDAR_TEST_SERVER_DELAY_MS`: a sleep before every answer of `routed_server`, standing
+    /// in for a slow runner's open chain.
+    fn server_delay() {
+        if let Some(ms) = std::env::var("ONDAR_TEST_SERVER_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    /// `ONDAR_TEST_LATE_REQUEST_DELAY_MS`: a sleep before `routed_server` **records** the third
+    /// and every later segment request — the request arrives late, as the log sees it, while
+    /// the first two segments (enough for `Playing`) are served at once. It stands in for a
+    /// runner slow to schedule the fetch task's next request (`4a388f5`'s CI run read T12's
+    /// log at `Playing` without its third start segment).
+    fn late_request_delay() {
+        if let Some(ms) = std::env::var("ONDAR_TEST_LATE_REQUEST_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    /// A segment request as the test servers name them.
+    fn is_segment_path(path: &str) -> bool {
+        let p = path.split('?').next().unwrap_or(path);
+        p.ends_with(".aac") || p.ends_with(".ts")
     }
 
     fn is_error(s: &PlaybackState) -> bool {
@@ -1268,9 +1416,11 @@ mod session_tests {
             .collect()
     }
 
-    /// Fails on a cause-blind policy: the state would be `Reconnecting { 1 }` inside the 3 s
-    /// window (the terminal `Error` only arrives after 31 s) and the server would see a
-    /// second request at ~1.2 s.
+    /// Fails on a cause-blind policy: the first state after the open would be
+    /// `Reconnecting { 1 }` (the terminal `Error` only arrives after 31 s) and the server would
+    /// see a second request at ~1.2 s. The request count after 1.3 s is a window that a slow
+    /// runner cannot break: after a terminal `Error` no request is ever made, so lateness can
+    /// only delay the check, never add a request.
     #[test]
     fn an_icy_server_fails_the_session_on_the_first_attempt() {
         let (url, requests) = counting_server(
@@ -1278,8 +1428,12 @@ mod session_tests {
               0123456789abcdef0123456789abcdef",
         );
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(3), is_error);
-        let state = h.ctx.shared.state();
+        // Stops at the first `Error` or `Reconnecting`, whichever the engine emits first: the
+        // cause-blind policy's `Reconnecting { 1 }` is caught by order, not by a window.
+        let seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
+        });
+        let state = last(&seen);
         assert!(
             matches!(
                 &state,
@@ -1288,7 +1442,7 @@ mod session_tests {
                     ..
                 }
             ),
-            "expected Error {{ Http }} within 3 s, got {state:?}"
+            "expected Error {{ Http }} before any Reconnecting, got {state:?}"
         );
         assert_eq!(
             reconnecting(&seen),
@@ -1308,8 +1462,12 @@ mod session_tests {
             b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         );
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(3), is_error);
-        let state = h.ctx.shared.state();
+        // Stops at the first `Error` or `Reconnecting`, whichever the engine emits first: the
+        // cause-blind policy's `Reconnecting { 1 }` is caught by order, not by a window.
+        let seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
+        });
+        let state = last(&seen);
         assert!(
             matches!(
                 &state,
@@ -1318,7 +1476,7 @@ mod session_tests {
                     ..
                 }
             ),
-            "expected Error {{ Http }} within 3 s, got {state:?}"
+            "expected Error {{ Http }} before any Reconnecting, got {state:?}"
         );
         assert_eq!(
             reconnecting(&seen),
@@ -1330,61 +1488,79 @@ mod session_tests {
         h.ctx.cancel();
     }
 
-    /// A 5xx keeps the backoff. Fails if 5xx were made terminal (one request, an `Error`
-    /// state inside the window) or if the backoff's first delay were not ~1 s.
+    /// A 5xx keeps the backoff. Fails if 5xx were made terminal (an `Error` before any
+    /// `Reconnecting`, one request) or if the backoff's first delay were under 1 s (the gap
+    /// between the two requests, on the server's clock — slowness only lengthens it).
     #[test]
     fn a_503_is_retried_through_the_backoff() {
-        let (url, requests) = counting_server(
-            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-        );
+        let (url, requests, times) = timed_scripted_server(vec![
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                .to_vec(),
+        ]);
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(3), |_| {
-            requests.load(Ordering::SeqCst) >= 2
+        let mut seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
         });
-        assert!(
-            requests.load(Ordering::SeqCst) >= 2,
-            "a second request within 3 s (saw {})",
-            requests.load(Ordering::SeqCst)
-        );
         assert_eq!(
             reconnecting(&seen).first(),
             Some(&1),
-            "Reconnecting {{ 1 }} was emitted"
+            "Reconnecting {{ 1 }} before any Error: {seen:?}"
         );
-        assert!(!is_error(&h.ctx.shared.state()), "not failed after one 5xx");
+        seen.extend(states_while_waiting_for(&h, GUARD, || {
+            requests.load(Ordering::SeqCst) >= 2
+        }));
+        assert!(
+            requests.load(Ordering::SeqCst) >= 2,
+            "a second request (saw {})",
+            requests.load(Ordering::SeqCst)
+        );
+        let t = times.lock().unwrap().clone();
+        assert!(
+            t[1] - t[0] >= Duration::from_secs(1),
+            "the backoff's first delay: {:?}",
+            t[1] - t[0]
+        );
+        assert!(
+            !seen.iter().any(is_error),
+            "not failed after one 5xx: {seen:?}"
+        );
         h.ctx.cancel();
     }
 
     /// A 429 on the first open keeps the backoff, and `Retry-After` stretches its delay.
-    /// Fails on the "every 4xx is terminal" rule (`Error { Http }` at once, one request) and
-    /// if the header is ignored (the backoff alone sends the second request at ~1.1 s; the
-    /// assertion at 2 s would see two).
+    /// Fails on the "every 4xx is terminal" rule (an `Error { Http }` before any
+    /// `Reconnecting`, one request) and if the header is ignored (the backoff alone sends the
+    /// second request ~1.1 s after the first; the gap, on the server's clock, must be at least
+    /// the header's 3 s — a slow runner only lengthens it). Until 2026-09-25 this was "no second
+    /// request by 2 s", which a late check could break on a correct build.
     #[test]
     fn a_429_is_retried_after_its_retry_after() {
-        let (url, requests) = counting_server(
-            b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 3\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-        );
+        let (url, requests, times) = timed_scripted_server(vec![
+            b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 3\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                .to_vec(),
+        ]);
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(2), |_| {
-            requests.load(Ordering::SeqCst) >= 2
+        let mut seen = states_until(&h, GUARD, |s| {
+            is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
         });
-        assert_eq!(
-            requests.load(Ordering::SeqCst),
-            1,
-            "no second request inside the header's 3 s"
-        );
         assert_eq!(
             reconnecting(&seen).first(),
             Some(&1),
-            "Reconnecting {{ 1 }} was emitted"
+            "Reconnecting {{ 1 }} before any Error: {seen:?}"
         );
-        assert!(!is_error(&h.ctx.shared.state()), "not failed on a 429");
-        let _ = states_until(&h, Duration::from_secs(4), |_| {
+        seen.extend(states_while_waiting_for(&h, GUARD, || {
             requests.load(Ordering::SeqCst) >= 2
-        });
+        }));
+        assert!(!seen.iter().any(is_error), "not failed on a 429: {seen:?}");
         assert!(
             requests.load(Ordering::SeqCst) >= 2,
             "a second request once Retry-After elapsed"
+        );
+        let t = times.lock().unwrap().clone();
+        assert!(
+            t[1] - t[0] >= Duration::from_secs(3),
+            "the second request waited for Retry-After: {:?}",
+            t[1] - t[0]
         );
         h.ctx.cancel();
     }
@@ -1400,10 +1576,10 @@ mod session_tests {
             b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
         ]);
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(8), |s| {
+        let seen = states_until(&h, GUARD, |s| {
             matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
         });
-        let state = h.ctx.shared.state();
+        let state = last(&seen);
         assert!(!is_error(&state), "ended on the reconnect's 404: {state:?}");
         assert_eq!(
             reconnecting(&seen),
@@ -1426,7 +1602,7 @@ mod session_tests {
     fn started_is_sent_once_per_session_across_a_reconnect() {
         let (url, requests) = counting_server_owned(wav_response(1.5));
         let h = start_session(&url);
-        let seen = states_until(&h, Duration::from_secs(10), |s| {
+        let seen = states_until(&h, GUARD, |s| {
             matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
         });
         let playing = seen
@@ -1486,8 +1662,9 @@ mod session_tests {
 
     /// Two stations in a row on **one** `Player` and one bare mixer, as `Engine::play` does for
     /// the second: the first session cancelled, a new generation, `clear()`, a new decode
-    /// thread. Returns `frames` frames of the mixer's output from the second session's
-    /// `Playing` on. The pull runs at about twice real time, like `start_session`'s.
+    /// thread. Returns the mixer's output from the second session's creation on, holding at
+    /// least `frames` frames from its tone's onset. The pull runs at about twice real time,
+    /// like `start_session`'s.
     fn two_sessions(
         first: Vec<u8>,
         second: Vec<u8>,
@@ -1495,7 +1672,7 @@ mod session_tests {
         mixer_ch: u16,
         frames: usize,
     ) -> Vec<f32> {
-        let (ev_tx, _ev_rx) = mpsc::channel();
+        let (ev_tx, ev_rx) = mpsc::channel();
         let shared = Shared {
             state: Arc::new(Mutex::new(PlaybackState::Idle)),
             events: ev_tx,
@@ -1519,8 +1696,11 @@ mod session_tests {
         thread::spawn(move || {
             let mut out = mixer_out;
             loop {
+                // Only a chunk begun while the capture was on is kept: one pulled before could
+                // carry the first station's tail, cleared by the time the capture starts.
+                let on = cap.lock().unwrap().is_some();
                 let pulled: Vec<f32> = out.by_ref().take(chunk).collect();
-                if let Some(v) = cap.lock().unwrap().as_mut() {
+                if on && let Some(v) = cap.lock().unwrap().as_mut() {
                     v.extend_from_slice(&pulled);
                 }
                 thread::sleep(Duration::from_millis(25));
@@ -1556,28 +1736,55 @@ mod session_tests {
             });
             ctx
         };
-        let wait_playing = |what: &str| {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while shared.state() != PlaybackState::Playing {
-                assert!(Instant::now() < deadline, "{what} never reached Playing");
-                thread::sleep(Duration::from_millis(10));
+        // A session's first `Playing` is read off the event stream as its `Started`, which
+        // names the station: a 1.5 s tone pulled at twice real time plays for ~0.75 s, short
+        // enough for a sample of the state to miss on a slow runner, and a sample could not
+        // tell the two sessions apart.
+        let wait_started = |station: &str| {
+            let deadline = Instant::now() + GUARD;
+            loop {
+                let ev = match ev_rx.try_recv() {
+                    Ok(ev) => Ok(ev),
+                    Err(_) => {
+                        poll_delay();
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        ev_rx.recv_timeout(left)
+                    }
+                };
+                match ev {
+                    Ok(EngineEvent::Started { station_id }) if station_id == station => return,
+                    Ok(_) => {}
+                    Err(_) => panic!("the {station} session never reached Playing"),
+                }
             }
         };
 
         let one = start(first, "first");
-        wait_playing("the first session");
+        wait_started("first");
         thread::sleep(Duration::from_millis(300));
         one.cancel();
         let _two = start(second, "second");
-        wait_playing("the second session");
+        // Captured from here: `start` has already cleared the first station's source, and the
+        // second cannot sound before its prefetch. Starting at its `Started` instead made the
+        // capture depend on how soon the test woke — a late wake missed the tone.
         *capture.lock().unwrap() = Some(Vec::new());
-        let deadline = Instant::now() + Duration::from_secs(10);
+        wait_started("second");
+        let ch = mixer_ch as usize;
+        let deadline = Instant::now() + GUARD;
         loop {
-            let got = capture.lock().unwrap().as_ref().map_or(0, Vec::len);
-            if got >= frames * mixer_ch as usize {
+            let after_onset = capture.lock().unwrap().as_ref().map_or(0, |v| {
+                v.iter()
+                    .step_by(ch)
+                    .position(|x| x.abs() > 0.05)
+                    .map_or(0, |onset| v.len() / ch - onset)
+            });
+            if after_onset >= frames {
                 break;
             }
-            assert!(Instant::now() < deadline, "captured only {got} samples");
+            assert!(
+                Instant::now() < deadline,
+                "captured only {after_onset} frames of the tone"
+            );
             thread::sleep(Duration::from_millis(20));
         }
         capture.lock().unwrap().take().expect("capture")
@@ -1658,6 +1865,855 @@ mod session_tests {
         assert!(
             (l - 1.0).abs() < 0.05 && (r - 1.0).abs() < 0.05 && worst < 1e-6,
             "mono after stereo: ratios L {l:.3} R {r:.3}, max |L-R| {worst:.4}; expected 1.00, 1.00, 0"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // HLS (M3c commit 4): T12–T17 against a path-routed server serving the census fixtures.
+    //
+    // The server hands out playlists byte for byte (10's media as the gzip bytes it was
+    // served) and synthesises segments from the fixture heads by repeating a head's 16 ADTS
+    // frames to the `EXTINF` duration (plan §4, R3): the decoder sees ordinary segments, and the
+    // prefetch, the fill target and the pacing are production's. Nothing in this block names
+    // `crate::hls`, so the same text ran on `b7e050a` for the recorded failures.
+
+    const HLS_FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/hls/");
+
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(format!("{HLS_FIXTURES}{name}"))
+            .unwrap_or_else(|e| panic!("fixture {name}: {e}"))
+    }
+
+    struct Routed {
+        status: u16,
+        content_type: &'static str,
+        gzip: bool,
+        /// Extra header lines, each ending in `\r\n`.
+        headers: &'static str,
+        body: Vec<u8>,
+    }
+
+    fn routed(content_type: &'static str, body: Vec<u8>) -> Routed {
+        Routed {
+            status: 200,
+            content_type,
+            gzip: false,
+            headers: "",
+            body,
+        }
+    }
+
+    /// A path-routed HTTP/1.0 server on 127.0.0.1: `handler(path_and_query)` answers each
+    /// request (or `None` → 404), and every path is recorded in order. Connections close after
+    /// one response, as `scripted_server`'s do.
+    fn routed_server(
+        handler: impl Fn(&str) -> Option<Routed> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let seen = paths.clone();
+        let mut segments_seen = 0usize;
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = head
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                if is_segment_path(&path) {
+                    if segments_seen >= 2 {
+                        late_request_delay();
+                    }
+                    segments_seen += 1;
+                }
+                seen.lock().unwrap().push(path.clone());
+                server_delay();
+                let response = handler(&path).unwrap_or(Routed {
+                    status: 404,
+                    content_type: "text/plain",
+                    gzip: false,
+                    headers: "",
+                    body: b"not found".to_vec(),
+                });
+                let mut out = format!(
+                    "HTTP/1.0 {} X\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    response.status,
+                    response.content_type,
+                    response.body.len()
+                )
+                .into_bytes();
+                if response.gzip {
+                    out.extend_from_slice(b"content-encoding: gzip\r\n");
+                }
+                out.extend_from_slice(response.headers.as_bytes());
+                out.extend_from_slice(b"\r\n");
+                out.extend_from_slice(&response.body);
+                let _ = sock.write_all(&out);
+                let _ = sock.flush();
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        (format!("http://{addr}"), paths)
+    }
+
+    /// The offset after every leading ID3v2 tag (the test-side copy; the crate's own lives in
+    /// `hls::segment`, which this block must not name).
+    fn test_id3_end(b: &[u8]) -> usize {
+        let mut off = 0;
+        while b.len() >= off + 10 && &b[off..off + 3] == b"ID3" {
+            let size = ((b[off + 6] as usize & 0x7F) << 21)
+                | ((b[off + 7] as usize & 0x7F) << 14)
+                | ((b[off + 8] as usize & 0x7F) << 7)
+                | (b[off + 9] as usize & 0x7F);
+            off += 10 + size + if b[off + 5] & 0x10 != 0 { 10 } else { 0 };
+        }
+        off.min(b.len())
+    }
+
+    /// A segment of `secs` seconds synthesised from a fixture head: its ID3 tag(s), then its
+    /// 16 frames repeated `ceil(secs × rate / 1024 / 16)` times. Repeated ADTS frames are a
+    /// valid stream — each frame is self-contained.
+    fn synth_segment(head: &[u8], secs: f64) -> Vec<u8> {
+        const RATES: [f64; 13] = [
+            96000., 88200., 64000., 48000., 44100., 32000., 24000., 22050., 16000., 12000., 11025.,
+            8000., 7350.,
+        ];
+        let tags = test_id3_end(head);
+        let frames = &head[tags..];
+        let sri = ((frames[2] >> 2) & 0x0F) as usize;
+        let rate = RATES[sri];
+        let k = (secs * rate / 1024.0 / 16.0).ceil() as usize;
+        let mut out = head[..tags].to_vec();
+        for _ in 0..k {
+            out.extend_from_slice(frames);
+        }
+        out
+    }
+
+    /// A live media playlist as a server would publish it at `elapsed` since it started: one
+    /// segment of `dur` seconds per `dur` elapsed, a sliding window of `window` segments ending
+    /// at the current sequence number, URIs `seg-<seq>.aac`.
+    fn live_playlist(
+        td: u64,
+        dur: f64,
+        first_seq: u64,
+        window: usize,
+        elapsed: Duration,
+    ) -> String {
+        let now_seq = first_seq + (elapsed.as_secs_f64() / dur).floor() as u64;
+        let from = now_seq.saturating_sub(window as u64 - 1).max(first_seq);
+        let mut s = format!(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{td}\n#EXT-X-MEDIA-SEQUENCE:{from}\n"
+        );
+        for seq in from..=now_seq {
+            s.push_str(&format!("#EXTINF:{dur:.3},\nseg-{seq}.aac\n"));
+        }
+        s
+    }
+
+    fn seg_seq(path: &str) -> Option<u64> {
+        path.rsplit('/')
+            .next()?
+            .strip_prefix("seg-")?
+            .strip_suffix(".aac")?
+            .parse()
+            .ok()
+    }
+
+    fn is_playing(s: &PlaybackState) -> bool {
+        matches!(s, PlaybackState::Playing)
+    }
+
+    fn error_message(s: &PlaybackState) -> String {
+        match s {
+            PlaybackState::Error { message, .. } => message.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn count_prefix(paths: &[String], prefix: &str) -> usize {
+        paths.iter().filter(|p| p.starts_with(prefix)).count()
+    }
+
+    /// T12: Antena 1's shape as captured — a master with a relative variant URI, a media
+    /// playlist served gzip, ADTS segments — reaches `Playing` with `StreamInfo` 48 000 / 2
+    /// and one `Started`. The master is requested **twice** (the `HttpStream` GET, then
+    /// `hls::open`'s own — review R1), then the media playlist, then the start segments
+    /// 97880–97882 (three from the end, D5). On `b7e050a`: `Error { UnsupportedFormat }`
+    /// after one request, no `Playing` (F7). Fails without gunzip — the parser refuses the
+    /// media playlist's compressed bytes as `NotPlaylist` ("not a playlist (no #EXTM3U)"), so
+    /// the session ends `Error { UnsupportedFormat }` (the census probe's run-1 bug was the
+    /// other shape: garbage URIs, because its parser had no `#EXTM3U` check) — or without the
+    /// dispatch.
+    #[test]
+    fn t12_adts_hls_behind_a_gzipped_media_playlist_plays() {
+        let master = fixture("10-master.m3u8");
+        let media_gz = fixture("10-media.m3u8.gz");
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = routed_server(move |path| match path {
+            "/liveradio/antena180a/playlist.m3u8" => {
+                Some(routed("application/vnd.apple.mpegurl", master.clone()))
+            }
+            "/liveradio/antena180a/chunklist.m3u8" => Some(Routed {
+                status: 200,
+                content_type: "application/vnd.apple.mpegurl",
+                gzip: true,
+                headers: "",
+                body: media_gz.clone(),
+            }),
+            p if p.starts_with("/liveradio/antena180a/media_") && p.ends_with(".aac") => {
+                Some(routed("audio/x-aac", synth_segment(&head, 4.0)))
+            }
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/liveradio/antena180a/playlist.m3u8"));
+        let seen = states_until(&h, GUARD, is_playing);
+        let state = last(&seen);
+        assert_eq!(state, PlaybackState::Playing, "states: {seen:?}");
+        assert!(reconnecting(&seen).is_empty(), "no backoff: {seen:?}");
+        assert_eq!(*h.infos.lock().unwrap(), vec![(48_000, 2)], "StreamInfo");
+        // Stopped at `Playing`: its `Started` is awaited, not assumed.
+        let _ = await_started(&h);
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            vec!["u1".to_string()],
+            "one Started"
+        );
+        let h_paths = paths;
+        let paths = h_paths.lock().unwrap().clone();
+        assert_eq!(
+            &paths[..4],
+            &[
+                "/liveradio/antena180a/playlist.m3u8".to_string(),
+                "/liveradio/antena180a/playlist.m3u8".to_string(),
+                "/liveradio/antena180a/chunklist.m3u8".to_string(),
+                "/liveradio/antena180a/media_97880.aac".to_string(),
+            ],
+            "two requests for the master (R1), then the media playlist, then the start segment: {paths:?}"
+        );
+        // The third start segment is requested once the task's two-segment channel has room —
+        // after the reader has taken one — so it is waited for, not sampled at `Playing`
+        // (4a388f5's CI run read the log with 97880 and 97881 only).
+        let log = h_paths.clone();
+        let _ = states_while_waiting_for(&h, GUARD, move || {
+            log.lock()
+                .unwrap()
+                .contains(&"/liveradio/antena180a/media_97882.aac".to_string())
+        });
+        let paths = h_paths.lock().unwrap().clone();
+        assert!(
+            paths.contains(&"/liveradio/antena180a/media_97882.aac".to_string()),
+            "the three start segments are fetched: {paths:?}"
+        );
+        h.ctx.cancel();
+    }
+
+    /// T13: a media playlist given directly whose segments are MPEG-TS (Известия, 09) → one
+    /// terminal `Error { UnsupportedFormat, "…MPEG-TS…" }`, no `Reconnecting`, **3** requests
+    /// (the playlist twice — R1 — and one segment, read only to its head), no `Started`. On
+    /// `b7e050a`: the state passes, the count is 1 and the message the generic one (F7).
+    /// Fails if the refusal is not terminal (`Reconnecting { 1 }` inside the window), or if a
+    /// third playlist request is made.
+    #[test]
+    fn t13_mpeg_ts_segments_are_refused_terminally_after_one_segment_head() {
+        let media = fixture("09-media.m3u8");
+        let ts = fixture("09-seg-head.mpegts");
+        let (base, paths) = routed_server(move |path| match path {
+            "/igi/radio1/tracks-a1/mono.m3u8" => {
+                Some(routed("application/vnd.apple.mpegurl", media.clone()))
+            }
+            p if p.contains("-06016.ts?hls_proxy_host=") => Some(routed("video/MP2T", ts.clone())),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
+        let seen = states_until(&h, GUARD, is_error);
+        let state = last(&seen);
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::UnsupportedFormat,
+                    ..
+                }
+            ),
+            "state: {state:?}"
+        );
+        assert_eq!(
+            error_message(&state),
+            "HLS with MPEG-TS segments is not supported yet"
+        );
+        assert!(
+            reconnecting(&seen).is_empty(),
+            "terminal, no backoff: {seen:?}"
+        );
+        assert!(h.started.lock().unwrap().is_empty(), "no vote");
+        thread::sleep(Duration::from_millis(300));
+        let paths = paths.lock().unwrap().clone();
+        assert_eq!(paths.len(), 3, "2 playlist + 1 segment head: {paths:?}");
+        assert_eq!(count_prefix(&paths, "/igi/radio1/tracks-a1/mono.m3u8"), 2);
+        assert!(paths[2].contains(".ts?hls_proxy_host="), "{paths:?}");
+    }
+
+    /// T14: a master whose variants are all video (Fox, 03) → `Error { UnsupportedFormat,
+    /// "…video only…" }` after **2** requests (the master twice, R1) and none for a media
+    /// playlist. On `b7e050a`: 1 request, the generic message. Fails with the video-only filter
+    /// dropped: a media playlist (on the real host — the fixture's URIs are absolute) and its
+    /// segment would be fetched.
+    #[test]
+    fn t14_a_video_only_master_is_refused_after_two_requests() {
+        let master = fixture("03-master.m3u8");
+        let (base, paths) = routed_server(move |path| match path {
+            "/hls/live/2020027/fncv3preview/primary.m3u8" => {
+                Some(routed("application/x-mpegURL", master.clone()))
+            }
+            _ => None,
+        });
+        let h = start_session(&format!(
+            "{base}/hls/live/2020027/fncv3preview/primary.m3u8"
+        ));
+        let seen = states_until(&h, GUARD, is_error);
+        let state = last(&seen);
+        assert_eq!(
+            error_message(&state),
+            "HLS stream has no audio variant (video only: avc1.42c020)",
+            "state: {state:?}"
+        );
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert!(h.started.lock().unwrap().is_empty());
+        thread::sleep(Duration::from_millis(300));
+        let paths = paths.lock().unwrap().clone();
+        assert_eq!(paths.len(), 2, "the master twice, nothing else: {paths:?}");
+    }
+
+    /// A live server: `live_playlist` at the elapsed time (frozen at `freeze_after` if set),
+    /// segments synthesised from the head `head_for(seq)` picks.
+    fn live_server(
+        td: u64,
+        dur: f64,
+        window: usize,
+        freeze_after: Option<Duration>,
+        head_for: impl Fn(u64) -> Vec<u8> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let started = Instant::now();
+        routed_server(move |path| {
+            if path == "/live/playlist.m3u8" {
+                let mut elapsed = started.elapsed();
+                if let Some(f) = freeze_after {
+                    elapsed = elapsed.min(f);
+                }
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(td, dur, 1, window, elapsed).into_bytes(),
+                ));
+            }
+            let seq = seg_seq(path)?;
+            Some(routed("audio/aac", synth_segment(&head_for(seq), dur)))
+        })
+    }
+
+    /// T15 (finding F4): a live playlist with 6 s segments, refreshed every 6 s, plays 13 s
+    /// with **no** internal reconnect and no `Reconnecting`. With the ICY `Settings` (a 5 s
+    /// `retry_timeout` and its `on_reconnect`) every normal wait between segments would count
+    /// as an internal reconnect and bump `reconnect_count` — the mutation. Costs 13 s.
+    #[test]
+    fn t15_a_normal_hls_wait_is_not_an_internal_reconnect() {
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = live_server(6, 6.0, 5, None, move |_| head.clone());
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        // A claim window: over 13 s of a healthy live playlist, no `Reconnecting`, no `Error`
+        // and no internal reconnect. Slowness cannot add one of those to a correct build; it
+        // can only delay events, which the window then does not see — never a false failure.
+        let seen = states_until(&h, Duration::from_secs(13), |_| false);
+        assert!(
+            seen.contains(&PlaybackState::Playing),
+            "it played: {seen:?}"
+        );
+        assert!(!seen.iter().any(is_error), "{seen:?}");
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert_eq!(
+            h.ctx.reconnect_count.load(Ordering::Relaxed),
+            0,
+            "stream-download's idle timeout fired during a normal HLS wait"
+        );
+        // An upper bound read at the window's end — slowness only delays reloads — then the
+        // lower bound awaited: the first refresh (the third playlist request) is waited for,
+        // not expected inside the window.
+        let reloads = count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8");
+        assert!(
+            reloads <= 5,
+            "2 for the open + at most a refresh per ~6 s in 13 s at TD 6: {reloads}"
+        );
+        let log = paths.clone();
+        let _ = states_while_waiting_for(&h, GUARD, move || {
+            count_prefix(&log.lock().unwrap(), "/live/playlist.m3u8") >= 3
+        });
+        assert!(
+            count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8") >= 3,
+            "the media playlist was refreshed"
+        );
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        h.ctx.cancel();
+    }
+
+    /// T16: the window stops advancing → the stall bound (3 × TD) ends the source → the
+    /// session's own backoff, `Reconnecting { 1 }` → the playlist is requested again → `Playing`
+    /// — and **one `Started` in total**: a reopen is inside the session. On `b7e050a`:
+    /// `Error`, 0 `Started`. Fails without the stall bound (the task waits for ever; nothing
+    /// ends the source, and the watchdog does not see a full ring under `Playing`).
+    #[test]
+    fn t16_a_stalled_window_reopens_inside_the_session_with_one_started() {
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = live_server(1, 1.0, 4, Some(Duration::from_secs(2)), move |_| {
+            head.clone()
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, GUARD, is_playing);
+        assert_eq!(last(&seen), PlaybackState::Playing, "first play: {seen:?}");
+        let opens_before = count_prefix(&paths.lock().unwrap(), "/live/playlist.m3u8");
+        // The stall → Reconnecting → Playing again, read in order off the event stream: the
+        // reopen's `Playing` lasts only until the still-stalled window ends it again, and a
+        // sample of the state could miss it and see `Reconnecting { 2 }`.
+        let mut all = seen;
+        all.extend(states_until(&h, GUARD, |s| {
+            matches!(s, PlaybackState::Reconnecting { .. })
+        }));
+        all.extend(states_until(&h, GUARD, is_playing));
+        assert_eq!(last(&all), PlaybackState::Playing, "no reopen: {all:?}");
+        assert_eq!(reconnecting(&all), vec![1], "one backoff step: {all:?}");
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            vec!["u1".to_string()],
+            "one Started across the reopen"
+        );
+        let paths = paths.lock().unwrap().clone();
+        let opens_after = count_prefix(&paths, "/live/playlist.m3u8");
+        assert!(
+            opens_after >= opens_before + 2,
+            "the reopen requested the playlist again (twice, R1): {opens_before} → {opens_after}"
+        );
+        h.ctx.cancel();
+    }
+
+    /// T17: a segment whose ADTS format differs from the session's first (48 000 / 2, then
+    /// 08's 22 050 / 2) ends the source; the reopen builds a new decoder, ring and converter,
+    /// so `StreamInfo` is emitted twice — 48 000 then 22 050 — and `Started` once. Fails with
+    /// the guard off: one `StreamInfo`, and the 22 050 frames play through a 48 000 ring.
+    #[test]
+    fn t17_a_format_change_reopens_with_a_new_stream_info_and_one_started() {
+        let head48 = fixture("10-seg-head.aac");
+        let head22 = fixture("08-seg-head.aac");
+        // A one-segment window, so the reopen (three from the end = the newest) lands past the
+        // switch at seq 4; with a wider window it starts inside the old 48 000 segments and
+        // sees a third `StreamInfo` (measured: `[48000, 48000, 22050]` with a window of 4).
+        let (base, _paths) = live_server(1, 1.0, 1, None, move |seq| {
+            if seq < 4 {
+                head48.clone()
+            } else {
+                head22.clone()
+            }
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        // First play, the format change's reopen, the reopened play — in order.
+        let mut all = states_until(&h, GUARD, is_playing);
+        all.extend(states_until(&h, GUARD, |s| {
+            matches!(s, PlaybackState::Reconnecting { .. })
+        }));
+        all.extend(states_until(&h, GUARD, is_playing));
+        assert_eq!(
+            last(&all),
+            PlaybackState::Playing,
+            "no reopened play in time: {all:?} infos {:?}",
+            h.infos.lock().unwrap()
+        );
+        assert_eq!(*h.infos.lock().unwrap(), vec![(48_000, 2), (22_050, 2)]);
+        assert_eq!(reconnecting(&all), vec![1], "{all:?}");
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        h.ctx.cancel();
+    }
+
+    /// A static media playlist of `n` one-second segments from `first_seq`, segments
+    /// synthesised from `head` unless `status_for(seq, playlist_requests)` says otherwise —
+    /// `playlist_requests` is how many times the playlist had been asked for, so a test can
+    /// key an answer to the open it belongs to rather than to a clock.
+    fn eviction_server(
+        first_seq: u64,
+        n: usize,
+        head: Vec<u8>,
+        status_for: impl Fn(u64, usize) -> Option<u16> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let playlist_requests = AtomicUsize::new(0);
+        routed_server(move |path| {
+            if path == "/live/playlist.m3u8" {
+                playlist_requests.fetch_add(1, Ordering::SeqCst);
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(1, 1.0, first_seq, n, Duration::from_secs(n as u64 - 1))
+                        .into_bytes(),
+                ));
+            }
+            let seq = seg_seq(path)?;
+            match status_for(seq, playlist_requests.load(Ordering::SeqCst)) {
+                Some(status) => Some(Routed {
+                    status,
+                    content_type: "text/plain",
+                    gzip: false,
+                    headers: "",
+                    body: b"gone".to_vec(),
+                }),
+                None => Some(routed("audio/aac", synth_segment(&head, 1.0))),
+            }
+        })
+    }
+
+    /// Review 2026-09-25, finding 4 (fix B): a 404 on the **first** segment means the origin
+    /// evicted it — the next pending segment is tried and plays. On `cce9ffa`: the playlist
+    /// policy applied and the session ended `Error { Http }`, terminal, after one chain.
+    #[test]
+    fn t18_an_evicted_first_segment_is_skipped_for_the_next_one() {
+        let head = fixture("10-seg-head.aac");
+        // Window 1..5; the start is three from the end = 3; 3 is gone, 4 and 5 are there.
+        let (base, paths) = eviction_server(1, 5, head, |seq, _| (seq == 3).then_some(404));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, GUARD, is_playing);
+        assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
+        assert!(
+            reconnecting(&seen).is_empty(),
+            "no backoff for one evicted segment: {seen:?}"
+        );
+        // Stopped at `Playing`: its `Started` is awaited, not assumed.
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        let paths = paths.lock().unwrap().clone();
+        let segs: Vec<u64> = paths.iter().filter_map(|p| seg_seq(p)).collect();
+        assert_eq!(&segs[..2], &[3, 4], "3 tried (404), then 4: {paths:?}");
+        h.ctx.cancel();
+    }
+
+    /// Fix B, the other half: every start segment evicted → not terminal — the session's
+    /// backoff reopens (`Reconnecting { 1 }`), and once the window has moved on it plays. On
+    /// `cce9ffa`: `Error { Http }` at once, no `Reconnecting`. The segments are gone for the
+    /// **first open** — while the playlist has been asked for at most twice (R1: the
+    /// `HttpStream` GET, then `hls::open`'s own) — and back for the reopen, the third and
+    /// fourth requests. Keyed to requests, not to a clock (review 2, finding 6: an 800 ms window
+    /// from before `start_session` read `[]` once the open chain took longer — reproduced with
+    /// `ONDAR_TEST_SERVER_DELAY_MS=300`).
+    #[test]
+    fn t19_all_start_segments_evicted_reopens_through_the_backoff() {
+        let head = fixture("10-seg-head.aac");
+        let (base, _paths) = eviction_server(1, 5, head, |_, playlist_requests| {
+            (playlist_requests <= 2).then_some(410)
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, GUARD, is_playing);
+        assert_eq!(last(&seen), PlaybackState::Playing, "states: {seen:?}");
+        assert_eq!(
+            reconnecting(&seen),
+            vec![1],
+            "one backoff step, then it plays: {seen:?}"
+        );
+        // Stopped at `Playing`: its `Started` is awaited, not assumed.
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        h.ctx.cancel();
+    }
+
+    /// Review 2 (2026-09-25), finding 5: every start segment gone is an answer the server
+    /// sent, so the open's error is `Http` — retriable (`terminal: false`, the backoff reopens
+    /// on a fresher window) and carrying the server's `Retry-After` — not `Network`, which put
+    /// `network: … 404 …` on the page after the fifth attempt, code and message disagreeing.
+    /// `hls::open` is called directly: `run_session` shows its error only after 31 s of
+    /// backoff. On `b07e04e`: `code: Network`, `retry_after: None`.
+    #[test]
+    fn t26_start_segments_gone_is_a_retriable_http_error_with_its_retry_after() {
+        let (base, _paths) = routed_server(|path| {
+            if path == "/live/playlist.m3u8" {
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(1, 1.0, 1, 5, Duration::from_secs(4)).into_bytes(),
+                ));
+            }
+            seg_seq(path).map(|_| Routed {
+                status: 410,
+                content_type: "text/plain",
+                gzip: false,
+                headers: "retry-after: 7\r\n",
+                body: b"gone".to_vec(),
+            })
+        });
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let client = stream::build_client("Ondar/test");
+        let url = stream::parse_url(&format!("{base}/live/playlist.m3u8")).expect("url");
+        let e = match rt.block_on(crate::hls::open(
+            &client,
+            url,
+            Arc::new(AtomicU64::new(0)),
+            stream::PREFETCH_FLOOR_BYTES,
+        )) {
+            Ok(_) => panic!("open succeeded with every start segment gone"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            (e.code, e.terminal, e.retry_after),
+            (ErrorCode::Http, false, Some(Duration::from_secs(7))),
+            "{}",
+            e.message
+        );
+        assert!(e.message.contains("410"), "{}", e.message);
+    }
+
+    /// Fix B keeps 401/403 terminal: access denial (a geo-block) does not change with a retry,
+    /// and five backoff attempts before the same answer would be worse than the honest error
+    /// now. One chain: the playlist twice, the segment once. Unchanged from `cce9ffa`.
+    #[test]
+    fn t20_a_forbidden_first_segment_is_terminal_after_one_chain() {
+        let head = fixture("10-seg-head.aac");
+        let (base, paths) = eviction_server(1, 5, head, |_, _| Some(403));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, GUARD, is_error);
+        let state = last(&seen);
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::Http,
+                    ..
+                }
+            ),
+            "state: {state:?}"
+        );
+        assert!(error_message(&state).contains("403"), "{state:?}");
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert!(h.started.lock().unwrap().is_empty());
+        thread::sleep(Duration::from_millis(300));
+        let paths = paths.lock().unwrap().clone();
+        assert_eq!(paths.len(), 3, "playlist ×2 + one segment: {paths:?}");
+    }
+
+    /// Review 2026-09-25, finding 5 (fix C): a **gzip-encoded** first segment must still be
+    /// sniffed after inflating. On `28f7098` the early sniff was skipped for a gzipped body and
+    /// the post-inflate sniff was guarded by the same flag, so a gzipped MPEG-TS segment read
+    /// the generic "HLS segment format not recognised" instead of the MPEG-TS message T13 pins
+    /// for the plain case.
+    #[test]
+    fn t21_a_gzipped_ts_first_segment_is_refused_as_mpeg_ts() {
+        let media = fixture("09-media.m3u8");
+        let ts = fixture("09-seg-head.mpegts");
+        let gz = {
+            use std::io::Write;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&ts).unwrap();
+            e.finish().unwrap()
+        };
+        let (base, paths) = routed_server(move |path| match path {
+            "/igi/radio1/tracks-a1/mono.m3u8" => {
+                Some(routed("application/vnd.apple.mpegurl", media.clone()))
+            }
+            p if p.contains("-06016.ts?hls_proxy_host=") => Some(Routed {
+                status: 200,
+                content_type: "video/MP2T",
+                gzip: true,
+                headers: "",
+                body: gz.clone(),
+            }),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/igi/radio1/tracks-a1/mono.m3u8"));
+        let seen = states_until(&h, GUARD, is_error);
+        let state = last(&seen);
+        assert_eq!(
+            error_message(&state),
+            "HLS with MPEG-TS segments is not supported yet",
+            "state: {state:?}"
+        );
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        assert!(h.started.lock().unwrap().is_empty());
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(paths.lock().unwrap().len(), 3);
+    }
+
+    /// Review 2 (2026-09-25), finding 1, through a caller: a gzip-encoded media playlist
+    /// whose body is a few KB but inflates past `PLAYLIST_MAX_BYTES` (a 2 MiB comment line) is
+    /// refused as the over-cap body already was — terminal, after the two requests of R1. On
+    /// `fe120a2` the inflate had no bound and the session played. Fails if a caller passes a
+    /// cap other than the playlist's.
+    #[test]
+    fn t22_a_gzipped_playlist_that_inflates_past_the_cap_is_refused() {
+        let head = fixture("10-seg-head.aac");
+        let text = format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n#{}\n#EXTINF:1.0,\nseg-1.aac\n#EXTINF:1.0,\nseg-2.aac\n#EXTINF:1.0,\nseg-3.aac\n",
+            " ".repeat(2 * 1024 * 1024)
+        );
+        let gz = {
+            use std::io::Write;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            e.write_all(text.as_bytes()).unwrap();
+            e.finish().unwrap()
+        };
+        assert!(gz.len() < 64 * 1024, "compressed {} bytes", gz.len());
+        let (base, paths) = routed_server(move |path| match path {
+            "/live/playlist.m3u8" => Some(Routed {
+                status: 200,
+                content_type: "application/vnd.apple.mpegurl",
+                gzip: true,
+                headers: "",
+                body: gz.clone(),
+            }),
+            p if seg_seq(p).is_some() => Some(routed("audio/aac", synth_segment(&head, 1.0))),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let seen = states_until(&h, GUARD, |s| is_error(s) || is_playing(s));
+        let state = last(&seen);
+        assert!(
+            matches!(
+                &state,
+                PlaybackState::Error {
+                    code: ErrorCode::UnsupportedFormat,
+                    ..
+                }
+            ),
+            "state: {state:?} after {seen:?}"
+        );
+        assert!(
+            error_message(&state).contains("over 1048576 bytes"),
+            "{state:?}"
+        );
+        assert!(reconnecting(&seen).is_empty(), "{seen:?}");
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(paths.lock().unwrap().len(), 2, "the playlist twice (R1)");
+        h.ctx.cancel();
+    }
+
+    /// A static window 1..=5 of one-second segments under `TARGETDURATION:10`: the open takes
+    /// seq 3 (three from the end), the fetch task seq 4 then 5. `status_for(seq, n)` answers
+    /// the `n`th request (from 1) for `seq`, `None` for a segment.
+    fn task_segment_server(
+        status_for: impl Fn(u64, usize) -> Option<u16> + Send + Sync + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let head = fixture("10-seg-head.aac");
+        let counts: Mutex<std::collections::HashMap<u64, usize>> = Mutex::default();
+        routed_server(move |path| {
+            if path == "/live/playlist.m3u8" {
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    live_playlist(10, 1.0, 1, 5, Duration::from_secs(4)).into_bytes(),
+                ));
+            }
+            let seq = seg_seq(path)?;
+            let n = {
+                let mut c = counts.lock().unwrap();
+                let n = c.entry(seq).or_insert(0);
+                *n += 1;
+                *n
+            };
+            match status_for(seq, n) {
+                Some(status) => Some(Routed {
+                    status,
+                    content_type: "text/plain",
+                    gzip: false,
+                    headers: "",
+                    body: b"gone".to_vec(),
+                }),
+                None => Some(routed("audio/aac", synth_segment(&head, 1.0))),
+            }
+        })
+    }
+
+    /// The segment sequence numbers requested once seq 5 has been, or after `within`.
+    fn segs_until_seq5(paths: &Arc<Mutex<Vec<String>>>, within: Duration) -> Vec<u64> {
+        let deadline = Instant::now() + within;
+        loop {
+            let segs: Vec<u64> = paths
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|p| seg_seq(p))
+                .collect();
+            if segs.contains(&5) || Instant::now() >= deadline {
+                return segs;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Review 2 (2026-09-25), finding 4 as triaged: a **410** in the fetch task is permanent —
+    /// one request, then the next segment. On `0f045b3` a 410 took the transient path and was
+    /// retried at 1 s steps for the whole TD (10 s here) before the gap.
+    #[test]
+    fn t23_a_gone_segment_in_the_task_is_skipped_after_one_request() {
+        let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(410));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, GUARD);
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            1,
+            "410 → one request: {segs:?}"
+        );
+    }
+
+    /// Finding 4, the 404 half: a 404 at the live edge is often CDN propagation lag, so it is
+    /// retried — at most twice, at 1 s. Answered 404 twice then 200, the segment plays: three
+    /// requests, no gap. Fails if a 404 is skipped at once (one request).
+    #[test]
+    fn t24_a_404_that_heals_on_the_second_retry_is_not_a_gap() {
+        let (base, paths) = task_segment_server(|seq, n| (seq == 4 && n <= 2).then_some(404));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, GUARD);
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            3,
+            "404, 404, 200: {segs:?}"
+        );
+    }
+
+    /// Round-3 review (2026-09-25), finding 2: the two 404 retries are counted apart from other
+    /// failures. Seq 4 answers 503, 503, then 404 for good: two transient retries, then the
+    /// first 404 and its **two** retries — five requests — then the gap and seq 5. On
+    /// `9a6a059` one counter served both, so the first 404 found it at 2 and skipped at once:
+    /// three requests, and no retry for a CDN edge that was about to have the segment.
+    #[test]
+    fn t27_404_retries_are_not_used_up_by_earlier_transient_failures() {
+        let (base, paths) = task_segment_server(|seq, n| match (seq, n) {
+            (4, 1 | 2) => Some(503),
+            (4, _) => Some(404),
+            _ => None,
+        });
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, GUARD);
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            5,
+            "503, 503, 404 + two 404 retries: {segs:?}"
+        );
+    }
+
+    /// Finding 4: a 404 that does not heal is a gap after the two retries — three requests,
+    /// then the next segment — never a whole-TD retry. On `0f045b3`: ten requests over the
+    /// TD of 10 s.
+    #[test]
+    fn t25_a_404_that_stays_is_a_gap_after_two_retries() {
+        let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(404));
+        let h = start_session(&format!("{base}/live/playlist.m3u8"));
+        let segs = segs_until_seq5(&paths, GUARD);
+        h.ctx.cancel();
+        assert!(segs.contains(&5), "seq 5 was never requested: {segs:?}");
+        assert_eq!(
+            segs.iter().filter(|&&s| s == 4).count(),
+            3,
+            "404 ×3, then the gap: {segs:?}"
         );
     }
 }

@@ -181,6 +181,17 @@ pub struct OpenedStream {
     pub station_name: Option<String>,
 }
 
+/// The bounded in-memory storage every reader is built on — the Icecast open's and the HLS
+/// open's (review 2026-09-25, finding 6: two copies of this construction, and two `.expect`
+/// sites where CLAUDE.md records one). The `expect` is the documented site: `BUFFER_BYTES` is a
+/// non-zero `const`, so it cannot fire.
+pub(crate) fn bounded_storage() -> BoundedStorageProvider<MemoryStorageProvider> {
+    BoundedStorageProvider::new(
+        MemoryStorageProvider,
+        NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer"),
+    )
+}
+
 /// Build the one HTTP client the engine uses for its lifetime.
 pub fn build_client(user_agent: &str) -> reqwest::Client {
     client_builder(user_agent)
@@ -257,7 +268,7 @@ pub async fn open(
     reconnect_count: Arc<AtomicU64>,
     prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
-    let stream = match HttpStream::new(client.clone(), url).await {
+    let stream = match HttpStream::new(client.clone(), url.clone()).await {
         Ok(s) => s,
         Err(e) => return Err(classify_open_error(e).await),
     };
@@ -275,10 +286,20 @@ pub async fn open(
         .as_ref()
         .map(|ct| format!("{}/{}", ct.r#type, ct.subtype));
 
-    let storage = BoundedStorageProvider::new(
-        MemoryStorageProvider,
-        NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer"),
-    );
+    // HLS (M3c): decided by the response, never by the station record's `hls` flag. The
+    // playlist just fetched is dropped and `hls::open` fetches it again itself — `HttpStream`
+    // keeps the URL it was *given*, not the final one after redirects, and the playlist's
+    // relative URIs must join against the final one. So every HLS open is two requests for the
+    // first playlist (plan review R1); the tests pin the count.
+    if content_type
+        .as_deref()
+        .is_some_and(crate::hls::is_hls_content_type)
+    {
+        drop(stream);
+        return crate::hls::open(client, url, reconnect_count, prefetch_bytes).await;
+    }
+
+    let storage = bounded_storage();
     let settings = Settings::default()
         .prefetch_bytes(prefetch_bytes)
         .retry_timeout(retry_timeout())
@@ -326,8 +347,8 @@ pub async fn open(
 /// - everything else (DNS, TCP, TLS, timeouts) → `Network`, retriable.
 ///
 /// The message carried to the UI is the whole chain, root last, so a log line shows the
-/// cause and not just "error sending request"; for a status the server sent, the first
-/// `BODY_EXCERPT` chars of its body follow — `<h2>Mount point not found</h2>` is what tells a
+/// cause and not just "error sending request"; for a status the server sent with a declared
+/// length of at most `ERROR_BODY_MAX`, the first `BODY_EXCERPT` chars of its body follow — `<h2>Mount point not found</h2>` is what tells a
 /// mislabelled mount from a dead host (`/code-review` finding 10, 2026-09-22: `3ab7ec2` had
 /// dropped it for `e.to_string()`).
 async fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamError {
@@ -341,14 +362,25 @@ async fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamErr
             let terminal = status_is_terminal(response.status());
             let retry_after = retry_after(response.headers());
             let head = e.to_string();
-            // `decode_error` formats "{source}: {body}" (or "{source}. Error decoding …").
-            let full = e.decode_error().await;
-            let tail = full.strip_prefix(&head).unwrap_or(full.as_str());
+            // `decode_error` is `response.text()`: the whole body, unbounded. It is read only
+            // when the server declared a length within `ERROR_BODY_MAX` — hyper stops at a
+            // declared length, so that is a bound; a chunked or larger body is not read
+            // (review 2, 2026-09-25, the bound sweep: on `fe120a2` an endless chunked 404 kept
+            // `open` reading — 14 GB sent in the test's 5 s).
+            let declared = response.content_length();
+            let message = if declared.is_some_and(|n| n <= ERROR_BODY_MAX) {
+                // "{source}: {body}" (or "{source}. Error decoding …").
+                let full = e.decode_error().await;
+                let tail = full.strip_prefix(&head).unwrap_or(full.as_str());
+                format!("{head}{}", excerpt(tail, BODY_EXCERPT))
+            } else {
+                head
+            };
             StreamError {
                 code: ErrorCode::Http,
                 terminal,
                 retry_after,
-                message: format!("{head}{}", excerpt(tail, BODY_EXCERPT)),
+                message,
             }
         }
         HttpStreamError::FetchFailure(e) => {
@@ -372,6 +404,9 @@ async fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamErr
 
 /// How much of an error response's body the message keeps.
 const BODY_EXCERPT: usize = 200;
+/// An error response's body is read for its excerpt only when its declared `Content-Length`
+/// is at most this. Error pages are a few KB; an Icecast 404 is under 1 KB.
+const ERROR_BODY_MAX: u64 = 64 * 1024;
 
 /// The first `max` chars of `s`, whitespace collapsed, with an ellipsis if cut.
 fn excerpt(s: &str, max: usize) -> String {
@@ -386,7 +421,7 @@ fn excerpt(s: &str, max: usize) -> String {
 /// The statuses that mean "not for you, not now, not later": no stream at this URL for us.
 /// Everything else — 5xx, 408, 429, the rest of 4xx — may read differently on the next
 /// attempt, so it keeps the backoff.
-fn status_is_terminal(status: reqwest::StatusCode) -> bool {
+pub(crate) fn status_is_terminal(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 401 | 403 | 404 | 410)
 }
 
@@ -396,7 +431,7 @@ fn is_client_error(e: &reqwest::Error) -> bool {
 }
 
 /// `Retry-After` in its delta-seconds form; `None` for an absent, HTTP-date or unparsable value.
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
@@ -444,7 +479,7 @@ fn root_looks_like_parse(e: &reqwest::Error) -> bool {
 
 /// "top: cause: root" — every link of the `source()` chain, so the UI and the log see the
 /// reason and not reqwest's outer wrapper alone.
-fn chain_message(e: &reqwest::Error) -> String {
+pub(crate) fn chain_message(e: &reqwest::Error) -> String {
     let mut parts = vec![e.to_string()];
     let mut cur = e.source();
     while let Some(err) = cur {
@@ -695,6 +730,62 @@ mod tests {
             tail.chars().count()
         );
         assert!(e.message.ends_with('…'), "{}", e.message);
+    }
+
+    /// Review 2 (2026-09-25), the widened bound sweep: an error response's body is read only
+    /// when its declared `Content-Length` is within [`ERROR_BODY_MAX`]. stream-download's
+    /// `decode_error` is `response.text()` — the whole body, unbounded — so a 404 whose chunked
+    /// body never ends kept `open` reading (and allocating) for as long as the server sent.
+    /// Fails on `fe120a2`: no answer inside the 5 s guard while the server streams on. The
+    /// answer is the same code and terminality as with a body, without an excerpt.
+    #[test]
+    fn an_error_response_with_an_endless_body_is_not_read() {
+        use std::sync::atomic::Ordering;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let sent = Arc::new(AtomicU64::new(0));
+        let sent_by_server = sent.clone();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            let _ = sock.write_all(
+                b"HTTP/1.1 404 Not Found\r\ncontent-type: text/html\r\ntransfer-encoding: chunked\r\n\r\n",
+            );
+            let chunk = vec![b'x'; 64 * 1024];
+            let head = format!("{:x}\r\n", chunk.len());
+            // Until the client hangs up (or 60 s): a chunked body with no end.
+            let until = std::time::Instant::now() + Duration::from_secs(60);
+            while std::time::Instant::now() < until {
+                if sock.write_all(head.as_bytes()).is_err()
+                    || sock.write_all(&chunk).is_err()
+                    || sock.write_all(b"\r\n").is_err()
+                {
+                    break;
+                }
+                sent_by_server.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            }
+        });
+        let url = format!("http://{addr}/stream");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_err(&url));
+        });
+        let e = match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(e) => e,
+            Err(_) => panic!(
+                "open did not answer in 5 s; the server had sent {} bytes of the 404's body",
+                sent.load(Ordering::Relaxed)
+            ),
+        };
+        assert_eq!(
+            (e.code, e.terminal),
+            (ErrorCode::Http, true),
+            "{}",
+            e.message
+        );
+        assert!(e.message.contains("404"), "{}", e.message);
+        assert!(!e.message.contains("xxxx"), "no excerpt: {}", e.message);
     }
 
     #[test]

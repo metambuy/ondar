@@ -120,6 +120,22 @@ not crates.io lookups):
   `set_effects` wraps it; see the `tauri-nspanel` spike note below.
 - `tracing-subscriber` 0.3.23 (env-filter; replaces `env_logger` — its `init()` installs
   a `LogTracer` itself, so `tracing-log` is not a direct dependency)
+- **Read for M3c (2026-09-24), from the registry sources at these lock versions:**
+  `stream-download` 0.24.4 — `SourceStream` is `TryStream<Ok = Bytes> + Stream + Unpin + Send +
+  Sync + 'static` with `create`, `content_length`, `seek_range`, `reconnect`, `supports_seek`
+  (`source/mod.rs:42-92`); the download loop wraps every `stream.next()` in
+  `timeout(retry_timeout)` (`:203`) and on elapse calls `reconnect` then `on_reconnect`
+  (`:272-290`); an `Err` item is logged and skipped (`:365-378`), `None` completes; `HttpStream`
+  stores the URL it was **given** (`http/mod.rs:185`, set at `:250`) and exposes no final URL;
+  `StreamDownload<P>` is generic over storage only, so `from_stream` (`lib.rs:343`) returns the
+  same `Reader` type as `new`. **No HLS support in any 0.23–0.24 release; no 0.25.**
+  `symphonia-codec-aac` 0.5.5 — the ADTS probe marker is `[0xff, 0xf1]` (`adts.rs:46`) and
+  `AdtsHeader::sync` scans byte by byte for `0xFFF1` before every frame (`:66-74`); SBR is read
+  only from an AudioSpecificConfig (`aac/mod.rs:101-112`), never from ADTS.
+  Direct since M3c, all already in the lock: `url` 2.5.8 (via ondar-stations' resolver),
+  `flate2` 1.1.10 (via tauri's icon codegen), `futures-core` 0.3.34 and `bytes` 1.12.1 (via
+  stream-download and reqwest); tokio 1.53.1 gains the `sync` and `macros` features. The lock's
+  package list is unchanged by M3c.
 
 **Not yet a dependency** (M2+; last-checked crates.io/GitHub state, *not* locked — re-verify
 before actually adding):
@@ -636,6 +652,229 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M3c: HLS, the ADTS half — built, measured (2026-09-24)
+
+Branch `m3c` off `main` `b7e050a` (`defect-a-done`). Commits, each pushed alone and CI green
+before the next: `7b19720` `chore(lint): ignore _handover/`, `659950d` fixtures, `ce6a247` the
+playlist module, `c37963b` segment normalisation, `a3ec612` the fetch layer; docs in the closing
+commit. Records in `_handover/`: brief `m3c-brief.md`, plan `m3c-plan.md` (its review
+`m3c-plan-review-2026-09-24.md`, the Step 0 gate `m3c-gate-review-2026-09-24.md`, and the
+"Commit N landed" sections with every mutation and the `b7e050a` recordings), Step 0
+`m3c-step0-report.md` (logs `m3c-step0/`), acceptance `m3c-acceptance.md` (logs
+`m3c-acceptance/`), the per-commit logs `m3c-commits/`.
+
+**What ships.** An HLS station whose media playlist carries **ADTS-AAC** segments plays through
+the same decoder, ring, converter and EQ as an Icecast stream. The engine detects HLS **by the
+response's content type** (four spellings, never the record's `hls` flag — two census `.m3u8`
+URLs flagged `hls == 0` answered plain ADTS), fetches the playlist again on its **final** URL
+(stream-download's `HttpStream` keeps the URL it was given, and relative URIs must join against
+the one after redirects — so every HLS open is two requests for the first playlist), chooses the
+**audio-only variant, LC before HE, highest bandwidth** (D1), refreshes the media playlist on
+`MEDIA-SEQUENCE` — the identity is "sequence greater than the last emitted", never "URI not yet
+seen", because every live reload still lists segments already fetched — starting **three
+segments behind the live edge** (D5), waiting the last segment's `EXTINF` after new segments and
+half the target duration otherwise, clamped to [1 s, 30 s]. Each segment's ID3 tags are skipped
+and its ADTS frames walked: the **MPEG-2 ID bit (`FFF9`) is cleared** to the `FFF1` Symphonia
+syncs on (F1, D7), a CRC is dropped, a partial tail dropped, and a segment whose sample-rate
+index or channel configuration differs from the session's first ends the source (`FormatChanged`)
+so the reopen builds a ring and converter for the new format — defect A's lesson applied
+forward. **MPEG-TS, fMP4, encrypted and byte-range playlists, video-only masters and plain M3U
+files are refused terminally** with a message the page renders (`error [unsupported_format]:
+HLS with MPEG-TS segments is not supported yet`, …), after one chain of requests, no backoff, no
+vote; the first segment is sniffed after its ID3 tags plus 376 bytes and dropped there. The source
+never yields an error into stream-download: a stall (3 × TD with no new segment), a sequence
+restart, a format change or `ENDLIST` closes the channel, the decoder sees EOF, and the session's
+own backoff reopens — one `Started`, one vote, per session. **No IPC change**: no command, event,
+argument or type; the vitest count stays 15.
+
+**Findings while planning** (F1–F7, `m3c-plan.md`) **and what Step 0 made of them:**
+- **F1** Symphonia's ADTS reader syncs only on `FFF1`; iHeart (census 02) sends `FFF9`. Confirmed
+  that it fails, refuted on the shape: not `UnrecognizedFormat` but — depending on how many bytes
+  the sync scan reads before EOF — `UnrecognizedFormat` under about 8 KB and `IoError("end of
+  stream")` from 16 KB (measured at commit 3), so on `b7e050a` a short `FFF9` file was terminal, a
+  long one ran the backoff, and a **live mount held the engine in `Connecting` for as long as the
+  mount stayed up** (Step 0 § (e): 34 s, released only by the server's EOF; the watchdog covers
+  `Buffering` only). That last shape is **defect B**, below.
+- **F2** the ADTS header's rate is not the rate ffprobe reports for HE-AAC. Confirmed, and **D9
+  did not fire**: Symphonia decodes the LC core only — 1 024 samples per frame at 22 050 where
+  ffmpeg synthesises 2 048 at 44 100 (ratio 2.00, duration 1.00) — and plays it at speed 1.0000
+  (RFM live, 111 windows, sd 0.0112; 08 replayed, 1.0003). **An HE-AAC station plays at the
+  correct speed with nothing above ~11 kHz**: a quality limit of Symphonia 0.5.5 on the census's
+  `AAC+` share (3 982 stations), recorded, not M3c's to fix; any fix is a stack decision.
+- **F3** every captured segment is whole frames; **F5** `HttpStream` keeps the requested URL;
+  **F6** Antena 1 gzips its media playlists unasked (`content-encoding: gzip` on a request with no
+  `Accept-Encoding`) — inflated by the response header, never requested, so no Icecast request
+  changes; **F4** stream-download's idle timeout (5 s) is shorter than a normal HLS wait, so the
+  HLS `Settings` set `retry_timeout` **above** `read_timeout` (stall bound + segment timeout +
+  5 s; 55 s at TD 10) — CLAUDE.md invariant 4 now says which path it guards.
+- **F7** on `b7e050a` an HLS URL was one request and `Error { UnsupportedFormat, "could not
+  identify the audio format (application/vnd.apple.mpegurl)" }`: confirmed on four live
+  stations, four fixture shapes and the app. TS was already "one terminal error, zero clicks"
+  (D4); M3c keeps it so with a better message and adds the ADTS half.
+- **Segment boundaries are clean**: 22 boundaries over four stations, zero sample loss, boundary
+  steps inside each stream's own range; **ID3 stripping is hygiene**, the decoder's scan skips
+  the tags itself (gate amendment 1). **Crates**: no crate covers live refresh; `m3u8-rs` 6.0.1
+  mis-parses 02's comma-bearing `EXTINF` titles (its #80, open) and brings `chrono`; hand-written.
+- **R2 (plan review): a plain M3U is not HLS.** `audio/x-mpegurl` is also served for a file that
+  lists an Icecast URL with no `EXT-X-*` tag; refused as `playlist is not HLS (no EXT-X tags)`,
+  the URL not followed. Census: 0 of 148 `hls == 0` stations answered an `mpegurl` type;
+  53 of 25 236 `url_resolved` end in `.m3u`/`.pls` (0.21 %, an upper bound by file name).
+
+**Acceptance (`m3c-acceptance.md`, 2026-09-24, at `a3ec612`; `rate_probe` and the app under
+`ONDAR_MEASURE` — no run voted):**
+
+| | measured |
+|---|---|
+| X1 Antena 1 in-app, 18 min | mean speed **1.0000**, sd 0.0128, 1 038 clean windows, cumulative 1.0000 (1071.355 / 1071.326 s), **0 underruns**; 267 refreshes, 264 `new=1`, sequence 10508 → 10774 never non-advancing; 539 requests all 200; 0 gaps; 0 reconnect; one click line (suppressed); 111 ms from `play` to `Playing` |
+| X2 08 HE-AAC / 02 `FFF9` | 22 050/2 at **1.0000** (sd 0.0125, 111 windows) / 24 000/1 at **0.9998** (sd 0.0133, 114); 0 underruns; **02 plays** — it could not on `b7e050a` |
+| X3 France Inter (TS) / Fox (video) | `Error` in 0.24 s / 0.70 s with the two messages; **3 / 2 requests**, exact on the fixture server and matching the live `hls request` lines; 0 `Reconnecting`, 0 `Started`, 0 clicks |
+| X4 click = play | in-app one play → one click line; HLS → Icecast → HLS through the probe: 3 plays, 3 `Started`, 0 reopens; the HLS task `ended reason=closed` at each switch and made 0 requests during the Icecast play |
+| X5 Stop during a wait | `hls task ended reason=closed` in the same millisecond as the switch; the host saw **no request for 31 s** with the process alive |
+| X6 Wi-Fi off 20 s (Martín, 2026-09-25) | (its `hls request … kind=master` failure lines at 13:11:09 and 13:11:49 were **media** reloads — the log's `kind=` was wrong on failures until review fix D, `005cc62`; the log is evidence and is annotated, not edited) twice: `Buffering` 7 s after the last segment → the hung reload's 10 s timeout → the retry's DNS error → `hls task ended reason=stall` 16.5 s after the last new segment → `Reconnecting { 1..4 }` → `Playing` — **20.7 s of silence for a ~20 s outage**; a second toggle 12 s after the recovery ran the same chain as `Reconnecting { 5 }` (24 s of stable play, under the 30 s reset) and recovered at 21.7 s; **one click line**, no `Started` on a reopen; after recovery mean 1.0001, 0 underruns |
+| X7 | on the reverted clean tree: fmt, clippy (0 warnings), **217 + 15**, typecheck, lint all 0; `pnpm tauri:dev` clean (X1's run was one; a second launch on the clean tree, `x7-devlaunch.*`) |
+
+X6's second outage is a note on **M1's policy, not M3c's**: two outages inside `STABLE_AFTER`
+(30 s) spend one session's five attempts, and had the network still been down at attempt 5's end
+the session would have ended in `Error`. Correct as written (invariant 5); recorded. The in-app
+HLS → Icecast → HLS switch was not clicked (one
+auto-play per launch); the probe's `Started` count stands in, with the shell's `Started` → click
+mapping pinned by `service::tests`. One instrument note: the X1 stop was scheduled at 10 min and
+the `pkill` pattern missed, so X1 ran 18 min and X2/X4 overlapped its last six — with 0 underruns
+throughout.
+
+**Tests: 217 + 15** (audio 113): `hls::playlist::tests` 19 (T1–T6), `hls::segment::tests` 8
+(T7–T11), `hls::tests` 2, and six in `engine::session_tests` (T12–T17) against a path-routed
+server that synthesises segments from the fixture heads. The `hls` modules do not exist on
+`b7e050a`, so T1–T11 are mutation-checked (28 mutations, each applied alone and reverted; every
+one fails at least one test, tables in the plan); T12–T17 were **run on `b7e050a`** through the
+same test block in a detached worktree: all six fail as F7 predicts. Two exceptions recorded
+rather than hidden: T14's mutation was not run (it would request the real Fox host — the
+fixture's variant URIs are absolute), and T17's guard-off mutation passes because Symphonia's
+ADTS reader ends the stream on a mid-stream rate change by itself; the guard is the first line
+(T10 pins it), T17 pins the outcome.
+
+**Fixtures** (`crates/ondar-audio/fixtures/hls/`, D6 as amended by R3): the census's P4 playlists
+byte for byte (Antena 1's media as the gzip bytes it was served; DW's master CRLF as served) and
+**heads only** of the segments — the ID3 tag(s) plus 16 ADTS frames, 0.34–0.74 s, 02 keeping its
+`FFF9`; four TS packets, named `.mpegts` because `eslint .` parses `.ts` as TypeScript. No second
+of broadcast audio is committed; the engine tests synthesise whole segments by repeating a head's
+frames, so the prefetch, the fill target and the pacing under test are production's.
+
+**Decisions** (Martín, 2026-09-24, `m3c-plan.md` § 6): D1 variant = audio-only, LC before HE,
+highest bandwidth (the brief said lowest); D2 a reload failure retries at the cadence to the stall
+bound before the session backoff; D3 a segment failure retries within its TD then is a logged gap;
+D4 the TS exit was already true on `b7e050a`, kept as a non-regression check with a better
+message; D5 start three segments behind live; D6 head-only fixtures; D7 the `FFF9` rewrite is in
+the HLS path only — the Icecast path's is defect B; D8 invariant 4 gains its scope; D9 (stop M3c
+on a speed defect) not fired.
+
+**Defect B — an unbounded `Connecting` — opened, not M3c's** (the gate review, 2026-09-24). Any
+live stream whose bytes the decoder cannot sync on keeps `main` in `Connecting` indefinitely:
+`build()` scans the arriving bytes, the watchdog covers `Buffering` only (`engine.rs:1063-1076`),
+`read_timeout` never fires while bytes arrive, and Stop is the only exit. `FFF9` on an Icecast
+mount is one trigger (measured: 34 s on a paced fixture, unbounded live); a mislabelled or garbage
+mount is another. Sequenced **after the M3c merge, before M4**, as its own measured piece like
+defect A: bound the build phase (a test that fails on `main` with the paced `FFF9` fixture), then
+the `FFF9` → `FFF1` rewrite on the Icecast path as a streaming wrapper over `hls::segment`, sized
+by the still-unmade count of Icecast AAC stations that send it (≈ 36 header reads over P5's
+`audio/aac*` rows). OPEN.md carries it.
+
+**Code review, 2026-09-25** (`_handover/m3c-review-findings.md`, verified; triage
+`m3c-review-triage-2026-09-25.md`; the single-agent local `/code-review` on the seven-commit
+branch at `102c114`). Nine findings, all accepted, fixed in five commits pushed one per green
+CI run plus this docs commit:
+
+| # | finding | fix |
+|---|---|---|
+| 1–3 | **three panics reachable from a remote playlist on the decode thread** — a `CODECS` value with a multi-byte char at byte 5 or 8 (`c[..5]`: "byte index 5 is not a char boundary"), an `EXTINF` of `1e30` (`Duration::from_secs_f64`: "cannot convert float seconds to Duration"), a `MEDIA-SEQUENCE` or `TARGETDURATION` at u64::MAX ("attempt to add with overflow"; "overflow when multiplying duration by scalar"). **The release profile is `panic = "abort"`**, so each was a whole-app abort from one playlist; in dev the thread died and the session sat in `Connecting` (defect B's shape) | A `cce9ffa`: byte-wise prefix compares, `try_from_secs_f64` into the parser's deferred `Malformed`, `checked_add` with u64::MAX refused, saturating `+ 1`, the timeouts on the planner's bounded TD, the bitrate cast capped; a hostile-playlist table test with every row's panic recorded first; **and a sweep** of every arithmetic op, cast, index/slice, `Duration` constructor and `unwrap`/`expect`/`unreachable!` in `hls/` outside tests, each listed in the commit message as fixed or safe-and-why (22 sites: 8 fixed, 12 safe by a checked bound or a `find`-derived index, 2 left for E) |
+| 4 | the first segment's HTTP failure took the playlist policy (terminal for 401/403/404/410) where every later segment's is retry-then-gap: a just-evicted start segment ended the session with `Error { http }` | B `28f7098`, reshaped by the triage: 404/410 = eviction → the next pending start segment, then a retriable error (the backoff reopens on a fresher window) — `Network` in B, `Http` carrying the server's `Retry-After` since review 2, finding 5; **401/403 stay terminal** — access denial does not change with a retry. T18–T20 |
+| 5 | a gzip-encoded first segment was never sniffed (one flag served the early and the post-inflate sniff) — a gzipped TS segment read the generic message | C `938944c`: two states; T21 |
+| 6, 8 | a second `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `hls::open` outside CLAUDE.md's exhaustive list; two "for the type" arms guarding a `remove(0)` on a list they made empty | E `adf8af7`: `stream::bounded_storage()` shared by both opens; a typed `Network` error for an empty start and an iterator for the start candidates — `hls/mod.rs` has no `expect`, and no index on a value that is not already clamped (`&body[tags..]` stays: `id3_end` clamps to the body's length — corrected by review 2, 2026-09-25, finding 3, which also removed the last `unreachable!` and added a source scan for panic shapes in `hls/`) |
+| 7 | every playlist-fetch failure logged `kind=master`, media reloads included (X6's log) | D `005cc62`: the kind the caller asked for on a failure, the parsed kind on success; `logged_kind` pure + tested |
+| 9 | T12's comment described a failure shape the parser cannot produce | this commit |
+
+**Invariant, from finding 1–3: no code path from network bytes may panic.** `panic = "abort"`
+is the right release setting — an audio-thread panic must not leave a half-dead app — and it
+is exactly why a panic reachable from a playlist, a segment, an ICY header or a station record
+is a crash from the network. Every value parsed from the network is bounded before it is used
+in arithmetic, indexing, slicing or a `Duration`; string prefixes are compared byte-wise; and a
+value that cannot be bounded is a typed refusal. The review's sweep is the method: list every
+site and say why each cannot fire. A later `/code-review` checks against this invariant.
+
+**Recorded from the triage:** the review was a single agent again; it found three real crashes,
+so it was not thin in effect, but the sweep is what closes the class. Ultra stays reserved for
+M4 and M6. Tests after the fixes: **224 + 15** (audio 120: +2 in A, +3 in B, +1 in C, +1 in D).
+
+**Out of scope, recorded:** the MPEG-TS demux (5 of the census's 10 HLS stations, 3 with video)
+stays after M4 as decided 2026-09-21; `EXT-X-MEDIA` audio renditions are not followed; there is no
+adaptive switching; a lagging origin that serves an older `MEDIA-SEQUENCE` would read as a
+restart (not seen in P4, where origins differed per request and the sequence still advanced);
+`StreamInfo.bitrate_kbps` for an HLS station is the variant's `BANDWIDTH` / 1000 (185/176 for
+Antena 1 across opens), not the record's 167 that sized the prefetch.
+
+**Code review 2, 2026-09-25** (`_handover/m3c-review2-findings.md`, verified; triage
+`m3c-review2-triage-2026-09-25.md`; a scoped single-agent `/code-review` of round 1's fixes,
+`102c114..fe120a2`). Seven findings, all accepted; the triage split finding 4 (410 ≠ 404) and
+widened the bound sweep to both crates. **One was a crash of the class round 1 closed:** the
+gzip inflate had no output bound.
+
+| # | finding | fix |
+|---|---|---|
+| 1 | **`segment::gunzip` inflated a remote body with no output bound** — the compressed body was capped (1 MB / 4 MB) but zeros inflate ~1000:1 (measured 1028:1 at 16 MiB), so a 4 MB segment was a ~4 GB `Vec` → allocation failure → abort under `panic = "abort"`. Also: `fetch_segment`'s "never downloaded" was false for a gzipped refused segment | `0f045b3`: `gunzip(bytes, max)` reads at most max + 1 (`GunzipError::TooLarge`), callers pass the cap their compressed body met; the doc now says a gzipped refused segment is downloaded whole, ≤ 4 MB, before its sniff (no streaming inflate — P4 saw no gzipped segment). T22 + a unit test, both recorded failing first |
+| 2 | the fetch task compared its retry window against the **raw** TD: `TARGETDURATION:3600` retried a failed segment every second for an hour | `b07e04e`: the bounded TD in `FetchTask`, and the pure `after_failure` bounds it again itself |
+| 3 | a fresh `unreachable!` in the task's match; ONDAR.md's "no index left" | the match went with `b07e04e`; `d61d524` removes the last one (`refused_container`'s ADTS arm → a `Refusal` type), corrects the row, and adds **a source scan** of `hls/`'s non-test code for `unreachable!`/`panic!`/`todo!`/`unimplemented!`/`.unwrap()`/`.expect(` |
+| 4 | an evicted segment was retried for a whole TD like a transient failure | `b07e04e`, **split by the triage**: 410 → skipped at once; 404 → at most two retries at 1 s (a CDN edge that has not yet received a segment the origin published), then the gap. T23–T25 (ten requests each on `0f045b3` for T23/T25) |
+| 5 | "start segments are gone" returned as `Network` though every candidate answered a status | `a746fe6`: `Http`, `terminal: false`, carrying `Retry-After`; T26 |
+| 6 | T19 decided its 410 window by wall clock (800 ms) | `50036ee`: keyed to playlist requests — see below |
+| 7 | `parse_fetched` carried two doc openings | `d61d524` |
+
+**The bound sweep, widened** (every `read_to_end`, remote-sized `with_capacity`, trusted
+`Content-Length` and decompression in `ondar-audio` and `ondar-stations`, in `0f045b3`'s
+message):
+
+| crate | site | verdict |
+|---|---|---|
+| audio | `hls/segment.rs` gunzip inflate + `with_capacity(len × 4)` | **fixed**: the caller's cap |
+| audio | `stream.rs` error excerpt: stream-download's `decode_error` is `response.text()` — **found by the sweep, not the review** | **fixed**: read only when the declared `Content-Length` ≤ 64 KiB (`ERROR_BODY_MAX`); on `fe120a2` an endless chunked 404 kept `open` reading — 14.3 GB sent in the test's 5 s |
+| audio | `hls/mod.rs` `read_body`, `fetch_segment`'s chunk loop | safe: stop at the cap |
+| audio | stream-download's `Content-Length` → storage | safe: `BoundedStorageProvider` takes min(content_length, `BUFFER_BYTES`) |
+| audio | `icy.rs` metadata block | safe: one length byte × 16 ≤ 4 080 |
+| audio | `segment.rs` normalise `with_capacity(b.len())` | safe: `b` is already capped |
+| both | reqwest decompression | none: no gzip/brotli/deflate feature enabled (`cargo tree -e features`) |
+| stations | `client.rs` `ReqwestTransport::get`: `resp.bytes()` | **carried**: unbounded in bytes, bounded only in time (180 / 30 / 10 s totals, 15 s idle); a bound needs a chunk loop, not one line. In `_handover/OPEN.md` |
+| stations | `normalise.rs` `with_capacity(raw.len())`, `serde_json::from_slice` | sized from the parsed body (bounded when the body is); serde's recursion limit 128 |
+
+**The commit order changed.** The first fix's CI run went red on round 1's T18
+(`states: [Buffering, Playing, Reconnecting { attempt: 1 }]`): its window holds ~2 s of audio,
+and the session tests' helper decided by **sampling** the current state every 20 ms, so on a slow
+runner `Playing` began and ended between two samples. Martín put the determinism fix next, as
+`50036ee` `test(audio): session tests assert state order, not timing`, ahead of the planned
+order (findings 2+4, 3+7, 5), and it absorbed finding 6. Every session test now reads states off
+the engine's event channel in order and stops at the first one it waits for; defect A's pair
+waits for each station's `Started` and captures from the second session's creation. Reproduced
+first with `ONDAR_TEST_POLL_DELAY_MS=1000` (T18, as CI) and `ONDAR_TEST_SERVER_DELAY_MS=300`
+(T19); all session tests pass under 1 000, 2 000 and 300 after. The two knobs stay in the harness.
+
+**Observed, not changed:** with the TD bounded at 30 s, a transient failure on a hostile TD still
+outlasts the session's 15 s watchdog, which ends the session first; the bound caps the requests at
+30 instead of 3 600. **Carried:** `ondar-stations`' response body has no byte bound. Tests after
+review 2: **233 + 15** (audio 129: +3 in `0f045b3`, +4 in `b07e04e`, +1 in `d61d524`, +1 in
+`a746fe6`). **Stop rule (triage):** a third scoped review on these commits is the last before the
+merge; the merge needs no crash or user-visible behaviour finding, and test-determinism or doc
+findings from it are fixed on `main` after the merge.
+
+**Code review 3, 2026-09-25** (`_handover/m3c-review3-findings.md`, verified; the last scoped
+round, `fe120a2..9a6a059`). No crash. Three findings, triaged by Martín:
+
+| # | finding | decision |
+|---|---|---|
+| 1 | since `0f045b3` an Icecast open's error-body excerpt is read only when `Content-Length` is declared and ≤ 64 KiB, so a chunked or close-delimited error page loses its excerpt — 2026-09-22 finding 10's `<h2>Mount point not found</h2>` for such servers | **accepted loss.** The bound stays: an endless error body cannot be read. A bounded prefix is not possible through stream-download 0.24.4 (`FetchError` gives `&reqwest::Response` and `decode_error(self)` = `text()` in full). **Revisit in defect B** with a measured Icecast missing-mount response: if it declares a length, nothing is lost; if not, a separate GET read to 64 KiB for the excerpt is the option on the table |
+| 2 | one `retries` counter across failure kinds: 503, 503, 404 skipped the 404 with no retry — an audible gap in the CDN-lag case | **fixed**, `4a6e3a7`: the 404 retries counted apart; T27 (on `9a6a059`: `[3, 4, 4, 4, 5]`) |
+| 3 | the session-test harness's `grace` can overwrite a held state when `states_while_waiting_for` enters with its condition already true, losing a state | **carried to `main`** after the merge (test determinism, per the stop rule): `grace` returns when a state is held, or the held slot becomes a queue |
+
+Tests after round 3: **234 + 15** (audio 130). The merge criterion — no crash or user-visible
+behaviour finding outstanding — is met.
 
 ### Defect A: the output kept the first session's sample rate — measured, fixed (2026-09-24)
 
