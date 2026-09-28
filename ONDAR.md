@@ -290,7 +290,7 @@ TypeScript, stop — it belongs in Rust.
   verifying that push's head commit — not every commit**; see "CI verifies the head of each
   push, not every commit" below. It runs, in order:
   `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
-  `cargo clippy --all-targets -- -D warnings`; `cargo test --workspace`;
+  `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`;
   `git diff --exit-code src/bindings` and `test -z "$(git status --porcelain src/bindings)"`;
   `pnpm typecheck`; `pnpm test`; `pnpm lint`; `cargo build`.
   The bindings check runs immediately after the tests because ts-rs regenerates

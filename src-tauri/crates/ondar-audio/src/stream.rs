@@ -865,11 +865,15 @@ mod tests {
     #[test]
     fn prefetch_is_capped_at_half_the_buffer() {
         assert_eq!(PREFETCH_CEILING_BYTES, 131_072);
-        assert!(PREFETCH_CEILING_BYTES * 2 <= BUFFER_BYTES as u64);
-        assert!(
-            PREFETCH_FLOOR_BYTES < PREFETCH_CEILING_BYTES,
-            "`clamp`'s precondition"
-        );
+        // Relations between constants, checked when the test compiles (clippy's
+        // `assertions_on_constants`: a runtime `assert!` on them can only ever pass).
+        const {
+            assert!(PREFETCH_CEILING_BYTES * 2 <= BUFFER_BYTES as u64);
+            assert!(
+                PREFETCH_FLOOR_BYTES < PREFETCH_CEILING_BYTES,
+                "`clamp`'s precondition"
+            );
+        }
         assert_eq!(prefetch_for(Some(10_000)), PREFETCH_CEILING_BYTES);
         assert_eq!(
             prefetch_for(Some(1411)),

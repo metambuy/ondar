@@ -259,7 +259,7 @@ music; CPU stays low (single digits) while playing; the tray icon animates while
 
 Every milestone closes with the same ritual:
 
-1. From `src-tauri`: `cargo fmt --all --check && cargo clippy --all-targets -- -D warnings &&
+1. From `src-tauri`: `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
    cargo test --workspace`. Plain `cargo test` (no `-p`/`--workspace`) only runs the root
    `ondar` package's tests — `ondar-audio`'s tests (the ones that matter) need `--workspace` or
    `-p ondar-audio`; see CLAUDE.md.

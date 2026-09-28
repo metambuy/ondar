@@ -281,7 +281,12 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 
 cd src-tauri
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+                              # --workspace, as for cargo test: without it the member crates'
+                              # libraries are linted only as the root's dependencies, and their
+                              # tests and examples never (defect B C2b, 2026-09-28: a constant
+                              # assertion, four unused functions and a complex type had failed
+                              # it unseen, and C1's harness dead code with them)
 cargo test --workspace       # every test in ondar_audio, ondar_stations and the shell's ondar_lib
                               # (counts: the test table above); the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
@@ -296,7 +301,7 @@ cargo test --workspace       # every test in ondar_audio, ondar_stations and the
 cargo run -p ondar-audio --example stall_bench    # against scripts/stall-server.py
 ```
 
-Before declaring any task done: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
+Before declaring any task done: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test --workspace`, `pnpm typecheck`, `pnpm test`, `pnpm lint`, and `pnpm tauri:dev` (not
 the bare form, which hands off to a running bundle and exits — a vacuous pass) launching without
 a console error.
