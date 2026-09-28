@@ -1,6 +1,9 @@
 # Ondar — project document
 
-*Last updated: 2026-09-22 (M3a acceptance run and its two fixes — see "M3a: the station
+*Last updated: 2026-09-28 (documentation drift pass: the M3 milestone entry, the CI step list, the
+frozen test counts marked as frozen, the vibrancy row, the instrument-principle count). Previously
+2026-09-25 (M3c built, accepted and reviewed three times — see "M3c: HLS, the ADTS half"; defect A
+fixed and merged — see "Defect A"; defect B opened). Previously 2026-09-22 (M3a acceptance run and its two fixes — see "M3a: the station
 directory, built", the acceptance paragraph; the Shoutcast v1 constraint corrected; instrument
 instance thirteen). Previously 2026-09-22 (M3a built on branch `m3a`; rusqlite 0.40.2 verified). Previously 2026-09-21 (M3 Step 0 measured — see "M3 Step 0: the live data, measured"; the geo
 share, the API etiquette line and the verified `hickory-resolver` version updated from it; four
@@ -87,7 +90,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | UI | **Vite + React 18 + TypeScript** | Thin view layer only; keeps map work tractable |
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). Pinned `rev = c9ec213…` since M2a; see "Verified versions". |
 | Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. Since M2a the centred position is clamped into the work area (`NSScreen.visibleFrame`) of the display under the icon. See "M2a: the tray path, measured". |
-| Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; no visual confirmation.** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
+| Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; confirmed by eye 2026-09-16 over a bright, busy backdrop (Martín).** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
 | Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
 | Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
 | Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
@@ -288,9 +291,12 @@ TypeScript, stop — it belongs in Rust.
   push, not every commit" below. It runs, in order:
   `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
   `cargo clippy --all-targets -- -D warnings`; `cargo test --workspace`;
-  `git diff --exit-code src/bindings`; `pnpm typecheck`; `pnpm lint`; `cargo build`.
+  `git diff --exit-code src/bindings` and `test -z "$(git status --porcelain src/bindings)"`;
+  `pnpm typecheck`; `pnpm test`; `pnpm lint`; `cargo build`.
   The bindings check runs immediately after the tests because ts-rs regenerates
-  `src/bindings/` during the test run — drifted committed bindings fail there. It is
+  `src/bindings/` during the test run — drifted committed bindings fail there. The status check
+  was added 2026-09-28 (the drift audit): `git diff` ignores untracked files, so a new exported
+  type whose `.ts` was never committed passed. It is
   `cargo build`, not `pnpm tauri build`: a full bundle is slow and pointless before M6, and
   the tile pyramid must never enter CI. Node and pnpm are pinned to the development
   machine's majors (Node 26; pnpm from `package.json`'s `packageManager`, so the lockfile,
@@ -1658,8 +1664,8 @@ every arrangement measured (ANMITE: tray rect 60 px / 2 = 30 pt = `work_area.y` 
 because the panel hangs from the *icon*, not from the work-area top: should the two ever differ,
 the recorded form plus `clamp_into` gives a panel pulled up to gap 0 — the readout that means "the
 clamp fired" — where this one gives a shorter panel with the clamp idle by construction. The
-decision is unchanged; only its expression is. No second positioning path: the cap feeds the same
-`anchor_points` / `clamp_into` that places the collapsed panel.
+decision is unchanged; only its expression is. No second positioning path: the cap is computed in
+`layout` and fed to the same `place` (`centred_below`, `clamp_into`) that places the collapsed panel.
 
 **Floor: expansion is refused only when the capped height would not exceed the collapsed height**
 (420 pt today). That is the only bound justifiable now, and it is recorded as **PROVISIONAL**. The
@@ -1893,7 +1899,7 @@ against the source before changing anything; `_handover/m2b-review-findings.md`)
   `defaults read com.apple.spaces spans-displays` returns `1`, and the key's presence means someone
   turned the setting off explicitly; the shipped default is the setting **on** (inherited, not
   verified here — Apple's documentation was not available offline). So the primary is a *preference*
-  among the acceptors: when it is not among them, `anchor_points` falls back to the first acceptor,
+  among the acceptors: when it is not among them, `resolve_display` falls back to the first acceptor,
   still clamped, and logs `AmbiguousWithoutPrimary`. Same class of error as "one display here":
   an environment-dependent fact treated as a property of the platform.
 - **The no-acceptor fallback clamps again.** It had reinterpreted a physical rect as points and
@@ -2339,8 +2345,8 @@ So an "Onda" in this repo is one of exactly three things:
 | `~/Developer/Onda` | The working directory is deliberately **not** renamed: it would break the working directory and the folder grant Martín's Claude session uses, and buys only tidiness. This is why CLAUDE.md's layout diagram still has an `onda/` root. |
 | A miss | Report it. |
 
-**Follow-ups Martín owns.** The GitHub repository is being renamed `metambuy/onda` →
-`metambuy/ondar` in the GitHub UI, after this commit lands, followed by `git remote set-url`.
+**Follow-ups Martín owns.** The GitHub repository **was renamed** `metambuy/onda` →
+`metambuy/ondar` and the remote updated.
 The docs in this commit already say `metambuy/ondar`, including the Actions run link in "Repo
 tooling" — so between this commit and that rename those URLs are ahead of reality. They are
 live pointers, not records, which is why they were renamed rather than frozen; left alone they
@@ -2383,6 +2389,8 @@ For that layout cargo's default scope is the root package alone, not all members
 "defaults to every member" behaviour belongs to *virtual* manifests (a `[workspace]` with no
 `[package]`). So from `src-tauri`:
 
+*Counts as of 2026-09-10 and deliberately frozen; current figures are in CLAUDE.md's test table.*
+
 | Invocation | What actually runs |
 |---|---|
 | `cargo test` | the `ondar` package only — its own 3 tests, exit 0, no warning |
@@ -2393,7 +2401,7 @@ It reports success either way, which is what made it survive this long — and a
 it is **more** dangerous, not less: the shell crate gained its own tests, so a bare run now
 prints a plausible-looking `3 passed` rather than an obviously-empty `0 passed`.
 
-**The mitigation is a test name.** A bare run prints nothing but the three shell test names, so
+**The mitigation is a test name.** A bare run prints nothing but the shell crate's own test names, so
 one of them says what happened:
 `log_rate_limit::tests::bare_cargo_test_runs_only_the_shell_crate_see_claude_md`. It is a real
 test of the rate limiter's burst behaviour, not a placeholder — the name is carrying a second
@@ -2472,11 +2480,12 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    **M2d (collapsed/expanded resize: two heights, the D1 cap, the page-commit round trip) done
    2026-09-21, merged `2a9bae9`, tagged `m2d-done`** — see "M2d: resize in place". **M2 complete.**
 3. **M3 — Station API + SQLite cache + country/station UI.** SRV discovery, `User-Agent`,
-   click endpoint, cache TTLs, favourites/recents. **M3a built 2026-09-22 on branch `m3a`** (the
-   crate, cache, store, commands, a dev list) — see "M3a: the station directory, built"; M3b (UI,
-   click, prefetch from bitrate) and M3c (HLS, ADTS only) follow. **Defect A**, M1's sample-rate
-   defect found at M3b acceptance, was fixed before M4 on branch `a-sample-rate` (`ebb414f`),
-   accepted 2026-09-24; Martín merges it and tags it `defect-a-done`. See "Defect A".
+   click endpoint, cache TTLs, favourites/recents. **M3a merged 2026-09-23** (`92cfe3f`,
+   `m3a-done`) — see "M3a: the station directory, built"; **M3b merged 2026-09-24** (`f7af9dc`,
+   `m3b-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) **merged
+   2026-09-24** (`b7e050a`, `defect-a-done`); **M3c (HLS, the ADTS half) merged 2026-09-26**
+   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) is open, sequenced before M4.
+   See "M3c: HLS, the ADTS half", "Defect A".
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
    coordinate DB merge. Record measured bundle size.
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
@@ -2485,8 +2494,10 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure three times, in three unrelated tools, and
-each time the instrument was wrong rather than the thing being measured.
+result.** This project has now hit the same failure thirteen times by the numbering below — sixteen
+counting the three M2a instances recorded between the fourth and the fifth without a number — in
+as many unrelated tools, and each time the instrument was wrong rather than the thing being
+measured. The three below are the archetypes; the rest are enumerated after them.
 
 | Instrument | What it reported | What was actually true |
 |---|---|---|

@@ -903,8 +903,10 @@ fn retry_or_fail(
     }
 }
 
-// Resume/dwell/instability thresholds below are placeholders pending measurement against
-// `scripts/stall-server.py`. Do not treat these numbers as tuned.
+// Resume/dwell/instability thresholds below are unmeasured. `UNDERRUN_WINDOW_TICKS` and
+// `UNDERRUN_PANIC_COUNT` were investigated and kept (ONDAR.md, "The unstable dwell was selected
+// and then cancelled"); `RESUME_FILL_NUM/DEN` is observed and deliberately not swept. The dwell
+// lengths and the fill threshold remain untuned.
 
 /// Resume once the ring is at least this fraction full (3/4 = 75%).
 const RESUME_FILL_NUM: usize = 3;

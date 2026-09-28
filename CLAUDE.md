@@ -112,7 +112,7 @@ onda/
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's 38 tests, including the
+    │   │                         flood; holds 3 of the shell's tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── measure.rs            dev-only measurement harness (M3b 1a), `#[cfg(debug_assertions)]`
     │   │                         whole: `ONDAR_MEASURE` → `panel.html?measure=…`, `_KEEP_OPEN`,
@@ -271,8 +271,9 @@ pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.de
 pnpm tauri build             # release bundle (macOS host only)
 pnpm typecheck               # tsc --noEmit
 pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
-                              # tests, 15 today (StationList + Transport + Panel). Its count is reported BESIDE
-                              # the Rust count — "235 + 15", never "250" — and CI runs it as its own step
+                              # tests (StationList + Transport + Panel; the count is under the test table).
+                              # Its count is reported BESIDE the Rust count, never summed with it, and CI
+                              # runs it as its own step
 pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
 pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
                               # all three crates: the engine's IPC types, the shell's panel types
@@ -281,14 +282,14 @@ pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes 
 cd src-tauri
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test --workspace       # 235 tests: 131 in the ondar_audio binary, 64 in ondar_stations and
-                              # 40 in the shell's ondar_lib; the remaining targets have 0. Plain
+cargo test --workspace       # every test in ondar_audio, ondar_stations and the shell's ondar_lib
+                              # (counts: the test table above); the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (40 tests) and silently skips both crates; this
+                              # `ondar` package (its own tests) and silently skips both crates; this
                               # workspace has a real [package] at the root, so cargo doesn't
                               # default to "all members" the way a virtual workspace would.
                               # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's forty test names, and one of them —
+                              # prints only the shell's own test names, and one of them —
                               # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
                               # so. That name is the signal; it is a real test, and renaming it
                               # makes the trap silent again.
@@ -378,7 +379,7 @@ engine handle and outlive any one session — they are not part of the command s
 
 Types crossing the boundary derive `Serialize, Deserialize, TS` with `#[ts(export)]`: the
 engine's in `crates/ondar-audio/src/types.rs`, the shell's beside the module that owns them
-(`panel.rs`'s `PanelView`, `PanelHeight` and `PanelLayout`). Adding one means adding it there, running
+(`panel.rs`'s `PanelView`, `PanelHeight`, `PanelTransition` and `PanelLayout`). Adding one means adding it there, running
 `cargo test --workspace` (plain `cargo test` skips the engine — see above; `pnpm gen:bindings`
 is the alias), and committing the generated `.ts`. No boundary type is typed by hand on the TS
 side.
@@ -395,8 +396,10 @@ side.
   `#[cfg(test)]` and must stay that way. Nothing enforces this — `clippy.toml` sets only
   `msrv`.
 
-  **Three sites sit outside both exemptions, by decision (2026-09-14; the third added at M3a
-  and counted by the 2026-09-22 review):**
+  **Three sites reachable from a command or the audio thread sit outside both exemptions, by
+  decision (2026-09-14; the third added at M3a and counted by the 2026-09-22 review; a fourth,
+  `lib.rs`'s `.build(generate_context!()).expect(..)`, runs once at startup before either
+  exists — rescanned 2026-09-28):**
   - `stream.rs::build_client`'s `.build().expect(..)`, called once from `Engine::new`. It
     fails only if the native-tls connector (Security.framework) cannot initialise or the
     user-agent is not a valid header value.
@@ -426,7 +429,7 @@ side.
 - Buffering supervision lives on the **engine thread**, not the decode loop — a stalled read
   blocks `decoder.next()` indefinitely, so a decode-cadence supervisor cannot see a stall.
 - State-machine changes go through `decide_tick`, the pure function at the bottom of
-  `engine.rs`, so they stay unit-testable without an audio device. It has 20 tests. Add to
+  `engine.rs`, so they stay unit-testable without an audio device (`engine::tick_tests`). Add to
   them; do not route new transitions around it.
 - Commands are thin: validate → send → map the error. Domain logic lives in `ondar-audio`.
 - Never add a dependency without saying what it does and why std or an existing crate is not
@@ -509,16 +512,6 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    `SOFT_CLIP_THRESHOLD` = 0.95 and asymptotic to `SOFT_CLIP_CEILING` = 1.0, applied inside
    `Equalizer` as the last operation on every sample so it cannot be bypassed. See ONDAR.md,
    "EQ output is bounded by a soft-clip stage".
-9. **Prefetch from bitrate** (M3b commit 6): `play` carries the station record's
-   `bitrate_kbps` (or none) and the engine sizes the stream's prefetch as the knee,
-   `RING_SECONDS × bitrate / 8`, bounded below by `PREFETCH_FLOOR_BYTES` (one decoder read) and
-   above by `PREFETCH_CEILING_BYTES` (half of `BUFFER_BYTES`, 131 072 — a prefetch at or over
-   the buffer is met only when the buffer is full, and the record's `bitrate` is user-entered:
-   1411, 1536 and a `128000` typo exist; `/code-review` finding 2, 2026-09-23) —
-   `stream::prefetch_for`, pure and tested (the floor wins up to 131 kbit/s; 320 kbit/s is
-   80 000 B; the ceiling from 525 kbit/s; no bitrate is the floor). `ONDAR_PREFETCH_BYTES`
-   still overrides the whole value.
-   Logged per play: `play station_id=… bitrate_kbps=… prefetch_bytes=…`.
 8. Call the radio-browser click endpoint exactly once, when playback actually starts — built at
    M3b commit 5: `Shared::write_state` in the engine sends `EngineEvent::Started { station_id }`
    on the **first `Playing` of the session a `play` began** (`begin_session` resets the flag;
@@ -537,6 +530,16 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    The page's row does nothing on the station already playing (a paused one resumes), so a
    double click is not two votes; a replay is stop, then the row. With the measurement harness
    active the click is suppressed (`suppressed=measurement`) and the recent still recorded.
+9. **Prefetch from bitrate** (M3b commit 6): `play` carries the station record's
+   `bitrate_kbps` (or none) and the engine sizes the stream's prefetch as the knee,
+   `RING_SECONDS × bitrate / 8`, bounded below by `PREFETCH_FLOOR_BYTES` (one decoder read) and
+   above by `PREFETCH_CEILING_BYTES` (half of `BUFFER_BYTES`, 131 072 — a prefetch at or over
+   the buffer is met only when the buffer is full, and the record's `bitrate` is user-entered:
+   1411, 1536 and a `128000` typo exist; `/code-review` finding 2, 2026-09-23) —
+   `stream::prefetch_for`, pure and tested (the floor wins up to 131 kbit/s; 320 kbit/s is
+   80 000 B; the ceiling from 525 kbit/s; no bitrate is the floor). `ONDAR_PREFETCH_BYTES`
+   still overrides the whole value.
+   Logged per play: `play station_id=… bitrate_kbps=… prefetch_bytes=…`.
 10. **One output format per process; every session converts to it before the EQ** (defect A,
    2026-09-24). `ensure_player` reads the sink's rate and channels from
    `MixerDeviceSink::config()` into `OutputFormat`. At attach, `output_chain` builds, per ring,
@@ -548,7 +551,7 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
    "fix" this: every boundary would rebuild the converter and discard its interpolation state.
    See ONDAR.md, "Defect A".
 
-## macOS specifics (as built through M2b)
+## macOS specifics (as built through M2d)
 
 - Activation policy `Accessory` (set in `panel::setup`, **before** `PanelBuilder::build()`) +
   `LSUIElement` in `src-tauri/Info.plist` — no Dock icon, no menu bar menus. Only a bundled
@@ -576,7 +579,7 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   `hides_on_deactivate` is not set — it keeps the panel off screen.
 - Position from Tauri's own `TrayIconEvent::Click { rect }` (physical at the *status item
   display's* scale), converted to points, centred under the icon and clamped into that display's
-  work area (`panel.rs`, `anchor_points` / `centred_below` / `clamp_into`, unit-tested against
+  work area (`panel.rs`, `layout` → `place`: `resolve_display`, `centred_below`, `clamp_into`, unit-tested against
   measured fixtures). `tauri-plugin-positioner` is **not needed**.
 - Vibrancy is Tauri's own `set_effects` (`Effect::Popover`, `EffectState::Active`) plus
   `PanelBuilder::transparent(true)` *and* `with_window(|w| w.transparent(true))`, with
@@ -679,6 +682,12 @@ HTTP (stream-download, bounded) → IcyReader → rodio::Decoder (Symphonia)   [
   --exit-status`, with the sha captured at push time; green → the next commit; red or no run →
   stop and report the run URL. `gh auth status` first in a session.
 - When a decision is made or reversed, it goes into **ONDAR.md**, not just the chat.
+- **Current test counts live only in this file's test table** (with the breakdown above it and
+  the TypeScript count below it). Everywhere else — README, `ci.yml` comments, ONDAR.md prose,
+  BUILD_PLAN, the rest of this file — a count is either absent or dated and frozen, with
+  "current: see CLAUDE.md" beside it. A milestone's record ("**217 + 15** at acceptance") is a
+  dated figure and stays. (Decided 2026-09-28: the drift audit of that day found present-tense
+  counts of 3, 38 and 53 standing for 40, 40 and 235, some stale since 2026-09-10.)
 - If a documented approach turns out to be wrong, stop and say so before improvising.
 - **The author of a block is frequently wrong about the code — verify before applying, and say
   so rather than improvising.** On 2026-09-14 a dictated replacement for this file's unwrap

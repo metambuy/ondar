@@ -72,16 +72,20 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       # --workspace is load-bearing: src-tauri/Cargo.toml has a real [package] at its
-      # root, so a bare `cargo test` runs only that package — its own 3 tests — while
-      # silently skipping every test in ondar-audio.
+      # root, so a bare `cargo test` runs only that package's own tests — while silently
+      # skipping both crates, ondar-audio and ondar-stations.
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace
 
       # Runs from the repo root, and deliberately after cargo test: ts-rs regenerates
       # src/bindings/ during the test run, so drifted committed bindings fail here.
+      # `git diff` sees only tracked files; the status check also fails on a new
+      # #[ts(export)] type whose generated .ts was never committed.
       - name: Bindings are up to date
-        run: git diff --exit-code src/bindings
+        run: |
+          git diff --exit-code src/bindings
+          test -z "$(git status --porcelain src/bindings)"
 
       - name: pnpm typecheck
         run: pnpm typecheck
