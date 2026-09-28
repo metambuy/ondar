@@ -718,6 +718,7 @@ pub async fn open(
 
     Ok(OpenedStream {
         reader,
+        kind: crate::stream::SourceKind::Hls,
         metaint: None,
         content_type: Some(content_type.unwrap_or_else(|| "audio/aac".to_string())),
         bitrate_kbps,

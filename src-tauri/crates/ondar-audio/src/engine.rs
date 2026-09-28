@@ -30,6 +30,7 @@ use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate
 use rtrb::PushError;
 use tokio_util::sync::CancellationToken;
 
+use crate::adts::AdtsReader;
 use crate::eq::{EqGains, Equalizer};
 use crate::icy::IcyReader;
 use crate::reconnect::{Backoff, STABLE_AFTER};
@@ -832,13 +833,22 @@ fn run_session(
 
         // 2. Probe / build the decoder.
         let title_shared = ctx.shared.clone();
-        let reader: BoxedReader = Box::new(IcyReader::new(
+        let icy = IcyReader::new(
             opened.reader,
             opened.metaint,
             Box::new(move |title| {
                 title_shared.emit(EngineEvent::Metadata(IcyMetadata { title: Some(title) }));
             }),
-        ));
+        );
+        // The ADTS front end (defect B C4) sits **after** `IcyReader` — a metadata block can hold
+        // `FF F9`, and inside the frames it would read as a sync loss — and applies to an HTTP
+        // stream labelled `audio/aac*` only (review P3: HLS segments are normalised already).
+        let reader: BoxedReader =
+            if wants_adts_front_end(opened.kind, opened.content_type.as_deref()) {
+                Box::new(AdtsReader::new(icy))
+            } else {
+                Box::new(icy)
+            };
         let mut builder = DecoderBuilder::new()
             .with_data(reader)
             .with_seekable(false)
@@ -1057,6 +1067,22 @@ fn format_secs(d: Duration) -> String {
 fn build_bound_ticks() -> u32 {
     let base = (stream::retry_timeout() * 3).max(BUILD_BOUND);
     (base.as_millis() / TICK_INTERVAL.as_millis()) as u32
+}
+
+/// Whether a stream gets the ADTS front end (defect B, B1): an HTTP stream whose content type,
+/// lowercased and without parameters, starts with `audio/aac` — `audio/aac` and `audio/aacp`,
+/// under which every `FFF9` body in Step 0 was served (S4) — and never the HLS source, whose
+/// segments `hls::segment` has already walked (review P3).
+fn wants_adts_front_end(kind: stream::SourceKind, content_type: Option<&str>) -> bool {
+    kind == stream::SourceKind::Http
+        && content_type.is_some_and(|ct| {
+            ct.split(';')
+                .next()
+                .unwrap_or(ct)
+                .trim()
+                .to_ascii_lowercase()
+                .starts_with("audio/aac")
+        })
 }
 
 /// A server's `Retry-After` lengthens the backoff's delay up to this; past it the session
@@ -1409,6 +1435,11 @@ mod session_tests {
         started: Mutex<Vec<String>>,
         /// Every `StreamInfo` seen while draining, as (sample_rate, channels), in order.
         infos: Mutex<Vec<(u32, u16)>>,
+        /// Every ICY title seen while draining, in order.
+        titles: Mutex<Vec<String>>,
+        /// The decode thread's name, unique per harness: the captured log lines are keyed by it
+        /// ([`adts_lines`]).
+        decode_thread: String,
         /// Every `Reconnect` count seen while draining (stream-download's internal reconnects,
         /// emitted by `Engine::tick` — only a supervised harness has one), in order.
         reconnects: Mutex<Vec<u64>>,
@@ -1507,13 +1538,24 @@ mod session_tests {
             channels: std::num::NonZero::new(2).expect("2"),
             sample_rate: std::num::NonZero::new(44_100).expect("44100"),
         };
-        thread::spawn(move || run_session(session, url, client, handle, player, prefetch, output));
+        capture_logs();
+        static SESSIONS: AtomicUsize = AtomicUsize::new(0);
+        let decode_thread = format!(
+            "ondar-decode:test-{}",
+            SESSIONS.fetch_add(1, Ordering::SeqCst)
+        );
+        thread::Builder::new()
+            .name(decode_thread.clone())
+            .spawn(move || run_session(session, url, client, handle, player, prefetch, output))
+            .expect("spawn decode thread");
         Harness {
             ctx,
             events: ev_rx,
             held: Mutex::new(None),
             started: Mutex::new(Vec::new()),
             infos: Mutex::new(Vec::new()),
+            titles: Mutex::new(Vec::new()),
+            decode_thread,
             reconnects: Mutex::new(Vec::new()),
             supervisor,
             _rt: rt,
@@ -1528,6 +1570,47 @@ mod session_tests {
         }
     }
 
+    /// The test binary's logger (defect B C4): keeps the ADTS front end's lines with the name
+    /// of the thread that logged them, so a test reads its own session's lines however many
+    /// sessions run in parallel. Installed once; the other lines are dropped.
+    struct Capture;
+
+    static CAPTURED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+    impl log::Log for Capture {
+        fn enabled(&self, m: &log::Metadata) -> bool {
+            m.level() <= log::Level::Info
+        }
+        fn log(&self, r: &log::Record) {
+            let msg = r.args().to_string();
+            if msg.starts_with("adts front end") {
+                let name = thread::current().name().unwrap_or_default().to_string();
+                CAPTURED.lock().unwrap().push((name, msg));
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    fn capture_logs() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            if log::set_logger(&Capture).is_ok() {
+                log::set_max_level(log::LevelFilter::Info);
+            }
+        });
+    }
+
+    /// The `adts front end` lines this harness's decode thread logged, in order.
+    fn adts_lines(h: &Harness) -> Vec<String> {
+        CAPTURED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| *t == h.decode_thread)
+            .map(|(_, m)| m.clone())
+            .collect()
+    }
+
     /// Record one engine event: a state is returned, `Started` and `StreamInfo` are kept on
     /// the harness in order.
     fn record(h: &Harness, ev: EngineEvent) -> Option<PlaybackState> {
@@ -1540,6 +1623,9 @@ mod session_tests {
                 .unwrap()
                 .push((info.sample_rate, info.channels)),
             EngineEvent::Reconnect(info) => h.reconnects.lock().unwrap().push(info.count),
+            EngineEvent::Metadata(IcyMetadata { title: Some(t) }) => {
+                h.titles.lock().unwrap().push(t)
+            }
             _ => {}
         }
         None
@@ -1667,6 +1753,8 @@ mod session_tests {
             held: Mutex::new(None),
             started: Mutex::new(Vec::new()),
             infos: Mutex::new(Vec::new()),
+            titles: Mutex::new(Vec::new()),
+            decode_thread: String::new(),
             reconnects: Mutex::new(Vec::new()),
             supervisor: None,
             _rt: tokio::runtime::Builder::new_current_thread()
@@ -2401,6 +2489,140 @@ mod session_tests {
         assert!(sent < BOUNDED_BELOW, "{sent} B sent before the bound");
     }
 
+    // ---- Defect B C4: the ADTS front end, wired ----
+
+    /// Station 02's head after its ID3 tag: 16 whole `FFF9` frames, 24 000/1.
+    fn frames_02() -> Vec<u8> {
+        let head = fixture("02-seg-head.aac");
+        let body = head[test_id3_end(&head)..].to_vec();
+        assert_eq!(crate::hls::segment::normalise_adts(&body).frames, 16);
+        body
+    }
+
+    /// `audio` with an ICY metadata block after every `metaint` bytes: `StreamTitle` in the
+    /// first, empty ones after (a length byte of 0), none after a short tail.
+    fn with_metaint(audio: &[u8], metaint: usize, title: &str) -> Vec<u8> {
+        let mut block = format!("StreamTitle='{title}';").into_bytes();
+        block.resize(block.len().div_ceil(16) * 16, 0);
+        let mut out = Vec::new();
+        for (i, chunk) in audio.chunks(metaint).enumerate() {
+            out.extend_from_slice(chunk);
+            if chunk.len() == metaint {
+                if i == 0 {
+                    out.push((block.len() / 16) as u8);
+                    out.extend_from_slice(&block);
+                } else {
+                    out.push(0);
+                }
+            }
+        }
+        out
+    }
+
+    fn icy_answer(content_type: &str, metaint: usize, body: Vec<u8>) -> Answer {
+        Answer {
+            head: format!(
+                "HTTP/1.0 200 OK\r\ncontent-type: {content_type}\r\nicy-metaint: {metaint}\r\n\r\n"
+            )
+            .into_bytes(),
+            body: Arc::new(body),
+            bytes_per_sec: 0,
+            after: After::Hold,
+        }
+    }
+
+    /// How long the `FFF9` body is: 64 × 16 frames, about 44 s of audio and above the 32 KiB
+    /// prefetch, so the open returns while the server holds the connection, as a live mount.
+    const REPEATS_02: usize = 64;
+
+    fn is_playing_or_ended(s: &PlaybackState) -> bool {
+        *s == PlaybackState::Playing || ends(s)
+    }
+
+    /// T-B2a (defect B C4): an Icecast `audio/aac` mount sending `FFF9` frames (station 02's,
+    /// repeated), with `icy-metaint: 1024` and a `StreamTitle` in the first block. The front
+    /// end aligns at 0 and rewrites every header: `Playing`, `StreamInfo` 24 000/1, one
+    /// `Started`, one title. On `d1b127b` the build never ends (S1 (i): `Connecting` for 150 s
+    /// live). Mutations: the front end off → the build bound's `Error { UnsupportedFormat }`;
+    /// the front end placed **before** `IcyReader` (review P4) → not both a `Metadata` event
+    /// and `Playing`.
+    #[test]
+    fn t_b2a_an_fff9_icecast_mount_plays_through_the_front_end() {
+        let audio = frames_02().repeat(REPEATS_02);
+        let server = paced_server(vec![icy_answer(
+            "audio/aac",
+            1024,
+            with_metaint(&audio, 1024, "Artist - Title"),
+        )]);
+        let h = start_session_supervised(&server.url, TEST_BOUND_TICKS);
+        let seen = states_until(&h, GUARD, is_playing_or_ended);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), ["u1"], "one Started");
+        assert_eq!(
+            *h.infos.lock().unwrap(),
+            [(24_000, 1)],
+            "the rewritten headers' format"
+        );
+        assert_eq!(
+            *h.titles.lock().unwrap(),
+            ["Artist - Title"],
+            "the metadata block reached IcyReader"
+        );
+        assert_eq!(adts_lines(&h), ["adts front end: aligned at 0 B"]);
+        h.ctx.cancel();
+    }
+
+    /// T-B2b (defect B C4): the same `FFF9` body, starting 100 B into its first frame, with an
+    /// MP3 frame header `FF FB 90 C4` planted 10 B into that partial — S2's live shape, where
+    /// the probe met a false MP3 marker first and resynced for ever. The front end realigns to
+    /// the first whole header: `Playing` at 24 000/1, one `Started`, `aligned at` the partial's
+    /// length. On `d1b127b`: never `Playing` (the MP3 marker wins). Mutation: realign off (a
+    /// rewrite only at offset 0) → the build bound's `Error`.
+    #[test]
+    fn t_b2b_a_mid_frame_fff9_start_with_a_false_mp3_marker_realigns() {
+        let frames = frames_02();
+        let len1 = crate::hls::segment::frame_length(&frames);
+        let mut body = frames.repeat(REPEATS_02)[100..].to_vec();
+        body[10..14].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC4]);
+        let server = paced_server(vec![answer("audio/aac", body, 0, After::Hold)]);
+        let h = start_session_supervised(&server.url, TEST_BOUND_TICKS);
+        let seen = states_until(&h, GUARD, is_playing_or_ended);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), ["u1"], "one Started");
+        assert_eq!(*h.infos.lock().unwrap(), [(24_000, 1)]);
+        assert_eq!(
+            adts_lines(&h),
+            [format!("adts front end: aligned at {} B", len1 - 100)]
+        );
+        h.ctx.cancel();
+    }
+
+    /// Which streams get the front end: HTTP `audio/aac` and `audio/aacp`, in any case and
+    /// with parameters; never another type, a missing one, or the HLS source (review P3).
+    #[test]
+    fn the_front_end_applies_to_http_aac_only() {
+        use stream::SourceKind::{Hls, Http};
+        for ct in [
+            "audio/aac",
+            "audio/aacp",
+            "Audio/AAC",
+            "audio/aacp; charset=x",
+        ] {
+            assert!(wants_adts_front_end(Http, Some(ct)), "{ct}");
+            assert!(!wants_adts_front_end(Hls, Some(ct)), "HLS, {ct}");
+        }
+        for ct in [
+            Some("audio/mpeg"),
+            Some("audio/x-aac"),
+            Some("application/ogg"),
+            None,
+        ] {
+            assert!(!wants_adts_front_end(Http, ct), "{ct:?}");
+        }
+    }
+
     // ---- Defect A: every session plays at its own rate and channel count ----
 
     /// An HTTP 200 carrying `secs` of a 16-bit sine at `hz`, amplitude 0.5, `channels` identical
@@ -3036,6 +3258,14 @@ mod session_tests {
         );
         let _ = await_started(&h);
         assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        // Review P3 (defect B C4): the segments are `audio/aac`, so a content-type filter would
+        // put the front end on this HLS session too; the source kind keeps it off. Fails with
+        // `wants_adts_front_end` ignoring the kind ("adts front end: aligned at 0 B").
+        assert_eq!(
+            adts_lines(&h),
+            Vec::<String>::new(),
+            "an HLS session gets no ADTS front end"
+        );
         h.ctx.cancel();
     }
 

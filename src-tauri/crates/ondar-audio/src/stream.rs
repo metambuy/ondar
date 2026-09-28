@@ -173,8 +173,20 @@ pub struct StreamError {
     pub retry_after: Option<Duration>,
 }
 
+/// Which open produced a stream (defect B C4, review P3): the reader over the HTTP body as
+/// served (Icecast, Shoutcast v2, plain HTTP), or the HLS source, whose segments
+/// `hls::segment` has already normalised. The engine applies the ADTS front end to the first
+/// only. Carried because the content type cannot tell them apart: an HLS session reports its
+/// first segment's type, `audio/aac` when the segment sends none (`hls::open`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Http,
+    Hls,
+}
+
 pub struct OpenedStream {
     pub reader: Reader,
+    pub kind: SourceKind,
     pub metaint: Option<usize>,
     pub content_type: Option<String>,
     pub bitrate_kbps: Option<u32>,
@@ -320,6 +332,7 @@ pub async fn open(
 
     Ok(OpenedStream {
         reader,
+        kind: SourceKind::Http,
         metaint,
         content_type,
         bitrate_kbps,
