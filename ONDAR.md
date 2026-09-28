@@ -291,9 +291,12 @@ TypeScript, stop — it belongs in Rust.
   push, not every commit" below. It runs, in order:
   `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
   `cargo clippy --all-targets -- -D warnings`; `cargo test --workspace`;
-  `git diff --exit-code src/bindings`; `pnpm typecheck`; `pnpm test`; `pnpm lint`; `cargo build`.
+  `git diff --exit-code src/bindings` and `test -z "$(git status --porcelain src/bindings)"`;
+  `pnpm typecheck`; `pnpm test`; `pnpm lint`; `cargo build`.
   The bindings check runs immediately after the tests because ts-rs regenerates
-  `src/bindings/` during the test run — drifted committed bindings fail there. It is
+  `src/bindings/` during the test run — drifted committed bindings fail there. The status check
+  was added 2026-09-28 (the drift audit): `git diff` ignores untracked files, so a new exported
+  type whose `.ts` was never committed passed. It is
   `cargo build`, not `pnpm tauri build`: a full bundle is slow and pointless before M6, and
   the tile pyramid must never enter CI. Node and pnpm are pinned to the development
   machine's majors (Node 26; pnpm from `package.json`'s `packageManager`, so the lockfile,
