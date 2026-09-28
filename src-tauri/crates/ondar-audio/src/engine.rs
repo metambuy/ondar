@@ -689,6 +689,14 @@ fn run_session(
     // only before that: afterwards the same 404 is a mount mid-restart, and the backoff
     // carries it (`/code-review` finding 4, 2026-09-22).
     let mut opened_once = false;
+    // Whether this session has pushed a decoded sample into a ring — "has produced audio"
+    // (defect B, B2; review round 7, P1). An unrecognised format is terminal only before
+    // that: a mount that once played had a valid format, so garbage on a reconnect is a
+    // source restarting, as a 404 there is. Not `opened_once` (set before the build), and not
+    // "has built a decoder": `build()` returns `Ok` with an empty decoder after a false header
+    // when the read ends (defect B Step 0, S3), which would let a mount that sends a false
+    // header and closes back off for ever instead of ending.
+    let mut produced_audio = false;
     loop {
         if ctx.cancelled() {
             return;
@@ -742,14 +750,20 @@ fn run_session(
         let mut decoder = match builder.build() {
             Ok(d) => d,
             Err(DecoderError::UnrecognizedFormat) => {
-                ctx.set_state(PlaybackState::Error {
-                    code: ErrorCode::UnsupportedFormat,
-                    message: format!(
-                        "could not identify the audio format ({})",
-                        opened.content_type.as_deref().unwrap_or("no content-type")
-                    ),
-                });
-                return;
+                let message = format!(
+                    "could not identify the audio format ({})",
+                    opened.content_type.as_deref().unwrap_or("no content-type")
+                );
+                if !retry_or_fail(
+                    &ctx,
+                    ErrorCode::UnsupportedFormat,
+                    message,
+                    !produced_audio,
+                    None,
+                ) {
+                    return;
+                }
+                continue;
             }
             Err(e) => {
                 log::warn!("decoder failed to open: {e}");
@@ -807,6 +821,7 @@ fn run_session(
                     }
                 }
             }
+            produced_audio = true;
 
             samples_since_check += 1;
             if samples_since_check < 1024 {
@@ -858,7 +873,8 @@ const RETRY_AFTER_CAP: Duration = Duration::from_secs(30);
 
 /// The retry policy, by cause. A **terminal** failure (`StreamError::terminal` — a non-HTTP
 /// answer such as `ICY 200 OK`, or 401/403/404/410 — and only while the session has never
-/// opened, see `run_session`) fails the session on the spot: retrying cannot change what the
+/// opened; or an unrecognised format while the session has never produced audio; see
+/// `run_session`) fails the session on the spot: retrying cannot change what the
 /// server says. Everything else (network, 5xx, 408/429, decoder, a stream that ended, any
 /// answer on a reconnect) goes through the 1/2/4/8/16 s backoff, each delay stretched to the
 /// server's `Retry-After` when it sent one (capped), and fails with the code of the last
@@ -1683,6 +1699,248 @@ mod session_tests {
     /// `counting_server` for a response built at runtime (a WAV is not a `&'static [u8]`).
     fn counting_server_owned(response: Vec<u8>) -> (String, Arc<AtomicUsize>) {
         scripted_server(vec![response])
+    }
+
+    // ---- Defect B: the build phase ----
+
+    /// What a paced answer does once its body is sent.
+    #[derive(Clone, Copy, Debug)]
+    enum After {
+        /// Close the connection: the stream ends.
+        Close,
+        /// Keep the connection open and send nothing more: a silent server.
+        Hold,
+        /// Send the body again, for ever.
+        Loop,
+    }
+
+    /// One connection's answer: `head` at once, then `body` at `bytes_per_sec` (0: as fast as
+    /// the client reads), then `after`.
+    #[derive(Clone)]
+    struct Answer {
+        head: Vec<u8>,
+        body: Arc<Vec<u8>>,
+        bytes_per_sec: u64,
+        after: After,
+    }
+
+    fn answer(content_type: &str, body: Vec<u8>, bytes_per_sec: u64, after: After) -> Answer {
+        Answer {
+            head: format!(
+                "HTTP/1.0 200 OK\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n"
+            )
+            .into_bytes(),
+            body: Arc::new(body),
+            bytes_per_sec,
+            after,
+        }
+    }
+
+    /// A server that paces its bodies on its own clock and counts what it did: `connections`
+    /// accepted and body bytes `sent`, both only growing, so a wait bounded by either cannot
+    /// be broken by a slow runner (the server's pace is fixed; slowness only means the client
+    /// read less of it). Connection `i` gets `answers[i]`, the last one repeated; each
+    /// connection has its own thread, so a held one never delays the next accept. Dropping it
+    /// ends every held or looping connection.
+    struct Paced {
+        url: String,
+        connections: Arc<AtomicUsize>,
+        sent: Arc<AtomicU64>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl Drop for Paced {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn paced_server(answers: Vec<Answer>) -> Paced {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let sent = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (conns, total, halt) = (connections.clone(), sent.clone(), stop.clone());
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                if halt.load(Ordering::SeqCst) {
+                    break;
+                }
+                let n = conns.fetch_add(1, Ordering::SeqCst);
+                let a = answers[n.min(answers.len() - 1)].clone();
+                let (total, halt) = (total.clone(), halt.clone());
+                thread::spawn(move || {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf);
+                    if sock.write_all(&a.head).is_err() {
+                        return;
+                    }
+                    let started = Instant::now();
+                    let mut written: u64 = 0;
+                    loop {
+                        let mut at = 0usize;
+                        while at < a.body.len() {
+                            if halt.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            let chunk = if a.bytes_per_sec == 0 {
+                                a.body.len() - at
+                            } else {
+                                // What the pace allows by now, at most 4 KiB at a time.
+                                let due = (started.elapsed().as_secs_f64() * a.bytes_per_sec as f64)
+                                    as u64;
+                                if due <= written {
+                                    thread::sleep(Duration::from_millis(5));
+                                    continue;
+                                }
+                                ((due - written) as usize).min(4096).min(a.body.len() - at)
+                            };
+                            if sock.write_all(&a.body[at..at + chunk]).is_err() {
+                                return;
+                            }
+                            at += chunk;
+                            written += chunk as u64;
+                            total.fetch_add(chunk as u64, Ordering::SeqCst);
+                        }
+                        match a.after {
+                            After::Loop => continue,
+                            After::Close => {
+                                let _ = sock.flush();
+                                let _ = sock.shutdown(std::net::Shutdown::Write);
+                                thread::sleep(Duration::from_millis(200));
+                                return;
+                            }
+                            After::Hold => {
+                                while !halt.load(Ordering::SeqCst) {
+                                    thread::sleep(Duration::from_millis(50));
+                                }
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        Paced {
+            url: format!("http://{addr}/stream"),
+            connections,
+            sent,
+            stop,
+        }
+    }
+
+    /// A seeded xorshift64 stream, for fixtures generated in the test (nothing new is
+    /// committed).
+    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed.max(1);
+        move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        }
+    }
+
+    /// F-nosync (defect B Step 0, A7): `len` seeded bytes drawn from `0x00–0x3F`. Every probe
+    /// marker of the formats rodio 0.22 registers holds a byte ≥ `0x40` or `0xFF`, so no reader
+    /// can sync on it by construction, and Symphonia gives up only after its 1 MiB search.
+    fn f_nosync(len: usize) -> Vec<u8> {
+        let mut next = xorshift(0x0DDB_0B5E);
+        (0..len).map(|_| (next() & 0x3F) as u8).collect()
+    }
+
+    /// The false ADTS header of F-falsesync (review A8): LC, sample-rate index 6 (24 000),
+    /// channel configuration 1, `frame_length` 16 — a header whose frame is followed by junk.
+    const FALSE_ADTS: [u8; 7] = [0xFF, 0xF1, 0x58, 0x40, 0x02, 0x1F, 0xFC];
+
+    /// F-falsesync: F-nosync with [`FALSE_ADTS`] planted at 4 096.
+    fn f_falsesync(len: usize) -> Vec<u8> {
+        let mut b = f_nosync(len);
+        b[4096..4096 + FALSE_ADTS.len()].copy_from_slice(&FALSE_ADTS);
+        b
+    }
+
+    /// 128 KiB/s, the pace of the defect B tests (S1's stuck mounts pull 10–28 KB/s; faster
+    /// only shortens the tests, and the bound is on time, not bytes).
+    const PACE: u64 = 128 * 1024;
+
+    /// T-B1a′ (defect B C1): a session that **produced audio** — 1.5 s of WAV, played, then
+    /// ended — and whose every reconnect answers F-nosync keeps the backoff on the reconnect's
+    /// `UnrecognizedFormat`, as a 404 there does: a mount that once played had a valid format.
+    /// Fails on `main`'s rule, where the arm is terminal whatever came before: `Error {
+    /// UnsupportedFormat }` right after Symphonia's 1 MiB search on the reconnect, never
+    /// `Reconnecting { 2 }`.
+    #[test]
+    fn t_b1a_prime_an_unrecognised_format_after_audio_keeps_the_backoff() {
+        let server = paced_server(vec![
+            Answer {
+                head: Vec::new(),
+                body: Arc::new(wav_response(1.5)),
+                bytes_per_sec: 0,
+                after: After::Close,
+            },
+            answer("audio/mpeg", f_nosync(2 * 1024 * 1024), PACE, After::Close),
+        ]);
+        let h = start_session(&server.url);
+        let seen = states_until(&h, Duration::from_secs(40), |s| {
+            matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
+        });
+        let state = last(&seen);
+        assert!(
+            !is_error(&state),
+            "the reconnect's unrecognised format ended the session: {state:?} ({seen:?})"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            vec![1, 2],
+            "the WAV's end, then the reconnect's format failure, through the backoff ({seen:?})"
+        );
+        assert!(
+            server.connections.load(Ordering::SeqCst) >= 2,
+            "the reconnect asked the server"
+        );
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            ["u1"],
+            "one Started, from the WAV"
+        );
+        h.ctx.cancel();
+    }
+
+    /// Review round 7, P1: the B2 fact is "has produced audio", not "has built a decoder".
+    /// The first connection sends a false ADTS header in 8 KiB of junk and closes: `build()`
+    /// returns `Ok` with a decoder that yields nothing (S3's empty `Ok` — the `StreamInfo`
+    /// below is the proof it built), the stream "ends", `Reconnecting { 1 }`. The reconnect
+    /// answers F-nosync: its `UnrecognizedFormat` must end the session, since no audio was
+    /// ever produced. Passes on `main` (every unrecognised format is terminal there); fails
+    /// on a "built once" flag set at `build()`'s `Ok`, which reads `Reconnecting { 2 }`.
+    #[test]
+    fn p1_a_decoder_that_built_but_never_produced_audio_does_not_protect_the_session() {
+        let server = paced_server(vec![
+            answer("audio/aac", f_falsesync(8 * 1024), 0, After::Close),
+            answer("audio/mpeg", f_nosync(2 * 1024 * 1024), PACE, After::Close),
+        ]);
+        let h = start_session(&server.url);
+        let seen = states_until(&h, Duration::from_secs(40), |s| {
+            matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
+        });
+        assert!(
+            !h.infos.lock().unwrap().is_empty(),
+            "the first connection built a decoder (S3's empty Ok): no StreamInfo in {seen:?}"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            vec![1],
+            "only the empty stream's end went through the backoff ({seen:?})"
+        );
+        match last(&seen) {
+            PlaybackState::Error { code, .. } => assert_eq!(code, ErrorCode::UnsupportedFormat),
+            other => panic!("the format failure did not end the session: {other:?} ({seen:?})"),
+        }
+        assert!(h.started.lock().unwrap().is_empty(), "no audio, no Started");
+        h.ctx.cancel();
     }
     // ---- Defect A: every session plays at its own rate and channel count ----
 
