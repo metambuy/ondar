@@ -11,6 +11,7 @@
 //! Public surface: [`AudioEngine`] (commands + state snapshot), [`EngineEvent`] (what the UI
 //! listens to), and the shared [`types`].
 
+pub mod adts;
 pub mod engine;
 pub mod eq;
 pub mod hls;

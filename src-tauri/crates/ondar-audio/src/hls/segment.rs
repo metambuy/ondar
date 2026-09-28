@@ -86,7 +86,7 @@ pub fn sniff(bytes: &[u8]) -> Container {
 }
 
 /// `0xFFF` followed by layer bits `00`; the ID bit and `protection_absent` may be either.
-fn is_adts_sync(b: &[u8]) -> bool {
+pub(crate) fn is_adts_sync(b: &[u8]) -> bool {
     b.len() >= 2 && b[0] == 0xFF && (b[1] & 0xF6) == 0xF0
 }
 
@@ -207,8 +207,9 @@ pub fn normalise_adts(b: &[u8]) -> Normalised {
     n
 }
 
-/// `frame_length`, 13 bits across bytes 3–5: the whole frame including the header.
-fn frame_length(h: &[u8]) -> usize {
+/// `frame_length`, 13 bits across bytes 3–5: the whole frame including the header. `h` holds
+/// at least a header's bytes (every caller checks).
+pub(crate) fn frame_length(h: &[u8]) -> usize {
     ((h[3] as usize & 0x03) << 11) | ((h[4] as usize) << 3) | ((h[5] as usize) >> 5)
 }
 
@@ -299,6 +300,31 @@ impl std::fmt::Display for GunzipError {
 
 // ---------------------------------------------------------------------------------------------
 
+/// Test helpers shared with `adts::tests` (defect B C3).
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// A synthetic ADTS frame: header + `payload` bytes of `fill`. `id` sets the MPEG-2 bit,
+    /// `crc` adds two CRC bytes and clears `protection_absent`.
+    pub(crate) fn frame(sri: u8, ch: u8, payload: usize, fill: u8, id: bool, crc: bool) -> Vec<u8> {
+        let header_len = if crc { 9 } else { 7 };
+        let len = header_len + payload;
+        let mut h = vec![0u8; header_len];
+        h[0] = 0xFF;
+        h[1] = 0xF0 | if id { 0x08 } else { 0 } | if crc { 0 } else { 1 };
+        h[2] = (1 << 6) | (sri << 2) | (ch >> 2); // profile LC
+        h[3] = ((ch & 0x03) << 6) | ((len >> 11) & 0x03) as u8;
+        h[4] = ((len >> 3) & 0xFF) as u8;
+        h[5] = ((len & 0x07) << 5) as u8 | 0x1F;
+        h[6] = 0xFC;
+        if crc {
+            h[7] = 0xAB;
+            h[8] = 0xCD;
+        }
+        h.extend(std::iter::repeat_n(fill, payload));
+        h
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! T7–T11 of the M3c plan, on the fixture heads (ID3 tag(s) + 16 ADTS frames; 4 TS
@@ -331,26 +357,7 @@ mod tests {
         ("09", head!("09-seg-head.mpegts")),
     ];
 
-    /// A synthetic ADTS frame: header + `payload` bytes of `fill`. `id` sets the MPEG-2 bit,
-    /// `crc` adds two CRC bytes and clears `protection_absent`.
-    fn frame(sri: u8, ch: u8, payload: usize, fill: u8, id: bool, crc: bool) -> Vec<u8> {
-        let header_len = if crc { 9 } else { 7 };
-        let len = header_len + payload;
-        let mut h = vec![0u8; header_len];
-        h[0] = 0xFF;
-        h[1] = 0xF0 | if id { 0x08 } else { 0 } | if crc { 0 } else { 1 };
-        h[2] = (1 << 6) | (sri << 2) | (ch >> 2); // profile LC
-        h[3] = ((ch & 0x03) << 6) | ((len >> 11) & 0x03) as u8;
-        h[4] = ((len >> 3) & 0xFF) as u8;
-        h[5] = ((len & 0x07) << 5) as u8 | 0x1F;
-        h[6] = 0xFC;
-        if crc {
-            h[7] = 0xAB;
-            h[8] = 0xCD;
-        }
-        h.extend(std::iter::repeat_n(fill, payload));
-        h
-    }
+    use super::test_support::frame;
 
     // ---- T7: the sniff
 
