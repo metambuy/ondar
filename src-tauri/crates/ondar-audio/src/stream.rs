@@ -369,9 +369,13 @@ async fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamErr
             // `open` reading — 14 GB sent in the test's 5 s).
             let declared = response.content_length();
             let message = if declared.is_some_and(|n| n <= ERROR_BODY_MAX) {
-                // "{source}: {body}" (or "{source}. Error decoding …").
+                // "{source}: {body}" (or "{source}. Error decoding …"), while `head` is
+                // "Failed to fetch: {source}": the prefix to strip is the source's text, not
+                // `head` (defect B Step 0, S5: stripping `head` never matched, so the message
+                // said its head twice).
+                let source = e.source().to_string();
                 let full = e.decode_error().await;
-                let tail = full.strip_prefix(&head).unwrap_or(full.as_str());
+                let tail = full.strip_prefix(&source).unwrap_or(full.as_str());
                 format!("{head}{}", excerpt(tail, BODY_EXCERPT))
             } else {
                 head
@@ -730,6 +734,37 @@ mod tests {
             tail.chars().count()
         );
         assert!(e.message.ends_with('…'), "{}", e.message);
+    }
+
+    /// Defect B Step 0, S5: the message says its head once, then the excerpt. `head` is
+    /// `FetchError`'s Display, `"Failed to fetch: {source}"`, while `decode_error` returns
+    /// `"{source}: {body}"`, so stripping `head` never matched and the whole `decode_error`
+    /// text followed it. Fails on that: `"404"` twice, and the URL followed by `"Failed"`'s
+    /// repeat instead of the body.
+    #[test]
+    fn an_error_message_states_its_head_once() {
+        const BODY: &str = "The file you requested could not be found";
+        static RESPONSE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+            format!(
+                "HTTP/1.1 404 Not Found\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{BODY}",
+                BODY.len()
+            )
+            .into_bytes()
+        });
+        let url = serve_once(RESPONSE.as_slice());
+        let e = open_err(&url);
+        assert_eq!((e.code, e.terminal), (ErrorCode::Http, true));
+        assert_eq!(
+            e.message.matches("404").count(),
+            1,
+            "the head once: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains(&format!("{url}): {BODY}")),
+            "the excerpt follows the URL: {}",
+            e.message
+        );
     }
 
     /// Review 2 (2026-09-25), the widened bound sweep: an error response's body is read only
