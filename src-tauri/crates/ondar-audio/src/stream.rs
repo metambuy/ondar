@@ -269,8 +269,12 @@ pub fn parse_url(url: &str) -> Result<Url, StreamError> {
     }
 }
 
-/// Connect and return a reader once `prefetch_bytes` have arrived (the caller computed them
-/// from the station's bitrate, [`prefetch_bytes`]). `reconnect_count` is
+/// Connect and return a reader whose first read waits for `prefetch_bytes` (the caller
+/// computed them from the station's bitrate, [`prefetch_bytes`]). `open` itself does **not**
+/// wait for them: stream-download 0.24.4's `from_stream` spawns the download and returns
+/// (`lib.rs:343`), and the downloaded range is published only once the prefetch completes
+/// (`source/mod.rs:323`), so the wait is inside the decoder's build — which is why the build
+/// bound counts from the first byte (defect B review fixes F1, finding 2). `reconnect_count` is
 /// advanced every time `stream-download` reconnects internally (idle `retry_timeout`, not one
 /// of our own external retries) — see `Settings::on_reconnect` below and `SessionCtx` in
 /// `engine.rs`, which is what actually surfaces it as an event.

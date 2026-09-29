@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! HTTP (stream-download, bounded ring)
+//!   → ClockedReader (stamps the decoder build's byte clock)
 //!   → IcyReader (strips in-band titles)
 //!   → AdtsReader (HTTP audio/aac* only: realign, FFF9 → FFF1)
 //!   → rodio::Decoder (Symphonia)          decode thread
@@ -13,6 +14,7 @@
 //! listens to), and the shared [`types`].
 
 pub mod adts;
+mod build;
 pub mod engine;
 pub mod eq;
 pub mod hls;
