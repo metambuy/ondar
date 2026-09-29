@@ -369,9 +369,11 @@ struct Engine {
     /// `reconnect_count` as of the last tick for `current_reconnect_counter`; a change from
     /// this is what triggers `EngineEvent::Reconnect`.
     last_reconnect_count: u64,
-    /// Consecutive ticks the current session's build has been [`BuildPhase::PROBING`]; 0 on
-    /// any tick it is not, on a new session, and after the bound fires.
-    ticks_probing: u32,
+    /// When a tick first saw the current session's build [`BuildPhase::PROBING`]; `None` on any
+    /// tick it is not, on a new session, and after the bound fires. The bound counts the time
+    /// since, converted to ticks for [`decide_tick`] (defect B C4b): counted ticks drifted with
+    /// the tick period — acceptance X1 measured a ~103 ms tick and a "20 s" bound at 20.65 s.
+    probing_since: Option<Instant>,
     /// Cached at construction — see [`build_bound_ticks`]; handed to each session's context.
     build_bound_ticks: u32,
 }
@@ -406,7 +408,7 @@ impl Engine {
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
             last_reconnect_count: 0,
-            ticks_probing: 0,
+            probing_since: None,
             build_bound_ticks: build_bound_ticks(),
         }
     }
@@ -460,7 +462,7 @@ impl Engine {
         if is_new_session {
             self.current_reconnect_counter = Some(session.reconnect_count.clone());
             self.last_reconnect_count = session.reconnect_count.load(Ordering::Relaxed);
-            self.ticks_probing = 0;
+            self.probing_since = None;
         }
         let reconnect_count = session.reconnect_count.load(Ordering::Relaxed);
         if reconnect_count != self.last_reconnect_count {
@@ -473,12 +475,13 @@ impl Engine {
         // The build bound (defect B), before the ring's early return: a session that is
         // building has no ring yet, and a bound behind that return would never run.
         if session.build.load(Ordering::Acquire) == BuildPhase::PROBING {
-            self.ticks_probing = self.ticks_probing.saturating_add(1);
+            let since = *self.probing_since.get_or_insert_with(Instant::now);
+            let elapsed_ticks = since.elapsed().as_millis() / TICK_INTERVAL.as_millis();
             let outcome = decide_tick(
                 &current,
                 TickInputs {
                     probing: true,
-                    ticks_probing: self.ticks_probing,
+                    ticks_probing: u32::try_from(elapsed_ticks).unwrap_or(u32::MAX),
                     build_bound_ticks: session.build_bound_ticks,
                     ..Default::default()
                 },
@@ -488,7 +491,7 @@ impl Engine {
             }
             return;
         }
-        self.ticks_probing = 0;
+        self.probing_since = None;
 
         let Some(stats) = session.ring_stats() else {
             return;
@@ -629,14 +632,15 @@ impl Engine {
             .is_ok();
         if won {
             log::warn!(
-                "build bound: no decoder after {} ticks; cancelling the download",
-                self.ticks_probing
+                "build bound: no decoder after {:.2} s; cancelling the download",
+                self.probing_since
+                    .map_or(0.0, |since| since.elapsed().as_secs_f64())
             );
             if let Some(t) = session.download.lock().unwrap().as_ref() {
                 t.cancel();
             }
         }
-        self.ticks_probing = 0;
+        self.probing_since = None;
     }
 
     /// Open the output device on first use so a missing device is reported as a playback
@@ -1446,6 +1450,10 @@ mod session_tests {
         /// Set by `Drop`: stops the supervising engine thread of
         /// [`start_session_supervised`]; `None` for the tick-less harness.
         supervisor: Option<Arc<AtomicBool>>,
+        /// The supervisor's own record of a build bound (defect B C4b): its clock from the
+        /// first tick that saw `PROBING` to the tick that swapped it to `BOUND`, and how many
+        /// ticks saw `PROBING` meanwhile. `None` until a bound fires.
+        bound_seen: Arc<Mutex<Option<(Duration, u32)>>>,
         // Dropping the runtime while `run_session` still holds its handle would abort the
         // open; kept for the harness's lifetime.
         _rt: tokio::runtime::Runtime,
@@ -1492,22 +1500,58 @@ mod session_tests {
     /// production 200 ticks would make every test 20 s. Opt-in: the other tests keep the
     /// tick-less harness.
     fn start_session_supervised(url: &str, build_bound_ticks: u32) -> Harness {
-        start_session_with(url, Some(build_bound_ticks))
+        start_session_with(url, Some((build_bound_ticks, Duration::ZERO)))
     }
 
-    fn start_session_with(url: &str, supervised: Option<u32>) -> Harness {
+    /// `start_session_supervised` with every tick slowed by `extra` (defect B C4b): a tick
+    /// period that is not `TICK_INTERVAL`, as a loaded machine gives.
+    fn start_session_supervised_slow(
+        url: &str,
+        build_bound_ticks: u32,
+        extra: Duration,
+    ) -> Harness {
+        start_session_with(url, Some((build_bound_ticks, extra)))
+    }
+
+    /// `ONDAR_TEST_TICK_DELAY_MS`: a sleep added to every supervised tick, standing in for a
+    /// slow runner (or a loaded Mac: acceptance X1 measured a ~103 ms tick).
+    fn tick_delay() -> Duration {
+        Duration::from_millis(
+            std::env::var("ONDAR_TEST_TICK_DELAY_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0),
+        )
+    }
+
+    fn start_session_with(url: &str, supervised: Option<(u32, Duration)>) -> Harness {
         let (ev_tx, ev_rx) = mpsc::channel();
         let mut ctx = test_ctx(ev_tx);
-        let supervisor = supervised.map(|ticks| {
+        let bound_seen: Arc<Mutex<Option<(Duration, u32)>>> = Arc::new(Mutex::new(None));
+        let supervisor = supervised.map(|(ticks, extra)| {
             ctx.build_bound_ticks = ticks;
             let stop = Arc::new(AtomicBool::new(false));
-            let (session, halt) = (ctx.clone(), stop.clone());
+            let (session, halt, seen) = (ctx.clone(), stop.clone(), bound_seen.clone());
+            let build = ctx.build.clone();
+            let pause = TICK_INTERVAL + extra.max(tick_delay());
             thread::spawn(move || {
                 let mut engine = Engine::new(session.shared.clone(), "Ondar/test".into());
                 engine.session = Some(session);
+                let mut probing: Option<(Instant, u32)> = None;
                 while !halt.load(Ordering::SeqCst) {
+                    let before = build.load(Ordering::Acquire);
+                    if before == BuildPhase::PROBING {
+                        probing.get_or_insert((Instant::now(), 0)).1 += 1;
+                    }
                     engine.tick();
-                    thread::sleep(TICK_INTERVAL);
+                    if build.load(Ordering::Acquire) == BuildPhase::BOUND {
+                        if let Some((at, n)) = probing.take() {
+                            *seen.lock().unwrap() = Some((at.elapsed(), n));
+                        }
+                    } else if before != BuildPhase::PROBING {
+                        probing = None;
+                    }
+                    thread::sleep(pause);
                 }
             });
             stop
@@ -1558,6 +1602,7 @@ mod session_tests {
             decode_thread,
             reconnects: Mutex::new(Vec::new()),
             supervisor,
+            bound_seen,
             _rt: rt,
         }
     }
@@ -1757,6 +1802,7 @@ mod session_tests {
             decode_thread: String::new(),
             reconnects: Mutex::new(Vec::new()),
             supervisor: None,
+            bound_seen: Arc::new(Mutex::new(None)),
             _rt: tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("runtime"),
@@ -2396,6 +2442,117 @@ mod session_tests {
             h.infos
         );
         assert!(h.started.lock().unwrap().is_empty(), "no Started");
+    }
+
+    /// C4b (defect B, review round 10): the build bound counts **elapsed time**, not ticks. Each
+    /// supervised tick is slowed by 50 ms, a 150 ms tick period, and the bound is 20 ticks,
+    /// 2 s. The supervisor times the build on its own clock, from the first tick that sees
+    /// `PROBING` to the tick that swaps it to `BOUND`.
+    ///
+    /// - An elapsed-time bound fires once 2 s have passed, at the first tick after that: at
+    ///   least 2 s and at most one tick period over, about 2.1 s, after about 14 ticks.
+    /// - A tick-counted bound fires on the 20th `PROBING` tick, 19 tick periods after the
+    ///   first: about 2.9 s, near 1.5 × the bound. That was the code on `a8585c6`, recorded
+    ///   failing at 2.908 s after 20 ticks.
+    ///
+    /// Asserted: at least the bound, below 1.25 × it (2.5 s), and fewer `PROBING` ticks than the
+    /// bound's 20. The upper limit is 0.4 s over the expected 2.1 s, so an elapsed-time bound
+    /// fails it only if one tick overruns by 0.35 s; it is 0.4 s under the tick-counted 2.9 s. The tick count cannot be
+    /// broken by a slow runner, which only makes each tick longer and the count smaller.
+    #[test]
+    fn c4b_the_build_bound_counts_elapsed_time_not_ticks() {
+        let server = paced_server(vec![answer(
+            "audio/aac",
+            f_falsesync(2 * MIB as usize),
+            PACE,
+            After::Close,
+        )]);
+        let h =
+            start_session_supervised_slow(&server.url, TEST_BOUND_TICKS, Duration::from_millis(50));
+        let seen = states_until_sent(&h, &server.sent, MIB, GUARD, ends);
+        let (code, message) = final_error(&seen, server.sent.load(Ordering::SeqCst));
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message}");
+        let _ = states_while_waiting_for(&h, GUARD, || h.bound_seen.lock().unwrap().is_some());
+        let (took, ticks) = h
+            .bound_seen
+            .lock()
+            .unwrap()
+            .expect("the supervisor saw the bound");
+        let bound = TICK_INTERVAL * TEST_BOUND_TICKS;
+        assert!(
+            took >= bound,
+            "fired early: {took:?} < {bound:?} ({ticks} ticks)"
+        );
+        assert!(
+            took < bound * 5 / 4,
+            "fired at {took:?} after {ticks} slowed ticks: the bound counted ticks, not {bound:?}"
+        );
+        assert!(
+            ticks < TEST_BOUND_TICKS,
+            "{ticks} PROBING ticks: a tick-counted bound fires on the {TEST_BOUND_TICKS}th"
+        );
+    }
+
+    /// C4b: the time a build has been probing starts again with each build. A real `Engine`
+    /// ticked by hand, the phase set by the test, a 10-tick (1 s) bound. Each case first lets a
+    /// `PROBING` timestamp age past the bound, then starts a new build and ticks once: the new
+    /// build must still be `PROBING`, not `BOUND`. The sleeps only make a stale timestamp older
+    /// (a slow runner lengthens them); the one tick after the new build starts must not take a
+    /// whole second. Fails, case by case, when the reset is dropped:
+    /// - a tick that sees another phase (the build ended, a retry began);
+    /// - a new session (another `Play` while the old one was probing);
+    /// - `fail_build` (a build that begins before any tick sees the `BOUND` phase — today the
+    ///   ≥ 1 s backoff always gives that tick, so this reset is the structural guarantee).
+    #[test]
+    fn c4b_each_build_starts_its_own_clock() {
+        const BOUND: u32 = 10;
+        let age = TICK_INTERVAL * BOUND + Duration::from_millis(150);
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let mut ctx = test_ctx(ev_tx);
+        ctx.build_bound_ticks = BOUND;
+        let mut engine = Engine::new(ctx.shared.clone(), "Ondar/test".into());
+        engine.session = Some(ctx.clone());
+        let phase = |c: &SessionCtx| c.build.load(Ordering::Acquire);
+
+        // The build ended, then a retry probes.
+        ctx.build.store(BuildPhase::PROBING, Ordering::Release);
+        engine.tick();
+        thread::sleep(age);
+        ctx.build.store(BuildPhase::BUILT, Ordering::Release);
+        engine.tick();
+        ctx.build.store(BuildPhase::PROBING, Ordering::Release);
+        engine.tick();
+        assert_eq!(
+            phase(&ctx),
+            BuildPhase::PROBING,
+            "a retry's build inherited the old clock"
+        );
+
+        // Another session while the first was probing.
+        thread::sleep(age);
+        let (ev_tx2, _ev_rx2) = mpsc::channel();
+        let mut next = test_ctx(ev_tx2);
+        next.build_bound_ticks = BOUND;
+        next.build.store(BuildPhase::PROBING, Ordering::Release);
+        engine.session = Some(next.clone());
+        engine.tick();
+        assert_eq!(
+            phase(&next),
+            BuildPhase::PROBING,
+            "a new session inherited the old clock"
+        );
+
+        // The bound fires, and the next build begins before any other tick.
+        thread::sleep(age);
+        engine.tick();
+        assert_eq!(phase(&next), BuildPhase::BOUND, "the aged build is bounded");
+        next.build.store(BuildPhase::PROBING, Ordering::Release);
+        engine.tick();
+        assert_eq!(
+            phase(&next),
+            BuildPhase::PROBING,
+            "the build after a bound inherited its clock"
+        );
     }
 
     /// T-B1b (defect B C2): F-nosync as `audio/mpeg`. On `main` Symphonia refuses it only after
