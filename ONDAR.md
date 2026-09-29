@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-09-28 (documentation drift pass: the M3 milestone entry, the CI step list, the
+*Last updated: 2026-09-29 (defect B built and accepted on `defect-b` — see "Defect B: an unbounded
+`Connecting`"; instrument instances fourteen to seventeen). Previously 2026-09-28 (documentation drift pass: the M3 milestone entry, the CI step list, the
 frozen test counts marked as frozen, the vibrancy row, the instrument-principle count). Previously
 2026-09-25 (M3c built, accepted and reviewed three times — see "M3c: HLS, the ADTS half"; defect A
 fixed and merged — see "Defect A"; defect B opened). Previously 2026-09-22 (M3a acceptance run and its two fixes — see "M3a: the station
@@ -659,6 +660,145 @@ M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed a
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
 
+### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built and accepted (2026-09-29)
+
+Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
+- brief `b-brief.md` (Amendments 1–3);
+- Step 0: plan `b-step0-plan.md`, report `b-step0-report.md` (logs `b-step0/`);
+- plan `b-plan.md`, with its round 7 addendum;
+- reviews: `b-step0-plan-review-2026-09-28.md`, rounds 1–10;
+- acceptance: `b-acceptance.md` (logs `b-acceptance/`).
+
+Commits, each pushed alone and CI green before the next:
+
+| | commit | what |
+|---|---|---|
+| C0 | `f95e530` | the HTTP error message states its head once (`FetchError`'s Display is `Failed to fetch: {source}`, `decode_error` is `{source}: {body}`, and stripping the first from the second never matched) |
+| C1 | `5740b96` | an unrecognised format is terminal only while the session has never **produced audio** |
+| C2 | `00ddac2` | the build bound: the CAS'd `BuildPhase`, `decide_tick`'s probing arm, the cause rule |
+| C2b | `a83fe78` | `ci:` clippy over the whole workspace (instrument instance fourteen, below) |
+| C3 | `5bc9483` | `adts::AdtsReader`, the front end as a streaming reader over `hls::segment` |
+| C4 | `a8585c6` | the front end wired after `IcyReader` for HTTP `audio/aac*`; `stream::SourceKind` |
+| C4b | `49e6a72` | the bound counts elapsed time, not ticks (acceptance finding 1) |
+
+**What was wrong on `main`.**
+- Any live stream whose bytes the decoder could not sync on stayed in `Connecting` indefinitely.
+  `build()` scanned the arriving bytes, the watchdog covered `Buffering` only, `read_timeout` never
+  fired while bytes arrived, and Stop was the only exit.
+- Step 0 found the live trigger was not `AdtsHeader::sync` at all. Every stuck mount (4 of 22
+  AAC/AAC+ in S2, and 36 of 42 `FFF9` bodies in S4) was caught by a **false MP3 marker** and the MP3
+  demuxer's unbounded "skipping junk".
+- **The share (S4, random stratum):** `FFF9` is 34/143 = **23.8 %** (95 % 18–31 %) of Icecast ADTS
+  bodies, 23 of 105 hosts (21.9 %), and only ever under `audio/aac` / `audio/aacp`. 8 % of ADTS
+  bodies start mid-frame. There were 0 leading ID3 tags, 0 CRC and 0 LOAS in 225 bodies.
+
+**The design, as decided.**
+- **The bound: (b), on the engine thread.** A wrapper on the decode thread fires only when a read
+  returns. Against a silent server the reads return only because stream-download's 5 s internal
+  re-feed does, so such a bound would be "the next re-feed after the deadline" (S1 (iii)).
+- **How it fires.**
+  - Detection: `SessionCtx::build` is `PROBING` from `open` returning to `build()` returning.
+    `Engine::tick` checks it before the ring's early return.
+  - The swap: the engine takes the build with one compare-and-swap `PROBING → BOUND` and only
+    then cancels the token in place. The decode thread leaves with one swap `PROBING → BUILT`. If
+    that swap fails, it drops whatever `build()` returned (`Ok` or `Err`: S3 saw both) and applies
+    the cause rule.
+- **The cause rule.**
+  - Internal reconnects during the build → `Network`, backoff.
+  - Otherwise → `UnsupportedFormat`, terminal only while the session has never produced audio.
+  - A byte counter is not needed: the bound is at least 3 × `retry_timeout`, so a starved reader
+    has reconnected before it.
+- **The numbers:**
+  - `max(20 s, 3 × retry_timeout)`: 4× the healthy maximum of 5.05 s.
+  - No engine byte budget.
+  - The front end's realign limit, 16 KiB, is an **alignment-start offset** (C3, below).
+- **stream-download's internal reconnect stays live during the build.** This is the one bounded
+  exception to "Ondar owns all reconnects". It cannot be switched off per phase in 0.24.4
+  (`retry_timeout` is fixed at `from_stream`), and it is what makes the `Network` cause
+  observable.
+- **The front end.**
+  - Placement and filter: after `IcyReader` (a metadata block can hold `FF F9`), for an HTTP
+    stream whose type starts with `audio/aac`. Chosen by `OpenedStream::kind`, never by the
+    content type alone: an HLS session reports its first segment's type (`audio/aac` by default),
+    and its segments are already normalised (review P3).
+  - Behaviour: it realigns to three chained headers, normalises with `normalise_adts` per read
+    over a carry (no second parser), or passes through. It never refuses.
+- **B1–B4 as decided (round 6/7):**
+  - B1: ship the front end.
+  - B2: terminal only if the session has never produced audio — P1: not "has built a decoder",
+    because of S3's empty `Ok` after a false header.
+  - B3: 20 s, no byte budget, 16 KiB.
+  - B4: accept the lost excerpt (3 of 8 hosts; generic 50–119 B bodies; no `<h2>` anywhere).
+
+**Decisions made in the commits and accepted (rounds 8–10).**
+- **C2:** the bound's ticks ride on each session's context, and the test server has no loop mode.
+- **C3:** the 16 KiB limit applies to where the alignment *starts*, not to the buffered size.
+  - A buffered-size limit made the answer depend on how the reads were chunked; test 7 pins it in
+    every chunking.
+  - At end of stream while realigning, a stream that never aligned passes through unchanged.
+  - T-B3 row 1 gained an ID3 tag holding a chain, because the ID3 skip had survived its mutation.
+- **C3's commit message overstates one mutation.** Its "realign off" (starting the reader in the
+  normalising state) is weaker than named, because the first sync loss realigns anyway. C4's
+  message records the real one, aligning only at offset 0. That mutation fails C3's rows (1), (2),
+  (4), (6), (7) and T-B2b. Pushed history is not rewritten; this is the correction.
+- **C2b:** the old clippy command linted the member crates' libraries, but not their tests and
+  examples.
+- **C4b (round 10):** `probing_since: Instant` in `Engine`, handed to the pure `decide_tick` as
+  elapsed ticks.
+
+**Acceptance (2026-09-29, `a8585c6`; X1/X1b re-run on `49e6a72`).**
+
+| item | fail rule | measured | |
+|---|---|---|---|
+| X1 F-falsesync `/loop` 128 kbps, in-app | `Connecting` at 25 s, a click, no message | `Error { unsupported_format, "no decodable audio in the first 20 s of the stream (audio/aac)" }`; 0 clicks; 1 request; **Martín confirmed the rendered message by eye** (`b-acceptance/x1-rendered-error.png`). The bound line was 20.651 s after `PROBING` on `a8585c6`, and **20.205 s** on `49e6a72` after C4b. That is 5 ms over the re-run's 20.0–20.2 s rule, and inside the design's worst case of 20 s plus two ticks (the engine's clock starts on the first tick that sees `PROBING`, ~0.10 s late here) | PASS; the re-run's timing rule missed by 5 ms, open for the chat |
+| X1b `/silent` 96 KiB | a format error (the wrong cause) | `Reconnecting { 1 }` by the network cause, "re-established 4 times in 20 s" (4 was correct: the 4th re-feed at +20.029 s preceded the bound); 5 requests, none with `Range`. Bound at 20.638 s on `a8585c6`; **20.178 s** after C4b | PASS |
+| X2 BR `7c1aa1c2`, 11 min | outside 1.000 ± 0.005, `Connecting` > 20 s, a pass-through, two clicks | aligned at 0 B; `Playing` 2.2 s; 22 050 Hz; cumulative 1.0000 over 651.9 s; 0 underruns; 1 click | PASS |
+| X2 SomaFM `05c3cfd3`, 11 min | same | aligned at 0 B; `Playing` 1.0 s; 16 000 Hz (core-only); 1.0000 over 652.7 s; 0 underruns; 1 click | PASS |
+| X3 4 stations × 3 runs × main/branch | a bound line, a pass-through on an AAC, the branch > 1 s slower | 0 bound, 0 pass-through in 24 plays; the branch at most +0.261 s. **Main left the AAC+ mount `05a218e1` in `Connecting` for all 15 s in 1 of 3 runs** (a false MP3 marker); the branch aligned it at 141–278 B every time | PASS |
+| X4 checks + dev launch | any non-zero | all 0, 258 + 15 at `a8585c6`; `pnpm tauri:dev` 0 errors | PASS |
+
+**The tick period (acceptance finding 1, fixed in C4b).**
+- `Engine::run` waits `recv_timeout(TICK_INTERVAL)` and then ticks, so a tick is the wait plus the
+  tick's work plus macOS timer slack. X1 measured ~103 ms here.
+- A bound counted in ticks therefore read "20 s" and waited 20.65 s. The acceptance item mixed
+  the two units.
+- C4b counts elapsed time. It was recorded failing at 2.908 s after 20 slowed ticks against a 2 s
+  bound, and reads 2.001–2.148 s after the fix.
+- **The `Buffering` watchdog still counts ticks and drifts the same ~3 %** (a nominal 15 s is
+  about 15.5 s). Carried, out of scope.
+
+**Carried to `/code-review` (round 8).**
+- Before C4b, `ticks_probing` counted *consecutive* `PROBING` ticks and reset only on a tick that
+  saw another phase, so two builds back to back with no tick between would have shared one count.
+- After C4b the same holds for `probing_since`. The reset in `fail_build` and the reset on a new
+  session cover two of the three ways; `c4b_each_build_starts_its_own_clock` pins all three.
+- The remaining way, a build that ends in `BUILT` and a next build that starts before any tick,
+  is prevented only by `retry_or_fail`'s ≥ 1 s backoff (`DELAYS_SECS[0]` = 1). A build generation
+  in `SessionCtx` would make that structural. The reviewer judges.
+
+**Known limits, carried (not defect B).**
+- **Opus:** Symphonia 0.5.5 has no Opus decoder (3 of 9 OGG in S2). These fail as an honest
+  `unsupported_format` in under 0.5 s, beside HE-AAC's SBR (decoded core-only, as at M3c).
+- **An expired TLS certificate is retried** through the backoff rather than treated as terminal
+  (S6, BR `4534dd5f`).
+- **`UNKNOWN`-codec records** are playlist files served as `application/octet-stream`. They end as
+  terminal `unsupported_format` in under 1 s (S6).
+- **Four `raw=0` playlist reads:** on 4 small playlist bodies the probe's `raw=` read 0 where
+  curl read 60–113 B. Unexplained.
+- **The `ondar-stations` body byte bound** (from M3c's review) is still carried.
+- **Log noise:** the shell's `log_rate_limit` counts `stream_download::source` events before the
+  level filter drops them. It printed "suppressed 29 … events" each second of X1's build while no
+  such line reached the log.
+- **DEBUG level:** `stream_download` DEBUG lines reach the dev app's log under `RUST_LOG=info`.
+- **Plan wording:** § 5 said the X1 message is rendered by `describeError`. A playback error is
+  rendered by NowPlaying's `stateText` as `error [<code>]: <message>`; `describeError` is for
+  command rejections. A wording error in the plan.
+
+**The rule earned.** A local check of an instrument must include the shapes the live data will
+have. Step 0 produced three quiet mis-specifications, each verified on the wrong shape (instrument
+instances fifteen to seventeen, below), plus one wrong fixture name in the plan. None printed a
+miss; each was caught by reading the raw evidence.
+
 ### M3c: HLS, the ADTS half — built, measured (2026-09-24)
 
 Branch `m3c` off `main` `b7e050a` (`defect-a-done`). Commits, each pushed alone and CI green
@@ -784,7 +924,9 @@ mount is another. Sequenced **after the M3c merge, before M4**, as its own measu
 defect A: bound the build phase (a test that fails on `main` with the paced `FFF9` fixture), then
 the `FFF9` → `FFF1` rewrite on the Icecast path as a streaming wrapper over `hls::segment`, sized
 by the still-unmade count of Icecast AAC stations that send it (≈ 36 header reads over P5's
-`audio/aac*` rows). OPEN.md carries it.
+`audio/aac*` rows). OPEN.md carries it. **Built and accepted 2026-09-29 on branch `defect-b`:** see
+"Defect B: an unbounded `Connecting`" above (Step 0 measured the share at 23.8 %, and the live
+trigger turned out to be a false MP3 marker, not `AdtsHeader::sync`).
 
 **Code review, 2026-09-25** (`_handover/m3c-review-findings.md`, verified; triage
 `m3c-review-triage-2026-09-25.md`; the single-agent local `/code-review` on the seven-commit
@@ -2484,7 +2626,9 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    `m3a-done`) — see "M3a: the station directory, built"; **M3b merged 2026-09-24** (`f7af9dc`,
    `m3b-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) **merged
    2026-09-24** (`b7e050a`, `defect-a-done`); **M3c (HLS, the ADTS half) merged 2026-09-26**
-   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) is open, sequenced before M4.
+   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) **built and accepted
+   2026-09-29 on branch `defect-b`** (`f95e530`…`49e6a72`), `/code-review` and the merge to come,
+   before M4 — see "Defect B".
    See "M3c: HLS, the ADTS half", "Defect A".
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
    coordinate DB merge. Record measured bundle size.
@@ -2494,7 +2638,7 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure thirteen times by the numbering below — sixteen
+result.** This project has now hit the same failure seventeen times by the numbering below — twenty
 counting the three M2a instances recorded between the fourth and the fifth without a number — in
 as many unrelated tools, and each time the instrument was wrong rather than the thing being
 measured. The three below are the archetypes; the rest are enumerated after them.
@@ -2607,6 +2751,33 @@ output proves that function; the claim was about the session, and only a test at
 level (`engine::session_tests`, counting requests) can carry it. Same family as eleven — a
 derived claim written as a measured one — with the added step that the derivation had a green
 test beside it.
+
+**Fourteenth, 2026-09-28 (defect B C2b): the lint that did not cover what it named.**
+`cargo clippy --all-targets -- -D warnings`, the command in CI and in CLAUDE.md, exited 0 on
+every push. In this workspace (a real `[package]` at the root) it lints the member crates'
+libraries only as the root package's dependencies, and **never their tests or examples**. The
+same command with `--workspace` failed on `00ddac2` with seven errors (four unused functions in
+the EQ sweep example, a complex type in the stations service's tests, a constant assertion in
+`stream.rs`'s tests). C1's two dead-code warnings in the new test harness had gone out unseen. The
+mutation that proves the scope: `return x + 1;` in `reconnect.rs`'s test module fails the
+workspace command and passes the old one, and the same line in the library fails both. The same
+trap as the bare `cargo test` of the first row, in the next tool along. The fix is the scope, and
+CI now runs the workspace form.
+
+**Fifteenth to seventeenth, 2026-09-28 (defect B Step 0): local checks verified on the wrong
+shape.** Each instrument passed its own local check, and each check lacked the shape the live data
+had:
+- the fetch's exit-code rule was verified on plain HTTP, where a closed pipe is curl's exit 23;
+  over TLS the same close is exit 56, and 39 reads were nearly miscounted as failures (A10, A18);
+- S2's ICY-metadata bound was right except at the boundary `raw = audio = metaint`, because
+  `IcyReader` reads a block on the next read (A15);
+- S5's excerpt detector looked for `<`, and was verified only on an HTML body, while the live
+  bodies were plain text.
+
+A fourth, of the same kind, was a fixture name in the plan: the control named M3c's normalised
+copy, not the raw file (A12). None printed a miss; each was caught by reading the raw evidence.
+**The rule earned: a local check of an instrument must include the shapes the live data will
+have** — TLS as well as plain HTTP, the boundary value, the plain-text body.
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 
