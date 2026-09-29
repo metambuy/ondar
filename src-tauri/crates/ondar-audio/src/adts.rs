@@ -41,7 +41,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Seek, SeekFrom};
 
-use crate::hls::segment::{ADTS_HEADER_LEN, frame_length, id3_end, is_adts_sync, normalise_adts};
+use crate::hls::segment::{ADTS_HEADER_LEN, Header, id3_end, normalise_adts, parse_header};
 
 /// The alignment must start below this offset, else the reader passes through: two maximum
 /// ADTS frames (8 191 B each) over the measured maximum of 736 B before the first header
@@ -54,23 +54,11 @@ pub const REALIGN_MAX_BYTES: usize = 16 * 1024;
 /// The most one inner read asks for.
 const READ_CHUNK: usize = 16 * 1024;
 
-/// The CRC that follows a header whose `protection_absent` is 0.
-const ADTS_CRC_LEN: usize = 2;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Realigning,
     Normalising,
     PassThrough,
-}
-
-/// What a header at an offset declares, for the chain check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Candidate {
-    profile: u8,
-    sri: u8,
-    channel_config: u8,
-    frame_len: usize,
 }
 
 /// The chain check at one offset.
@@ -218,34 +206,13 @@ impl<R: Read> AdtsReader<R> {
     }
 }
 
-/// The header at `p`, if it is a candidate: an ADTS sync with layer 0, a sample-rate index
-/// below 13 and a `frame_length` of at least its own header. `None` also when fewer than a
-/// header's bytes are there (the caller tells the two apart by length).
-fn candidate(b: &[u8], p: usize) -> Option<Candidate> {
-    let h = b.get(p..p.checked_add(ADTS_HEADER_LEN)?)?;
-    if !is_adts_sync(h) {
-        return None;
-    }
-    let (b1, b2, b3) = (*h.get(1)?, *h.get(2)?, *h.get(3)?);
-    let sri = (b2 >> 2) & 0x0F;
-    if sri >= 13 {
-        return None;
-    }
-    let header_len = if b1 & 0x01 == 1 {
-        ADTS_HEADER_LEN
-    } else {
-        ADTS_HEADER_LEN + ADTS_CRC_LEN
-    };
-    let frame_len = frame_length(h);
-    if frame_len < header_len {
-        return None;
-    }
-    Some(Candidate {
-        profile: b2 >> 6,
-        sri,
-        channel_config: ((b2 & 0x01) << 2) | (b3 >> 6),
-        frame_len,
-    })
+/// The header at `p`, if it is a candidate: [`parse_header`]'s (an ADTS sync with layer 0, a
+/// `frame_length` of at least its own header) with a sample-rate index that names a rate
+/// ([`Header::rate_known`]). `None` also when fewer than a header's bytes are there (the caller
+/// tells the two apart by length). One parser with the HLS walk (review fixes F4, finding 9).
+fn candidate(b: &[u8], p: usize) -> Option<Header> {
+    let h = b.get(p..p.checked_add(ADTS_HEADER_LEN)?)?.first_chunk()?;
+    parse_header(h).filter(Header::rate_known)
 }
 
 /// Three chained headers from `k`?
@@ -331,8 +298,8 @@ mod tests {
     //! `fixtures/hls/`.
 
     use super::*;
-    use crate::hls::segment::normalise;
     use crate::hls::segment::test_support::frame;
+    use crate::hls::segment::{frame_length, normalise};
 
     macro_rules! head {
         ($name:literal) => {
@@ -516,7 +483,7 @@ mod tests {
         let first = id3_end(HEAD_02);
         let mut ninth = first;
         for _ in 0..8 {
-            ninth += frame_length(&HEAD_02[ninth..]);
+            ninth += frame_length(HEAD_02[ninth..].first_chunk().expect("a header"));
         }
         for base in [first, ninth] {
             for off in 1..=6 {
@@ -538,7 +505,7 @@ mod tests {
     #[test]
     fn t_b3_4_a_mid_frame_start_realigns_to_the_first_whole_header() {
         let first = id3_end(HEAD_02);
-        let second = first + frame_length(&HEAD_02[first..]);
+        let second = first + frame_length(HEAD_02[first..].first_chunk().expect("a header"));
         let mut body = HEAD_02[first + 100..].to_vec();
         body[10..14].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC4]);
         let want = normalise(&HEAD_02[second..]).bytes;
@@ -642,6 +609,22 @@ mod tests {
                 "{name}: the frames after the junk were not normalised"
             );
             assert!(head_max <= bound, "{name}: head grew to {head_max} B");
+        }
+    }
+
+    // ---- (11): a reserved rate is not an alignment (review fixes F4)
+
+    /// (11) Review fixes F4 (D2): the chain check requires a sample-rate index that names a
+    /// rate ([`Header::rate_known`]), which `parse_header` leaves to its callers. Six chained
+    /// `FFF9` frames with the reserved index 13 are not an alignment: the body passes through
+    /// unchanged (aligned, the ID bit would be rewritten). Passes on `da36489`, where the check
+    /// sat inline in `candidate`; it pins the check through the refactor — fails with
+    /// `candidate` calling `parse_header` alone.
+    #[test]
+    fn t_b3_11_a_reserved_rate_is_not_an_alignment() {
+        let reserved = frames(6, 13, 2, true, false);
+        for (name, make) in chunkings() {
+            assert_eq!(through(make(&reserved)), reserved, "{name}");
         }
     }
 

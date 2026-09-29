@@ -173,6 +173,18 @@ pub struct StreamError {
     pub retry_after: Option<Duration>,
 }
 
+/// A `Content-Type`'s essence: the type and subtype, lowercased, without parameters —
+/// `Audio/AAC; charset=x` → `audio/aac` (review fixes F4, finding 9: one parser for the HLS
+/// dispatch and the ADTS front end's filter).
+pub(crate) fn mime_essence(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
 /// Which open produced a stream (defect B C4, review P3): the reader over the HTTP body as
 /// served (Icecast, Shoutcast v2, plain HTTP), or the HLS source, whose segments
 /// `hls::segment` has already normalised. The engine applies the ADTS front end to the first

@@ -1045,19 +1045,17 @@ fn format_secs(d: Duration) -> String {
     }
 }
 
-/// Whether a stream gets the ADTS front end (defect B, B1): an HTTP stream whose content type,
-/// lowercased and without parameters, starts with `audio/aac` — `audio/aac` and `audio/aacp`,
-/// under which every `FFF9` body in Step 0 was served (S4) — and never the HLS source, whose
+/// Whether a stream gets the ADTS front end (defect B, B1): an HTTP stream whose content type's
+/// essence starts with `audio/aac` — `audio/aac` and `audio/aacp`, under which every `FFF9` body
+/// in Step 0 was served (S4) — or `audio/x-aac`, which real servers send too (review fixes F4,
+/// finding 7: Antena 1's HLS segments; the front end passes a non-ADTS body through, so a
+/// mislabelled stream costs at most a 16 KiB head delay); and never the HLS source, whose
 /// segments `hls::segment` has already walked (review P3).
 fn wants_adts_front_end(kind: stream::SourceKind, content_type: Option<&str>) -> bool {
     kind == stream::SourceKind::Http
         && content_type.is_some_and(|ct| {
-            ct.split(';')
-                .next()
-                .unwrap_or(ct)
-                .trim()
-                .to_ascii_lowercase()
-                .starts_with("audio/aac")
+            let essence = stream::mime_essence(ct);
+            essence.starts_with("audio/aac") || essence.starts_with("audio/x-aac")
         })
 }
 
@@ -2974,7 +2972,7 @@ mod session_tests {
     #[test]
     fn t_b2b_a_mid_frame_fff9_start_with_a_false_mp3_marker_realigns() {
         let frames = frames_02();
-        let len1 = crate::hls::segment::frame_length(&frames);
+        let len1 = crate::hls::segment::frame_length(frames.first_chunk().expect("a header"));
         let mut body = frames.repeat(REPEATS_02)[100..].to_vec();
         body[10..14].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC4]);
         let server = paced_server(vec![answer("audio/aac", body, 0, After::Hold)]);
@@ -2991,8 +2989,28 @@ mod session_tests {
         h.ctx.cancel();
     }
 
-    /// Which streams get the front end: HTTP `audio/aac` and `audio/aacp`, in any case and
-    /// with parameters; never another type, a missing one, or the HLS source (review P3).
+    /// F4 (finding 7): T-B2b's shape — station 02's `FFF9` frames, held open — served as
+    /// `audio/x-aac`, a type real servers send (Antena 1's HLS segments, `m3c-plan.md:769`).
+    /// The front end aligns at 0: `Playing` at 24 000/1, one `Started`. Recorded failing on
+    /// `da36489` (see the F4 commit): no front end, so the build bound's `Error`.
+    #[test]
+    fn f4_an_x_aac_fff9_mount_plays() {
+        let body = frames_02().repeat(REPEATS_02);
+        let server = paced_server(vec![answer("audio/x-aac", body, 0, After::Hold)]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until(&h, GUARD, is_playing_or_ended);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), ["u1"], "one Started");
+        assert_eq!(*h.infos.lock().unwrap(), [(24_000, 1)]);
+        assert_eq!(adts_lines(&h), ["adts front end: aligned at 0 B"]);
+        h.ctx.cancel();
+    }
+
+    /// Which streams get the front end: HTTP `audio/aac`, `audio/aacp` and (review fixes F4,
+    /// finding 7) `audio/x-aac`, in any case and with parameters; never another type — not
+    /// `audio/x-aiff`, whose prefix `audio/x-a` a loose match would take — a missing one, or
+    /// the HLS source (review P3). Fails on `da36489` at `audio/x-aac`.
     #[test]
     fn the_front_end_applies_to_http_aac_only() {
         use stream::SourceKind::{Hls, Http};
@@ -3001,13 +3019,15 @@ mod session_tests {
             "audio/aacp",
             "Audio/AAC",
             "audio/aacp; charset=x",
+            "audio/x-aac",
+            "AUDIO/X-AAC; charset=x",
         ] {
             assert!(wants_adts_front_end(Http, Some(ct)), "{ct}");
             assert!(!wants_adts_front_end(Hls, Some(ct)), "HLS, {ct}");
         }
         for ct in [
             Some("audio/mpeg"),
-            Some("audio/x-aac"),
+            Some("audio/x-aiff"),
             Some("application/ogg"),
             None,
         ] {
