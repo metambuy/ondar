@@ -831,6 +831,14 @@ fn run_session(
             builder = builder.with_mime_type(ct);
         }
         let built = builder.build();
+        // A user's cancel (Stop, or `play` of another station) during the build: whatever
+        // `build()` returned belongs to a session that is over. After a cancel it can return an
+        // empty `Ok` (Step 0, S3), and `StreamInfo` is not generation-gated, so it would land on
+        // the next station's row (review finding 5). The bound's own cancel does not set this
+        // flag; it is decided by the phase below.
+        if ctx.cancelled() {
+            return;
+        }
         // The phase, never the variant: after the cancel, `build()` has returned
         // `UnrecognizedFormat`, `IoError` and a decoder that yields nothing (Step 0, S3), so
         // the bound is checked on `Ok` and `Err` alike, before any arm reads the result. The
@@ -2813,6 +2821,64 @@ mod session_tests {
         );
         assert!(h.infos.lock().unwrap().is_empty(), "no decoder");
         h.ctx.cancel();
+    }
+
+    // ---- Defect B, review fixes F2: a cancelled build emits nothing ----
+
+    /// F2 (finding 5): a build the **user** cancelled (Stop, or `play` of another station)
+    /// emits nothing. Session A builds on 8 KiB of F-falsesync (served as `audio/mpeg`, then
+    /// held) with a 4 KiB prefetch, so its decoder has read the false header and waits for
+    /// more. (Reshaped before the fix: as `audio/aac` the ADTS front end holds the 8 KiB, the
+    /// decoder has read nothing, and the cancel makes `build()` return `UnrecognizedFormat`,
+    /// not the empty `Ok`; `application/octet-stream` does the same, `audio/mpeg` and an
+    /// unknown type give the `Ok`.) Then B is
+    /// played as `Engine::play` does it — A cancelled, B's session begun, `Connecting`. After a
+    /// cancel `build()` returns an empty `Ok` (Step 0, S3), and `StreamInfo` is not
+    /// generation-gated, so A's would land on B's row. B never builds, as a server that never
+    /// answers, so any `StreamInfo` after B's play is A's. (B's `Connecting` sends no event
+    /// here: the state is already `Connecting`, as it is in production when A was still
+    /// connecting; the boundary is read at the cancel.) The events are read after A's decode thread has exited
+    /// (its handle on the context dropped), never inside a window. Recorded failing on
+    /// `da36489`: see the F2 commit. Mutation: the check placed after the `StreamInfo` emit
+    /// reads the same.
+    #[test]
+    fn f2_a_cancelled_build_emits_no_stream_info() {
+        let server = paced_server(vec![answer(
+            "audio/mpeg",
+            f_falsesync(8 * KIB as usize),
+            0,
+            After::Hold,
+        )]);
+        let h = start_session_with(&server.url, None, Some(4 * KIB), None);
+        let _ = states_while_waiting_for(&h, GUARD, || {
+            server.sent.load(Ordering::SeqCst) >= 8 * KIB
+                && build::phase_of(h.ctx.clock.word()) == build::phase::PROBING
+        });
+        // Shape only, never the claim: let the decoder read the 8 KiB it was sent, so the
+        // cancel meets a decoder past the false header (S3's empty `Ok`).
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            h.infos.lock().unwrap().is_empty(),
+            "A had not built before B"
+        );
+        // Everything A sent so far is before B; A cannot emit `StreamInfo` without `build()`
+        // returning, which on this held body takes the cancel.
+        while h.events.try_recv().is_ok() {}
+
+        h.ctx.cancel();
+        let _b = h.ctx.shared.begin_session("u2".into());
+        h.ctx.shared.set_state(PlaybackState::Connecting);
+
+        let deadline = Instant::now() + GUARD;
+        while Arc::strong_count(&h.ctx.cancel) > 1 {
+            assert!(Instant::now() < deadline, "A's decode thread did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let after_b: Vec<String> = h.events.try_iter().map(|ev| format!("{ev:?}")).collect();
+        assert!(
+            !after_b.iter().any(|e| e.starts_with("StreamInfo")),
+            "A's StreamInfo landed after B's play: {after_b:?}"
+        );
     }
 
     // ---- Defect B C4: the ADTS front end, wired ----
