@@ -15,16 +15,21 @@
 //!    sample-rate index, `frame_length` at least the header — **followed by two more** at
 //!    `k + len` and `k + len + len₂` with the same profile, sample-rate index and channel
 //!    configuration is the alignment. `[0, k)` is dropped and the rest is normalised. If no
-//!    chain starts below [`REALIGN_MAX_BYTES`], the reader **passes through**: it never refuses
-//!    — a mount that is not ADTS reaches the decoder as before, and the engine's build bound
-//!    covers the rest. Whether and where it aligns depends on the bytes alone, never on how
-//!    the inner reads were chunked.
+//!    chain starts below [`REALIGN_MAX_BYTES`] **before the stream has ever aligned**, the
+//!    reader **passes through**: it never refuses — a mount that is not ADTS reaches the
+//!    decoder as before, and the engine's build bound covers the rest. **After** an alignment
+//!    (a realign after a sync loss) it never passes through: the bytes below the limit are
+//!    dropped and the scan goes on over the next window (review fixes F3, finding 4 — an
+//!    `FFF9` mount passed through after a long splice fed a built decoder headers it never
+//!    syncs on). Whether and where it aligns depends on the bytes alone, never on how the
+//!    inner reads were chunked.
 //! 2. **Normalising.** Each read runs [`normalise_adts`] on the carry plus the new bytes and
 //!    emits the whole frames (ID bit cleared, CRC dropped, `frame_length` fixed); the trailing
 //!    partial frame, or a header split at any offset, is kept as the carry for the next read. A
 //!    sync loss (a splice from stream-download's internal reconnect, garbage) drops back to
 //!    realigning from that offset with a fresh budget.
-//! 3. **Pass-through.** Terminal: every byte unchanged.
+//! 3. **Pass-through.** Terminal: every byte unchanged. Reached only before the first
+//!    alignment.
 //!
 //! EOF while normalising drops the partial carry. EOF while realigning passes the head through
 //! if the stream never aligned (a short non-ADTS body is not eaten) and drops it after a sync
@@ -91,8 +96,11 @@ pub struct AdtsReader<R: Read> {
     /// Bytes ready for the caller.
     out: VecDeque<u8>,
     scratch: Vec<u8>,
-    /// Whether the stream has aligned once; a realign after that is a resync.
+    /// Whether the stream has aligned once; a realign after that is a resync, and the reader
+    /// never passes through again.
     aligned_once: bool,
+    /// Resyncs so far: the first is logged at `info`, the rest at `debug`.
+    realigns: u32,
     eof: bool,
 }
 
@@ -106,6 +114,7 @@ impl<R: Read> AdtsReader<R> {
             out: VecDeque::new(),
             scratch: vec![0; READ_CHUNK],
             aligned_once: false,
+            realigns: 0,
             eof: false,
         }
     }
@@ -154,7 +163,16 @@ impl<R: Read> AdtsReader<R> {
                     }
                     if found {
                         if self.aligned_once {
-                            log::info!("adts front end: realigned at {k} B after a sync loss");
+                            self.realigns = self.realigns.saturating_add(1);
+                            if self.realigns == 1 {
+                                log::info!("adts front end: realigned at {k} B after a sync loss");
+                            } else {
+                                log::debug!(
+                                    "adts front end: realigned at {k} B after a sync loss \
+                                     ({} so far)",
+                                    self.realigns
+                                );
+                            }
                         } else {
                             log::info!("adts front end: aligned at {k} B");
                         }
@@ -165,6 +183,17 @@ impl<R: Read> AdtsReader<R> {
                         continue;
                     }
                     self.scan_from = k;
+                    if k >= REALIGN_MAX_BYTES && self.aligned_once {
+                        // After an alignment, slide: no chain starts below `k`, and the bytes
+                        // before it never change, so drop them and scan the next window.
+                        log::debug!(
+                            "adts front end: no chained header in {k} B after a sync loss; \
+                             dropped, still realigning"
+                        );
+                        self.buf.drain(..k.min(self.buf.len()));
+                        self.scan_from = 0;
+                        continue;
+                    }
                     if k >= REALIGN_MAX_BYTES {
                         log::warn!(
                             "adts front end: no chained ADTS header in {} KiB; passing through",
@@ -572,6 +601,47 @@ mod tests {
                 "16 KiB − 1: aligned, {name}"
             );
             assert_eq!(through(make(&past)), past, "16 KiB: passed through, {name}");
+        }
+    }
+
+    // ---- (10): after the first alignment, never pass through (review fixes F3)
+
+    /// (10) Review finding 4: a stream that has aligned once never passes through. Station 02's
+    /// `FFF9` frames, 20 KiB of junk (a splice, a restarting source: no chain in more than the
+    /// limit), then 02's frames again: every frame comes out `FFF1` and no junk byte does, in
+    /// every chunking, and the head stays bounded while the window slides. Fails on `da36489`:
+    /// 28 660 B out where 8 180 were due (chunks of 1) — the first run normalised, then all
+    /// 20 480 B of junk and the second run's 4 090 B raw `FFF9`, because the realign after the
+    /// sync loss gave up at 16 KiB and passed through for the rest of the stream. Mutation: the slide removed (pass-through after alignment)
+    /// reads the same.
+    #[test]
+    fn t_b3_10_after_the_first_alignment_it_never_passes_through() {
+        let f02 = &HEAD_02[id3_end(HEAD_02)..];
+        let mut input = f02.to_vec();
+        input.extend(junk(20 * 1024, 11));
+        input.extend(f02);
+        let once = normalise_adts(f02).bytes;
+        let mut want = once.clone();
+        want.extend(&once);
+        let bound = REALIGN_MAX_BYTES + 3 * 8191 + READ_CHUNK;
+        for (name, make) in chunkings() {
+            let mut r = AdtsReader::new(make(&input));
+            let (mut out, mut head_max) = (Vec::new(), 0);
+            let mut buf = [0u8; 4096];
+            loop {
+                match r.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => out.extend_from_slice(&buf[..n]),
+                    Err(e) => panic!("unexpected error: {e}"),
+                }
+                head_max = head_max.max(r.buf.len());
+            }
+            assert_eq!(out.len(), want.len(), "{name}");
+            assert!(
+                out == want,
+                "{name}: the frames after the junk were not normalised"
+            );
+            assert!(head_max <= bound, "{name}: head grew to {head_max} B");
         }
     }
 
