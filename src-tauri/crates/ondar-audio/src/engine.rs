@@ -191,8 +191,23 @@ impl Shared {
         self.state.lock().unwrap().clone()
     }
 
-    fn emit(&self, ev: EngineEvent) {
+    /// A session event (`StreamInfo`, an ICY title, an internal `Reconnect`), sent only while
+    /// `generation` is the live session — decided under the session lock, with the send inside
+    /// it, as [`Self::write_state`] decides a state (review 2, finding 2: a check before the
+    /// send left a window for the engine thread's `cancel` + `begin_session`, and a stale
+    /// decode thread's `StreamInfo` or title landed on the next station's row). The channel is
+    /// an unbounded `mpsc`, so the send never blocks under the lock.
+    ///
+    /// There is no ungated `emit`: every engine event today belongs to a session. An event
+    /// from the audio path (M5's spectrum) must not come through here — it would take the
+    /// session lock from the audio callback, which never blocks.
+    fn emit_from(&self, generation: u64, ev: EngineEvent) {
+        let session = self.session.lock().unwrap();
+        if session.generation != generation {
+            return;
+        }
         let _ = self.events.send(ev);
+        drop(session);
     }
 }
 
@@ -247,6 +262,12 @@ impl SessionCtx {
     /// (`/code-review` finding 1, 2026-09-23).
     fn set_state(&self, s: PlaybackState) {
         self.shared.write_state(Some(self.generation), s);
+    }
+
+    /// A session event from this session, dropped once the session is over
+    /// ([`Shared::emit_from`]).
+    fn emit(&self, ev: EngineEvent) {
+        self.shared.emit_from(self.generation, ev);
     }
 
     fn sleep_cancellable(&self, d: Duration) {
@@ -432,7 +453,7 @@ impl Engine {
         let reconnect_count = session.reconnect_count.load(Ordering::Relaxed);
         if reconnect_count != self.last_reconnect_count {
             self.last_reconnect_count = reconnect_count;
-            session.shared.emit(EngineEvent::Reconnect(ReconnectInfo {
+            session.emit(EngineEvent::Reconnect(ReconnectInfo {
                 count: reconnect_count,
             }));
         }
@@ -813,13 +834,10 @@ fn run_session(
         // 2. Probe / build the decoder. The first-byte reader (review fixes F1) is the bottom of
         // the chain, under `IcyReader`, on both source kinds: HLS's reader is the same
         // `stream::Reader`. Its first read returns once the prefetch is met.
-        let title_shared = ctx.shared.clone();
         let icy = IcyReader::new(
             ClockedReader::new(opened.reader, ctx.clock.clone(), prefetch_bytes),
             opened.metaint,
-            Box::new(move |title| {
-                title_shared.emit(EngineEvent::Metadata(IcyMetadata { title: Some(title) }));
-            }),
+            title_sink(&ctx),
         );
         // The ADTS front end (defect B C4) sits **after** `IcyReader` — a metadata block can hold
         // `FF F9`, and inside the frames it would read as a sync loss — and applies to an HTTP
@@ -840,9 +858,10 @@ fn run_session(
         let built = builder.build();
         // A user's cancel (Stop, or `play` of another station) during the build: whatever
         // `build()` returned belongs to a session that is over. After a cancel it can return an
-        // empty `Ok` (Step 0, S3), and `StreamInfo` is not generation-gated, so it would land on
-        // the next station's row (review finding 5). The bound's own cancel does not set this
-        // flag; it is decided by the phase below.
+        // empty `Ok` (Step 0, S3); returning here spares a dead session its ring. Since review 2's
+        // G2 this is control flow only: `StreamInfo` is generation-gated under the session lock,
+        // which also closes the window between this check and the emit. The bound's own cancel
+        // does not set this flag; it is decided by the phase below.
         if ctx.cancelled() {
             return;
         }
@@ -898,7 +917,7 @@ fn run_session(
 
         let sample_rate = decoder.sample_rate();
         let channels = decoder.channels();
-        ctx.shared.emit(EngineEvent::StreamInfo(StreamInfo {
+        ctx.emit(EngineEvent::StreamInfo(StreamInfo {
             content_type: opened.content_type.clone(),
             bitrate_kbps: opened.bitrate_kbps,
             station_name: opened.station_name.clone(),
@@ -1043,6 +1062,20 @@ fn build_bound_cause(
             false,
         ),
     }
+}
+
+/// The ICY title callback for `ctx`'s session: each title is a session event, dropped once the
+/// session is over ([`Shared::emit_from`]; review 2, finding 2 — a read a cancel unblocks returns
+/// what is buffered, and if that completes a metadata block the stale title would land on the
+/// next station's row). It runs on the decode thread inside a read, holding no lock.
+fn title_sink(ctx: &SessionCtx) -> crate::icy::TitleCallback {
+    let (shared, generation) = (ctx.shared.clone(), ctx.generation);
+    Box::new(move |title| {
+        shared.emit_from(
+            generation,
+            EngineEvent::Metadata(IcyMetadata { title: Some(title) }),
+        );
+    })
 }
 
 /// The inputs the bound's message is written from: the clock as it stands for the rest, and
@@ -4305,6 +4338,78 @@ mod started_tests {
     }
 
     use PlaybackState::{Buffering, Connecting, Paused, Playing, Reconnecting};
+
+    /// A `StreamInfo` as the decode thread emits it, tagged by `station_name` for the reader.
+    fn info(tag: &str) -> EngineEvent {
+        EngineEvent::StreamInfo(StreamInfo {
+            content_type: None,
+            bitrate_kbps: None,
+            station_name: Some(tag.into()),
+            sample_rate: 48_000,
+            channels: 2,
+        })
+    }
+
+    /// Every `StreamInfo` and `Metadata` on the channel, as `info:<tag>` and `title:<title>`.
+    fn session_events(rx: &Receiver<EngineEvent>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                EngineEvent::StreamInfo(i) => {
+                    out.push(format!("info:{}", i.station_name.unwrap_or_default()))
+                }
+                EngineEvent::Metadata(m) => {
+                    out.push(format!("title:{}", m.title.unwrap_or_default()))
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Review 2, G2 (finding 2): a session event from a session that is over never reaches the
+    /// channel — decided under the session lock, as a state write is. Deterministic: the
+    /// interleaving the finding names (a cancel between F2's check and the emit) leaves the
+    /// decode thread emitting with a generation that is no longer live, and that is what is
+    /// driven here, for `StreamInfo` and for the ICY title callback. Session 1's events after
+    /// session 2 began, and session 2's after its own cancel with no successor (a Stop), are
+    /// dropped; session 2's while live land. Recorded failing on `688c9fd` through a shim of
+    /// `SessionCtx::emit` and `title_sink` as pass-throughs to the ungated `Shared::emit` (the
+    /// code there): `["info:A", "title:A"]` on the channel. Fails with the generation check
+    /// removed from `emit_from`.
+    #[test]
+    fn g2_a_stale_session_emits_nothing() {
+        let (s, rx) = shared();
+        let a = ctx(&s, s.begin_session("u1".into()));
+        let mut a_title = title_sink(&a);
+        let b = ctx(&s, s.begin_session("u2".into()));
+        let mut b_title = title_sink(&b);
+
+        a.emit(info("A"));
+        a_title("A".into());
+        assert_eq!(
+            session_events(&rx),
+            Vec::<String>::new(),
+            "session 1 is over"
+        );
+
+        b.emit(info("B"));
+        b_title("B".into());
+        assert_eq!(
+            session_events(&rx),
+            ["info:B", "title:B"],
+            "session 2 is live"
+        );
+
+        b.cancel();
+        b.emit(info("B2"));
+        b_title("B2".into());
+        assert_eq!(
+            session_events(&rx),
+            Vec::<String>::new(),
+            "session 2 was stopped"
+        );
+    }
 
     /// Fails if the flag is missing (four `Started`), or if the decision looks at the previous
     /// state instead of the flag (a resume or a reconnect's `Playing` would count).
