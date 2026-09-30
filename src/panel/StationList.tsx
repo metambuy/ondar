@@ -152,7 +152,10 @@ function StationList({
     sourceRef.current = source;
     load(source);
     // `key` stands for `source` (same list, same key), so a re-render with an equal source
-    // does not re-request; `load` reads only refs and the module-level API.
+    // does not re-request; `load` reads only refs and the module-level API. `source` is a new
+    // object every render, so listing it would re-request on every render: the rule is
+    // disabled for this line only, for that reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, showGeneration]);
 
   // A favourite was toggled: only the ★ list changes.
