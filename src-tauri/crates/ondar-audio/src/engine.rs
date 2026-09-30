@@ -1035,7 +1035,7 @@ fn build_bound_cause(
     }
 }
 
-/// `20 s`, `2 s`, `104.9 s`: a duration as the bound's messages print it.
+/// `20 s`, `2 s`, `115.3 s`: a duration as the bound's messages print it.
 fn format_secs(d: Duration) -> String {
     let ms = d.as_millis();
     if ms.is_multiple_of(1000) {

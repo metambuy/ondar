@@ -70,16 +70,24 @@ impl BuildBounds {
     ///   refused before the build (M3c's sniff). **What fails it:** an HTTP stream that pauses
     ///   ≥ 5 s during its build and never syncs backs off instead of ending, and ends as
     ///   `Error { Network }` after five attempts: the wrong code, never a wrong terminal.
-    /// - **`no_bytes` = max(60 s, prefetch ÷ 1 250 B/s)**: the prefetch's time at 10 kbit/s —
-    ///   60 s at the 32 768 B floor, 64 s for a 320 kbit/s record, 104.9 s at the 131 072 B
-    ///   ceiling. **What fails it:** a stream with no burst on connect below 4.4 kbit/s at the
-    ///   floor, or below 10 kbit/s with a ceiling record; none is recorded. It is always
+    /// - **`no_bytes` = max(60 s, ⌈1.1 × prefetch ÷ 1 250 B/s⌉)**: the prefetch's time at
+    ///   10 kbit/s plus a 10 % margin, rounded up to the millisecond — 60 s at the 32 768 B floor,
+    ///   70.4 s for a 320 kbit/s record, 115.344 s at the 131 072 B ceiling. The margin is the
+    ///   connection's latency and the first tick after the bound (review 2, finding 3: without
+    ///   it, a stream at exactly 10 kbit/s met its prefetch 0.6 ms after the bound, and the
+    ///   integer division cut the bound itself). **What fails it:** a stream with no burst on
+    ///   connect below 4.8 kbit/s at the floor, or below 9.1 kbit/s with a ceiling record, or at
+    ///   exactly 10 kbit/s with more than ~10 s of connect latency; none is recorded. It is always
     ///   `Network`: a trickle cannot be told from a slow healthy stream (decided 2026-09-29, D1:
     ///   a body stalled before its prefetch takes 60–105 s per attempt; `main` never ended).
     pub(crate) fn for_prefetch(prefetch_bytes: u64) -> Self {
         let retry = stream::retry_timeout();
-        let at_slowest =
-            Duration::from_millis(prefetch_bytes.saturating_mul(1_000) / SLOWEST_BYTES_PER_SEC);
+        // ms = ⌈prefetch × 1 000 × 1.1 ÷ 1 250⌉, in integers.
+        let at_slowest = Duration::from_millis(
+            prefetch_bytes
+                .saturating_mul(11_000)
+                .div_ceil(SLOWEST_BYTES_PER_SEC * 10),
+        );
         Self {
             format: (retry * 3).max(FORMAT_BOUND),
             starved: retry,
@@ -368,18 +376,18 @@ mod tests {
     }
 
     /// The production bounds: the no-bytes bound at the floor, a 320 kbit/s record and the
-    /// ceiling; fails on a missing `max` (the floor's 26.2 s) or a wrong rate.
+    /// ceiling; fails on a missing `max` (the floor's 28.8 s) or a wrong rate.
     #[test]
     fn the_production_bounds() {
         let floor = BuildBounds::for_prefetch(stream::PREFETCH_FLOOR_BYTES);
         assert_eq!(floor.no_bytes, Duration::from_secs(60));
         assert_eq!(
             BuildBounds::for_prefetch(80_000).no_bytes,
-            Duration::from_secs(64)
+            Duration::from_millis(70_400)
         );
         assert_eq!(
             BuildBounds::for_prefetch(stream::PREFETCH_CEILING_BYTES).no_bytes,
-            Duration::from_millis(104_857)
+            Duration::from_millis(115_344)
         );
         assert!(
             BuildBounds::for_prefetch(u64::MAX).no_bytes > NO_BYTES_BOUND,
@@ -390,6 +398,27 @@ mod tests {
             floor.format,
             (stream::retry_timeout() * 3).max(FORMAT_BOUND)
         );
+    }
+
+    /// The no-bytes bound at exactly 10 kbit/s (review 2, finding 3): at the floor, a 320 kbit/s
+    /// record and the ceiling, the bound covers the prefetch's time at 1 250 B/s with a 10 %
+    /// margin, rounded up. Fails on `688c9fd`, where the ceiling's 104 857 ms (integer division)
+    /// is below the 104 857.6 ms the prefetch takes; and with the margin's factor at 1.0.
+    #[test]
+    fn the_no_bytes_bound_keeps_a_margin_at_10_kbit() {
+        for (prefetch, pinned) in [
+            (stream::PREFETCH_CEILING_BYTES, 115_344),
+            (80_000, 70_400),
+            (stream::PREFETCH_FLOOR_BYTES, 60_000),
+        ] {
+            let no_bytes = BuildBounds::for_prefetch(prefetch).no_bytes;
+            let at_10_kbit = prefetch as f64 / SLOWEST_BYTES_PER_SEC as f64;
+            assert!(
+                no_bytes.as_secs_f64() >= 1.1 * at_10_kbit,
+                "{prefetch} B: {no_bytes:?} < 1.1 × {at_10_kbit} s"
+            );
+            assert_eq!(no_bytes, Duration::from_millis(pinned), "{prefetch} B");
+        }
     }
 
     /// A reader that returns `chunks` in turn: bytes, an empty read, an error.
