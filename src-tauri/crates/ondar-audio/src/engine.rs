@@ -30,6 +30,10 @@ use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate
 use rtrb::PushError;
 use tokio_util::sync::CancellationToken;
 
+use crate::adts::AdtsReader;
+use crate::build::{
+    self, Arrivals, Bounded, BuildBounds, BuildCause, BuildClock, BuildInputs, ClockedReader,
+};
 use crate::eq::{EqGains, Equalizer};
 use crate::icy::IcyReader;
 use crate::reconnect::{Backoff, STABLE_AFTER};
@@ -187,8 +191,23 @@ impl Shared {
         self.state.lock().unwrap().clone()
     }
 
-    fn emit(&self, ev: EngineEvent) {
+    /// A session event (`StreamInfo`, an ICY title, an internal `Reconnect`), sent only while
+    /// `generation` is the live session — decided under the session lock, with the send inside
+    /// it, as [`Self::write_state`] decides a state (review 2, finding 2: a check before the
+    /// send left a window for the engine thread's `cancel` + `begin_session`, and a stale
+    /// decode thread's `StreamInfo` or title landed on the next station's row). The channel is
+    /// an unbounded `mpsc`, so the send never blocks under the lock.
+    ///
+    /// There is no ungated `emit`: every engine event today belongs to a session. An event
+    /// from the audio path (M5's spectrum) must not come through here — it would take the
+    /// session lock from the audio callback, which never blocks.
+    fn emit_from(&self, generation: u64, ev: EngineEvent) {
+        let session = self.session.lock().unwrap();
+        if session.generation != generation {
+            return;
+        }
         let _ = self.events.send(ev);
+        drop(session);
     }
 }
 
@@ -216,6 +235,10 @@ struct SessionCtx {
     /// The [`Session`] generation this context was born with (`Shared::begin_session`); every
     /// state write through it is checked against the live one, under the lock.
     generation: u64,
+    /// The decoder build's clock and phase (defect B; the review fixes' F1): stamped by the
+    /// decode thread, read and swapped by `Engine::tick`. Its bounds are fixed for the session:
+    /// [`BuildBounds::for_prefetch`] in production, shorter ones in the tests.
+    clock: Arc<BuildClock>,
     shared: Shared,
 }
 
@@ -239,6 +262,12 @@ impl SessionCtx {
     /// (`/code-review` finding 1, 2026-09-23).
     fn set_state(&self, s: PlaybackState) {
         self.shared.write_state(Some(self.generation), s);
+    }
+
+    /// A session event from this session, dropped once the session is over
+    /// ([`Shared::emit_from`]).
+    fn emit(&self, ev: EngineEvent) {
+        self.shared.emit_from(self.generation, ev);
     }
 
     fn sleep_cancellable(&self, d: Duration) {
@@ -424,9 +453,29 @@ impl Engine {
         let reconnect_count = session.reconnect_count.load(Ordering::Relaxed);
         if reconnect_count != self.last_reconnect_count {
             self.last_reconnect_count = reconnect_count;
-            session.shared.emit(EngineEvent::Reconnect(ReconnectInfo {
+            session.emit(EngineEvent::Reconnect(ReconnectInfo {
                 count: reconnect_count,
             }));
+        }
+
+        // The build bound (defect B), before the ring's early return: a session that is
+        // building has no ring yet, and a bound behind that return would never run. The engine
+        // keeps no build state: every duration comes from the decode thread's stamps for the
+        // build the word names (review fixes F1, finding 6), so no build can read another's.
+        let word = session.clock.word();
+        if build::phase_of(word) == build::phase::PROBING {
+            let inputs = session.clock.inputs(reconnect_count);
+            let outcome = decide_tick(
+                &current,
+                TickInputs {
+                    build: Some(inputs),
+                    ..Default::default()
+                },
+            );
+            if let Some(Transition::FailBuild(cause)) = outcome.transition {
+                Self::fail_build(&session, word, cause, &inputs);
+            }
+            return;
         }
 
         let Some(stats) = session.ring_stats() else {
@@ -503,6 +552,7 @@ impl Engine {
                 dwell,
                 ticks_since_progress: self.ticks_since_progress,
                 watchdog_ticks: self.watchdog_ticks,
+                build: None,
             },
         );
 
@@ -523,6 +573,8 @@ impl Engine {
             Some(Transition::ResumePaused) => {
                 session.set_state(PlaybackState::Paused);
             }
+            // Returned only while probing, which is handled above and returns.
+            Some(Transition::FailBuild(_)) => {}
             Some(Transition::FailSession) => {
                 log::warn!(
                     "watchdog: {} ticks buffering with no decode progress; failing the session",
@@ -544,6 +596,41 @@ impl Engine {
         if outcome.reset_backoff {
             session.backoff.lock().unwrap().reset();
         }
+    }
+
+    /// The build bound fired: take the build from the decode thread with the one swap, from the
+    /// exact `word` this tick read, and only if that won, cancel the download in place (as
+    /// `FailSession` does, never `take()`, so a later Stop still finds the token). The cancel
+    /// returns a blocked `build()` in about 1 ms (Step 0, S1); the decode thread's own swap then
+    /// fails and reads the cause from the phase. A lost swap means `build()` returned first, or
+    /// a new build began (another seq): nothing to do.
+    ///
+    /// **Lock scope and order:** `download` is the only lock taken, and it is held from the swap
+    /// through the cancel. The decode thread stores the next build's token under the same lock,
+    /// and only after its own swap for this build has failed, so the token cancelled here is
+    /// this build's — never the next open's (finding 6, which the ≥ 1 s backoff used to cover).
+    /// Nothing inside blocks: the swap, and `CancellationToken::cancel`, which is synchronous.
+    /// The log line waits until the lock is dropped.
+    fn fail_build(session: &SessionCtx, word: u64, cause: BuildCause, inputs: &BuildInputs) {
+        let download = session.download.lock().unwrap();
+        if !session.clock.bound(word, cause, inputs) {
+            return;
+        }
+        if let Some(t) = download.as_ref() {
+            t.cancel();
+        }
+        drop(download);
+        log::warn!(
+            "build bound: {cause:?} after {:.2} s (first byte {}, longest gap {:.2} s, {} \
+             reconnects); cancelling the download",
+            inputs.since_start.as_secs_f64(),
+            inputs.since_first_byte.map_or_else(
+                || "none".to_string(),
+                |d| format!("{:.2} s ago", d.as_secs_f64())
+            ),
+            inputs.longest_gap.as_secs_f64(),
+            inputs.reconnects
+        );
     }
 
     /// Open the output device on first use so a missing device is reported as a playback
@@ -601,6 +688,7 @@ impl Engine {
             }
         };
 
+        let prefetch = stream::prefetch_bytes(bitrate_kbps);
         let ctx = SessionCtx {
             cancel: Arc::new(AtomicBool::new(false)),
             download: Arc::new(Mutex::new(None)),
@@ -608,6 +696,7 @@ impl Engine {
             backoff: Arc::new(Mutex::new(Backoff::default())),
             reconnect_count: Arc::new(AtomicU64::new(0)),
             generation,
+            clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(prefetch))),
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
@@ -615,7 +704,6 @@ impl Engine {
 
         let client = self.client.clone();
         let handle = self.rt.handle().clone();
-        let prefetch = stream::prefetch_bytes(bitrate_kbps);
         log::info!(
             "play station_id={station_id} bitrate_kbps={bitrate_kbps:?} prefetch_bytes={prefetch}"
         );
@@ -689,16 +777,28 @@ fn run_session(
     // only before that: afterwards the same 404 is a mount mid-restart, and the backoff
     // carries it (`/code-review` finding 4, 2026-09-22).
     let mut opened_once = false;
+    // Whether this session has pushed a decoded sample into a ring — "has produced audio"
+    // (defect B, B2; review round 7, P1). An unrecognised format is terminal only before
+    // that: a mount that once played had a valid format, so garbage on a reconnect is a
+    // source restarting, as a 404 there is. Not `opened_once` (set before the build), and not
+    // "has built a decoder": `build()` returns `Ok` with an empty decoder after a false header
+    // when the read ends (defect B Step 0, S3), which would let a mount that sends a false
+    // header and closes back off for ever instead of ending.
+    let mut produced_audio = false;
     loop {
         if ctx.cancelled() {
             return;
         }
 
-        // 1. Connect.
+        // 1. Connect. Each open has its own arrival clock (review 2, G1), stamped by its
+        // download task from the moment `open` spawns it — so the prefetch's arrivals, which can
+        // land before `begin_build`, are kept, and no earlier open's stamp is in it.
+        let arrivals = Arc::new(Arrivals::new());
         let opened = match rt.block_on(stream::open(
             &client,
             url.clone(),
             ctx.reconnect_count.clone(),
+            arrivals.clone(),
             prefetch_bytes,
         )) {
             Ok(o) => o,
@@ -722,16 +822,33 @@ fn run_session(
             opened.reader.cancel_download();
             return;
         }
+        // The build is supervised from here (defect B): the token the bound cancels is in
+        // `download` before the engine can see `PROBING`, stored under the lock `fail_build`
+        // holds from its swap to its cancel. `begin_build` stamps the build's start and the
+        // internal reconnect count the cause compares against, installs this open's arrivals,
+        // then publishes `PROBING`.
+        let word = ctx
+            .clock
+            .begin_build(ctx.reconnect_count.load(Ordering::Relaxed), arrivals);
 
-        // 2. Probe / build the decoder.
-        let title_shared = ctx.shared.clone();
-        let reader: BoxedReader = Box::new(IcyReader::new(
-            opened.reader,
+        // 2. Probe / build the decoder. The first-byte reader (review fixes F1) is the bottom of
+        // the chain, under `IcyReader`, on both source kinds: HLS's reader is the same
+        // `stream::Reader`. Its first read returns once the prefetch is met.
+        let icy = IcyReader::new(
+            ClockedReader::new(opened.reader, ctx.clock.clone(), prefetch_bytes),
             opened.metaint,
-            Box::new(move |title| {
-                title_shared.emit(EngineEvent::Metadata(IcyMetadata { title: Some(title) }));
-            }),
-        ));
+            title_sink(&ctx),
+        );
+        // The ADTS front end (defect B C4) sits **after** `IcyReader` — a metadata block can hold
+        // `FF F9`, and inside the frames it would read as a sync loss — and applies to an HTTP
+        // stream labelled `audio/aac*` or `audio/x-aac*` only (review P3: HLS segments are
+        // normalised already).
+        let reader: BoxedReader =
+            if wants_adts_front_end(opened.kind, opened.content_type.as_deref()) {
+                Box::new(AdtsReader::new(icy))
+            } else {
+                Box::new(icy)
+            };
         let mut builder = DecoderBuilder::new()
             .with_data(reader)
             .with_seekable(false)
@@ -739,17 +856,56 @@ fn run_session(
         if let Some(ct) = &opened.content_type {
             builder = builder.with_mime_type(ct);
         }
-        let mut decoder = match builder.build() {
+        let built = builder.build();
+        // A user's cancel (Stop, or `play` of another station) during the build: whatever
+        // `build()` returned belongs to a session that is over. After a cancel it can return an
+        // empty `Ok` (Step 0, S3); returning here spares a dead session its ring. Since review 2's
+        // G2 this is control flow only: `StreamInfo` is generation-gated under the session lock,
+        // which also closes the window between this check and the emit. The bound's own cancel
+        // does not set this flag; it is decided by the phase below.
+        if ctx.cancelled() {
+            return;
+        }
+        // The phase, never the variant: after the cancel, `build()` has returned
+        // `UnrecognizedFormat`, `IoError` and a decoder that yields nothing (Step 0, S3), so
+        // the bound is checked on `Ok` and `Err` alike, before any arm reads the result. The
+        // engine's swap wrote the cause into the phase.
+        if let Err(bounded) = ctx.clock.finish_build(word) {
+            // A decoder on a cancelled download is dead.
+            drop(built);
+            let (code, message, terminal) = build_bound_cause(
+                bounded.cause,
+                &decided_inputs(
+                    &ctx.clock,
+                    &bounded,
+                    ctx.reconnect_count.load(Ordering::Relaxed),
+                ),
+                opened.content_type.as_deref(),
+                produced_audio,
+            );
+            log::warn!("build bound: {message}");
+            if !retry_or_fail(&ctx, code, message, terminal, None) {
+                return;
+            }
+            continue;
+        }
+        let mut decoder = match built {
             Ok(d) => d,
             Err(DecoderError::UnrecognizedFormat) => {
-                ctx.set_state(PlaybackState::Error {
-                    code: ErrorCode::UnsupportedFormat,
-                    message: format!(
-                        "could not identify the audio format ({})",
-                        opened.content_type.as_deref().unwrap_or("no content-type")
-                    ),
-                });
-                return;
+                let message = format!(
+                    "could not identify the audio format ({})",
+                    opened.content_type.as_deref().unwrap_or("no content-type")
+                );
+                if !retry_or_fail(
+                    &ctx,
+                    ErrorCode::UnsupportedFormat,
+                    message,
+                    !produced_audio,
+                    None,
+                ) {
+                    return;
+                }
+                continue;
             }
             Err(e) => {
                 log::warn!("decoder failed to open: {e}");
@@ -762,7 +918,7 @@ fn run_session(
 
         let sample_rate = decoder.sample_rate();
         let channels = decoder.channels();
-        ctx.shared.emit(EngineEvent::StreamInfo(StreamInfo {
+        ctx.emit(EngineEvent::StreamInfo(StreamInfo {
             content_type: opened.content_type.clone(),
             bitrate_kbps: opened.bitrate_kbps,
             station_name: opened.station_name.clone(),
@@ -807,6 +963,7 @@ fn run_session(
                     }
                 }
             }
+            produced_audio = true;
 
             samples_since_check += 1;
             if samples_since_check < 1024 {
@@ -852,13 +1009,120 @@ fn run_session(
     }
 }
 
+/// The bound's outcome (defect B; the review fixes' F1), from the cause the engine swapped into
+/// the phase and the build as the decode thread reads it after the cancel. The rule that chose
+/// the cause is `decide_tick`'s first arm; this only names it:
+///
+/// - **`Format`** → `UnsupportedFormat`: bytes kept arriving for the whole format bound, from
+///   the first one, and nothing synced. Terminal only while the session has never produced
+///   audio, as the `UnrecognizedFormat` arm is.
+/// - **`Starved`** → `Network`, never terminal: the format bound passed with a gap of `starved`
+///   or more between network arrivals, or a completed internal reconnect.
+/// - **`NoBytes`** → `Network`, never terminal: no byte reached the decoder within the
+///   no-bytes bound — a trickle cannot be told from a slow healthy stream.
+///
+/// Returns the code, the message and whether it is terminal.
+fn build_bound_cause(
+    cause: BuildCause,
+    build: &BuildInputs,
+    content_type: Option<&str>,
+    produced_audio: bool,
+) -> (ErrorCode, String, bool) {
+    match cause {
+        BuildCause::Format => (
+            ErrorCode::UnsupportedFormat,
+            format!(
+                "no decodable audio in the first {} of the stream ({})",
+                format_secs(build.bounds.format),
+                content_type.unwrap_or("no content-type")
+            ),
+            !produced_audio,
+        ),
+        BuildCause::Starved => {
+            let reconnected = match build.reconnects {
+                0 => String::new(),
+                1 => "; re-established once".to_string(),
+                n => format!("; re-established {n} times"),
+            };
+            (
+                ErrorCode::Network,
+                format!(
+                    "no audio arrived while starting: the connection stalled ({:.1} s without \
+                     data{reconnected})",
+                    build.longest_gap.as_secs_f64()
+                ),
+                false,
+            )
+        }
+        BuildCause::NoBytes => (
+            ErrorCode::Network,
+            format!(
+                "no audio arrived within {} of connecting",
+                format_secs(build.bounds.no_bytes)
+            ),
+            false,
+        ),
+    }
+}
+
+/// The ICY title callback for `ctx`'s session: each title is a session event, dropped once the
+/// session is over ([`Shared::emit_from`]; review 2, finding 2 — a read a cancel unblocks returns
+/// what is buffered, and if that completes a metadata block the stale title would land on the
+/// next station's row). It runs on the decode thread inside a read, holding no lock.
+fn title_sink(ctx: &SessionCtx) -> crate::icy::TitleCallback {
+    let (shared, generation) = (ctx.shared.clone(), ctx.generation);
+    Box::new(move |title| {
+        shared.emit_from(
+            generation,
+            EngineEvent::Metadata(IcyMetadata { title: Some(title) }),
+        );
+    })
+}
+
+/// The inputs the bound's message is written from: the clock as it stands for the rest, and
+/// the gap and reconnect count **the engine decided on** — not the clock read again after the
+/// cancel, whose open gap has grown since (review 2, finding 4: the page and the engine's log
+/// line could disagree).
+fn decided_inputs(clock: &BuildClock, bounded: &Bounded, reconnect_count: u64) -> BuildInputs {
+    BuildInputs {
+        longest_gap: bounded.longest_gap,
+        reconnects: bounded.reconnects,
+        ..clock.inputs(reconnect_count)
+    }
+}
+
+/// `20 s`, `2 s`, `115.3 s`: a duration as the bound's messages print it.
+fn format_secs(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms.is_multiple_of(1000) {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{:.1} s", d.as_secs_f64())
+    }
+}
+
+/// Whether a stream gets the ADTS front end (defect B, B1): an HTTP stream whose content type's
+/// essence starts with `audio/aac` — `audio/aac` and `audio/aacp`, under which every `FFF9` body
+/// in Step 0 was served (S4) — or `audio/x-aac`, which real servers send too (review fixes F4,
+/// finding 7: Antena 1's HLS segments; the front end passes a non-ADTS body through, so a
+/// mislabelled stream costs at most a 16 KiB head delay); and never the HLS source, whose
+/// segments `hls::segment` has already walked (review P3).
+fn wants_adts_front_end(kind: stream::SourceKind, content_type: Option<&str>) -> bool {
+    kind == stream::SourceKind::Http
+        && content_type.is_some_and(|ct| {
+            let essence = stream::mime_essence(ct);
+            essence.starts_with("audio/aac") || essence.starts_with("audio/x-aac")
+        })
+}
+
 /// A server's `Retry-After` lengthens the backoff's delay up to this; past it the session
 /// would look dead to the user, and the backoff's own 16 s is already the longest wait shown.
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(30);
 
 /// The retry policy, by cause. A **terminal** failure (`StreamError::terminal` — a non-HTTP
 /// answer such as `ICY 200 OK`, or 401/403/404/410 — and only while the session has never
-/// opened, see `run_session`) fails the session on the spot: retrying cannot change what the
+/// opened; or an unrecognised format while the session has never produced audio; see
+/// `run_session`) fails the session on the spot: retrying cannot change what the
 /// server says. Everything else (network, 5xx, 408/429, decoder, a stream that ended, any
 /// answer on a reconnect) goes through the 1/2/4/8/16 s backoff, each delay stretched to the
 /// server's `Retry-After` when it sent one (capped), and fails with the code of the last
@@ -998,6 +1262,9 @@ enum Transition {
     /// Buffering has lasted too long with no decode progress. Fail the session so the
     /// existing `Backoff` + a fresh `stream::open()` can recover it.
     FailSession,
+    /// The decoder's build has reached a bound (defect B), for the cause named: take the build
+    /// with the swap and cancel the download ([`Engine::fail_build`]).
+    FailBuild(BuildCause),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1037,6 +1304,10 @@ struct TickInputs {
     ticks_since_progress: u32,
     /// Threshold for the above; see [`watchdog_ticks`].
     watchdog_ticks: u32,
+    /// The session's build, while it is `PROBING` (defect B): the decode thread's stamps as the
+    /// engine read them this tick (review fixes F1). When set, only the build bound is decided;
+    /// there is no ring yet.
+    build: Option<BuildInputs>,
 }
 
 fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
@@ -1050,11 +1321,36 @@ fn decide_tick(state: &PlaybackState, inputs: TickInputs) -> TickOutcome {
         dwell,
         ticks_since_progress,
         watchdog_ticks,
+        build,
     } = inputs;
     let mut out = TickOutcome {
         transition: None,
         reset_backoff: stable,
     };
+
+    // The build bound (defect B), before the pause arm: a pause during `Connecting` sets
+    // `Paused` while the decode thread is still building, and the build is no less stuck.
+    // Review fixes F1: before the first byte only the no-bytes bound runs, always the network;
+    // from the first byte the format bound, whose cause is the network if the bytes ever
+    // stopped for `starved` (the longest gap, the open one included — a stall that resumed
+    // just before the bound had seconds of bytes, not the bound's) or an internal reconnect
+    // completed, and the format otherwise.
+    if let Some(b) = build {
+        out.transition = match b.since_first_byte {
+            None if b.since_start >= b.bounds.no_bytes => {
+                Some(Transition::FailBuild(BuildCause::NoBytes))
+            }
+            Some(since) if since >= b.bounds.format => Some(Transition::FailBuild(
+                if b.reconnects > 0 || b.longest_gap >= b.bounds.starved {
+                    BuildCause::Starved
+                } else {
+                    BuildCause::Format
+                },
+            )),
+            _ => None,
+        };
+        return out;
+    }
 
     // User-paused and not buffering: the callback isn't pulling, so nothing is starving in
     // any sense the user cares about. Refill silently, stay Paused.
@@ -1179,6 +1475,25 @@ mod session_tests {
         started: Mutex<Vec<String>>,
         /// Every `StreamInfo` seen while draining, as (sample_rate, channels), in order.
         infos: Mutex<Vec<(u32, u16)>>,
+        /// Every ICY title seen while draining, in order.
+        titles: Mutex<Vec<String>>,
+        /// The decode thread's name, unique per harness: the captured log lines are keyed by it
+        /// ([`adts_lines`]).
+        decode_thread: String,
+        /// Every `Reconnect` count seen while draining (stream-download's internal reconnects,
+        /// emitted by `Engine::tick` — only a supervised harness has one), in order.
+        reconnects: Mutex<Vec<u64>>,
+        /// Set by `Drop`: stops the supervising engine thread of
+        /// [`start_session_supervised`]; `None` for the tick-less harness.
+        supervisor: Option<Arc<AtomicBool>>,
+        /// The supervisor's own record of a build bound (defect B C4b; review fixes F1): the
+        /// time from the build's first byte (the decode thread's stamp) to the tick whose swap
+        /// bounded it, and how many ticks saw that build `PROBING` with a first byte meanwhile.
+        /// `None` until a bound fires.
+        bound_seen: Arc<Mutex<Option<(Duration, u32)>>>,
+        /// The longest gap in the inputs of the tick that bounded the build, read just before
+        /// that tick (review 2, G1): the figure the bound was decided on. `None` until a bound.
+        bound_gap: Arc<Mutex<Option<Duration>>>,
         // Dropping the runtime while `run_session` still holds its handle would abort the
         // open; kept for the harness's lifetime.
         _rt: tokio::runtime::Runtime,
@@ -1201,6 +1516,9 @@ mod session_tests {
             backoff: Arc::new(Mutex::new(Backoff::default())),
             reconnect_count: Arc::new(AtomicU64::new(0)),
             generation,
+            clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(
+                stream::prefetch_bytes(None),
+            ))),
             shared,
         }
     }
@@ -1212,8 +1530,113 @@ mod session_tests {
     /// the mixer forever (found by `started_is_sent_once_per_session_across_a_reconnect`,
     /// M3b commit 5: the second stream reached its fill target and never left `clear()`).
     fn start_session(url: &str) -> Harness {
+        start_session_with(url, None, None, None)
+    }
+
+    /// `start_session`, plus the engine thread's supervision: a thread builds its own
+    /// [`Engine`] (on that thread, so nothing `!Send` moves), gives it the session and calls
+    /// `tick()` every `TICK_INTERVAL` until the harness drops — the build bound, the
+    /// `Reconnect` events and the ring's transitions run as in production, with no `Player`
+    /// (every `if let Some(p)` arm skips it). The session's bounds are [`test_bounds`] with a
+    /// 2 s format bound: the production 20 s would make every test 20 s. Opt-in: the other
+    /// tests keep the tick-less harness.
+    fn start_session_supervised(url: &str) -> Harness {
+        start_session_bounded(url, None, test_bounds(TEST_FORMAT))
+    }
+
+    /// `start_session_supervised` with the prefetch and every bound given (review fixes F1).
+    /// `prefetch` `None` is production's for a station with no bitrate (the floor).
+    fn start_session_bounded(url: &str, prefetch: Option<u64>, bounds: BuildBounds) -> Harness {
+        start_session_with(url, Some(Duration::ZERO), prefetch, Some(bounds))
+    }
+
+    /// `start_session_supervised` with every tick slowed by `extra` (defect B C4b): a tick
+    /// period that is not `TICK_INTERVAL`, as a loaded machine gives.
+    fn start_session_supervised_slow(url: &str, extra: Duration) -> Harness {
+        start_session_with(url, Some(extra), None, Some(test_bounds(TEST_FORMAT)))
+    }
+
+    /// The defect B tests' format bound: 2 s. At [`PACE`] that is 256 KiB, a quarter of
+    /// Symphonia's 1 MiB search, so the two cannot be confused.
+    const TEST_FORMAT: Duration = Duration::from_secs(2);
+
+    /// Bounds with `format` and production's `starved`; `no_bytes` 60 s, production's floor,
+    /// which a test that does not time the prefetch never reaches.
+    fn test_bounds(format: Duration) -> BuildBounds {
+        BuildBounds {
+            format,
+            starved: stream::retry_timeout(),
+            no_bytes: Duration::from_secs(60),
+        }
+    }
+
+    /// `ONDAR_TEST_TICK_DELAY_MS`: a sleep added to every supervised tick, standing in for a
+    /// slow runner (or a loaded Mac: acceptance X1 measured a ~103 ms tick).
+    fn tick_delay() -> Duration {
+        Duration::from_millis(
+            std::env::var("ONDAR_TEST_TICK_DELAY_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0),
+        )
+    }
+
+    /// `supervised`: `Some(extra)` runs the engine's ticks, each slowed by `extra`. `bounds`
+    /// replaces the session's production bounds.
+    fn start_session_with(
+        url: &str,
+        supervised: Option<Duration>,
+        prefetch: Option<u64>,
+        bounds: Option<BuildBounds>,
+    ) -> Harness {
         let (ev_tx, ev_rx) = mpsc::channel();
-        let ctx = test_ctx(ev_tx);
+        let mut ctx = test_ctx(ev_tx);
+        if let Some(b) = bounds {
+            ctx.clock = Arc::new(BuildClock::new(b));
+        }
+        let bound_seen: Arc<Mutex<Option<(Duration, u32)>>> = Arc::new(Mutex::new(None));
+        let bound_gap: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
+        let supervisor = supervised.map(|extra| {
+            let stop = Arc::new(AtomicBool::new(false));
+            let (session, halt, seen) = (ctx.clone(), stop.clone(), bound_seen.clone());
+            let gap_seen = bound_gap.clone();
+            let clock = ctx.clock.clone();
+            let pause = TICK_INTERVAL + extra.max(tick_delay());
+            thread::spawn(move || {
+                let mut engine = Engine::new(session.shared.clone(), "Ondar/test".into());
+                engine.session = Some(session);
+                // (the build's seq, ticks that saw it probing with a first byte)
+                let mut probing: Option<(u64, u32)> = None;
+                while !halt.load(Ordering::SeqCst) {
+                    let before = clock.word();
+                    let pre = clock.inputs(0);
+                    let first_byte = pre.since_first_byte.is_some();
+                    if build::phase_of(before) == build::phase::PROBING && first_byte {
+                        let seq = build::seq_of(before);
+                        match &mut probing {
+                            Some((s, n)) if *s == seq => *n += 1,
+                            _ => probing = Some((seq, 1)),
+                        }
+                    }
+                    engine.tick();
+                    let after = clock.word();
+                    let bounded = build::phase_of(before) == build::phase::PROBING
+                        && build::seq_of(after) == build::seq_of(before)
+                        && build::phase_of(after) >= build::phase::BOUND_FORMAT;
+                    if bounded {
+                        *gap_seen.lock().unwrap() = Some(pre.longest_gap);
+                    }
+                    if bounded
+                        && let Some(since) = clock.inputs(0).since_first_byte
+                        && let Some((_, n)) = probing.take()
+                    {
+                        *seen.lock().unwrap() = Some((since, n));
+                    }
+                    thread::sleep(pause);
+                }
+            });
+            stop
+        });
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -1235,20 +1658,94 @@ mod session_tests {
         let client = stream::build_client("Ondar/test");
         let handle = rt.handle().clone();
         let session = ctx.clone();
-        let prefetch = stream::prefetch_bytes(None);
+        let prefetch = prefetch.unwrap_or_else(|| stream::prefetch_bytes(None));
         let output = OutputFormat {
             channels: std::num::NonZero::new(2).expect("2"),
             sample_rate: std::num::NonZero::new(44_100).expect("44100"),
         };
-        thread::spawn(move || run_session(session, url, client, handle, player, prefetch, output));
+        capture_logs();
+        static SESSIONS: AtomicUsize = AtomicUsize::new(0);
+        let decode_thread = format!(
+            "ondar-decode:test-{}",
+            SESSIONS.fetch_add(1, Ordering::SeqCst)
+        );
+        thread::Builder::new()
+            .name(decode_thread.clone())
+            .spawn(move || run_session(session, url, client, handle, player, prefetch, output))
+            .expect("spawn decode thread");
         Harness {
             ctx,
             events: ev_rx,
             held: Mutex::new(None),
             started: Mutex::new(Vec::new()),
             infos: Mutex::new(Vec::new()),
+            titles: Mutex::new(Vec::new()),
+            decode_thread,
+            reconnects: Mutex::new(Vec::new()),
+            supervisor,
+            bound_seen,
+            bound_gap,
             _rt: rt,
         }
+    }
+
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            if let Some(stop) = &self.supervisor {
+                stop.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// The test binary's logger (defect B C4): keeps the ADTS front end's lines, and since F1
+    /// the build's, with the name of the thread that logged them, so a test reads its own session's lines however many
+    /// sessions run in parallel. Installed once; the other lines are dropped.
+    struct Capture;
+
+    static CAPTURED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+    impl log::Log for Capture {
+        fn enabled(&self, m: &log::Metadata) -> bool {
+            m.level() <= log::Level::Info
+        }
+        fn log(&self, r: &log::Record) {
+            let msg = r.args().to_string();
+            if msg.starts_with("adts front end") || msg.starts_with("build") {
+                let name = thread::current().name().unwrap_or_default().to_string();
+                CAPTURED.lock().unwrap().push((name, msg));
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    fn capture_logs() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            if log::set_logger(&Capture).is_ok() {
+                log::set_max_level(log::LevelFilter::Info);
+            }
+        });
+    }
+
+    /// The `adts front end` lines this harness's decode thread logged, in order.
+    fn adts_lines(h: &Harness) -> Vec<String> {
+        lines_with_prefix(h, "adts front end")
+    }
+
+    /// The `build…` lines this harness's decode thread logged, in order: the first byte, and
+    /// the bound's outcome (review fixes F1).
+    fn build_lines(h: &Harness) -> Vec<String> {
+        lines_with_prefix(h, "build")
+    }
+
+    fn lines_with_prefix(h: &Harness, prefix: &str) -> Vec<String> {
+        CAPTURED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, m)| *t == h.decode_thread && m.starts_with(prefix))
+            .map(|(_, m)| m.clone())
+            .collect()
     }
 
     /// Record one engine event: a state is returned, `Started` and `StreamInfo` are kept on
@@ -1262,6 +1759,10 @@ mod session_tests {
                 .lock()
                 .unwrap()
                 .push((info.sample_rate, info.channels)),
+            EngineEvent::Reconnect(info) => h.reconnects.lock().unwrap().push(info.count),
+            EngineEvent::Metadata(IcyMetadata { title: Some(t) }) => {
+                h.titles.lock().unwrap().push(t)
+            }
             _ => {}
         }
         None
@@ -1389,6 +1890,12 @@ mod session_tests {
             held: Mutex::new(None),
             started: Mutex::new(Vec::new()),
             infos: Mutex::new(Vec::new()),
+            titles: Mutex::new(Vec::new()),
+            decode_thread: String::new(),
+            reconnects: Mutex::new(Vec::new()),
+            supervisor: None,
+            bound_seen: Arc::new(Mutex::new(None)),
+            bound_gap: Arc::new(Mutex::new(None)),
             _rt: tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("runtime"),
@@ -1684,6 +2191,989 @@ mod session_tests {
     fn counting_server_owned(response: Vec<u8>) -> (String, Arc<AtomicUsize>) {
         scripted_server(vec![response])
     }
+
+    // ---- Defect B: the build phase ----
+
+    /// What a paced answer does once its body is sent.
+    #[derive(Clone, Copy, Debug)]
+    enum After {
+        /// Close the connection: the stream ends.
+        Close,
+        /// Keep the connection open and send nothing more: a silent server.
+        Hold,
+    }
+
+    /// One connection's answer: `head` at once, then `body` at `bytes_per_sec` (0: as fast as
+    /// the client reads), then `after`.
+    #[derive(Clone)]
+    struct Answer {
+        head: Vec<u8>,
+        body: Arc<Vec<u8>>,
+        bytes_per_sec: u64,
+        after: After,
+    }
+
+    fn answer(content_type: &str, body: Vec<u8>, bytes_per_sec: u64, after: After) -> Answer {
+        Answer {
+            head: format!(
+                "HTTP/1.0 200 OK\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n"
+            )
+            .into_bytes(),
+            body: Arc::new(body),
+            bytes_per_sec,
+            after,
+        }
+    }
+
+    /// A server that paces its bodies on its own clock and counts what it did: `connections`
+    /// accepted and body bytes `sent`, both only growing, so a wait bounded by either cannot
+    /// be broken by a slow runner (the server's pace is fixed; slowness only means the client
+    /// read less of it). Connection `i` gets `answers[i]`, the last one repeated; each
+    /// connection has its own thread, so a held one never delays the next accept. Dropping it
+    /// ends every held connection.
+    struct Paced {
+        url: String,
+        connections: Arc<AtomicUsize>,
+        sent: Arc<AtomicU64>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl Drop for Paced {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn paced_server(answers: Vec<Answer>) -> Paced {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let sent = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (conns, total, halt) = (connections.clone(), sent.clone(), stop.clone());
+        thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(mut sock) = sock else { break };
+                if halt.load(Ordering::SeqCst) {
+                    break;
+                }
+                let n = conns.fetch_add(1, Ordering::SeqCst);
+                let a = answers[n.min(answers.len() - 1)].clone();
+                let (total, halt) = (total.clone(), halt.clone());
+                thread::spawn(move || {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf);
+                    if sock.write_all(&a.head).is_err() {
+                        return;
+                    }
+                    let started = Instant::now();
+                    let mut at = 0usize;
+                    while at < a.body.len() {
+                        if halt.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        // At most 4 KiB at a time, so `sent` tracks what the client took; paced,
+                        // no more than the pace allows by now.
+                        let mut chunk = (a.body.len() - at).min(4096);
+                        if a.bytes_per_sec > 0 {
+                            let due =
+                                (started.elapsed().as_secs_f64() * a.bytes_per_sec as f64) as usize;
+                            if due <= at {
+                                thread::sleep(Duration::from_millis(5));
+                                continue;
+                            }
+                            chunk = chunk.min(due - at);
+                        }
+                        if sock.write_all(&a.body[at..at + chunk]).is_err() {
+                            return;
+                        }
+                        at += chunk;
+                        total.fetch_add(chunk as u64, Ordering::SeqCst);
+                    }
+                    match a.after {
+                        After::Close => {
+                            let _ = sock.flush();
+                            let _ = sock.shutdown(std::net::Shutdown::Write);
+                            thread::sleep(Duration::from_millis(200));
+                        }
+                        After::Hold => {
+                            while !halt.load(Ordering::SeqCst) {
+                                thread::sleep(Duration::from_millis(50));
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        Paced {
+            url: format!("http://{addr}/stream"),
+            connections,
+            sent,
+            stop,
+        }
+    }
+
+    /// A seeded xorshift64 stream, for fixtures generated in the test (nothing new is
+    /// committed).
+    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed.max(1);
+        move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        }
+    }
+
+    /// F-nosync (defect B Step 0, A7): `len` seeded bytes drawn from `0x00–0x3F`. Every probe
+    /// marker of the formats rodio 0.22 registers holds a byte ≥ `0x40` or `0xFF`, so no reader
+    /// can sync on it by construction, and Symphonia gives up only after its 1 MiB search.
+    fn f_nosync(len: usize) -> Vec<u8> {
+        let mut next = xorshift(0x0DDB_0B5E);
+        (0..len).map(|_| (next() & 0x3F) as u8).collect()
+    }
+
+    /// The false ADTS header of F-falsesync (review A8): LC, sample-rate index 6 (24 000),
+    /// channel configuration 1, `frame_length` 16 — a header whose frame is followed by junk.
+    const FALSE_ADTS: [u8; 7] = [0xFF, 0xF1, 0x58, 0x40, 0x02, 0x1F, 0xFC];
+
+    /// F-falsesync: F-nosync with [`FALSE_ADTS`] planted at 4 096.
+    fn f_falsesync(len: usize) -> Vec<u8> {
+        let mut b = f_nosync(len);
+        b[4096..4096 + FALSE_ADTS.len()].copy_from_slice(&FALSE_ADTS);
+        b
+    }
+
+    /// 128 KiB/s, the pace of the defect B tests (S1's stuck mounts pull 10–28 KB/s; faster
+    /// only shortens the tests, and the bound is on time, not bytes).
+    const PACE: u64 = 128 * 1024;
+
+    /// Every state emitted, in order, up to the first one `done` accepts, or until the server
+    /// has sent `limit` body bytes, or `within` elapses. The byte count is the defect B tests'
+    /// bound: on `main` a stuck build keeps reading, so the wait ends on the count and the
+    /// assertion on the state fails; the count only grows, and at the server's fixed pace a
+    /// slow runner only reaches it later.
+    fn states_until_sent(
+        h: &Harness,
+        sent: &AtomicU64,
+        limit: u64,
+        within: Duration,
+        done: impl Fn(&PlaybackState) -> bool,
+    ) -> Vec<PlaybackState> {
+        let deadline = Instant::now() + within;
+        let mut seen = Vec::new();
+        loop {
+            if sent.load(Ordering::SeqCst) >= limit {
+                grace(h);
+                return seen;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return seen;
+            }
+            if let Some(ev) = next_event(h, left.min(Duration::from_millis(20)))
+                && let Some(s) = record(h, ev)
+            {
+                let hit = done(&s);
+                seen.push(s);
+                if hit {
+                    grace(h);
+                    return seen;
+                }
+            }
+        }
+    }
+
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+
+    /// "The bound fired below 512 KiB": 2 s at [`PACE`] plus the prefetch (32 KiB) is about
+    /// 290 KiB; the slack (almost 2 s at the pace) is for late ticks on a slow runner. The
+    /// unbounded paths read 1 MiB (the search) or never stop.
+    const BOUNDED_BELOW: u64 = 512 * KIB;
+
+    fn ends(s: &PlaybackState) -> bool {
+        is_error(s) || matches!(s, PlaybackState::Reconnecting { .. })
+    }
+
+    /// The final state as `(code, message)`, or a panic naming what the session did instead.
+    fn final_error(seen: &[PlaybackState], sent: u64) -> (ErrorCode, String) {
+        match last(seen) {
+            PlaybackState::Error { code, message } => (code, message),
+            other => panic!("no Error: stopped at {other:?} with {sent} B sent ({seen:?})"),
+        }
+    }
+
+    /// T-B1a′ (defect B C1, at the bound since C2): a session that **produced audio** — 1.5 s
+    /// of WAV, played, then ended — and whose every reconnect answers F-nosync keeps the
+    /// backoff on the reconnect's format failure, as a 404 there does: a mount that once played
+    /// had a valid format. Since C2 the failure is the build bound's `UnsupportedFormat` cause
+    /// (fewer than 512 KiB of F-nosync sent), not Symphonia's 1 MiB search. Fails on `main`'s
+    /// rule, where the arm is terminal whatever came before: `Error { UnsupportedFormat }`
+    /// after the reconnect's search, never `Reconnecting { 2 }`.
+    #[test]
+    fn t_b1a_prime_an_unrecognised_format_after_audio_keeps_the_backoff() {
+        let wav = wav_response(1.5);
+        let wav_len = wav.len() as u64;
+        let server = paced_server(vec![
+            Answer {
+                head: Vec::new(),
+                body: Arc::new(wav),
+                bytes_per_sec: 0,
+                after: After::Close,
+            },
+            answer("audio/mpeg", f_nosync(2 * MIB as usize), PACE, After::Close),
+        ]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until_sent(&h, &server.sent, wav_len + MIB, GUARD, |s| {
+            matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
+        });
+        let nosync_sent = server.sent.load(Ordering::SeqCst) - wav_len;
+        let state = last(&seen);
+        assert!(
+            !is_error(&state),
+            "the reconnect's unrecognised format ended the session: {state:?} ({seen:?})"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            vec![1, 2],
+            "the WAV's end, then the reconnect's format failure, through the backoff ({seen:?})"
+        );
+        assert!(
+            nosync_sent < BOUNDED_BELOW,
+            "the reconnect failed at the bound, not the search: {nosync_sent} B of F-nosync sent"
+        );
+        assert_eq!(
+            *h.started.lock().unwrap(),
+            ["u1"],
+            "one Started, from the WAV"
+        );
+        h.ctx.cancel();
+    }
+
+    /// Review round 7, P1: the B2 fact is "has produced audio", not "has built a decoder".
+    /// The first connection sends a false ADTS header in 8 KiB of junk and closes: `build()`
+    /// returns `Ok` with a decoder that yields nothing (S3's empty `Ok` — the `StreamInfo`
+    /// below is the proof it built), the stream "ends", `Reconnecting { 1 }`. The reconnect
+    /// answers F-falsesync, whose build never ends on its own: the bound's `UnsupportedFormat`
+    /// cause must end the session, since no audio was ever produced. Fails on `main`, where the
+    /// reconnect's build runs unbounded (the wait ends at 1 MiB sent, in `Reconnecting { 1 }`),
+    /// and on a flag set at `build()`'s `Ok`, which reads `Reconnecting { 2 }`.
+    #[test]
+    fn p1_a_decoder_that_built_but_never_produced_audio_does_not_protect_the_session() {
+        let server = paced_server(vec![
+            answer("audio/aac", f_falsesync(8 * KIB as usize), 0, After::Close),
+            answer(
+                "audio/aac",
+                f_falsesync(2 * MIB as usize),
+                PACE,
+                After::Close,
+            ),
+        ]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until_sent(&h, &server.sent, 8 * KIB + MIB, GUARD, |s| {
+            matches!(s, PlaybackState::Reconnecting { attempt: 2 }) || is_error(s)
+        });
+        let sent = server.sent.load(Ordering::SeqCst);
+        assert!(
+            !h.infos.lock().unwrap().is_empty(),
+            "the first connection built a decoder (S3's empty Ok): no StreamInfo in {seen:?}"
+        );
+        assert_eq!(
+            reconnecting(&seen),
+            vec![1],
+            "only the empty stream's end went through the backoff ({seen:?})"
+        );
+        let (code, message) = final_error(&seen, sent);
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message}");
+        assert!(
+            message.contains("first 2 s"),
+            "the bound's cause: {message}"
+        );
+        assert!(h.started.lock().unwrap().is_empty(), "no audio, no Started");
+        h.ctx.cancel();
+    }
+
+    /// T-B1a (defect B C2): F-falsesync as `audio/aac` — S1's shape, a false ADTS header the
+    /// ADTS and MP3 readers resync on for ever (S1: 2.49 MB read, then `Ok` on Stop). The bound
+    /// ends it: `Error { UnsupportedFormat }` naming the bound, one connection, no `Started`.
+    /// Fails on `main`: `Connecting` when the server has sent 1 MiB. Mutations: the bound never
+    /// firing reads the same; the phase checked on `Err` only (not on `Ok`) reads `Buffering`
+    /// with `StreamInfo` 24 000/1 and then `Reconnecting { 1 }` (S3's empty `Ok`); the cause
+    /// rule inverted reads `Reconnecting { 1 }`.
+    #[test]
+    fn t_b1a_a_false_adts_header_is_bounded() {
+        let server = paced_server(vec![answer(
+            "audio/aac",
+            f_falsesync(2 * MIB as usize),
+            PACE,
+            After::Close,
+        )]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until_sent(&h, &server.sent, MIB, GUARD, ends);
+        let sent = server.sent.load(Ordering::SeqCst);
+        let (code, message) = final_error(&seen, sent);
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message}");
+        assert!(
+            message.contains("no decodable audio in the first 2 s")
+                && message.contains("audio/aac"),
+            "the message names the bound and the content type: {message}"
+        );
+        assert!(sent < BOUNDED_BELOW, "{sent} B sent before the bound");
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            1,
+            "one connection"
+        );
+        assert!(
+            h.infos.lock().unwrap().is_empty(),
+            "no decoder: {:?}",
+            h.infos
+        );
+        assert!(h.started.lock().unwrap().is_empty(), "no Started");
+    }
+
+    /// C4b (defect B, review round 10), measured since F1 from the build's first byte: the
+    /// bound counts **elapsed time**, not ticks. Each supervised tick is slowed by 50 ms, a
+    /// 150 ms tick period, and the format bound is 2 s (20 ticks at `TICK_INTERVAL`). The
+    /// supervisor reads the time from the decode thread's first-byte stamp to the tick whose
+    /// swap bounded the build, and counts the ticks that saw it probing with a first byte.
+    ///
+    /// - An elapsed-time bound fires at the first tick at or past 2 s after the stamp: at least
+    ///   2 s and at most one tick period over, after about 14 ticks.
+    /// - A tick-counted bound fires on the 20th tick, about 2.9 s in (recorded failing on
+    ///   `a8585c6` at 2.908 s after 20 ticks).
+    ///
+    /// Asserted: at least the bound, below 1.25 × it (2.5 s), and fewer ticks than 20. The tick
+    /// count cannot be broken by a slow runner, which only makes each tick longer and the count
+    /// smaller.
+    #[test]
+    fn c4b_the_build_bound_counts_elapsed_time_not_ticks() {
+        let server = paced_server(vec![answer(
+            "audio/aac",
+            f_falsesync(2 * MIB as usize),
+            PACE,
+            After::Close,
+        )]);
+        let h = start_session_supervised_slow(&server.url, Duration::from_millis(50));
+        let seen = states_until_sent(&h, &server.sent, MIB, GUARD, ends);
+        let (code, message) = final_error(&seen, server.sent.load(Ordering::SeqCst));
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message}");
+        let _ = states_while_waiting_for(&h, GUARD, || h.bound_seen.lock().unwrap().is_some());
+        let (took, ticks) = h
+            .bound_seen
+            .lock()
+            .unwrap()
+            .expect("the supervisor saw the bound");
+        let ticks_at_interval = (TEST_FORMAT.as_millis() / TICK_INTERVAL.as_millis()) as u32;
+        assert!(
+            took >= TEST_FORMAT,
+            "fired early: {took:?} < {TEST_FORMAT:?} ({ticks} ticks)"
+        );
+        assert!(
+            took < TEST_FORMAT * 5 / 4,
+            "fired at {took:?} after {ticks} slowed ticks: the bound counted ticks, not \
+             {TEST_FORMAT:?}"
+        );
+        assert!(
+            ticks < ticks_at_interval,
+            "{ticks} ticks: a tick-counted bound fires on the {ticks_at_interval}th"
+        );
+    }
+
+    /// Review fixes F1 (e), finding 6: each build carries its own clock, stamped by the decode
+    /// thread, so nothing separates two builds but their seq — not a tick that sees the phase
+    /// between them, not the backoff's ≥ 1 s sleep. A real `Engine` ticked by hand, the builds
+    /// driven through the clock as `run_session` drives it, a 1 s format bound.
+    ///
+    /// 1. Build N gets a first byte, a tick sees it, and it ages past the bound.
+    /// 2. Build N returns (`BUILT`) and build N+1 begins, with **no tick in between**; N+1 is
+    ///    ticked before and after its first byte: still `PROBING` (fails too if `begin_build`
+    ///    keeps N's first-byte stamp). Recorded failing on `da36489` (with the
+    ///    phase stored by hand, the one knob it has): `left: 3` (`BOUND`) — its `probing_since`
+    ///    was kept from build N, since only a tick that saw another phase reset it.
+    /// 3. A bound decided from N's word, after N+1 began: N+1 is still `PROBING` and its
+    ///    download's token is not cancelled. Fails on a swap that compares the phase alone.
+    #[test]
+    fn f1_each_build_carries_its_own_clock() {
+        let format = Duration::from_secs(1);
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let mut ctx = test_ctx(ev_tx);
+        ctx.clock = Arc::new(BuildClock::new(test_bounds(format)));
+        let mut engine = Engine::new(ctx.shared.clone(), "Ondar/test".into());
+        engine.session = Some(ctx.clone());
+        let first_byte = |ctx: &SessionCtx| {
+            let mut r =
+                ClockedReader::new(std::io::Cursor::new(vec![0u8; 4]), ctx.clock.clone(), 0);
+            let mut b = [0u8; 4];
+            r.read_exact(&mut b).expect("read");
+        };
+
+        let n = ctx.clock.begin_build(0, Arc::new(Arrivals::new()));
+        first_byte(&ctx);
+        engine.tick();
+        thread::sleep(format + Duration::from_millis(150));
+        assert_eq!(
+            ctx.clock.finish_build(n),
+            Ok(()),
+            "N returned before any tick bounded it"
+        );
+        let n1 = ctx.clock.begin_build(0, Arc::new(Arrivals::new()));
+        engine.tick();
+        assert_eq!(
+            ctx.clock.word(),
+            n1,
+            "build N+1, before its first byte, read N's stamps"
+        );
+        first_byte(&ctx);
+        engine.tick();
+        assert_eq!(ctx.clock.word(), n1, "build N+1 read build N's clock");
+
+        let token = CancellationToken::new();
+        *ctx.download.lock().unwrap() = Some(token.clone());
+        let inputs = ctx.clock.inputs(0);
+        Engine::fail_build(&ctx, n, BuildCause::Format, &inputs);
+        assert_eq!(ctx.clock.word(), n1, "a decision about N bounded N+1");
+        assert!(
+            !token.is_cancelled(),
+            "a decision about N cancelled N+1's download"
+        );
+    }
+
+    /// T-B1b (defect B C2): F-nosync as `audio/mpeg`. On `main` Symphonia refuses it only after
+    /// its 1 MiB search, 8 s at the pace; the bound sits below that. Fails on `main`: the wait
+    /// ends at 1 MiB sent, before the search's `Error` (and that error does not name the
+    /// bound). Mutation: the bound never firing reads the same.
+    #[test]
+    fn t_b1b_no_marker_is_bounded_below_the_search() {
+        let server = paced_server(vec![answer(
+            "audio/mpeg",
+            f_nosync(2 * MIB as usize),
+            PACE,
+            After::Close,
+        )]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until_sent(&h, &server.sent, MIB, GUARD, ends);
+        let sent = server.sent.load(Ordering::SeqCst);
+        let (code, message) = final_error(&seen, sent);
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message}");
+        assert!(
+            message.contains("first 2 s"),
+            "the bound's cause: {message}"
+        );
+        assert!(sent < BOUNDED_BELOW, "{sent} B sent before the bound");
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            1,
+            "one connection"
+        );
+    }
+
+    /// T-B1c (defect B C2): a silent server — 96 KiB of F-nosync, then nothing, and every
+    /// connection re-sent from byte 0 (S1 (iii): stream-download's internal reconnect re-feeds
+    /// it every `retry_timeout`, so bytes keep "arriving" and `read_timeout` never fires). The
+    /// cause is the network, not the format: at the bound the internal reconnect count has
+    /// moved (and the bytes stopped for `retry_timeout` between re-feeds) → `Reconnecting { 1 }`,
+    /// no `Error`. The bound here is the production relation,
+    /// `max(2 s, 3 × retry_timeout)` = 15 s at the default 5 s (review P2), because the cause
+    /// needs the re-feeds; `ONDAR_RETRY_TIMEOUT_SECS` is resolved once per process, so it
+    /// cannot be shortened per test. Fails on `main`: `Error { UnsupportedFormat }` when the
+    /// re-fed scan reaches 1 MiB, about 50 s in (the wrong cause). Mutations: a cause rule
+    /// "bytes flowing ⇒ format" reads `Error { UnsupportedFormat }`; so does the phase checked
+    /// after the `UnrecognizedFormat` arm.
+    #[test]
+    fn t_b1c_a_silent_server_is_a_network_cause() {
+        let bound = (stream::retry_timeout() * 3).max(Duration::from_secs(2));
+        let server = paced_server(vec![answer(
+            "audio/mpeg",
+            f_nosync(96 * KIB as usize),
+            0,
+            After::Hold,
+        )]);
+        let h = start_session_bounded(&server.url, None, test_bounds(bound));
+        let seen = states_until_sent(&h, &server.sent, MIB, Duration::from_secs(90), ends);
+        let sent = server.sent.load(Ordering::SeqCst);
+        let state = last(&seen);
+        assert_eq!(
+            state,
+            PlaybackState::Reconnecting { attempt: 1 },
+            "{sent} B sent ({seen:?})"
+        );
+        assert!(
+            !h.reconnects.lock().unwrap().is_empty(),
+            "the internal reconnect ran during the build"
+        );
+        assert!(
+            server.connections.load(Ordering::SeqCst) >= 2,
+            "the server saw the re-feed"
+        );
+        // Review 2, G1: the bound was decided on a real arrival gap, the server's silence up to
+        // stream-download's idle timeout — not on a read's fill time.
+        let gap = h.bound_gap.lock().unwrap().expect("the bound's tick");
+        assert!(gap >= stream::retry_timeout(), "decided on a {gap:?} gap");
+        h.ctx.cancel();
+    }
+
+    /// T-B1d (defect B C2): F-nosync with an MP3 frame header `FF FB 90 C4` planted at 4 096,
+    /// as `audio/mpeg` — the MP3 demuxer's unbounded "skipping junk" resync (Amendment 3; every
+    /// stuck live mount in S2 was caught this way). The bound is reader-agnostic. Fails on
+    /// `main`: `Connecting` at 1 MiB sent. Mutation: the bound never firing reads the same.
+    #[test]
+    fn t_b1d_an_mp3_resync_is_bounded() {
+        let mut body = f_nosync(2 * MIB as usize);
+        body[4096..4100].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC4]);
+        let server = paced_server(vec![answer("audio/mpeg", body, PACE, After::Close)]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until_sent(&h, &server.sent, MIB, GUARD, ends);
+        let sent = server.sent.load(Ordering::SeqCst);
+        let (code, message) = final_error(&seen, sent);
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message}");
+        assert!(
+            message.contains("first 2 s"),
+            "the bound's cause: {message}"
+        );
+        assert!(sent < BOUNDED_BELOW, "{sent} B sent before the bound");
+    }
+
+    // ---- Defect B, review fixes F1: the build clock ----
+
+    /// A connection accepted, its request read, and never answered: a reconnect that hangs.
+    fn mute() -> Answer {
+        Answer {
+            head: Vec::new(),
+            body: Arc::new(Vec::new()),
+            bytes_per_sec: 0,
+            after: After::Hold,
+        }
+    }
+
+    /// F1 (a), finding 1: a reconnect that **hangs** is the network, not the format. The first
+    /// connection sends 40 KiB of F-nosync as `audio/mpeg` (above the 32 KiB prefetch, so the
+    /// build has a first byte) and holds; every later connection is accepted and never answered.
+    /// stream-download's reconnect is cut by its own `retry_timeout` and never calls
+    /// `on_reconnect` (0.24.4 `source/mod.rs:272–287`), so the count stays at 0 — the gap
+    /// decides. The format bound is T-B1c's 15 s, since the gap must reach `retry_timeout`
+    /// inside it. Asserted: `Reconnecting { 1 }`; no `Reconnect` event (this is the hung case,
+    /// not T-B1c's); a reconnect was attempted. Recorded failing on `da36489`: `Error {
+    /// UnsupportedFormat, "no decodable audio in the first 15 s of the stream (audio/mpeg)" }`,
+    /// terminal. Mutation: the longest gap dropped from the rule reads the same. ~16 s.
+    #[test]
+    fn f1_a_hung_reconnect_is_a_network_cause() {
+        let format = (stream::retry_timeout() * 3).max(Duration::from_secs(2));
+        let server = paced_server(vec![
+            answer("audio/mpeg", f_nosync(40 * KIB as usize), 0, After::Hold),
+            mute(),
+        ]);
+        let h = start_session_bounded(&server.url, None, test_bounds(format));
+        let seen = states_until(&h, Duration::from_secs(60), ends);
+        assert_eq!(
+            last(&seen),
+            PlaybackState::Reconnecting { attempt: 1 },
+            "{seen:?}"
+        );
+        assert!(
+            h.reconnects.lock().unwrap().is_empty(),
+            "an internal reconnect completed: {:?}",
+            h.reconnects
+        );
+        assert!(
+            server.connections.load(Ordering::SeqCst) >= 2,
+            "a reconnect was attempted"
+        );
+        assert!(
+            build_lines(&h)
+                .iter()
+                .any(|l| l.contains("the connection stalled")),
+            "{:?}",
+            build_lines(&h)
+        );
+        h.ctx.cancel();
+    }
+
+    // ---- Defect B, review 2, G1: starvation on network arrival ----
+
+    /// G1, review 2 finding 1: an unsyncable body served **steadily** at 32 kbit/s (4 000 B/s,
+    /// in the paced server's small writes), no ICY metadata, never pausing, is a format cause:
+    /// terminal `Error { UnsupportedFormat }` at the format bound, no `Reconnecting`, one
+    /// connection, and the bound decided on a longest gap under 1 s. A 4 KiB prefetch, the
+    /// production `starved` (5 s) and T-B1c's 15 s format bound. On `688c9fd` the gaps were
+    /// per-read times, and Symphonia's 32 KiB read takes 8.2 s at this rate, so the build read
+    /// `Starved` and backed off. ~16 s.
+    #[test]
+    fn g1_a_steady_32_kbit_unsyncable_is_a_format_cause() {
+        const RATE: u64 = 4_000;
+        let server = paced_server(vec![answer(
+            "audio/mpeg",
+            f_nosync(256 * KIB as usize),
+            RATE,
+            After::Hold,
+        )]);
+        g1_assert_format_cause(&server, "audio/mpeg");
+    }
+
+    /// G1, review 2 finding 1, behind ICY metadata: the same body at 20 kbit/s (2 500 B/s) with
+    /// `icy-metaint: 16000`, where `IcyReader` caps a read at 16 000 B — 6.4 s per read at this
+    /// rate (at the finding's ~26 kbit/s a read takes 4.9 s and `688c9fd` would pass, proving
+    /// nothing). The same assertions as (a). ~16 s.
+    #[test]
+    fn g1_b_icy_16000_below_26_kbit_is_a_format_cause() {
+        let server = paced_server(vec![Answer {
+            bytes_per_sec: 2_500,
+            ..icy_answer(
+                "audio/mpeg",
+                16_000,
+                with_metaint(&f_nosync(256 * KIB as usize), 16_000, "Artist - Title"),
+            )
+        }]);
+        g1_assert_format_cause(&server, "audio/mpeg");
+    }
+
+    fn g1_assert_format_cause(server: &Paced, content_type: &str) {
+        let format = (stream::retry_timeout() * 3).max(Duration::from_secs(2));
+        let h = start_session_bounded(&server.url, Some(4 * KIB), test_bounds(format));
+        let seen = states_until(&h, Duration::from_secs(60), ends);
+        let sent = server.sent.load(Ordering::SeqCst);
+        let (code, message) = final_error(&seen, sent);
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message} ({seen:?})");
+        assert_eq!(
+            message,
+            format!(
+                "no decodable audio in the first {} of the stream ({content_type})",
+                format_secs(format)
+            )
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|s| matches!(s, PlaybackState::Reconnecting { .. })),
+            "{seen:?}"
+        );
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            1,
+            "one connection"
+        );
+        let gap = h.bound_gap.lock().unwrap().expect("the bound's tick");
+        assert!(gap < Duration::from_secs(1), "decided on a {gap:?} gap");
+        h.ctx.cancel();
+    }
+
+    /// F1 (b), finding 2: a slow healthy stream whose prefetch outlasts the format bound plays,
+    /// because the bound counts from the first byte, not from `open`. The finding's shape
+    /// scaled by 1/10: there, an 80 000 B prefetch at 3 KB/s is 26.7 s against 20 s; here a
+    /// tone WAV at 8 kHz mono 16-bit (16 000 B/s) paced at that rate with no burst, a 64 000 B
+    /// prefetch (4 s to meet), a 2 s format bound and an 8 s no-bytes bound. Recorded failing
+    /// on `da36489`: `Error { UnsupportedFormat, "no decodable audio in the first 2 s of the
+    /// stream (audio/wav)" }`, terminal, never `Playing`. Mutation: the format bound also run
+    /// before the first byte, from the build's start (`da36489`'s clock), reads the same. (The
+    /// format bound read from the build's start only once a first byte exists survives here —
+    /// the WAV builds within microseconds of its first byte, before any tick — and is pinned by
+    /// `format_fires_at_its_bound_from_the_first_byte_and_not_before`.)
+    #[test]
+    fn f1_an_overstated_bitrate_on_a_slow_stream_plays() {
+        const RATE: u64 = 16_000;
+        let wav = tone_wav_response(8_000, 1, 440.0, 30.0);
+        let server = paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(wav),
+            bytes_per_sec: RATE,
+            after: After::Hold,
+        }]);
+        let h = start_session_bounded(
+            &server.url,
+            Some(4 * RATE),
+            BuildBounds {
+                format: TEST_FORMAT,
+                starved: stream::retry_timeout(),
+                no_bytes: Duration::from_secs(8),
+            },
+        );
+        let seen = states_until(&h, GUARD, is_playing_or_ended);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        assert_eq!(*h.infos.lock().unwrap(), [(8_000, 1)]);
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), ["u1"], "one Started");
+        h.ctx.cancel();
+    }
+
+    /// F1 (c), finding 3: an HLS session whose segments stall before the prefetch is met is the
+    /// network. A static live window of five 10 s segments; the first fetched (seq 3, three
+    /// from the end) is station 10's head alone, below the 32 KiB prefetch; every later segment
+    /// request sleeps 15 s (the routed server is serial, so the host stalls as a dead network
+    /// does). No byte reaches the decoder, and HLS's `retry_timeout` (≥ 55 s) means no internal
+    /// reconnect either: the no-bytes bound (3 s here) ends the build as the network.
+    /// Recorded failing on `da36489`: `Error { UnsupportedFormat, "no decodable audio in the
+    /// first 2 s of the stream (audio/aac)" }`, terminal. Mutation: `NoBytes` mapped to
+    /// `Format` reads an `Error`.
+    #[test]
+    fn f1_an_hls_stall_before_the_first_byte_is_a_network_cause() {
+        let head = fixture("10-seg-head.aac");
+        assert!(
+            (head.len() as u64) < stream::PREFETCH_FLOOR_BYTES,
+            "the first segment must not meet the prefetch"
+        );
+        let playlist = live_playlist(10, 10.0, 1, 5, Duration::from_secs(40));
+        let (base, paths) = routed_server(move |path| {
+            if path == "/live/playlist.m3u8" {
+                return Some(routed(
+                    "application/vnd.apple.mpegurl",
+                    playlist.clone().into_bytes(),
+                ));
+            }
+            let seq = seg_seq(path)?;
+            if seq > 3 {
+                thread::sleep(Duration::from_secs(15));
+            }
+            Some(routed("audio/aac", head.clone()))
+        });
+        let h = start_session_bounded(
+            &format!("{base}/live/playlist.m3u8"),
+            None,
+            BuildBounds {
+                format: TEST_FORMAT,
+                starved: stream::retry_timeout(),
+                no_bytes: Duration::from_secs(3),
+            },
+        );
+        let seen = states_until(&h, GUARD, ends);
+        assert_eq!(
+            last(&seen),
+            PlaybackState::Reconnecting { attempt: 1 },
+            "{seen:?}"
+        );
+        assert!(
+            paths
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.ends_with("seg-3.aac")),
+            "the open fetched the first segment"
+        );
+        assert!(
+            build_lines(&h)
+                .iter()
+                .any(|l| l.contains("no audio arrived within 3 s of connecting")),
+            "{:?}",
+            build_lines(&h)
+        );
+        assert!(h.infos.lock().unwrap().is_empty(), "no decoder");
+        h.ctx.cancel();
+    }
+
+    // ---- Defect B, review fixes F2: a cancelled build emits nothing ----
+
+    /// F2 (finding 5): a build the **user** cancelled (Stop, or `play` of another station)
+    /// emits nothing. Session A builds on 8 KiB of F-falsesync (served as `audio/mpeg`, then
+    /// held) with a 4 KiB prefetch, so its decoder has read the false header and waits for
+    /// more. (Reshaped before the fix: as `audio/aac` the ADTS front end holds the 8 KiB, the
+    /// decoder has read nothing, and the cancel makes `build()` return `UnrecognizedFormat`,
+    /// not the empty `Ok`; `application/octet-stream` does the same, `audio/mpeg` and an
+    /// unknown type give the `Ok`.) Then B is
+    /// played as `Engine::play` does it — A cancelled, B's session begun, `Connecting`. After a
+    /// cancel `build()` returns an empty `Ok` (Step 0, S3), and `StreamInfo` is not
+    /// generation-gated, so A's would land on B's row. B never builds, as a server that never
+    /// answers, so any `StreamInfo` after B's play is A's. (B's `Connecting` sends no event
+    /// here: the state is already `Connecting`, as it is in production when A was still
+    /// connecting; the boundary is read at the cancel.) The events are read after A's decode thread has exited
+    /// (its handle on the context dropped), never inside a window. Recorded failing on
+    /// `da36489`: see the F2 commit. Mutation: the check placed after the `StreamInfo` emit
+    /// reads the same.
+    #[test]
+    fn f2_a_cancelled_build_emits_no_stream_info() {
+        let server = paced_server(vec![answer(
+            "audio/mpeg",
+            f_falsesync(8 * KIB as usize),
+            0,
+            After::Hold,
+        )]);
+        let h = start_session_with(&server.url, None, Some(4 * KIB), None);
+        let _ = states_while_waiting_for(&h, GUARD, || {
+            server.sent.load(Ordering::SeqCst) >= 8 * KIB
+                && build::phase_of(h.ctx.clock.word()) == build::phase::PROBING
+        });
+        // Shape only, never the claim: let the decoder read the 8 KiB it was sent, so the
+        // cancel meets a decoder past the false header (S3's empty `Ok`).
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            h.infos.lock().unwrap().is_empty(),
+            "A had not built before B"
+        );
+        // Everything A sent so far is before B; A cannot emit `StreamInfo` without `build()`
+        // returning, which on this held body takes the cancel.
+        while h.events.try_recv().is_ok() {}
+
+        h.ctx.cancel();
+        let _b = h.ctx.shared.begin_session("u2".into());
+        h.ctx.shared.set_state(PlaybackState::Connecting);
+
+        let deadline = Instant::now() + GUARD;
+        while Arc::strong_count(&h.ctx.cancel) > 1 {
+            assert!(Instant::now() < deadline, "A's decode thread did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let after_b: Vec<String> = h.events.try_iter().map(|ev| format!("{ev:?}")).collect();
+        assert!(
+            !after_b.iter().any(|e| e.starts_with("StreamInfo")),
+            "A's StreamInfo landed after B's play: {after_b:?}"
+        );
+    }
+
+    // ---- Defect B C4: the ADTS front end, wired ----
+
+    /// Station 02's head after its ID3 tag: 16 whole `FFF9` frames, 24 000/1.
+    fn frames_02() -> Vec<u8> {
+        let head = fixture("02-seg-head.aac");
+        let body = head[test_id3_end(&head)..].to_vec();
+        assert_eq!(crate::hls::segment::normalise_adts(&body).frames, 16);
+        body
+    }
+
+    /// `audio` with an ICY metadata block after every `metaint` bytes: `StreamTitle` in the
+    /// first, empty ones after (a length byte of 0), none after a short tail.
+    fn with_metaint(audio: &[u8], metaint: usize, title: &str) -> Vec<u8> {
+        let mut block = format!("StreamTitle='{title}';").into_bytes();
+        block.resize(block.len().div_ceil(16) * 16, 0);
+        let mut out = Vec::new();
+        for (i, chunk) in audio.chunks(metaint).enumerate() {
+            out.extend_from_slice(chunk);
+            if chunk.len() == metaint {
+                if i == 0 {
+                    out.push((block.len() / 16) as u8);
+                    out.extend_from_slice(&block);
+                } else {
+                    out.push(0);
+                }
+            }
+        }
+        out
+    }
+
+    fn icy_answer(content_type: &str, metaint: usize, body: Vec<u8>) -> Answer {
+        Answer {
+            head: format!(
+                "HTTP/1.0 200 OK\r\ncontent-type: {content_type}\r\nicy-metaint: {metaint}\r\n\r\n"
+            )
+            .into_bytes(),
+            body: Arc::new(body),
+            bytes_per_sec: 0,
+            after: After::Hold,
+        }
+    }
+
+    /// How long the `FFF9` body is: 64 × 16 frames, about 44 s of audio and above the 32 KiB
+    /// prefetch, so the open returns while the server holds the connection, as a live mount.
+    const REPEATS_02: usize = 64;
+
+    fn is_playing_or_ended(s: &PlaybackState) -> bool {
+        *s == PlaybackState::Playing || ends(s)
+    }
+
+    /// T-B2a (defect B C4): an Icecast `audio/aac` mount sending `FFF9` frames (station 02's,
+    /// repeated), with `icy-metaint: 1024` and a `StreamTitle` in the first block. The front
+    /// end aligns at 0 and rewrites every header: `Playing`, `StreamInfo` 24 000/1, one
+    /// `Started`, one title. On `d1b127b` the build never ends (S1 (i): `Connecting` for 150 s
+    /// live). Mutations: the front end off → the build bound's `Error { UnsupportedFormat }`;
+    /// the front end placed **before** `IcyReader` (review P4) → not both a `Metadata` event
+    /// and `Playing`.
+    #[test]
+    fn t_b2a_an_fff9_icecast_mount_plays_through_the_front_end() {
+        let audio = frames_02().repeat(REPEATS_02);
+        let server = paced_server(vec![icy_answer(
+            "audio/aac",
+            1024,
+            with_metaint(&audio, 1024, "Artist - Title"),
+        )]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until(&h, GUARD, is_playing_or_ended);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), ["u1"], "one Started");
+        assert_eq!(
+            *h.infos.lock().unwrap(),
+            [(24_000, 1)],
+            "the rewritten headers' format"
+        );
+        assert_eq!(
+            *h.titles.lock().unwrap(),
+            ["Artist - Title"],
+            "the metadata block reached IcyReader"
+        );
+        assert_eq!(adts_lines(&h), ["adts front end: aligned at 0 B"]);
+        h.ctx.cancel();
+    }
+
+    /// T-B2b (defect B C4): the same `FFF9` body, starting 100 B into its first frame, with an
+    /// MP3 frame header `FF FB 90 C4` planted 10 B into that partial — S2's live shape, where
+    /// the probe met a false MP3 marker first and resynced for ever. The front end realigns to
+    /// the first whole header: `Playing` at 24 000/1, one `Started`, `aligned at` the partial's
+    /// length. On `d1b127b`: never `Playing` (the MP3 marker wins). Mutation: realign off (a
+    /// rewrite only at offset 0) → the build bound's `Error`.
+    #[test]
+    fn t_b2b_a_mid_frame_fff9_start_with_a_false_mp3_marker_realigns() {
+        let frames = frames_02();
+        let len1 = crate::hls::segment::frame_length(frames.first_chunk().expect("a header"));
+        let mut body = frames.repeat(REPEATS_02)[100..].to_vec();
+        body[10..14].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC4]);
+        let server = paced_server(vec![answer("audio/aac", body, 0, After::Hold)]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until(&h, GUARD, is_playing_or_ended);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), ["u1"], "one Started");
+        assert_eq!(*h.infos.lock().unwrap(), [(24_000, 1)]);
+        assert_eq!(
+            adts_lines(&h),
+            [format!("adts front end: aligned at {} B", len1 - 100)]
+        );
+        h.ctx.cancel();
+    }
+
+    /// F4 (finding 7): T-B2b's shape — station 02's `FFF9` frames, held open — served as
+    /// `audio/x-aac`, a type real servers send (Antena 1's HLS segments, `m3c-plan.md:769`).
+    /// The front end aligns at 0: `Playing` at 24 000/1, one `Started`. Recorded failing on
+    /// `da36489` (see the F4 commit): no front end, so the build bound's `Error`.
+    #[test]
+    fn f4_an_x_aac_fff9_mount_plays() {
+        let body = frames_02().repeat(REPEATS_02);
+        let server = paced_server(vec![answer("audio/x-aac", body, 0, After::Hold)]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until(&h, GUARD, is_playing_or_ended);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        let _ = await_started(&h);
+        assert_eq!(*h.started.lock().unwrap(), ["u1"], "one Started");
+        assert_eq!(*h.infos.lock().unwrap(), [(24_000, 1)]);
+        assert_eq!(adts_lines(&h), ["adts front end: aligned at 0 B"]);
+        h.ctx.cancel();
+    }
+
+    /// Which streams get the front end: HTTP `audio/aac`, `audio/aacp` and (review fixes F4,
+    /// finding 7) `audio/x-aac`, in any case and with parameters; never another type — not
+    /// `audio/x-aiff`, whose prefix `audio/x-a` a loose match would take — a missing one, or
+    /// the HLS source (review P3). Fails on `da36489` at `audio/x-aac`.
+    #[test]
+    fn the_front_end_applies_to_http_aac_only() {
+        use stream::SourceKind::{Hls, Http};
+        for ct in [
+            "audio/aac",
+            "audio/aacp",
+            "Audio/AAC",
+            "audio/aacp; charset=x",
+            "audio/x-aac",
+            "AUDIO/X-AAC; charset=x",
+        ] {
+            assert!(wants_adts_front_end(Http, Some(ct)), "{ct}");
+            assert!(!wants_adts_front_end(Hls, Some(ct)), "HLS, {ct}");
+        }
+        for ct in [
+            Some("audio/mpeg"),
+            Some("audio/x-aiff"),
+            Some("application/ogg"),
+            None,
+        ] {
+            assert!(!wants_adts_front_end(Http, ct), "{ct:?}");
+        }
+    }
+
     // ---- Defect A: every session plays at its own rate and channel count ----
 
     /// An HTTP 200 carrying `secs` of a 16-bit sine at `hz`, amplitude 0.5, `channels` identical
@@ -1776,6 +3266,9 @@ mod session_tests {
                 backoff: Arc::new(Mutex::new(Backoff::default())),
                 reconnect_count: Arc::new(AtomicU64::new(0)),
                 generation,
+                clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(
+                    stream::prefetch_bytes(None),
+                ))),
                 shared: shared.clone(),
             };
             shared.set_state(PlaybackState::Connecting);
@@ -2143,6 +3636,12 @@ mod session_tests {
             vec!["u1".to_string()],
             "one Started"
         );
+        // Review 2, G1: `hls::open` attaches the arrival clock (no other test sees its wiring;
+        // fails with its `on_progress` removed).
+        assert!(
+            h.ctx.clock.arrivals().is_some_and(|a| a.any()),
+            "no arrival stamped on the HLS open"
+        );
         let h_paths = paths;
         let paths = h_paths.lock().unwrap().clone();
         assert_eq!(
@@ -2317,6 +3816,14 @@ mod session_tests {
         );
         let _ = await_started(&h);
         assert_eq!(*h.started.lock().unwrap(), vec!["u1".to_string()]);
+        // Review P3 (defect B C4): the segments are `audio/aac`, so a content-type filter would
+        // put the front end on this HLS session too; the source kind keeps it off. Fails with
+        // `wants_adts_front_end` ignoring the kind ("adts front end: aligned at 0 B").
+        assert_eq!(
+            adts_lines(&h),
+            Vec::<String>::new(),
+            "an HLS session gets no ADTS front end"
+        );
         h.ctx.cancel();
     }
 
@@ -2512,6 +4019,7 @@ mod session_tests {
             &client,
             url,
             Arc::new(AtomicU64::new(0)),
+            Arc::new(Arrivals::new()),
             stream::PREFETCH_FLOOR_BYTES,
         )) {
             Ok(_) => panic!("open succeeded with every start segment gone"),
@@ -2807,6 +4315,9 @@ mod started_tests {
             backoff: Arc::new(Mutex::new(Backoff::default())),
             reconnect_count: Arc::new(AtomicU64::new(0)),
             generation,
+            clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(
+                stream::prefetch_bytes(None),
+            ))),
             shared: s.clone(),
         }
     }
@@ -2828,6 +4339,78 @@ mod started_tests {
     }
 
     use PlaybackState::{Buffering, Connecting, Paused, Playing, Reconnecting};
+
+    /// A `StreamInfo` as the decode thread emits it, tagged by `station_name` for the reader.
+    fn info(tag: &str) -> EngineEvent {
+        EngineEvent::StreamInfo(StreamInfo {
+            content_type: None,
+            bitrate_kbps: None,
+            station_name: Some(tag.into()),
+            sample_rate: 48_000,
+            channels: 2,
+        })
+    }
+
+    /// Every `StreamInfo` and `Metadata` on the channel, as `info:<tag>` and `title:<title>`.
+    fn session_events(rx: &Receiver<EngineEvent>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                EngineEvent::StreamInfo(i) => {
+                    out.push(format!("info:{}", i.station_name.unwrap_or_default()))
+                }
+                EngineEvent::Metadata(m) => {
+                    out.push(format!("title:{}", m.title.unwrap_or_default()))
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Review 2, G2 (finding 2): a session event from a session that is over never reaches the
+    /// channel — decided under the session lock, as a state write is. Deterministic: the
+    /// interleaving the finding names (a cancel between F2's check and the emit) leaves the
+    /// decode thread emitting with a generation that is no longer live, and that is what is
+    /// driven here, for `StreamInfo` and for the ICY title callback. Session 1's events after
+    /// session 2 began, and session 2's after its own cancel with no successor (a Stop), are
+    /// dropped; session 2's while live land. Recorded failing on `688c9fd` through a shim of
+    /// `SessionCtx::emit` and `title_sink` as pass-throughs to the ungated `Shared::emit` (the
+    /// code there): `["info:A", "title:A"]` on the channel. Fails with the generation check
+    /// removed from `emit_from`.
+    #[test]
+    fn g2_a_stale_session_emits_nothing() {
+        let (s, rx) = shared();
+        let a = ctx(&s, s.begin_session("u1".into()));
+        let mut a_title = title_sink(&a);
+        let b = ctx(&s, s.begin_session("u2".into()));
+        let mut b_title = title_sink(&b);
+
+        a.emit(info("A"));
+        a_title("A".into());
+        assert_eq!(
+            session_events(&rx),
+            Vec::<String>::new(),
+            "session 1 is over"
+        );
+
+        b.emit(info("B"));
+        b_title("B".into());
+        assert_eq!(
+            session_events(&rx),
+            ["info:B", "title:B"],
+            "session 2 is live"
+        );
+
+        b.cancel();
+        b.emit(info("B2"));
+        b_title("B2".into());
+        assert_eq!(
+            session_events(&rx),
+            Vec::<String>::new(),
+            "session 2 was stopped"
+        );
+    }
 
     /// Fails if the flag is missing (four `Started`), or if the decision looks at the previous
     /// state instead of the flag (a resume or a reconnect's `Playing` would count).
@@ -3213,6 +4796,226 @@ mod tick_tests {
             },
         );
         assert_ne!(out.transition, Some(Transition::FailSession));
+    }
+
+    // ---- Defect B: the build bound ----
+
+    // Review fixes F1: the rule's truth table, on durations as `Engine::tick` reads them from
+    // the decode thread's stamps. Each boundary is a pair of rows; each row names the mutation
+    // that fails it.
+
+    const S: fn(u64) -> Duration = Duration::from_secs;
+    const MS: fn(u64) -> Duration = Duration::from_millis;
+
+    fn bounds() -> BuildBounds {
+        BuildBounds {
+            format: S(20),
+            starved: S(5),
+            no_bytes: S(60),
+        }
+    }
+
+    /// A build `since_start` in, with its first byte `since_first_byte` ago, the longest gap
+    /// and the completed reconnects given.
+    fn building(
+        since_start: Duration,
+        since_first_byte: Option<Duration>,
+        longest_gap: Duration,
+        reconnects: u64,
+    ) -> TickInputs {
+        TickInputs {
+            build: Some(BuildInputs {
+                since_start,
+                since_first_byte,
+                longest_gap,
+                reconnects,
+                bounds: bounds(),
+            }),
+            ..ti()
+        }
+    }
+
+    fn decide(inputs: TickInputs) -> Option<Transition> {
+        decide_tick(&PlaybackState::Connecting, inputs).transition
+    }
+
+    /// Before the first byte, only the no-bytes bound: at it → `NoBytes`; 1 ms before → none.
+    /// Fails on `>` for `>=`, or on the bound counted from anything but the build's start.
+    #[test]
+    fn no_bytes_fires_at_its_bound_and_not_before() {
+        assert_eq!(
+            decide(building(S(60), None, S(0), 0)),
+            Some(Transition::FailBuild(BuildCause::NoBytes))
+        );
+        assert_eq!(decide(building(S(60) - MS(1), None, S(0), 0)), None);
+    }
+
+    /// Before the first byte the format bound does not run, however long the build: the
+    /// prefetch is not the format's time (finding 2). Fails if the format bound is read from
+    /// the build's start.
+    #[test]
+    fn nothing_but_no_bytes_runs_before_the_first_byte() {
+        assert_eq!(decide(building(S(59), None, S(0), 3)), None);
+    }
+
+    /// No-bytes is always the network, even with reconnects and no gap. Fails if the cause is
+    /// shared with the format arm.
+    #[test]
+    fn no_bytes_is_never_the_format() {
+        assert_eq!(
+            decide(building(S(61), None, S(0), 0)),
+            Some(Transition::FailBuild(BuildCause::NoBytes))
+        );
+    }
+
+    /// From the first byte, the format bound: at it with bytes flowing → `Format`; 1 ms
+    /// before → none. Fails on `>` for `>=`, or on the bound counted from the build's start
+    /// (these rows start 30 s in: that reading fires in the second).
+    #[test]
+    fn format_fires_at_its_bound_from_the_first_byte_and_not_before() {
+        assert_eq!(
+            decide(building(S(50), Some(S(20)), MS(200), 0)),
+            Some(Transition::FailBuild(BuildCause::Format))
+        );
+        assert_eq!(
+            decide(building(S(50), Some(S(20) - MS(1)), MS(200), 0)),
+            None
+        );
+    }
+
+    /// At the format bound, a gap of `starved` → `Starved`; 1 ms below → `Format`. Fails on
+    /// `>` for `>=`, or with the gap dropped from the rule.
+    #[test]
+    fn a_gap_of_starved_is_the_network() {
+        assert_eq!(
+            decide(building(S(20), Some(S(20)), S(5), 0)),
+            Some(Transition::FailBuild(BuildCause::Starved))
+        );
+        assert_eq!(
+            decide(building(S(20), Some(S(20)), S(5) - MS(1), 0)),
+            Some(Transition::FailBuild(BuildCause::Format))
+        );
+    }
+
+    /// A completed internal reconnect is the network with no gap (T-B1c's re-feed). Fails with
+    /// the reconnect clause dropped.
+    #[test]
+    fn a_completed_reconnect_is_the_network() {
+        assert_eq!(
+            decide(building(S(20), Some(S(20)), S(0), 1)),
+            Some(Transition::FailBuild(BuildCause::Starved))
+        );
+    }
+
+    /// `Engine::tick` hands over the longest gap with the open one included, so a stall that
+    /// is still open at the bound and one that resumed just before it read alike: here the
+    /// rule sees the longest gap whatever its origin — `BuildClock::inputs` takes the max,
+    /// pinned in `build::tests`. Fails if the rule reads only a gap below `starved`.
+    #[test]
+    fn a_stall_that_resumed_before_the_bound_is_the_network() {
+        assert_eq!(
+            decide(building(S(22), Some(S(20)), S(10), 0)),
+            Some(Transition::FailBuild(BuildCause::Starved))
+        );
+    }
+
+    /// A pause during `Connecting` sets `Paused` while the decode thread is still building;
+    /// the build is no less stuck. Fails with the arm placed after the `user_paused` arm, which
+    /// returns first.
+    #[test]
+    fn build_bound_fires_while_user_paused() {
+        let out = decide_tick(
+            &PlaybackState::Paused,
+            TickInputs {
+                user_paused: true,
+                ..building(S(20), Some(S(20)), S(0), 0)
+            },
+        );
+        assert_eq!(
+            out.transition,
+            Some(Transition::FailBuild(BuildCause::Format))
+        );
+    }
+
+    /// Only a build is bounded: with `build` `None` the ring's arms decide.
+    #[test]
+    fn build_bound_does_not_fire_without_a_build() {
+        assert_eq!(decide(ti()), None);
+    }
+
+    /// The outcome the decode thread names: the format is terminal only before audio, the two
+    /// network causes never; the messages carry the bound and the cause. Fails on a terminal
+    /// network cause, or the format's message changed (acceptance X1 reads it on the page).
+    #[test]
+    fn the_bound_outcomes() {
+        let build = |gap: Duration, reconnects: u64| BuildInputs {
+            since_start: S(25),
+            since_first_byte: Some(S(20)),
+            longest_gap: gap,
+            reconnects,
+            bounds: bounds(),
+        };
+        let (code, message, terminal) = build_bound_cause(
+            BuildCause::Format,
+            &build(S(0), 0),
+            Some("audio/aac"),
+            false,
+        );
+        assert_eq!(
+            (code, message.as_str(), terminal),
+            (
+                ErrorCode::UnsupportedFormat,
+                "no decodable audio in the first 20 s of the stream (audio/aac)",
+                true
+            )
+        );
+        assert!(!build_bound_cause(BuildCause::Format, &build(S(0), 0), None, true).2);
+        let (code, message, terminal) =
+            build_bound_cause(BuildCause::Starved, &build(MS(5_400), 3), None, false);
+        assert_eq!(
+            (code, message.as_str(), terminal),
+            (
+                ErrorCode::Network,
+                "no audio arrived while starting: the connection stalled (5.4 s without data; \
+                 re-established 3 times)",
+                false
+            )
+        );
+        let (code, message, terminal) =
+            build_bound_cause(BuildCause::NoBytes, &build(S(0), 0), None, false);
+        assert_eq!(
+            (code, message.as_str(), terminal),
+            (
+                ErrorCode::Network,
+                "no audio arrived within 60 s of connecting",
+                false
+            )
+        );
+    }
+
+    /// Review 2, finding 4: the bound's message is written from the gap and reconnect count the
+    /// engine decided on, not from the clock read again after the cancel, whose open gap has
+    /// grown. A clock whose open gap is ≥ 300 ms, a bound decided on 50 ms and 2 reconnects →
+    /// the message's inputs carry 50 ms and 2. Fails with `decided_inputs` returning the clock's
+    /// own inputs (the code on `688c9fd`).
+    #[test]
+    fn the_bound_message_carries_the_decided_figures() {
+        let clock = BuildClock::new(BuildBounds::for_prefetch(stream::PREFETCH_FLOOR_BYTES));
+        let arrivals = Arc::new(Arrivals::new());
+        crate::build::ArrivalWriter::new(arrivals.clone()).arrive(Duration::from_millis(1), 1);
+        clock.begin_build(0, arrivals);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(clock.inputs(0).longest_gap >= Duration::from_millis(300));
+        let bounded = Bounded {
+            cause: BuildCause::Starved,
+            longest_gap: Duration::from_millis(50),
+            reconnects: 2,
+        };
+        let i = decided_inputs(&clock, &bounded, 0);
+        assert_eq!(
+            (i.longest_gap, i.reconnects),
+            (Duration::from_millis(50), 2)
+        );
     }
 
     #[test]

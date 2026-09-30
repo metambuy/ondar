@@ -89,13 +89,7 @@ const RETRY_TIMEOUT_HEADROOM: Duration = Duration::from_secs(5);
 
 /// Whether a response's `Content-Type` names an HLS playlist.
 pub fn is_hls_content_type(content_type: &str) -> bool {
-    let bare = content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    HLS_CONTENT_TYPES.contains(&bare.as_str())
+    HLS_CONTENT_TYPES.contains(&crate::stream::mime_essence(content_type).as_str())
 }
 
 /// Whole-request bound on a segment fetch: twice the target duration, at least 10 s.
@@ -564,10 +558,11 @@ fn refused_container(r: Refusal) -> StreamError {
 /// fetch task on the current runtime and returns the reader `run_session` expects. Every
 /// refusal is a terminal `UnsupportedFormat` with the message the page renders; a failed
 /// request is classified as the Icecast open classifies its own.
-pub async fn open(
+pub(crate) async fn open(
     client: &Client,
     url: Url,
     reconnect_count: Arc<AtomicU64>,
+    arrivals: Arc<crate::build::Arrivals>,
     prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
     let (fetched, started) = fetch_playlist(client, &url, Kind::Master).await?;
@@ -711,13 +706,17 @@ pub async fn open(
         .on_reconnect(move |_stream: &HlsSource, _token| {
             let n = reconnect_count.fetch_add(1, Ordering::Relaxed) + 1;
             log::warn!("hls source idle past retry_timeout (session count now {n})");
-        });
+        })
+        // Network arrival for the build's starvation rule (review 2, G1): each chunk the fetch
+        // task hands `HlsSource` is one arrival.
+        .on_progress(crate::build::on_progress(arrivals));
     let reader = StreamDownload::from_stream(HlsSource { rx }, storage, settings)
         .await
         .map_err(|e| network(format!("HLS reader: {e}")))?;
 
     Ok(OpenedStream {
         reader,
+        kind: crate::stream::SourceKind::Hls,
         metaint: None,
         content_type: Some(content_type.unwrap_or_else(|| "audio/aac".to_string())),
         bitrate_kbps,

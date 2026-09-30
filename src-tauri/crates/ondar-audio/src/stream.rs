@@ -173,8 +173,32 @@ pub struct StreamError {
     pub retry_after: Option<Duration>,
 }
 
+/// A `Content-Type`'s essence: the type and subtype, lowercased, without parameters —
+/// `Audio/AAC; charset=x` → `audio/aac` (review fixes F4, finding 9: one parser for the HLS
+/// dispatch and the ADTS front end's filter).
+pub(crate) fn mime_essence(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Which open produced a stream (defect B C4, review P3): the reader over the HTTP body as
+/// served (Icecast, Shoutcast v2, plain HTTP), or the HLS source, whose segments
+/// `hls::segment` has already normalised. The engine applies the ADTS front end to the first
+/// only. Carried because the content type cannot tell them apart: an HLS session reports its
+/// first segment's type, `audio/aac` when the segment sends none (`hls::open`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Http,
+    Hls,
+}
+
 pub struct OpenedStream {
     pub reader: Reader,
+    pub kind: SourceKind,
     pub metaint: Option<usize>,
     pub content_type: Option<String>,
     pub bitrate_kbps: Option<u32>,
@@ -257,15 +281,22 @@ pub fn parse_url(url: &str) -> Result<Url, StreamError> {
     }
 }
 
-/// Connect and return a reader once `prefetch_bytes` have arrived (the caller computed them
-/// from the station's bitrate, [`prefetch_bytes`]). `reconnect_count` is
+/// Connect and return a reader whose first read waits for `prefetch_bytes` (the caller
+/// computed them from the station's bitrate, [`prefetch_bytes`]). `open` itself does **not**
+/// wait for them: stream-download 0.24.4's `from_stream` spawns the download and returns
+/// (`lib.rs:343`), and the downloaded range is published only once the prefetch completes
+/// (`source/mod.rs:323`), so the wait is inside the decoder's build — which is why the build
+/// bound counts from the first byte (defect B review fixes F1, finding 2). `reconnect_count` is
 /// advanced every time `stream-download` reconnects internally (idle `retry_timeout`, not one
 /// of our own external retries) — see `Settings::on_reconnect` below and `SessionCtx` in
-/// `engine.rs`, which is what actually surfaces it as an event.
-pub async fn open(
+/// `engine.rs`, which is what actually surfaces it as an event. `arrivals` is this open's
+/// network-arrival clock (review 2, G1), stamped by `Settings::on_progress` from the download
+/// task on every chunk written — on the HLS path too.
+pub(crate) async fn open(
     client: &reqwest::Client,
     url: Url,
     reconnect_count: Arc<AtomicU64>,
+    arrivals: Arc<crate::build::Arrivals>,
     prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
     let stream = match HttpStream::new(client.clone(), url.clone()).await {
@@ -296,7 +327,7 @@ pub async fn open(
         .is_some_and(crate::hls::is_hls_content_type)
     {
         drop(stream);
-        return crate::hls::open(client, url, reconnect_count, prefetch_bytes).await;
+        return crate::hls::open(client, url, reconnect_count, arrivals, prefetch_bytes).await;
     }
 
     let storage = bounded_storage();
@@ -308,7 +339,8 @@ pub async fn open(
                 let n = reconnect_count.fetch_add(1, Ordering::Relaxed) + 1;
                 log::debug!("stream-download internal reconnect (session count now {n})");
             },
-        );
+        )
+        .on_progress(crate::build::on_progress(arrivals));
 
     let reader = match StreamDownload::from_stream(stream, storage, settings).await {
         Ok(r) => r,
@@ -320,6 +352,7 @@ pub async fn open(
 
     Ok(OpenedStream {
         reader,
+        kind: SourceKind::Http,
         metaint,
         content_type,
         bitrate_kbps,
@@ -369,9 +402,13 @@ async fn classify_open_error(err: HttpStreamError<reqwest::Client>) -> StreamErr
             // `open` reading — 14 GB sent in the test's 5 s).
             let declared = response.content_length();
             let message = if declared.is_some_and(|n| n <= ERROR_BODY_MAX) {
-                // "{source}: {body}" (or "{source}. Error decoding …").
+                // "{source}: {body}" (or "{source}. Error decoding …"), while `head` is
+                // "Failed to fetch: {source}": the prefix to strip is the source's text, not
+                // `head` (defect B Step 0, S5: stripping `head` never matched, so the message
+                // said its head twice).
+                let source = e.source().to_string();
                 let full = e.decode_error().await;
-                let tail = full.strip_prefix(&head).unwrap_or(full.as_str());
+                let tail = full.strip_prefix(&source).unwrap_or(full.as_str());
                 format!("{head}{}", excerpt(tail, BODY_EXCERPT))
             } else {
                 head
@@ -550,6 +587,7 @@ mod tests {
             &client,
             url,
             Arc::new(AtomicU64::new(0)),
+            Arc::new(crate::build::Arrivals::new()),
             PREFETCH_FLOOR_BYTES,
         )) {
             Ok(_) => panic!("open succeeded against a server that cannot be played"),
@@ -593,6 +631,7 @@ mod tests {
                     &client,
                     url,
                     Arc::new(AtomicU64::new(0)),
+                    Arc::new(crate::build::Arrivals::new()),
                     PREFETCH_FLOOR_BYTES,
                 ),
             )
@@ -732,6 +771,37 @@ mod tests {
         assert!(e.message.ends_with('…'), "{}", e.message);
     }
 
+    /// Defect B Step 0, S5: the message says its head once, then the excerpt. `head` is
+    /// `FetchError`'s Display, `"Failed to fetch: {source}"`, while `decode_error` returns
+    /// `"{source}: {body}"`, so stripping `head` never matched and the whole `decode_error`
+    /// text followed it. Fails on that: `"404"` twice, and the URL followed by `"Failed"`'s
+    /// repeat instead of the body.
+    #[test]
+    fn an_error_message_states_its_head_once() {
+        const BODY: &str = "The file you requested could not be found";
+        static RESPONSE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+            format!(
+                "HTTP/1.1 404 Not Found\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{BODY}",
+                BODY.len()
+            )
+            .into_bytes()
+        });
+        let url = serve_once(RESPONSE.as_slice());
+        let e = open_err(&url);
+        assert_eq!((e.code, e.terminal), (ErrorCode::Http, true));
+        assert_eq!(
+            e.message.matches("404").count(),
+            1,
+            "the head once: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains(&format!("{url}): {BODY}")),
+            "the excerpt follows the URL: {}",
+            e.message
+        );
+    }
+
     /// Review 2 (2026-09-25), the widened bound sweep: an error response's body is read only
     /// when its declared `Content-Length` is within [`ERROR_BODY_MAX`]. stream-download's
     /// `decode_error` is `response.text()` — the whole body, unbounded — so a 404 whose chunked
@@ -830,11 +900,15 @@ mod tests {
     #[test]
     fn prefetch_is_capped_at_half_the_buffer() {
         assert_eq!(PREFETCH_CEILING_BYTES, 131_072);
-        assert!(PREFETCH_CEILING_BYTES * 2 <= BUFFER_BYTES as u64);
-        assert!(
-            PREFETCH_FLOOR_BYTES < PREFETCH_CEILING_BYTES,
-            "`clamp`'s precondition"
-        );
+        // Relations between constants, checked when the test compiles (clippy's
+        // `assertions_on_constants`: a runtime `assert!` on them can only ever pass).
+        const {
+            assert!(PREFETCH_CEILING_BYTES * 2 <= BUFFER_BYTES as u64);
+            assert!(
+                PREFETCH_FLOOR_BYTES < PREFETCH_CEILING_BYTES,
+                "`clamp`'s precondition"
+            );
+        }
         assert_eq!(prefetch_for(Some(10_000)), PREFETCH_CEILING_BYTES);
         assert_eq!(
             prefetch_for(Some(1411)),

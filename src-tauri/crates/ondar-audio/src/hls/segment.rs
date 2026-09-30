@@ -86,7 +86,7 @@ pub fn sniff(bytes: &[u8]) -> Container {
 }
 
 /// `0xFFF` followed by layer bits `00`; the ID bit and `protection_absent` may be either.
-fn is_adts_sync(b: &[u8]) -> bool {
+pub(crate) fn is_adts_sync(b: &[u8]) -> bool {
     b.len() >= 2 && b[0] == 0xFF && (b[1] & 0xF6) == 0xF0
 }
 
@@ -114,6 +114,66 @@ impl std::fmt::Display for AdtsFormat {
             None => write!(f, "sri{}/{}", self.sri, self.channel_config),
         }
     }
+}
+
+/// One ADTS header, parsed (review fixes F4, findings 8 and 9: the one parser, for the HLS walk
+/// here and the front end's chain check in `adts.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Header {
+    /// No CRC follows the 7 bytes.
+    pub protection_absent: bool,
+    pub profile: u8,
+    /// Indexes [`SAMPLE_RATES`]; 13–15 are reserved (see [`Header::rate_known`]).
+    pub sri: u8,
+    pub channel_config: u8,
+    /// 7, or 9 with a CRC.
+    pub header_len: usize,
+    /// The whole frame, header included; at least `header_len`.
+    pub frame_len: usize,
+}
+
+impl Header {
+    /// Whether the sample-rate index names a rate. Deliberately **not** a condition of
+    /// [`parse_header`] (decided 2026-09-29, D2): the HLS walk has always passed a reserved
+    /// index on to the decoder and `FormatGuard` (which prints it as `sri13`), and a review
+    /// fix does not change HLS behaviour. The front end's chain check requires it.
+    pub fn rate_known(&self) -> bool {
+        (self.sri as usize) < SAMPLE_RATES.len()
+    }
+
+    pub fn format(&self) -> AdtsFormat {
+        AdtsFormat {
+            sri: self.sri,
+            channel_config: self.channel_config,
+        }
+    }
+}
+
+/// The header in `h`, or `None` if it is not one: no sync with layer 0, or a `frame_length`
+/// below the header's own length. Takes exactly a header's bytes, so no caller can index past a
+/// short slice (the release profile is `panic = "abort"`).
+pub(crate) fn parse_header(h: &[u8; ADTS_HEADER_LEN]) -> Option<Header> {
+    if !is_adts_sync(h) {
+        return None;
+    }
+    let protection_absent = h[1] & 0x01 == 1;
+    let header_len = if protection_absent {
+        ADTS_HEADER_LEN
+    } else {
+        ADTS_HEADER_LEN + ADTS_CRC_LEN
+    };
+    let frame_len = frame_length(h);
+    if frame_len < header_len {
+        return None;
+    }
+    Some(Header {
+        protection_absent,
+        profile: h[2] >> 6,
+        sri: (h[2] >> 2) & 0x0F,
+        channel_config: ((h[2] & 0x01) << 2) | (h[3] >> 6),
+        header_len,
+        frame_len,
+    })
 }
 
 /// One segment after the walk.
@@ -155,60 +215,45 @@ pub fn normalise_adts(b: &[u8]) -> Normalised {
     let mut i = 0;
     while i < b.len() {
         let rest = &b[i..];
-        if rest.len() < ADTS_HEADER_LEN {
+        let Some(raw) = rest.first_chunk::<ADTS_HEADER_LEN>() else {
             // Not even a header: the tail of a frame the segment cut short.
             n.partial_dropped = rest.len();
             break;
-        }
-        if !is_adts_sync(rest) {
-            n.sync_lost = Some((i, rest.len()));
-            break;
-        }
-        let protection_absent = rest[1] & 0x01 == 1;
-        let header_len = if protection_absent {
-            ADTS_HEADER_LEN
-        } else {
-            ADTS_HEADER_LEN + ADTS_CRC_LEN
         };
-        let frame_len = frame_length(rest);
-        if frame_len < header_len {
+        let Some(h) = parse_header(raw) else {
             n.sync_lost = Some((i, rest.len()));
             break;
-        }
-        if frame_len > rest.len() {
+        };
+        let Some(frame) = rest.get(..h.frame_len) else {
             n.partial_dropped = rest.len();
             break;
-        }
-        let frame = &rest[..frame_len];
+        };
         if n.format.is_none() {
-            n.format = Some(AdtsFormat {
-                sri: (frame[2] >> 2) & 0x0F,
-                channel_config: ((frame[2] & 0x01) << 2) | (frame[3] >> 6),
-            });
+            n.format = Some(h.format());
         }
 
-        let mut header = [0u8; ADTS_HEADER_LEN];
-        header.copy_from_slice(&frame[..ADTS_HEADER_LEN]);
+        let mut header = *raw;
         if header[1] & 0x08 != 0 {
             header[1] &= !0x08; // the MPEG-2 ID bit → MPEG-4 (F1)
             n.rewritten += 1;
         }
-        if !protection_absent {
+        if !h.protection_absent {
             header[1] |= 0x01; // protection_absent = 1: no CRC follows
-            set_frame_length(&mut header, frame_len - ADTS_CRC_LEN);
+            set_frame_length(&mut header, h.frame_len - ADTS_CRC_LEN);
             n.crc_dropped += 1;
         }
         out.extend_from_slice(&header);
-        out.extend_from_slice(&frame[header_len..]);
+        out.extend_from_slice(frame.get(h.header_len..).unwrap_or_default());
         n.frames += 1;
-        i += frame_len;
+        i += h.frame_len;
     }
     n.bytes = out;
     n
 }
 
-/// `frame_length`, 13 bits across bytes 3–5: the whole frame including the header.
-fn frame_length(h: &[u8]) -> usize {
+/// `frame_length`, 13 bits across bytes 3–5: the whole frame including the header. Takes a
+/// header's bytes exactly, so the precondition is the type (review fixes F4, finding 8).
+pub(crate) fn frame_length(h: &[u8; ADTS_HEADER_LEN]) -> usize {
     ((h[3] as usize & 0x03) << 11) | ((h[4] as usize) << 3) | ((h[5] as usize) >> 5)
 }
 
@@ -299,6 +344,31 @@ impl std::fmt::Display for GunzipError {
 
 // ---------------------------------------------------------------------------------------------
 
+/// Test helpers shared with `adts::tests` (defect B C3).
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// A synthetic ADTS frame: header + `payload` bytes of `fill`. `id` sets the MPEG-2 bit,
+    /// `crc` adds two CRC bytes and clears `protection_absent`.
+    pub(crate) fn frame(sri: u8, ch: u8, payload: usize, fill: u8, id: bool, crc: bool) -> Vec<u8> {
+        let header_len = if crc { 9 } else { 7 };
+        let len = header_len + payload;
+        let mut h = vec![0u8; header_len];
+        h[0] = 0xFF;
+        h[1] = 0xF0 | if id { 0x08 } else { 0 } | if crc { 0 } else { 1 };
+        h[2] = (1 << 6) | (sri << 2) | (ch >> 2); // profile LC
+        h[3] = ((ch & 0x03) << 6) | ((len >> 11) & 0x03) as u8;
+        h[4] = ((len >> 3) & 0xFF) as u8;
+        h[5] = ((len & 0x07) << 5) as u8 | 0x1F;
+        h[6] = 0xFC;
+        if crc {
+            h[7] = 0xAB;
+            h[8] = 0xCD;
+        }
+        h.extend(std::iter::repeat_n(fill, payload));
+        h
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! T7–T11 of the M3c plan, on the fixture heads (ID3 tag(s) + 16 ADTS frames; 4 TS
@@ -331,26 +401,7 @@ mod tests {
         ("09", head!("09-seg-head.mpegts")),
     ];
 
-    /// A synthetic ADTS frame: header + `payload` bytes of `fill`. `id` sets the MPEG-2 bit,
-    /// `crc` adds two CRC bytes and clears `protection_absent`.
-    fn frame(sri: u8, ch: u8, payload: usize, fill: u8, id: bool, crc: bool) -> Vec<u8> {
-        let header_len = if crc { 9 } else { 7 };
-        let len = header_len + payload;
-        let mut h = vec![0u8; header_len];
-        h[0] = 0xFF;
-        h[1] = 0xF0 | if id { 0x08 } else { 0 } | if crc { 0 } else { 1 };
-        h[2] = (1 << 6) | (sri << 2) | (ch >> 2); // profile LC
-        h[3] = ((ch & 0x03) << 6) | ((len >> 11) & 0x03) as u8;
-        h[4] = ((len >> 3) & 0xFF) as u8;
-        h[5] = ((len & 0x07) << 5) as u8 | 0x1F;
-        h[6] = 0xFC;
-        if crc {
-            h[7] = 0xAB;
-            h[8] = 0xCD;
-        }
-        h.extend(std::iter::repeat_n(fill, payload));
-        h
-    }
+    use super::test_support::frame;
 
     // ---- T7: the sniff
 
@@ -462,10 +513,10 @@ mod tests {
             assert_eq!(n.bytes[i], 0xFF);
             assert_eq!(n.bytes[i + 1], raw[i + 1] & !0x08);
             assert_eq!(
-                &n.bytes[i + 2..i + frame_length(&raw[i..])],
-                &raw[i + 2..i + frame_length(&raw[i..])]
+                &n.bytes[i + 2..i + frame_length(raw[i..].first_chunk().expect("a header"))],
+                &raw[i + 2..i + frame_length(raw[i..].first_chunk().expect("a header"))]
             );
-            i += frame_length(&raw[i..]);
+            i += frame_length(raw[i..].first_chunk().expect("a header"));
             headers += 1;
         }
         assert_eq!(headers, 16);
@@ -501,7 +552,7 @@ mod tests {
         assert_eq!(n.crc_dropped, 1);
         assert_eq!(n.bytes.len(), 107);
         assert_eq!(n.bytes[1] & 0x01, 1, "protection_absent set");
-        assert_eq!(frame_length(&n.bytes), 107);
+        assert_eq!(frame_length(n.bytes.first_chunk().expect("a header")), 107);
         assert_eq!(&n.bytes[7..], &[0x5A; 100][..]);
         assert_eq!(
             n.bytes[2], f[2],
@@ -691,5 +742,20 @@ mod tests {
             gunzip(&gz, 16 * 1024),
             Err(GunzipError::TooLarge(_))
         ));
+    }
+    /// Review fixes F4 (D2, 2026-09-29): one header parser, and the HLS walk unchanged by it. A
+    /// frame with a reserved sample-rate index (13) is walked, not lost: its format is `sri13`
+    /// (what `FormatGuard` prints) and nothing is a sync loss. `parse_header` returns the header
+    /// and `rate_known` is false. Fails if the rate check moves into `parse_header` (the
+    /// triage's first placement), which would make a reserved index an HLS sync loss.
+    #[test]
+    fn a_reserved_sample_rate_index_is_walked_not_lost() {
+        let f = frame(13, 2, 50, 0, false, false);
+        let n = normalise_adts(&f);
+        assert_eq!((n.frames, n.sync_lost), (1, None));
+        assert_eq!(n.format.map(|a| a.to_string()), Some("sri13/2".to_string()));
+        let h = parse_header(f.first_chunk().expect("a header")).expect("parsed");
+        assert!(!h.rate_known());
+        assert_eq!((h.sri, h.frame_len, h.header_len), (13, 57, 7));
     }
 }

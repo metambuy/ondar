@@ -618,15 +618,16 @@ mod tests {
         (Arc::new(move |e| l.lock().unwrap().push(e)), log)
     }
 
-    fn service(
-        transport: Arc<FakeTransport>,
-        clock_start: i64,
-    ) -> (
+    /// What `service` hands a test: the handle, the fake clock's time, the event log and a
+    /// cache for assertions.
+    type Started = (
         StationsHandle,
         Arc<Mutex<i64>>,
         Arc<Mutex<Vec<Event>>>,
         Cache,
-    ) {
+    );
+
+    fn service(transport: Arc<FakeTransport>, clock_start: i64) -> Started {
         let (clock, now) = fake_clock(clock_start);
         let cache = Cache::in_memory(clock.clone()).unwrap();
         let (sink, log) = events();

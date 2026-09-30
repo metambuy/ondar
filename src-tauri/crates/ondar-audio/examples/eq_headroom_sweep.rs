@@ -123,40 +123,12 @@ fn settled(v: &[f32]) -> &[f32] {
     &v[v.len() / 2..]
 }
 
-fn rms(v: &[f32]) -> f32 {
-    (v.iter().map(|x| x * x).sum::<f32>() / v.len() as f32).sqrt()
-}
-
 fn peak(v: &[f32]) -> f32 {
     v.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
 }
 
-fn db(ratio: f32) -> String {
-    if ratio > 0.0 {
-        format!("{:9.4}", 20.0 * ratio.log10())
-    } else {
-        // Exactly transparent: the shaper never engaged, so the residual is identically zero.
-        format!("{:>9}", "-inf")
-    }
-}
-
-/// Residual after removing the best-fit broadband gain, as a fraction of the input. A THD
-/// **proxy**, not THD: it is a time-domain residual with no FFT, so it lumps harmonic
-/// distortion together with any waveform change the gain fit cannot absorb.
-fn residual_db(y: &[f32], x: &[f32]) -> String {
-    let dot_yx: f32 = y.iter().zip(x).map(|(a, b)| a * b).sum();
-    let dot_xx: f32 = x.iter().map(|b| b * b).sum();
-    let g = if dot_xx > 0.0 { dot_yx / dot_xx } else { 0.0 };
-    let resid: Vec<f32> = y.iter().zip(x).map(|(a, b)| a - g * b).collect();
-    db(rms(&resid) / rms(x))
-}
-
 fn through_eq(signal: &[f32], gains: EqGains) -> Vec<f32> {
     Equalizer::new(Samples::new(signal.to_vec()), gains).collect()
-}
-
-fn shaped(v: &[f32], t: f32) -> Vec<f32> {
-    v.iter().map(|&x| shape(x, t)).collect()
 }
 
 fn capture(args: &[&str]) -> String {

@@ -67,9 +67,12 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --all --check
 
+      # --workspace is load-bearing, as for cargo test below: without it clippy lints the
+      # member crates' libraries only as the root's dependencies, and never their tests or
+      # examples (C2b, 2026-09-28: three such targets had failed it unseen).
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # --workspace is load-bearing: src-tauri/Cargo.toml has a real [package] at its
       # root, so a bare `cargo test` runs only that package's own tests — while silently

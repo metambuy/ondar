@@ -1,6 +1,11 @@
 # Ondar — project document
 
-*Last updated: 2026-09-28 (documentation drift pass: the M3 milestone entry, the CI step list, the
+*Last updated: 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
+times, not arrival; G1–G3 and the re-acceptance — see "Defect B", "Code review 2 and G1–G3";
+instrument instance eighteen). Previously 2026-09-29, later (defect B's `/code-review`: ten findings, the bound redesigned on a
+byte clock and build stamp, F1–F4, re-accepted — see "Defect B", "The code review and the
+redesign"). Earlier 2026-09-29 (defect B built and accepted on `defect-b` — see "Defect B: an unbounded
+`Connecting`"; instrument instances fourteen to seventeen). Previously 2026-09-28 (documentation drift pass: the M3 milestone entry, the CI step list, the
 frozen test counts marked as frozen, the vibrancy row, the instrument-principle count). Previously
 2026-09-25 (M3c built, accepted and reviewed three times — see "M3c: HLS, the ADTS half"; defect A
 fixed and merged — see "Defect A"; defect B opened). Previously 2026-09-22 (M3a acceptance run and its two fixes — see "M3a: the station
@@ -290,7 +295,7 @@ TypeScript, stop — it belongs in Rust.
   verifying that push's head commit — not every commit**; see "CI verifies the head of each
   push, not every commit" below. It runs, in order:
   `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
-  `cargo clippy --all-targets -- -D warnings`; `cargo test --workspace`;
+  `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`;
   `git diff --exit-code src/bindings` and `test -z "$(git status --porcelain src/bindings)"`;
   `pnpm typecheck`; `pnpm test`; `pnpm lint`; `cargo build`.
   The bindings check runs immediately after the tests because ts-rs regenerates
@@ -659,6 +664,294 @@ M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed a
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
 
+### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
+
+Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
+- brief `b-brief.md` (Amendments 1–3);
+- Step 0: plan `b-step0-plan.md`, report `b-step0-report.md` (logs `b-step0/`);
+- plan `b-plan.md`, with its round 7 addendum;
+- reviews: `b-step0-plan-review-2026-09-28.md`, rounds 1–10;
+- acceptance: `b-acceptance.md` (logs `b-acceptance/`), with the re-acceptance after the fixes;
+- the code review: findings `b-review-findings.md`, triage and the chat's checks
+  `b-review-triage-2026-09-29.md`, plan `b-fix-plan.md`; recorded failures on `da36489`
+  `b-f1-da36489-*`, `b-f2-*`, `b-f3-*`, `b-f4-*`; mutations `b-f1-mutations.log`,
+  `b-f4-mutations.log`;
+- the second code review: findings `b-review2-findings.md`, triage and the chat's plan review
+  `b-review2-triage-2026-09-30.md` (N1–N3), plan `b-review2-plan.md`; recorded failures,
+  shims and mutations in `b-g/`; the re-acceptance in `b-acceptance.md`, last section.
+
+Commits, each pushed alone and CI green before the next:
+
+| | commit | what |
+|---|---|---|
+| C0 | `f95e530` | the HTTP error message states its head once (`FetchError`'s Display is `Failed to fetch: {source}`, `decode_error` is `{source}: {body}`, and stripping the first from the second never matched) |
+| C1 | `5740b96` | an unrecognised format is terminal only while the session has never **produced audio** |
+| C2 | `00ddac2` | the build bound: the CAS'd `BuildPhase`, `decide_tick`'s probing arm, the cause rule |
+| C2b | `a83fe78` | `ci:` clippy over the whole workspace (instrument instance fourteen, below) |
+| C3 | `5bc9483` | `adts::AdtsReader`, the front end as a streaming reader over `hls::segment` |
+| C4 | `a8585c6` | the front end wired after `IcyReader` for HTTP `audio/aac*`; `stream::SourceKind` |
+| C4b | `49e6a72` | the bound counts elapsed time, not ticks (acceptance finding 1) |
+| C5 | `da36489` | docs |
+| F1 | `2784efd` | the byte clock and the build stamp: the bound from the first byte, the cause from the bytes (review findings 1, 2, 3, 6, 10) |
+| F2 | `128dc08` | a build the user cancelled emits nothing (finding 5) |
+| F3 | `f3008cd` | after its first alignment the front end never passes through (finding 4) |
+| F4 | `dd469e4` | `audio/x-aac` gets the front end; one ADTS header parser, one MIME parser (findings 7, 8, 9) |
+| F5 | `688c9fd` | docs |
+| G1a | `ed907f0` | the no-bytes bound keeps a 10 % margin at 10 kbit/s (review 2, finding 3) |
+| G1b | `34547bf` | starvation measured on network arrival (`on_progress`), not read time; the message prints the engine's decided figures (findings 1, 4) |
+| G2 | `afe6c2e` | session events land only while their session is live (finding 2) |
+| G3 | this commit | docs (finding 6 and this record) |
+
+**What was wrong on `main`.**
+- Any live stream whose bytes the decoder could not sync on stayed in `Connecting` indefinitely.
+  `build()` scanned the arriving bytes, the watchdog covered `Buffering` only, `read_timeout` never
+  fired while bytes arrived, and Stop was the only exit.
+- Step 0 found the live trigger was not `AdtsHeader::sync` at all. Every stuck mount (4 of 22
+  AAC/AAC+ in S2, and 36 of 42 `FFF9` bodies in S4) was caught by a **false MP3 marker** and the MP3
+  demuxer's unbounded "skipping junk".
+- **The share (S4, random stratum):** `FFF9` is 34/143 = **23.8 %** (95 % 18–31 %) of Icecast ADTS
+  bodies, 23 of 105 hosts (21.9 %), and only ever under `audio/aac` / `audio/aacp`. 8 % of ADTS
+  bodies start mid-frame. There were 0 leading ID3 tags, 0 CRC and 0 LOAS in 225 bodies.
+
+**The design, as decided** (round 7). **Its clock and its cause rule were wrong and are superseded**
+by the review's redesign — "The code review and the redesign", below. What stands: the bound on
+the engine thread, the one swap each way, the cause decided at the bound, no byte budget, the
+internal reconnect live during the build, and the front end.
+- **The bound: (b), on the engine thread.** A wrapper on the decode thread fires only when a read
+  returns. Against a silent server the reads return only because stream-download's 5 s internal
+  re-feed does, so such a bound would be "the next re-feed after the deadline" (S1 (iii)).
+- **How it fires.**
+  - Detection: `SessionCtx::build` is `PROBING` from `open` returning to `build()` returning.
+    `Engine::tick` checks it before the ring's early return.
+  - The swap: the engine takes the build with one compare-and-swap `PROBING → BOUND` and only
+    then cancels the token in place. The decode thread leaves with one swap `PROBING → BUILT`. If
+    that swap fails, it drops whatever `build()` returned (`Ok` or `Err`: S3 saw both) and applies
+    the cause rule.
+- **The cause rule.**
+  - Internal reconnects during the build → `Network`, backoff.
+  - Otherwise → `UnsupportedFormat`, terminal only while the session has never produced audio.
+  - A byte counter is not needed: the bound is at least 3 × `retry_timeout`, so a starved reader
+    has reconnected before it.
+- **The numbers:**
+  - `max(20 s, 3 × retry_timeout)`: 4× the healthy maximum of 5.05 s.
+  - No engine byte budget.
+  - The front end's realign limit, 16 KiB, is an **alignment-start offset** (C3, below).
+- **stream-download's internal reconnect stays live during the build.** This is the one bounded
+  exception to "Ondar owns all reconnects". It cannot be switched off per phase in 0.24.4
+  (`retry_timeout` is fixed at `from_stream`), and it is what makes the `Network` cause
+  observable.
+- **The front end.**
+  - Placement and filter: after `IcyReader` (a metadata block can hold `FF F9`), for an HTTP
+    stream whose type starts with `audio/aac`. Chosen by `OpenedStream::kind`, never by the
+    content type alone: an HLS session reports its first segment's type (`audio/aac` by default),
+    and its segments are already normalised (review P3).
+  - Behaviour: it realigns to three chained headers, normalises with `normalise_adts` per read
+    over a carry (no second parser), or passes through. It never refuses.
+- **B1–B4 as decided (round 6/7):**
+  - B1: ship the front end.
+  - B2: terminal only if the session has never produced audio — P1: not "has built a decoder",
+    because of S3's empty `Ok` after a false header.
+  - B3: 20 s, no byte budget, 16 KiB.
+  - B4: accept the lost excerpt (3 of 8 hosts; generic 50–119 B bodies; no `<h2>` anywhere).
+
+**Decisions made in the commits and accepted (rounds 8–10).**
+- **C2:** the bound's ticks ride on each session's context, and the test server has no loop mode.
+- **C3:** the 16 KiB limit applies to where the alignment *starts*, not to the buffered size.
+  - A buffered-size limit made the answer depend on how the reads were chunked; test 7 pins it in
+    every chunking.
+  - At end of stream while realigning, a stream that never aligned passes through unchanged.
+  - T-B3 row 1 gained an ID3 tag holding a chain, because the ID3 skip had survived its mutation.
+- **C3's commit message overstates one mutation.** Its "realign off" (starting the reader in the
+  normalising state) is weaker than named, because the first sync loss realigns anyway. C4's
+  message records the real one, aligning only at offset 0. That mutation fails C3's rows (1), (2),
+  (4), (6), (7) and T-B2b. Pushed history is not rewritten; this is the correction.
+- **C2b:** the old clippy command linted the member crates' libraries, but not their tests and
+  examples.
+- **C4b (round 10):** `probing_since: Instant` in `Engine`, handed to the pure `decide_tick` as
+  elapsed ticks.
+
+**Acceptance (2026-09-29, `a8585c6`; X1/X1b re-run on `49e6a72`).**
+
+| item | fail rule | measured | |
+|---|---|---|---|
+| X1 F-falsesync `/loop` 128 kbps, in-app | `Connecting` at 25 s, a click, no message | `Error { unsupported_format, "no decodable audio in the first 20 s of the stream (audio/aac)" }`; 0 clicks; 1 request; **Martín confirmed the rendered message by eye** (`b-acceptance/x1-rendered-error.png`). The bound line was 20.651 s after `PROBING` on `a8585c6`, and **20.205 s** on `49e6a72` after C4b. That is 5 ms over the re-run's 20.0–20.2 s rule, and inside the design's worst case of 20 s plus two ticks (the engine's clock starts on the first tick that sees `PROBING`, ~0.10 s late here) | PASS; the re-run's timing rule missed by 5 ms, open for the chat |
+| X1b `/silent` 96 KiB | a format error (the wrong cause) | `Reconnecting { 1 }` by the network cause, "re-established 4 times in 20 s" (4 was correct: the 4th re-feed at +20.029 s preceded the bound); 5 requests, none with `Range`. Bound at 20.638 s on `a8585c6`; **20.178 s** after C4b | PASS |
+| X2 BR `7c1aa1c2`, 11 min | outside 1.000 ± 0.005, `Connecting` > 20 s, a pass-through, two clicks | aligned at 0 B; `Playing` 2.2 s; 22 050 Hz; cumulative 1.0000 over 651.9 s; 0 underruns; 1 click | PASS |
+| X2 SomaFM `05c3cfd3`, 11 min | same | aligned at 0 B; `Playing` 1.0 s; 16 000 Hz (core-only); 1.0000 over 652.7 s; 0 underruns; 1 click | PASS |
+| X3 4 stations × 3 runs × main/branch | a bound line, a pass-through on an AAC, the branch > 1 s slower | 0 bound, 0 pass-through in 24 plays; the branch at most +0.261 s. **Main left the AAC+ mount `05a218e1` in `Connecting` for all 15 s in 1 of 3 runs** (a false MP3 marker); the branch aligned it at 141–278 B every time | PASS |
+| X4 checks + dev launch | any non-zero | all 0, 258 + 15 at `a8585c6`; `pnpm tauri:dev` 0 errors | PASS |
+
+**The tick period (acceptance finding 1, fixed in C4b).**
+- `Engine::run` waits `recv_timeout(TICK_INTERVAL)` and then ticks, so a tick is the wait plus the
+  tick's work plus macOS timer slack. X1 measured ~103 ms here.
+- A bound counted in ticks therefore read "20 s" and waited 20.65 s. The acceptance item mixed
+  the two units.
+- C4b counts elapsed time. It was recorded failing at 2.908 s after 20 slowed ticks against a 2 s
+  bound, and reads 2.001–2.148 s after the fix.
+- **The `Buffering` watchdog still counts ticks and drifts the same ~3 %** (a nominal 15 s is
+  about 15.5 s). Carried, out of scope.
+
+**Carried to `/code-review` (round 8)** — answered by the review (finding 6: "correct today, not
+structural") and closed by F1's build stamp, below.
+- Before C4b, `ticks_probing` counted *consecutive* `PROBING` ticks and reset only on a tick that
+  saw another phase, so two builds back to back with no tick between would have shared one count.
+- After C4b the same holds for `probing_since`. The reset in `fail_build` and the reset on a new
+  session cover two of the three ways; `c4b_each_build_starts_its_own_clock` pins all three.
+- The remaining way, a build that ends in `BUILT` and a next build that starts before any tick,
+  is prevented only by `retry_or_fail`'s ≥ 1 s backoff (`DELAYS_SECS[0]` = 1). A build generation
+  in `SessionCtx` would make that structural. The reviewer judges.
+
+**The code review and the redesign (2026-09-29).** `/code-review` on Fable over `d1b127b..da36489`
+found ten findings; the chat accepted all ten (`b-review-triage-2026-09-29.md`), five of them
+behaviour findings, so no merge until the fixes and one last scoped review.
+
+- **The design error behind findings 1–3 was the chat's, round 7.** The cause rule took "starved"
+  from stream-download's reconnect count, and the clock started at `open`. Three facts, read in
+  stream-download 0.24.4's source, which Step 0 could not show:
+  - a reconnect cut by its own `retry_timeout` never calls `on_reconnect` (`source/mod.rs:272–287`),
+    and `HttpStream::reconnect` replaces its body only when the GET returns (`http/mod.rs:343–355`),
+    so a **hung** reconnect is an uncounted 10 s cycle and read as a format failure — terminal on a
+    first play (finding 1);
+  - `from_stream` returns before the prefetch is met (`lib.rs:343`; the range is published at
+    `source/mod.rs:323`), so the 20 s included a prefetch sized from a user-entered bitrate: a
+    healthy slow stream with an overstated record got a terminal format error (finding 2);
+  - HLS's `retry_timeout` is ≥ 55 s, so its count never moved inside 20 s and an HLS stall could
+    only read as a format failure (finding 3).
+- **F1, the redesign** (`build.rs`; CLAUDE.md invariant 11). `ClockedReader`, the bottom of the
+  decoder's chain under `IcyReader` on both source kinds, stamps the first byte, the longest gap and
+  the last byte; `begin_build` stamps each build's start and publishes it with a build seq and
+  `PROBING` in one word. The engine keeps no build state; it swaps from the exact word it read to a
+  `BOUND_*` phase that is the cause, holding `download`'s lock from the swap through the cancel.
+  - **no first byte by `no_bytes`** = max(60 s, prefetch ÷ 1 250 B/s, the prefetch at the lowest
+    recorded bitrate, 10 kbit/s) → `Network`, always (D1: a body stalled before its prefetch takes
+    60–105 s per attempt, 5.5–9.2 min to the final `Error`; `main` never ended; an `on_progress`
+    stamp is the recorded upgrade path);
+  - **20 s after the first byte** → `Network` if an internal reconnect completed or the longest gap,
+    the open one included, reached `retry_timeout`; otherwise `UnsupportedFormat`, terminal only
+    before audio. The page text is unchanged.
+  - It closes finding 6 structurally (no reset sites; a stale decision fails on the seq; the token
+    cancelled is always the bounded build's) and retires round 11's "20 s + 2 ticks": the fire is at
+    most one tick after the bound.
+  - The chat checked F1's diff on five points (lock scope, orderings, resets gone, no stamp on 0
+    bytes or an `Err`, the recorded failures) and accepted it.
+- **F2–F4.** A cancelled build returns before emitting (F2; its test was reshaped before the fix:
+  served as `audio/aac` the front end held the bytes and the cancel gave `UnrecognizedFormat`, as
+  `audio/mpeg` S3's empty `Ok` — so the content type's hint does matter in that shape, unlike S3's
+  reading). The front end never passes through after its first alignment (F3). `audio/x-aac` gets
+  the front end; one `segment::parse_header(&[u8; 7])` and one `stream::mime_essence` (F4). **D2:**
+  the `sri < 13` check is `Header::rate_known`, called by the front end only: the HLS walk still
+  hands a reserved index to the decoder, and a review fix does not change HLS behaviour (the
+  triage's first placement would have).
+- **Every session and front-end test was recorded failing on `da36489`** through an uncommitted
+  shim of the harness (the format bound onto `build_bound_ticks`, its one knob), except those that
+  pin behaviour `da36489` already had (T-B1a–d, a′, P1's row, the rate check in `candidate`), which
+  were recorded passing. The pure tests whose inputs do not exist there (the tick table on
+  durations, `build.rs`, the reserved index through `parse_header`) were mutation-checked instead.
+  Two F1 mutations first survived the session test that named them, and one F4 mutation survived
+  every test; each was answered by fixing the test, not the claim.
+
+**Re-acceptance after F1–F4 (2026-09-29, `dd469e4`; `b-acceptance.md`, last section).**
+
+| item | fail rule | measured | |
+|---|---|---|---|
+| X5 precondition, `da36489` | void if it plays | a healthy 24 kbit/s stream with a 320 kbit/s record: terminal `Error { unsupported_format }` 20.180 s after `PROBING` — finding 2, live | valid |
+| X1 F-falsesync, in-app | first byte → bound outside [20.000, 20.150] s; not `Format`; another message; a click | **20.100 s**; `Format`, 0 reconnects; the message unchanged, **confirmed on screen by Martín**; 0 clicks | PASS |
+| X1b `/silent` | a format error; bound before 20.000 s; not `Starved` | **20.033 s**; `Starved`, "5.0 s without data; re-established 4 times" → `Reconnecting { 1 }` | PASS |
+| X3 4 stations × 3 × `d1b127b`/`dd469e4` | a bound, a pass-through on AAC, the branch > 1 s slower | 24/24 `Playing`, 0 bound, 0 pass-through; at most +0.148 s | PASS |
+| X5 24 kbit/s at 3 000 B/s, records 320 and 1411 | a bound; `Error`/`Reconnecting` before `Playing`; no `Playing` within `no_bytes`; first byte off ±10 % of prefetch ÷ 3 000 B/s | first byte **27.312 s** / **44.038 s** (due 26.7 / 43.7), then `Playing`; 0 bound, 0 underruns over 235.0 s and 161.7 s; **playing, confirmed on screen by Martín** | PASS |
+
+X1's round-11 line (20.205 s, "20 s + 2 ticks") is superseded: with the decode thread's stamp the
+fire is 20.100 s after the first byte. **280 + 15** at `dd469e4`.
+
+**Code review 2 and G1–G3 (2026-09-30).** The last scoped `/code-review` (Fable, `da36489..688c9fd`,
+`b-review2-findings.md`) found no crash, one behaviour finding and one behaviour-in-principle race,
+so the merge rule fixed before it blocked the merge. The chat triaged it
+(`b-review2-triage-2026-09-30.md`): 1–4 and 6 accepted, 5 and 7 carried.
+
+- **Finding 1 (behaviour): the gaps were per-read times, not arrival.** stream-download 0.24.4
+  returns a read only once the whole requested block has arrived (`lib.rs:556–577`), and Symphonia
+  asks for up to 32 KiB (`IcyReader` up to `metaint`, the front end 16 KiB). F1's `ClockedReader`
+  therefore measured a block's fill time: 8.2 s at 32 kbit/s. Every unsyncable build below
+  ~52 kbit/s (~26 behind 16 000-byte reads) read `Starved` and backed off for about 3 minutes,
+  where the rule says a terminal `UnsupportedFormat` at 20 s, and its message ("stalled (8.2 s
+  without data)") was false. It was never wrongly terminal and never hid a real pause. **The
+  chat's F1 diff check verified how the stamps were published, not what they measured.**
+- **Finding 2 (in principle):** a cancel between F2's `cancelled()` check and the `StreamInfo`
+  emit, microseconds wide, still leaked a stale `StreamInfo`; the ICY title callback had the same
+  shape. **Finding 3:** `no_bytes` had zero margin at exactly 10 kbit/s (104 857 ms, integer
+  division, against 104 857.6 ms). **Finding 4:** the message's gap was recomputed after the
+  cancel, and a reconnect during the prefetch could print "stalled (0.1 s…)". **Finding 6:** four
+  `audio/aac*`-only lines F4 left, and CLAUDE.md's `adts.rs` line without F3's "only before the
+  first alignment" — fixed in G3.
+- **G1a** (`ed907f0`): `no_bytes` = max(60 s, ⌈1.1 × prefetch ÷ 1 250 B/s⌉): 60 / 70.4 /
+  115.344 s at the floor, 80 000 B and the ceiling.
+- **G1b** (`34547bf`): D1's recorded upgrade path, taken. Each open has its own `build::Arrivals`,
+  stamped by `Settings::on_progress` on the download task after every chunk written, in
+  `stream::open` and `hls::open`. The callback is `FnMut`, so the gap state lives in the closure's
+  `ArrivalWriter`, the one writer; the first gap runs from the download's start. `ClockedReader`
+  keeps the first-byte stamp only. `begin_build` installs the open's `Arrivals` **unreset**:
+  the prefetch's arrivals can land before it, and a fresh one per open holds no earlier open's
+  stamp, which would read the backoff as a gap. The engine stores the gap and reconnect count it
+  decided on before its swap, and the page's message prints those. The rule is unchanged.
+- **G2** (`afe6c2e`): `Shared::emit_from(generation, ev)` drops a stale session's event under the
+  session lock and sends inside it, as `write_state` does. `StreamInfo`, the ICY title and the
+  internal `Reconnect` go through `SessionCtx::emit`, and `Shared::emit` is deleted. F2's check
+  stays as control flow only.
+- **N1 (the chat's note, for M5): the spectrum must not go through `emit_from`.** It would take the
+  session lock from the audio path, and the audio callback never blocks. Deleting the ungated
+  `emit` forces that choice to be made consciously. (N2: an HLS build unsynced at the bound still
+  reads `Starved`, since gaps between segments are ≥ 5 s, as the F1 plan intended. N3: X1b's
+  gap ≥ 5.0 s holds by construction.)
+- **Recorded failing on `688c9fd`** (`_handover/b-g/`): G1a's margin test ("131072 B: 104.857s <
+  1.1 × 104.8576 s"); `g1_a` (F-nosync at 4 000 B/s) and `g1_b` (behind `icy-metaint: 16000` at
+  2 500 B/s, since at 26 kbit/s a 16 000 B read takes 4.9 s and would pass there) as
+  `Reconnecting { 1 }`, "stalled (8.1 s …)" and "(6.4 s …)"; G2's test through a shim of the
+  ungated emit, `["info:A", "title:A"]` on the channel. Eight mutations, each caught by the test
+  named in the plan, with one exception recorded: resetting the arrivals in `begin_build` survives
+  `g1_a` (its gaps are tiny either way) and is caught by the `build.rs` unit test.
+
+**Re-acceptance after G2 (2026-09-30, `afe6c2e`; `b-acceptance.md`, last section).** In-app, the
+same instrument as the last round; X6's precondition on a clean `688c9fd` worktree with the
+engine-only `rate_probe` example, as X5's was.
+
+| item | fail rule | measured | |
+|---|---|---|---|
+| X6 precondition, `688c9fd` | void unless a `Starved` bound and `Reconnecting { 1 }` | first byte 8.453 s after open; `Starved`, "longest gap 8.20 s, 0 reconnects" (one 32 KiB read), 20.02 s after the first byte → `Reconnecting { 1 }` — finding 1, live | valid |
+| X1 F-falsesync, in-app | first byte → bound outside [20.000, 20.150] s; not `Format`; another message; a `Reconnecting`; a click | **20.024 s**; `Format`, longest gap 0.07 s (1.03 s last round, a read's time); the message unchanged, **confirmed on screen by Martín**; 1 request, 0 clicks | PASS |
+| X1b `/silent`, in-app | a format error; not `Starved`; logged gap < 5.0 s; bound outside [20.000, 20.150] s; next state not `Reconnecting { 1 }` | **20.091 s**; `Starved`, gap 5.01 s, 4 re-feeds at 5.0 s intervals, "5.0 s without data; re-established 4 times" → `Reconnecting { 1 }` | PASS |
+| X6 F-nosync at a steady 32 kbit/s, in-app | a `Reconnecting`; not terminal; not `unsupported_format`; bound outside [20.000, 20.150] s; gap ≥ 1.0 s; another message | first byte 8.450 s after open; **20.102 s**; `Format`, longest gap 0.26 s (the server's 1 KiB writes); "no decodable audio in the first 20 s of the stream (audio/mpeg)", terminal, **confirmed on screen by Martín**; 1 request | PASS |
+
+X3 and X5 are unaffected (a healthy build ends before any gap matters) and were not re-run.
+**285 + 15** at `afe6c2e`. Carried to after the merge: finding 5 (one bound logs two `warn`
+lines) and finding 7 (`mime_essence` allocates a `String` per call).
+
+**The rule earned (review 2): a clock is checked for what it measures, not only for how it is
+published.** F1's check read every ordering and every reset and still missed that a read is not
+an arrival (instrument instance eighteen, below).
+
+**Known limits, carried (not defect B).**
+- **Opus:** Symphonia 0.5.5 has no Opus decoder (3 of 9 OGG in S2). These fail as an honest
+  `unsupported_format` in under 0.5 s, beside HE-AAC's SBR (decoded core-only, as at M3c).
+- **An expired TLS certificate is retried** through the backoff rather than treated as terminal
+  (S6, BR `4534dd5f`).
+- **`UNKNOWN`-codec records** are playlist files served as `application/octet-stream`. They end as
+  terminal `unsupported_format` in under 1 s (S6).
+- **Four `raw=0` playlist reads:** on 4 small playlist bodies the probe's `raw=` read 0 where
+  curl read 60–113 B. Unexplained.
+- **The `ondar-stations` body byte bound** (from M3c's review) is still carried.
+- **Log noise:** the shell's `log_rate_limit` counts `stream_download::source` events before the
+  level filter drops them. It printed "suppressed 29 … events" each second of X1's build while no
+  such line reached the log.
+- **DEBUG level:** `stream_download` DEBUG lines reach the dev app's log under `RUST_LOG=info`.
+- **Plan wording:** § 5 said the X1 message is rendered by `describeError`. A playback error is
+  rendered by NowPlaying's `stateText` as `error [<code>]: <message>`; `describeError` is for
+  command rejections. A wording error in the plan.
+
+**The rule earned.** A local check of an instrument must include the shapes the live data will
+have. Step 0 produced three quiet mis-specifications, each verified on the wrong shape (instrument
+instances fifteen to seventeen, below), plus one wrong fixture name in the plan. None printed a
+miss; each was caught by reading the raw evidence.
+
 ### M3c: HLS, the ADTS half — built, measured (2026-09-24)
 
 Branch `m3c` off `main` `b7e050a` (`defect-a-done`). Commits, each pushed alone and CI green
@@ -784,7 +1077,9 @@ mount is another. Sequenced **after the M3c merge, before M4**, as its own measu
 defect A: bound the build phase (a test that fails on `main` with the paced `FFF9` fixture), then
 the `FFF9` → `FFF1` rewrite on the Icecast path as a streaming wrapper over `hls::segment`, sized
 by the still-unmade count of Icecast AAC stations that send it (≈ 36 header reads over P5's
-`audio/aac*` rows). OPEN.md carries it.
+`audio/aac*` rows). OPEN.md carries it. **Built and accepted 2026-09-29 on branch `defect-b`:** see
+"Defect B: an unbounded `Connecting`" above (Step 0 measured the share at 23.8 %, and the live
+trigger turned out to be a false MP3 marker, not `AdtsHeader::sync`).
 
 **Code review, 2026-09-25** (`_handover/m3c-review-findings.md`, verified; triage
 `m3c-review-triage-2026-09-25.md`; the single-agent local `/code-review` on the seven-commit
@@ -2484,7 +2779,10 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    `m3a-done`) — see "M3a: the station directory, built"; **M3b merged 2026-09-24** (`f7af9dc`,
    `m3b-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) **merged
    2026-09-24** (`b7e050a`, `defect-a-done`); **M3c (HLS, the ADTS half) merged 2026-09-26**
-   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) is open, sequenced before M4.
+   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) **built and accepted
+   2026-09-29 on branch `defect-b`** (`f95e530`…`49e6a72`); `/code-review` the same day, ten
+   findings, the bound redesigned and fixed in F1–F4 (`2784efd`…`dd469e4`), re-accepted; the last
+   scoped review and the merge to come, before M4 — see "Defect B".
    See "M3c: HLS, the ADTS half", "Defect A".
 4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
    coordinate DB merge. Record measured bundle size.
@@ -2494,7 +2792,7 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure thirteen times by the numbering below — sixteen
+result.** This project has now hit the same failure eighteen times by the numbering below — twenty-one
 counting the three M2a instances recorded between the fourth and the fifth without a number — in
 as many unrelated tools, and each time the instrument was wrong rather than the thing being
 measured. The three below are the archetypes; the rest are enumerated after them.
@@ -2607,6 +2905,41 @@ output proves that function; the claim was about the session, and only a test at
 level (`engine::session_tests`, counting requests) can carry it. Same family as eleven — a
 derived claim written as a measured one — with the added step that the derivation had a green
 test beside it.
+
+**Fourteenth, 2026-09-28 (defect B C2b): the lint that did not cover what it named.**
+`cargo clippy --all-targets -- -D warnings`, the command in CI and in CLAUDE.md, exited 0 on
+every push. In this workspace (a real `[package]` at the root) it lints the member crates'
+libraries only as the root package's dependencies, and **never their tests or examples**. The
+same command with `--workspace` failed on `00ddac2` with seven errors (four unused functions in
+the EQ sweep example, a complex type in the stations service's tests, a constant assertion in
+`stream.rs`'s tests). C1's two dead-code warnings in the new test harness had gone out unseen. The
+mutation that proves the scope: `return x + 1;` in `reconnect.rs`'s test module fails the
+workspace command and passes the old one, and the same line in the library fails both. The same
+trap as the bare `cargo test` of the first row, in the next tool along. The fix is the scope, and
+CI now runs the workspace form.
+
+**Fifteenth to seventeenth, 2026-09-28 (defect B Step 0): local checks verified on the wrong
+shape.** Each instrument passed its own local check, and each check lacked the shape the live data
+had:
+- the fetch's exit-code rule was verified on plain HTTP, where a closed pipe is curl's exit 23;
+  over TLS the same close is exit 56, and 39 reads were nearly miscounted as failures (A10, A18);
+- S2's ICY-metadata bound was right except at the boundary `raw = audio = metaint`, because
+  `IcyReader` reads a block on the next read (A15);
+- S5's excerpt detector looked for `<`, and was verified only on an HTML body, while the live
+  bodies were plain text.
+
+A fourth, of the same kind, was a fixture name in the plan: the control named M3c's normalised
+copy, not the raw file (A12). None printed a miss; each was caught by reading the raw evidence.
+**The rule earned: a local check of an instrument must include the shapes the live data will
+have** — TLS as well as plain HTTP, the boundary value, the plain-text body.
+
+**Eighteenth, 2026-09-30 (defect B review 2): a clock that measured the reader, not the network.**
+F1's "longest gap" was stamped by the decoder's reads, and it was checked for its orderings, its
+resets and its writers. stream-download returns a read only once the whole requested block has
+arrived, so the gap was a 32 KiB block's fill time: 8.2 s at 32 kbit/s, read as a 5 s stall. The
+tests all ran at 128 KiB/s, where a block takes 0.25 s, so none could show it. G1 stamps arrival
+on the download task (`on_progress`). **The rule earned: check a clock for what it measures, at
+the rates where the difference shows.**
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 
