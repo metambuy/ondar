@@ -883,7 +883,9 @@ fn run_session(
                 opened.content_type.as_deref(),
                 produced_audio,
             );
-            log::warn!("build bound: {message}");
+            // The engine's `fail_build` line is the bound's one warning, with the figures it
+            // decided on; this is the page's message, for the record (review 2, finding 5).
+            log::info!("build bound: {message}");
             if !retry_or_fail(&ctx, code, message, terminal, None) {
                 return;
             }
@@ -1698,11 +1700,12 @@ mod session_tests {
     }
 
     /// The test binary's logger (defect B C4): keeps the ADTS front end's lines, and since F1
-    /// the build's, with the name of the thread that logged them, so a test reads its own session's lines however many
-    /// sessions run in parallel. Installed once; the other lines are dropped.
+    /// the build's, with the name of the thread that logged them and their level, so a test
+    /// reads its own session's lines however many sessions run in parallel. Installed once;
+    /// the other lines are dropped.
     struct Capture;
 
-    static CAPTURED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+    static CAPTURED: Mutex<Vec<(String, log::Level, String)>> = Mutex::new(Vec::new());
 
     impl log::Log for Capture {
         fn enabled(&self, m: &log::Metadata) -> bool {
@@ -1712,7 +1715,7 @@ mod session_tests {
             let msg = r.args().to_string();
             if msg.starts_with("adts front end") || msg.starts_with("build") {
                 let name = thread::current().name().unwrap_or_default().to_string();
-                CAPTURED.lock().unwrap().push((name, msg));
+                CAPTURED.lock().unwrap().push((name, r.level(), msg));
             }
         }
         fn flush(&self) {}
@@ -1743,8 +1746,23 @@ mod session_tests {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(t, m)| *t == h.decode_thread && m.starts_with(prefix))
-            .map(|(_, m)| m.clone())
+            .filter(|(t, _, m)| *t == h.decode_thread && m.starts_with(prefix))
+            .map(|(_, _, m)| m.clone())
+            .collect()
+    }
+
+    /// The `warn`-level lines with `prefix` this harness's decode thread logged (review 2,
+    /// finding 5: a bound is one warning, the engine's `fail_build` line with the figures it
+    /// decided on; the decode thread's line carrying the page's message is `info`).
+    fn decode_warn_lines(h: &Harness, prefix: &str) -> Vec<String> {
+        CAPTURED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, level, m)| {
+                *t == h.decode_thread && *level == log::Level::Warn && m.starts_with(prefix)
+            })
+            .map(|(_, _, m)| m.clone())
             .collect()
     }
 
@@ -2531,6 +2549,20 @@ mod session_tests {
             h.infos
         );
         assert!(h.started.lock().unwrap().is_empty(), "no Started");
+        // Review 2, finding 5: the bound's message line is logged (`build_lines`) but is not a
+        // second warning beside the engine's `fail_build` line (on `dc9200d` it was `warn`).
+        assert!(
+            build_lines(&h)
+                .iter()
+                .any(|l| l.starts_with("build bound: no decodable audio")),
+            "{:?}",
+            build_lines(&h)
+        );
+        assert_eq!(
+            decode_warn_lines(&h, "build bound"),
+            Vec::<String>::new(),
+            "a second warn for one bound"
+        );
     }
 
     /// C4b (defect B, review round 10), measured since F1 from the build's first byte: the
@@ -2786,6 +2818,12 @@ mod session_tests {
                 .any(|l| l.contains("the connection stalled")),
             "{:?}",
             build_lines(&h)
+        );
+        // Review 2, finding 5: one warning per bound (the network cause's line too).
+        assert_eq!(
+            decode_warn_lines(&h, "build bound"),
+            Vec::<String>::new(),
+            "a second warn for one bound"
         );
         h.ctx.cancel();
     }
