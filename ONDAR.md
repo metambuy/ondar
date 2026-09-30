@@ -1,6 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
+*Last updated: 2026-09-30, later (M4's reversal: the drawn map replaces the satellite map; pan
+and zoom kept; M4 split into M4a/M4b/M4c — see "M4: the drawn map — the reversal").
+Previously 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
 times, not arrival; G1–G3 and the re-acceptance — see "Defect B", "Code review 2 and G1–G3";
 instrument instance eighteen). Previously 2026-09-29, later (defect B's `/code-review`: ten findings, the bound redesigned on a
 byte clock and build stamp, F1–F4, re-accepted — see "Defect B", "The code review and the
@@ -32,10 +34,14 @@ audio-first.
 It is **not** a port of PixelRadio. The only inheritance from PixelRadio is:
 
 - the **station data source** (radio-browser.info) and the query/filter logic learned there,
-- the **city database** (`cities.js`, ~500 cities with lat/lng, grouped by ISO alpha-2),
+- the **city database** (`cities.js`, ~500 cities with lat/lng, grouped by ISO alpha-2) —
+  **not used in M4**; kept for a possible later coordinate-inference feature (decision M1,
+  2026-09-30),
 - the **country/region groupings** and the API-etiquette rules (`clickStation` on play),
-- a **supplementary coordinate database** for stations that radio-browser leaves ungeolocated
-  (files to be supplied by Martín at M4).
+- ~~a **supplementary coordinate database** for stations that radio-browser leaves
+  ungeolocated~~ — **not used** (decision M2, 2026-09-30): the map draws radio-browser's own
+  coordinates; a later milestone may infer city-level coordinates in Rust and draw them
+  visibly as approximate.
 
 Everything else — rendering, aesthetic, audio pipeline, state model — is rebuilt from scratch.
 
@@ -62,25 +68,31 @@ work area of the display the tray icon is on, so "expanded" is a function of the
 "M2d: the expanded height is capped to the work area". Grows *in place* — it stays a menu bar
 popover, never a separate window):
 
-- Satellite map section revealed above the station list
-- Map is framed on the currently selected country
-- Pan and zoom inside the frame; for large countries (Russia, USA, Brazil) the viewport
-  moves rather than shrinking the country to illegibility
+- A drawn map revealed above the station list, framed on the selected country: the mainland
+  fitted to the pane, outlying territory in insets, neighbours in a quieter tone, subdivisions
+  for large countries.
+- Pan and zoom inside the frame: the fit is the initial view and the zoom-out limit, 1.5 km/pt
+  the zoom-in limit; for large countries (Russia, USA, Brazil) the subdivisions give the fit
+  view its scale, and zooming in brings the coastline detail the resource carries per level.
 - Station markers on the map; click a marker to play
 - Equalizer panel (toggle between map and EQ, or EQ as a second expanded pane)
 
 ## Aesthetic
 
-Satellite imagery, not pixel art. The reference points are Apple's own menu bar surfaces:
-translucent material (`NSVisualEffectView` vibrancy), SF Symbols or a matching icon set,
-SF Pro type, 8pt spacing rhythm, subtle depth, no drop shadows on flat elements, full
-light/dark support driven by the system appearance.
+A drawn map, not satellite imagery and not pixel art. The reference points for the chrome are
+Apple's own menu bar surfaces: translucent material (`NSVisualEffectView` vibrancy), SF Symbols
+or a matching icon set, SF Pro type, 8pt spacing rhythm, subtle depth, no drop shadows on flat
+elements, full light/dark support driven by the system appearance.
 
-Map imagery is **NASA Blue Marble Next Generation**, bundled offline. Country outlines are
-drawn as thin translucent strokes over the imagery; the selected country gets a brighter
-stroke and a faint inner glow. Consider shipping the **Black Marble (night lights)** variant
-as the dark-mode map — city lights are a natural fit for a radio product and it solves dark
-mode elegantly.
+The map is **drawn from Natural Earth 10m shapes** (public domain), designed twice: **Sand** by
+day (flat fill, sea `#D3E0E3`, land `#E6D5B1`, neighbours `#EFE9DC`, hairline edge `#8F7A55`),
+**Ink** by night (sea `#121A25`, two-tone land `#524A3E`/`#6B5E47`, neighbours `#262C34`). The
+sea is drawn, not vibrancy. The country is fitted to the pane on an equal-area projection centred
+on its mainland; outlying territory (Azores, Madeira; Alaska, Hawaii) sits in insets with the
+territory's name; countries coarser than 8 km/pt show their subdivisions. Stations gather by
+distance on the ground into one dot per place, sized by count, with no numbers on the map. The
+full colour and size table is the "Ondar map style" artifact (v3). Decided 2026-09-24 after
+true-size mockups of satellite imagery and of drawn styles (m4-design/DIRECTION.md).
 
 The tray icon is a monochrome template image so macOS tints it correctly; it gets a subtle
 animated state when audio is playing. Note: there is no animated-template-image API; this is
@@ -96,8 +108,8 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). Pinned `rev = c9ec213…` since M2a; see "Verified versions". |
 | Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. Since M2a the centred position is clamped into the work area (`NSScreen.visibleFrame`) of the display under the icon. See "M2a: the tray path, measured". |
 | Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; confirmed by eye 2026-09-16 over a bright, busy backdrop (Martín).** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
-| Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
-| Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
+| Map rendering | **Inline SVG in the webview, drawing exactly the paths Rust sends** | Projection (spherical LAEA, authalic radius), framing, insets, level choice, clipping, station gathering and hit-testing all run in Rust (`ondar-map`); the webview is a renderer. Leaflet and the tile pyramid are gone (2026-09-24/30). |
+| Map data | **Natural Earth 10m admin 0 + admin 1, tag v5.1.2, pinned by SHA-256**, built at build time into one bundled resource (a global scale ladder 1.5/3/6/12/24 km/pt, each unit once per level, simplified to a measured ≤ 0.25 pt) | Public domain, offline, no API key. Credited in About anyway. Station coordinates are radio-browser's `geo` only (decision M2, 2026-09-30); no city set in M4. |
 | Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
@@ -303,7 +315,8 @@ TypeScript, stop — it belongs in Rust.
   was added 2026-09-28 (the drift audit): `git diff` ignores untracked files, so a new exported
   type whose `.ts` was never committed passed. It is
   `cargo build`, not `pnpm tauri build`: a full bundle is slow and pointless before M6, and
-  the tile pyramid must never enter CI. Node and pnpm are pinned to the development
+  the Natural Earth inputs (40 MB) never enter CI: the built resource is committed, and the
+  tool's input-bound tests are `#[ignore]`d. Node and pnpm are pinned to the development
   machine's majors (Node 26; pnpm from `package.json`'s `packageManager`, so the lockfile,
   local installs and CI cannot drift apart).
   **First run green** on `fba1133`, 5m6s cold-cache:
@@ -324,18 +337,18 @@ TypeScript, stop — it belongs in Rust.
   ceiling by `RING_SECONDS`. Raising `RING_SECONDS` to 4 would close it at the cost of memory
   and of a longer worst-case resume everywhere else. Titles are late on these stations; audio
   is unaffected. See "The prefetch knee".
-- **Offline map resolution is capped.** Blue Marble NG tops out at 500 m/px (eight 21600×21600
-  tiles) and we ship the 2 km/px 21600×10800 composite. Small countries will be shown at
-  native resolution and upscale gently past that; this is accepted, not a bug.
-- **Bundle size.** The full 2 km/px level is ~233 Mpx; as lossy WebP that is roughly 45–90 MB
-  for the base level plus ~33% for the rest of the pyramid. **Decision (2026-09-07): an
-  installed size above 100 MB is acceptable.** Measure real numbers at M4 and record them
-  here. If Black Marble is also shipped, expect roughly double.
+- **The map is a bundled vector resource** (Natural Earth 10m, one file). Its finest level is
+  1.5 km/pt, which is also the zoom-in limit. Step 0 measured 4.55 MB deflated per blob and
+  9.3 MB raw for the shared store (`_handover/m4-step0-report.md`, Q2b), so the 100 MB
+  acceptance of 2026-09-07 is moot. The installed size after M4a is recorded in "M4a" below.
+  (Replaced 2026-09-30, the reversal: the satellite map's "offline resolution is capped" and
+  "bundle size" bullets.)
 - **20.7 % of radio-browser stations have coordinates** — measured 2026-09-21 over 25 236
   stations in eight countries (7 % RU to 38 % BR; `_handover/m3-step0-logs/p3-census.tsv`),
   an eight-country sample, not a global figure. The inherited "~30 %" is retired. Map markers
   are therefore sparse; the country dropdown, not the map, is the primary navigation. The map
-  is context and delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
+  is context and delight. Coordinates are radio-browser's only (M2, 2026-09-30); a later
+  milestone may infer more.
 - ~~**BLOCKER: `src-tauri/icons/icon.png` is a 1×1 placeholder.**~~ **Resolved 2026-09-13.**
   It had stopped being cosmetic: the bundler failed with `Failed to create app icon: No
   matching IconType` and produced nothing, so no bundle could be built at all and
@@ -663,6 +676,36 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M4: the drawn map — the reversal (2026-09-30)
+
+**Decided 2026-09-24** (Martín, `_handover/m4-design/DIRECTION.md` § DECIDED), after true-size
+mockups of satellite imagery (real Blue Marble and Black Marble pixels in the 328 × 300 pt pane)
+and of drawn styles. Martín preferred "our own design rather than NASA's photograph". **Applied
+2026-09-30** in M4a's first commit, as the reversal rule requires. What it reverses:
+
+| Before | Now |
+|---|---|
+| Aesthetic: satellite imagery, NASA Blue Marble bundled offline, Black Marble considered for dark mode | A drawn map from Natural Earth 10m: Sand by day, Ink by night, the sea drawn; the full table is the "Ondar map style" artifact, v3 |
+| Stack: Leaflet, `L.CRS.EPSG4326`, a WebP tile pyramid | Inline SVG drawing the paths Rust sends; projection, framing, insets, clipping, gathering and hit-testing in Rust (`ondar-map`) — the Tauri weight the tile pyramid carried moves to the boundary rule |
+| Constraints: offline resolution capped at 2 km/px; an installed size above 100 MB accepted (2026-09-07) | One vector resource, 4.55 MB deflated per blob at Step 0; the 100 MB acceptance is moot |
+| BUILD_PLAN open questions 3–5 (Blue Marble month, night lights, deepest zoom) | Moot |
+| The PixelRadio supplementary coordinate database, and `cities.js` ported | Neither used in M4 (decisions M1, M2): radio-browser's `geo` only; coordinate inference is a later milestone |
+
+**What was kept.** The M4 brief first proposed no pan or zoom. **Amendment 1 (Martín,
+2026-09-30, M4 YES) kept them**: the fit is the initial view and the zoom-out limit, 1.5 km/pt
+the zoom-in limit, and the pan is clamped in projected kilometres, never in lon/lat. So the
+Product-shape pan/zoom line is amended, not reversed. The list stays the navigation: 20.7 % of
+stations carry coordinates.
+
+**What decides the data.** Step 0 (`_handover/m4-step0-report.md`, four review rounds, R1–R10)
+measured the rules M4a builds on: the centre as the midpoint of the antimeridian-aware bbox, AQ
+pole-centred; the authalic sphere; a global scale ladder 1.5/3/6/12/24 km/pt, each unit once per
+level; per-ring Visvalingam–Whyatt simplification bisected to a measured ≤ 0.25 pt; a per-ring
+index; Antarctica's polar seam stripped. M4 is split into M4a (geodata and the `ondar-map`
+crate, no UI), M4b (IPC and the SVG renderer) and M4c (stations, gathering, hit-testing); the
+plan is `_handover/m4a-plan.md`, reviewed 2026-09-30 (P1–P4). The instructions field's
+replacement text is `_handover/m4a-instructions-field.md`.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -2784,8 +2827,10 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    findings, the bound redesigned and fixed in F1–F4 (`2784efd`…`dd469e4`), re-accepted; the last
    scoped review and the merge to come, before M4 — see "Defect B".
    See "M3c: HLS, the ADTS half", "Defect A".
-4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
-   coordinate DB merge. Record measured bundle size.
+4. **M4 — Map**, split (2026-09-30): **M4a** geodata + the `ondar-map` crate (no UI); **M4b**
+   IPC + the SVG renderer with pan and zoom; **M4c** stations, gathering, hit-testing. Drawn map
+   decided 2026-09-24 (`m4-design/DIRECTION.md`); Step 0 measured 2026-09-30. Record the
+   installed bundle size at M4a.
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
@@ -3060,6 +3105,7 @@ rather than assumed closed.
 
 - **Popover** — the tray-anchored `NSPanel` window; the whole app UI.
 - **Collapsed / Expanded** — the two popover heights.
-- **Tile pyramid** — the pre-sliced Blue Marble WebP levels shipped as app resources.
+- **Map resource** — the one file the build tool writes from Natural Earth: every unit's rings
+  at each ladder level, plus the per-country frame tables.
 - **Station** — a radio-browser record: uuid, name, url_resolved, codec, bitrate, country, geo.
 - **EQ band** — one biquad peaking filter with a fixed centre frequency and adjustable gain.
