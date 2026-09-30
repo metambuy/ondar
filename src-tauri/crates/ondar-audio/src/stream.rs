@@ -173,16 +173,21 @@ pub struct StreamError {
     pub retry_after: Option<Duration>,
 }
 
-/// A `Content-Type`'s essence: the type and subtype, lowercased, without parameters —
-/// `Audio/AAC; charset=x` → `audio/aac` (review fixes F4, finding 9: one parser for the HLS
-/// dispatch and the ADTS front end's filter).
-pub(crate) fn mime_essence(content_type: &str) -> String {
-    content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase()
+/// A `Content-Type`'s essence: the type and subtype without parameters, borrowed as served —
+/// `Audio/AAC; charset=x` → `Audio/AAC` (review fixes F4, finding 9: one parser for the HLS
+/// dispatch and the ADTS front end's filter). The case is the caller's to fold:
+/// `eq_ignore_ascii_case`, or [`starts_with_ignore_ascii_case`] (review 2, finding 7: no
+/// `String` per call).
+pub(crate) fn mime_essence(content_type: &str) -> &str {
+    content_type.split(';').next().unwrap_or("").trim()
+}
+
+/// Whether `s` starts with the ASCII `prefix`, case-insensitively. A prefix cut inside a
+/// multi-byte character (`s.get` answers `None`) is no match, never a panic — an ASCII prefix
+/// cannot match non-ASCII bytes anyway.
+pub(crate) fn starts_with_ignore_ascii_case(s: &str, prefix: &str) -> bool {
+    s.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 /// Which open produced a stream (defect B C4, review P3): the reader over the HTTP body as
@@ -561,6 +566,37 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// Review 2, finding 7: the essence is borrowed as served, without parameters, and the case
+    /// is folded by the prefix check — `Audio/AAC; charset=x` matches `audio/aac`. A prefix whose
+    /// length falls inside a multi-byte character (`audio/aaé` is 10 bytes; `audio/aac` is 9,
+    /// the byte inside `é`) is no match and no panic. Fails on a prefix check that slices with
+    /// `[..n]` (a char-boundary panic), on a `starts_with` without the fold, or on an essence
+    /// that keeps its parameters.
+    #[test]
+    fn mime_essence_is_borrowed_and_the_prefix_check_folds_case() {
+        assert_eq!(mime_essence("Audio/AAC; charset=x"), "Audio/AAC");
+        assert_eq!(mime_essence(" audio/aacp ;a=b;c=d"), "audio/aacp");
+        assert_eq!(mime_essence(""), "");
+        assert_eq!(mime_essence(";"), "");
+        for (essence, prefix, expected) in [
+            ("Audio/AAC", "audio/aac", true),
+            ("AUDIO/X-AAC", "audio/x-aac", true),
+            ("audio/aacp", "audio/aac", true),
+            ("audio/aa", "audio/aac", false),
+            ("audio/x-aiff", "audio/x-aac", false),
+            ("audio/aa\u{e9}", "audio/aac", false),
+            ("\u{e9}", "a", false),
+            ("", "audio/aac", false),
+            ("anything", "", true),
+        ] {
+            assert_eq!(
+                starts_with_ignore_ascii_case(essence, prefix),
+                expected,
+                "{essence:?} vs {prefix:?}"
+            );
+        }
+    }
 
     /// One-shot server: accept once, read the request head, write `response`, hold the
     /// socket briefly so the client sees a complete answer, close.

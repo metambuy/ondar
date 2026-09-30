@@ -90,14 +90,21 @@ impl BuildBounds {
     ///   256 KiB buffer.
     /// - **`no_bytes` = max(60 s, ⌈1.1 × prefetch ÷ 1 250 B/s⌉)**: the prefetch's time at
     ///   10 kbit/s plus a 10 % margin, rounded up to the millisecond — 60 s at the 32 768 B floor,
-    ///   70.4 s for a 320 kbit/s record, 115.344 s at the 131 072 B ceiling. The margin is the
-    ///   connection's latency and the first tick after the bound (review 2, finding 3: without
-    ///   it, a stream at exactly 10 kbit/s met its prefetch 0.6 ms after the bound, and the
-    ///   integer division cut the bound itself). **What fails it:** a stream with no burst on
-    ///   connect below 4.8 kbit/s at the floor, or below 9.1 kbit/s with a ceiling record, or at
-    ///   exactly 10 kbit/s with more than ~10 s of connect latency; none is recorded. It is always
-    ///   `Network`: a trickle cannot be told from a slow healthy stream (decided 2026-09-29, D1:
-    ///   a body stalled before its prefetch takes 60–105 s per attempt; `main` never ended).
+    ///   70.4 s for a 320 kbit/s record, 115.344 s at the 131 072 B ceiling. The build's start
+    ///   is stamped after the response headers, so the margin — 6.4 s at 80 000 B, 10.5 s at the
+    ///   ceiling — covers what runs between the headers and the decoder's first byte besides the
+    ///   prefetch itself: the wait from the headers to the first body chunk, one more chunk after
+    ///   the prefetch (stream-download marks the prefetch met without waking the reader; its next
+    ///   write does — 0.24.4 `source/mod.rs:290–328`, `:431–436`) and the first tick after the
+    ///   bound (review 2, finding 3: without the margin, a stream at exactly 10 kbit/s met its
+    ///   prefetch 0.6 ms after the bound, and the integer division cut the bound itself).
+    ///   **What fails it:** a stream with no burst on connect below 4.4 kbit/s at the floor
+    ///   (32 768 B in 60 s), or below 9.1 kbit/s with a ceiling record, or at exactly 10 kbit/s
+    ///   whose headers-to-first-chunk wait plus that one chunk outlasts the margin (a proxy
+    ///   coalescing 16 KiB chunks would take 13 s per chunk at that rate); none is recorded. It
+    ///   is always `Network`: a trickle cannot be told from a slow healthy stream (decided
+    ///   2026-09-29, D1: a body stalled before its prefetch takes 60–115 s per attempt; `main`
+    ///   never ended).
     pub(crate) fn for_prefetch(prefetch_bytes: u64) -> Self {
         let retry = stream::retry_timeout();
         // ms = ⌈prefetch × 1 000 × 1.1 ÷ 1 250⌉, in integers.
