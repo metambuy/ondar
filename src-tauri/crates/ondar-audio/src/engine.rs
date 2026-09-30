@@ -1113,7 +1113,8 @@ fn wants_adts_front_end(kind: stream::SourceKind, content_type: Option<&str>) ->
     kind == stream::SourceKind::Http
         && content_type.is_some_and(|ct| {
             let essence = stream::mime_essence(ct);
-            essence.starts_with("audio/aac") || essence.starts_with("audio/x-aac")
+            stream::starts_with_ignore_ascii_case(essence, "audio/aac")
+                || stream::starts_with_ignore_ascii_case(essence, "audio/x-aac")
         })
 }
 

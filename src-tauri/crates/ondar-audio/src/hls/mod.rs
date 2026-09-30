@@ -89,7 +89,10 @@ const RETRY_TIMEOUT_HEADROOM: Duration = Duration::from_secs(5);
 
 /// Whether a response's `Content-Type` names an HLS playlist.
 pub fn is_hls_content_type(content_type: &str) -> bool {
-    HLS_CONTENT_TYPES.contains(&crate::stream::mime_essence(content_type).as_str())
+    let essence = crate::stream::mime_essence(content_type);
+    HLS_CONTENT_TYPES
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(essence))
 }
 
 /// Whole-request bound on a segment fetch: twice the target duration, at least 10 s.
