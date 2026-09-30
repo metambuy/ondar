@@ -1,5 +1,6 @@
-//! The ADTS front end (defect B): a streaming reader that realigns an Icecast `audio/aac*` body
-//! to a walked ADTS header and normalises every frame before the decoder sees it.
+//! The ADTS front end (defect B): a streaming reader that realigns an Icecast `audio/aac*` or
+//! `audio/x-aac*` body to a walked ADTS header and normalises every frame before the decoder
+//! sees it.
 //!
 //! Why (defect B Step 0): 23.8 % of Icecast ADTS bodies send `FFF9` headers (the MPEG-2 ID bit),
 //! which Symphonia's ADTS reader never syncs on, and 8 % start mid-frame; in 36 of 42 `FFF9`

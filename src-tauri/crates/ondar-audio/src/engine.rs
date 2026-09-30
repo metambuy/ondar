@@ -841,7 +841,8 @@ fn run_session(
         );
         // The ADTS front end (defect B C4) sits **after** `IcyReader` — a metadata block can hold
         // `FF F9`, and inside the frames it would read as a sync loss — and applies to an HTTP
-        // stream labelled `audio/aac*` only (review P3: HLS segments are normalised already).
+        // stream labelled `audio/aac*` or `audio/x-aac*` only (review P3: HLS segments are
+        // normalised already).
         let reader: BoxedReader =
             if wants_adts_front_end(opened.kind, opened.content_type.as_deref()) {
                 Box::new(AdtsReader::new(icy))

@@ -1,6 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-29, later (defect B's `/code-review`: ten findings, the bound redesigned on a
+*Last updated: 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
+times, not arrival; G1–G3 and the re-acceptance — see "Defect B", "Code review 2 and G1–G3";
+instrument instance eighteen). Previously 2026-09-29, later (defect B's `/code-review`: ten findings, the bound redesigned on a
 byte clock and build stamp, F1–F4, re-accepted — see "Defect B", "The code review and the
 redesign"). Earlier 2026-09-29 (defect B built and accepted on `defect-b` — see "Defect B: an unbounded
 `Connecting`"; instrument instances fourteen to seventeen). Previously 2026-09-28 (documentation drift pass: the M3 milestone entry, the CI step list, the
@@ -662,7 +664,7 @@ M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed a
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
 
-### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed and redesigned (2026-09-29)
+### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
 - brief `b-brief.md` (Amendments 1–3);
@@ -673,7 +675,10 @@ Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
 - the code review: findings `b-review-findings.md`, triage and the chat's checks
   `b-review-triage-2026-09-29.md`, plan `b-fix-plan.md`; recorded failures on `da36489`
   `b-f1-da36489-*`, `b-f2-*`, `b-f3-*`, `b-f4-*`; mutations `b-f1-mutations.log`,
-  `b-f4-mutations.log`.
+  `b-f4-mutations.log`;
+- the second code review: findings `b-review2-findings.md`, triage and the chat's plan review
+  `b-review2-triage-2026-09-30.md` (N1–N3), plan `b-review2-plan.md`; recorded failures,
+  shims and mutations in `b-g/`; the re-acceptance in `b-acceptance.md`, last section.
 
 Commits, each pushed alone and CI green before the next:
 
@@ -691,6 +696,11 @@ Commits, each pushed alone and CI green before the next:
 | F2 | `128dc08` | a build the user cancelled emits nothing (finding 5) |
 | F3 | `f3008cd` | after its first alignment the front end never passes through (finding 4) |
 | F4 | `dd469e4` | `audio/x-aac` gets the front end; one ADTS header parser, one MIME parser (findings 7, 8, 9) |
+| F5 | `688c9fd` | docs |
+| G1a | `ed907f0` | the no-bytes bound keeps a 10 % margin at 10 kbit/s (review 2, finding 3) |
+| G1b | `34547bf` | starvation measured on network arrival (`on_progress`), not read time; the message prints the engine's decided figures (findings 1, 4) |
+| G2 | `afe6c2e` | session events land only while their session is live (finding 2) |
+| G3 | this commit | docs (finding 6 and this record) |
 
 **What was wrong on `main`.**
 - Any live stream whose bytes the decoder could not sync on stayed in `Connecting` indefinitely.
@@ -852,6 +862,72 @@ behaviour findings, so no merge until the fixes and one last scoped review.
 
 X1's round-11 line (20.205 s, "20 s + 2 ticks") is superseded: with the decode thread's stamp the
 fire is 20.100 s after the first byte. **280 + 15** at `dd469e4`.
+
+**Code review 2 and G1–G3 (2026-09-30).** The last scoped `/code-review` (Fable, `da36489..688c9fd`,
+`b-review2-findings.md`) found no crash, one behaviour finding and one behaviour-in-principle race,
+so the merge rule fixed before it blocked the merge. The chat triaged it
+(`b-review2-triage-2026-09-30.md`): 1–4 and 6 accepted, 5 and 7 carried.
+
+- **Finding 1 (behaviour): the gaps were per-read times, not arrival.** stream-download 0.24.4
+  returns a read only once the whole requested block has arrived (`lib.rs:556–577`), and Symphonia
+  asks for up to 32 KiB (`IcyReader` up to `metaint`, the front end 16 KiB). F1's `ClockedReader`
+  therefore measured a block's fill time: 8.2 s at 32 kbit/s. Every unsyncable build below
+  ~52 kbit/s (~26 behind 16 000-byte reads) read `Starved` and backed off for about 3 minutes,
+  where the rule says a terminal `UnsupportedFormat` at 20 s, and its message ("stalled (8.2 s
+  without data)") was false. It was never wrongly terminal and never hid a real pause. **The
+  chat's F1 diff check verified how the stamps were published, not what they measured.**
+- **Finding 2 (in principle):** a cancel between F2's `cancelled()` check and the `StreamInfo`
+  emit, microseconds wide, still leaked a stale `StreamInfo`; the ICY title callback had the same
+  shape. **Finding 3:** `no_bytes` had zero margin at exactly 10 kbit/s (104 857 ms, integer
+  division, against 104 857.6 ms). **Finding 4:** the message's gap was recomputed after the
+  cancel, and a reconnect during the prefetch could print "stalled (0.1 s…)". **Finding 6:** four
+  `audio/aac*`-only lines F4 left, and CLAUDE.md's `adts.rs` line without F3's "only before the
+  first alignment" — fixed in G3.
+- **G1a** (`ed907f0`): `no_bytes` = max(60 s, ⌈1.1 × prefetch ÷ 1 250 B/s⌉): 60 / 70.4 /
+  115.344 s at the floor, 80 000 B and the ceiling.
+- **G1b** (`34547bf`): D1's recorded upgrade path, taken. Each open has its own `build::Arrivals`,
+  stamped by `Settings::on_progress` on the download task after every chunk written, in
+  `stream::open` and `hls::open`. The callback is `FnMut`, so the gap state lives in the closure's
+  `ArrivalWriter`, the one writer; the first gap runs from the download's start. `ClockedReader`
+  keeps the first-byte stamp only. `begin_build` installs the open's `Arrivals` **unreset**:
+  the prefetch's arrivals can land before it, and a fresh one per open holds no earlier open's
+  stamp, which would read the backoff as a gap. The engine stores the gap and reconnect count it
+  decided on before its swap, and the page's message prints those. The rule is unchanged.
+- **G2** (`afe6c2e`): `Shared::emit_from(generation, ev)` drops a stale session's event under the
+  session lock and sends inside it, as `write_state` does. `StreamInfo`, the ICY title and the
+  internal `Reconnect` go through `SessionCtx::emit`, and `Shared::emit` is deleted. F2's check
+  stays as control flow only.
+- **N1 (the chat's note, for M5): the spectrum must not go through `emit_from`.** It would take the
+  session lock from the audio path, and the audio callback never blocks. Deleting the ungated
+  `emit` forces that choice to be made consciously. (N2: an HLS build unsynced at the bound still
+  reads `Starved`, since gaps between segments are ≥ 5 s, as the F1 plan intended. N3: X1b's
+  gap ≥ 5.0 s holds by construction.)
+- **Recorded failing on `688c9fd`** (`_handover/b-g/`): G1a's margin test ("131072 B: 104.857s <
+  1.1 × 104.8576 s"); `g1_a` (F-nosync at 4 000 B/s) and `g1_b` (behind `icy-metaint: 16000` at
+  2 500 B/s, since at 26 kbit/s a 16 000 B read takes 4.9 s and would pass there) as
+  `Reconnecting { 1 }`, "stalled (8.1 s …)" and "(6.4 s …)"; G2's test through a shim of the
+  ungated emit, `["info:A", "title:A"]` on the channel. Eight mutations, each caught by the test
+  named in the plan, with one exception recorded: resetting the arrivals in `begin_build` survives
+  `g1_a` (its gaps are tiny either way) and is caught by the `build.rs` unit test.
+
+**Re-acceptance after G2 (2026-09-30, `afe6c2e`; `b-acceptance.md`, last section).** In-app, the
+same instrument as the last round; X6's precondition on a clean `688c9fd` worktree with the
+engine-only `rate_probe` example, as X5's was.
+
+| item | fail rule | measured | |
+|---|---|---|---|
+| X6 precondition, `688c9fd` | void unless a `Starved` bound and `Reconnecting { 1 }` | first byte 8.453 s after open; `Starved`, "longest gap 8.20 s, 0 reconnects" (one 32 KiB read), 20.02 s after the first byte → `Reconnecting { 1 }` — finding 1, live | valid |
+| X1 F-falsesync, in-app | first byte → bound outside [20.000, 20.150] s; not `Format`; another message; a `Reconnecting`; a click | **20.024 s**; `Format`, longest gap 0.07 s (1.03 s last round, a read's time); the message unchanged, **confirmed on screen by Martín**; 1 request, 0 clicks | PASS |
+| X1b `/silent`, in-app | a format error; not `Starved`; logged gap < 5.0 s; bound outside [20.000, 20.150] s; next state not `Reconnecting { 1 }` | **20.091 s**; `Starved`, gap 5.01 s, 4 re-feeds at 5.0 s intervals, "5.0 s without data; re-established 4 times" → `Reconnecting { 1 }` | PASS |
+| X6 F-nosync at a steady 32 kbit/s, in-app | a `Reconnecting`; not terminal; not `unsupported_format`; bound outside [20.000, 20.150] s; gap ≥ 1.0 s; another message | first byte 8.450 s after open; **20.102 s**; `Format`, longest gap 0.26 s (the server's 1 KiB writes); "no decodable audio in the first 20 s of the stream (audio/mpeg)", terminal, **confirmed on screen by Martín**; 1 request | PASS |
+
+X3 and X5 are unaffected (a healthy build ends before any gap matters) and were not re-run.
+**285 + 15** at `afe6c2e`. Carried to after the merge: finding 5 (one bound logs two `warn`
+lines) and finding 7 (`mime_essence` allocates a `String` per call).
+
+**The rule earned (review 2): a clock is checked for what it measures, not only for how it is
+published.** F1's check read every ordering and every reset and still missed that a read is not
+an arrival (instrument instance eighteen, below).
 
 **Known limits, carried (not defect B).**
 - **Opus:** Symphonia 0.5.5 has no Opus decoder (3 of 9 OGG in S2). These fail as an honest
@@ -2716,7 +2792,7 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure seventeen times by the numbering below — twenty
+result.** This project has now hit the same failure eighteen times by the numbering below — twenty-one
 counting the three M2a instances recorded between the fourth and the fifth without a number — in
 as many unrelated tools, and each time the instrument was wrong rather than the thing being
 measured. The three below are the archetypes; the rest are enumerated after them.
@@ -2856,6 +2932,14 @@ A fourth, of the same kind, was a fixture name in the plan: the control named M3
 copy, not the raw file (A12). None printed a miss; each was caught by reading the raw evidence.
 **The rule earned: a local check of an instrument must include the shapes the live data will
 have** — TLS as well as plain HTTP, the boundary value, the plain-text body.
+
+**Eighteenth, 2026-09-30 (defect B review 2): a clock that measured the reader, not the network.**
+F1's "longest gap" was stamped by the decoder's reads, and it was checked for its orderings, its
+resets and its writers. stream-download returns a read only once the whole requested block has
+arrived, so the gap was a 32 KiB block's fill time: 8.2 s at 32 kbit/s, read as a 5 s stall. The
+tests all ran at 128 KiB/s, where a block takes 0.25 s, so none could show it. G1 stamps arrival
+on the download task (`on_progress`). **The rule earned: check a clock for what it measures, at
+the rates where the difference shows.**
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 

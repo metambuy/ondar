@@ -4,7 +4,7 @@
 //! HTTP (stream-download, bounded ring; on_progress stamps each open's network arrival)
 //!   → ClockedReader (stamps the decoder build's first byte)
 //!   → IcyReader (strips in-band titles)
-//!   → AdtsReader (HTTP audio/aac* only: realign, FFF9 → FFF1)
+//!   → AdtsReader (HTTP audio/aac* and audio/x-aac* only: realign, FFF9 → FFF1)
 //!   → rodio::Decoder (Symphonia)          decode thread
 //!   → rtrb ring buffer  ───────────────────────────────  audio callback
 //!   → Equalizer (10 × biquad peaking)  → Player → MixerDeviceSink (cpal)
