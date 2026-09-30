@@ -31,7 +31,9 @@ use rtrb::PushError;
 use tokio_util::sync::CancellationToken;
 
 use crate::adts::AdtsReader;
-use crate::build::{self, BuildBounds, BuildCause, BuildClock, BuildInputs, ClockedReader};
+use crate::build::{
+    self, Arrivals, Bounded, BuildBounds, BuildCause, BuildClock, BuildInputs, ClockedReader,
+};
 use crate::eq::{EqGains, Equalizer};
 use crate::icy::IcyReader;
 use crate::reconnect::{Backoff, STABLE_AFTER};
@@ -590,7 +592,7 @@ impl Engine {
     /// The log line waits until the lock is dropped.
     fn fail_build(session: &SessionCtx, word: u64, cause: BuildCause, inputs: &BuildInputs) {
         let download = session.download.lock().unwrap();
-        if !session.clock.bound(word, cause) {
+        if !session.clock.bound(word, cause, inputs) {
             return;
         }
         if let Some(t) = download.as_ref() {
@@ -767,11 +769,15 @@ fn run_session(
             return;
         }
 
-        // 1. Connect.
+        // 1. Connect. Each open has its own arrival clock (review 2, G1), stamped by its
+        // download task from the moment `open` spawns it — so the prefetch's arrivals, which can
+        // land before `begin_build`, are kept, and no earlier open's stamp is in it.
+        let arrivals = Arc::new(Arrivals::new());
         let opened = match rt.block_on(stream::open(
             &client,
             url.clone(),
             ctx.reconnect_count.clone(),
+            arrivals.clone(),
             prefetch_bytes,
         )) {
             Ok(o) => o,
@@ -798,13 +804,14 @@ fn run_session(
         // The build is supervised from here (defect B): the token the bound cancels is in
         // `download` before the engine can see `PROBING`, stored under the lock `fail_build`
         // holds from its swap to its cancel. `begin_build` stamps the build's start and the
-        // internal reconnect count the cause compares against, then publishes `PROBING`.
+        // internal reconnect count the cause compares against, installs this open's arrivals,
+        // then publishes `PROBING`.
         let word = ctx
             .clock
-            .begin_build(ctx.reconnect_count.load(Ordering::Relaxed));
+            .begin_build(ctx.reconnect_count.load(Ordering::Relaxed), arrivals);
 
-        // 2. Probe / build the decoder. The byte clock (review fixes F1) is the bottom of the
-        // chain, under `IcyReader`, on both source kinds: HLS's reader is the same
+        // 2. Probe / build the decoder. The first-byte reader (review fixes F1) is the bottom of
+        // the chain, under `IcyReader`, on both source kinds: HLS's reader is the same
         // `stream::Reader`. Its first read returns once the prefetch is met.
         let title_shared = ctx.shared.clone();
         let icy = IcyReader::new(
@@ -843,13 +850,16 @@ fn run_session(
         // `UnrecognizedFormat`, `IoError` and a decoder that yields nothing (Step 0, S3), so
         // the bound is checked on `Ok` and `Err` alike, before any arm reads the result. The
         // engine's swap wrote the cause into the phase.
-        if let Err(cause) = ctx.clock.finish_build(word) {
+        if let Err(bounded) = ctx.clock.finish_build(word) {
             // A decoder on a cancelled download is dead.
             drop(built);
             let (code, message, terminal) = build_bound_cause(
-                cause,
-                &ctx.clock
-                    .inputs(ctx.reconnect_count.load(Ordering::Relaxed)),
+                bounded.cause,
+                &decided_inputs(
+                    &ctx.clock,
+                    &bounded,
+                    ctx.reconnect_count.load(Ordering::Relaxed),
+                ),
                 opened.content_type.as_deref(),
                 produced_audio,
             );
@@ -987,7 +997,7 @@ fn run_session(
 ///   the first one, and nothing synced. Terminal only while the session has never produced
 ///   audio, as the `UnrecognizedFormat` arm is.
 /// - **`Starved`** → `Network`, never terminal: the format bound passed with a gap of `starved`
-///   or more between bytes, or a completed internal reconnect.
+///   or more between network arrivals, or a completed internal reconnect.
 /// - **`NoBytes`** → `Network`, never terminal: no byte reached the decoder within the
 ///   no-bytes bound — a trickle cannot be told from a slow healthy stream.
 ///
@@ -1032,6 +1042,18 @@ fn build_bound_cause(
             ),
             false,
         ),
+    }
+}
+
+/// The inputs the bound's message is written from: the clock as it stands for the rest, and
+/// the gap and reconnect count **the engine decided on** — not the clock read again after the
+/// cancel, whose open gap has grown since (review 2, finding 4: the page and the engine's log
+/// line could disagree).
+fn decided_inputs(clock: &BuildClock, bounded: &Bounded, reconnect_count: u64) -> BuildInputs {
+    BuildInputs {
+        longest_gap: bounded.longest_gap,
+        reconnects: bounded.reconnects,
+        ..clock.inputs(reconnect_count)
     }
 }
 
@@ -1435,6 +1457,9 @@ mod session_tests {
         /// bounded it, and how many ticks saw that build `PROBING` with a first byte meanwhile.
         /// `None` until a bound fires.
         bound_seen: Arc<Mutex<Option<(Duration, u32)>>>,
+        /// The longest gap in the inputs of the tick that bounded the build, read just before
+        /// that tick (review 2, G1): the figure the bound was decided on. `None` until a bound.
+        bound_gap: Arc<Mutex<Option<Duration>>>,
         // Dropping the runtime while `run_session` still holds its handle would abort the
         // open; kept for the harness's lifetime.
         _rt: tokio::runtime::Runtime,
@@ -1536,9 +1561,11 @@ mod session_tests {
             ctx.clock = Arc::new(BuildClock::new(b));
         }
         let bound_seen: Arc<Mutex<Option<(Duration, u32)>>> = Arc::new(Mutex::new(None));
+        let bound_gap: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
         let supervisor = supervised.map(|extra| {
             let stop = Arc::new(AtomicBool::new(false));
             let (session, halt, seen) = (ctx.clone(), stop.clone(), bound_seen.clone());
+            let gap_seen = bound_gap.clone();
             let clock = ctx.clock.clone();
             let pause = TICK_INTERVAL + extra.max(tick_delay());
             thread::spawn(move || {
@@ -1548,7 +1575,8 @@ mod session_tests {
                 let mut probing: Option<(u64, u32)> = None;
                 while !halt.load(Ordering::SeqCst) {
                     let before = clock.word();
-                    let first_byte = clock.inputs(0).since_first_byte.is_some();
+                    let pre = clock.inputs(0);
+                    let first_byte = pre.since_first_byte.is_some();
                     if build::phase_of(before) == build::phase::PROBING && first_byte {
                         let seq = build::seq_of(before);
                         match &mut probing {
@@ -1561,6 +1589,9 @@ mod session_tests {
                     let bounded = build::phase_of(before) == build::phase::PROBING
                         && build::seq_of(after) == build::seq_of(before)
                         && build::phase_of(after) >= build::phase::BOUND_FORMAT;
+                    if bounded {
+                        *gap_seen.lock().unwrap() = Some(pre.longest_gap);
+                    }
                     if bounded
                         && let Some(since) = clock.inputs(0).since_first_byte
                         && let Some((_, n)) = probing.take()
@@ -1619,6 +1650,7 @@ mod session_tests {
             reconnects: Mutex::new(Vec::new()),
             supervisor,
             bound_seen,
+            bound_gap,
             _rt: rt,
         }
     }
@@ -1829,6 +1861,7 @@ mod session_tests {
             reconnects: Mutex::new(Vec::new()),
             supervisor: None,
             bound_seen: Arc::new(Mutex::new(None)),
+            bound_gap: Arc::new(Mutex::new(None)),
             _rt: tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("runtime"),
@@ -2542,7 +2575,7 @@ mod session_tests {
             r.read_exact(&mut b).expect("read");
         };
 
-        let n = ctx.clock.begin_build(0);
+        let n = ctx.clock.begin_build(0, Arc::new(Arrivals::new()));
         first_byte(&ctx);
         engine.tick();
         thread::sleep(format + Duration::from_millis(150));
@@ -2551,7 +2584,7 @@ mod session_tests {
             Ok(()),
             "N returned before any tick bounded it"
         );
-        let n1 = ctx.clock.begin_build(0);
+        let n1 = ctx.clock.begin_build(0, Arc::new(Arrivals::new()));
         engine.tick();
         assert_eq!(
             ctx.clock.word(),
@@ -2640,6 +2673,10 @@ mod session_tests {
             server.connections.load(Ordering::SeqCst) >= 2,
             "the server saw the re-feed"
         );
+        // Review 2, G1: the bound was decided on a real arrival gap, the server's silence up to
+        // stream-download's idle timeout — not on a read's fill time.
+        let gap = h.bound_gap.lock().unwrap().expect("the bound's tick");
+        assert!(gap >= stream::retry_timeout(), "decided on a {gap:?} gap");
         h.ctx.cancel();
     }
 
@@ -2664,7 +2701,7 @@ mod session_tests {
         assert!(sent < BOUNDED_BELOW, "{sent} B sent before the bound");
     }
 
-    // ---- Defect B, review fixes F1: the byte clock ----
+    // ---- Defect B, review fixes F1: the build clock ----
 
     /// A connection accepted, its request read, and never answered: a reconnect that hangs.
     fn mute() -> Answer {
@@ -2716,6 +2753,74 @@ mod session_tests {
             "{:?}",
             build_lines(&h)
         );
+        h.ctx.cancel();
+    }
+
+    // ---- Defect B, review 2, G1: starvation on network arrival ----
+
+    /// G1, review 2 finding 1: an unsyncable body served **steadily** at 32 kbit/s (4 000 B/s,
+    /// in the paced server's small writes), no ICY metadata, never pausing, is a format cause:
+    /// terminal `Error { UnsupportedFormat }` at the format bound, no `Reconnecting`, one
+    /// connection, and the bound decided on a longest gap under 1 s. A 4 KiB prefetch, the
+    /// production `starved` (5 s) and T-B1c's 15 s format bound. On `688c9fd` the gaps were
+    /// per-read times, and Symphonia's 32 KiB read takes 8.2 s at this rate, so the build read
+    /// `Starved` and backed off. ~16 s.
+    #[test]
+    fn g1_a_steady_32_kbit_unsyncable_is_a_format_cause() {
+        const RATE: u64 = 4_000;
+        let server = paced_server(vec![answer(
+            "audio/mpeg",
+            f_nosync(256 * KIB as usize),
+            RATE,
+            After::Hold,
+        )]);
+        g1_assert_format_cause(&server, "audio/mpeg");
+    }
+
+    /// G1, review 2 finding 1, behind ICY metadata: the same body at 20 kbit/s (2 500 B/s) with
+    /// `icy-metaint: 16000`, where `IcyReader` caps a read at 16 000 B — 6.4 s per read at this
+    /// rate (at the finding's ~26 kbit/s a read takes 4.9 s and `688c9fd` would pass, proving
+    /// nothing). The same assertions as (a). ~16 s.
+    #[test]
+    fn g1_b_icy_16000_below_26_kbit_is_a_format_cause() {
+        let server = paced_server(vec![Answer {
+            bytes_per_sec: 2_500,
+            ..icy_answer(
+                "audio/mpeg",
+                16_000,
+                with_metaint(&f_nosync(256 * KIB as usize), 16_000, "Artist - Title"),
+            )
+        }]);
+        g1_assert_format_cause(&server, "audio/mpeg");
+    }
+
+    fn g1_assert_format_cause(server: &Paced, content_type: &str) {
+        let format = (stream::retry_timeout() * 3).max(Duration::from_secs(2));
+        let h = start_session_bounded(&server.url, Some(4 * KIB), test_bounds(format));
+        let seen = states_until(&h, Duration::from_secs(60), ends);
+        let sent = server.sent.load(Ordering::SeqCst);
+        let (code, message) = final_error(&seen, sent);
+        assert_eq!(code, ErrorCode::UnsupportedFormat, "{message} ({seen:?})");
+        assert_eq!(
+            message,
+            format!(
+                "no decodable audio in the first {} of the stream ({content_type})",
+                format_secs(format)
+            )
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|s| matches!(s, PlaybackState::Reconnecting { .. })),
+            "{seen:?}"
+        );
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            1,
+            "one connection"
+        );
+        let gap = h.bound_gap.lock().unwrap().expect("the bound's tick");
+        assert!(gap < Duration::from_secs(1), "decided on a {gap:?} gap");
         h.ctx.cancel();
     }
 
@@ -3497,6 +3602,12 @@ mod session_tests {
             vec!["u1".to_string()],
             "one Started"
         );
+        // Review 2, G1: `hls::open` attaches the arrival clock (no other test sees its wiring;
+        // fails with its `on_progress` removed).
+        assert!(
+            h.ctx.clock.arrivals().is_some_and(|a| a.any()),
+            "no arrival stamped on the HLS open"
+        );
         let h_paths = paths;
         let paths = h_paths.lock().unwrap().clone();
         assert_eq!(
@@ -3874,6 +3985,7 @@ mod session_tests {
             &client,
             url,
             Arc::new(AtomicU64::new(0)),
+            Arc::new(Arrivals::new()),
             stream::PREFETCH_FLOOR_BYTES,
         )) {
             Ok(_) => panic!("open succeeded with every start segment gone"),
@@ -4772,6 +4884,31 @@ mod tick_tests {
                 "no audio arrived within 60 s of connecting",
                 false
             )
+        );
+    }
+
+    /// Review 2, finding 4: the bound's message is written from the gap and reconnect count the
+    /// engine decided on, not from the clock read again after the cancel, whose open gap has
+    /// grown. A clock whose open gap is ≥ 300 ms, a bound decided on 50 ms and 2 reconnects →
+    /// the message's inputs carry 50 ms and 2. Fails with `decided_inputs` returning the clock's
+    /// own inputs (the code on `688c9fd`).
+    #[test]
+    fn the_bound_message_carries_the_decided_figures() {
+        let clock = BuildClock::new(BuildBounds::for_prefetch(stream::PREFETCH_FLOOR_BYTES));
+        let arrivals = Arc::new(Arrivals::new());
+        crate::build::ArrivalWriter::new(arrivals.clone()).arrive(Duration::from_millis(1), 1);
+        clock.begin_build(0, arrivals);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(clock.inputs(0).longest_gap >= Duration::from_millis(300));
+        let bounded = Bounded {
+            cause: BuildCause::Starved,
+            longest_gap: Duration::from_millis(50),
+            reconnects: 2,
+        };
+        let i = decided_inputs(&clock, &bounded, 0);
+        assert_eq!(
+            (i.longest_gap, i.reconnects),
+            (Duration::from_millis(50), 2)
         );
     }
 

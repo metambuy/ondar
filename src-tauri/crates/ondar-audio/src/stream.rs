@@ -289,11 +289,14 @@ pub fn parse_url(url: &str) -> Result<Url, StreamError> {
 /// bound counts from the first byte (defect B review fixes F1, finding 2). `reconnect_count` is
 /// advanced every time `stream-download` reconnects internally (idle `retry_timeout`, not one
 /// of our own external retries) — see `Settings::on_reconnect` below and `SessionCtx` in
-/// `engine.rs`, which is what actually surfaces it as an event.
-pub async fn open(
+/// `engine.rs`, which is what actually surfaces it as an event. `arrivals` is this open's
+/// network-arrival clock (review 2, G1), stamped by `Settings::on_progress` from the download
+/// task on every chunk written — on the HLS path too.
+pub(crate) async fn open(
     client: &reqwest::Client,
     url: Url,
     reconnect_count: Arc<AtomicU64>,
+    arrivals: Arc<crate::build::Arrivals>,
     prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
     let stream = match HttpStream::new(client.clone(), url.clone()).await {
@@ -324,7 +327,7 @@ pub async fn open(
         .is_some_and(crate::hls::is_hls_content_type)
     {
         drop(stream);
-        return crate::hls::open(client, url, reconnect_count, prefetch_bytes).await;
+        return crate::hls::open(client, url, reconnect_count, arrivals, prefetch_bytes).await;
     }
 
     let storage = bounded_storage();
@@ -336,7 +339,8 @@ pub async fn open(
                 let n = reconnect_count.fetch_add(1, Ordering::Relaxed) + 1;
                 log::debug!("stream-download internal reconnect (session count now {n})");
             },
-        );
+        )
+        .on_progress(crate::build::on_progress(arrivals));
 
     let reader = match StreamDownload::from_stream(stream, storage, settings).await {
         Ok(r) => r,
@@ -583,6 +587,7 @@ mod tests {
             &client,
             url,
             Arc::new(AtomicU64::new(0)),
+            Arc::new(crate::build::Arrivals::new()),
             PREFETCH_FLOOR_BYTES,
         )) {
             Ok(_) => panic!("open succeeded against a server that cannot be played"),
@@ -626,6 +631,7 @@ mod tests {
                     &client,
                     url,
                     Arc::new(AtomicU64::new(0)),
+                    Arc::new(crate::build::Arrivals::new()),
                     PREFETCH_FLOOR_BYTES,
                 ),
             )

@@ -1,8 +1,8 @@
 //! Ondar audio engine.
 //!
 //! ```text
-//! HTTP (stream-download, bounded ring)
-//!   → ClockedReader (stamps the decoder build's byte clock)
+//! HTTP (stream-download, bounded ring; on_progress stamps each open's network arrival)
+//!   → ClockedReader (stamps the decoder build's first byte)
 //!   → IcyReader (strips in-band titles)
 //!   → AdtsReader (HTTP audio/aac* only: realign, FFF9 → FFF1)
 //!   → rodio::Decoder (Symphonia)          decode thread

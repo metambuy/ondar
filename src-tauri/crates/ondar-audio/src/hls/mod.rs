@@ -558,10 +558,11 @@ fn refused_container(r: Refusal) -> StreamError {
 /// fetch task on the current runtime and returns the reader `run_session` expects. Every
 /// refusal is a terminal `UnsupportedFormat` with the message the page renders; a failed
 /// request is classified as the Icecast open classifies its own.
-pub async fn open(
+pub(crate) async fn open(
     client: &Client,
     url: Url,
     reconnect_count: Arc<AtomicU64>,
+    arrivals: Arc<crate::build::Arrivals>,
     prefetch_bytes: u64,
 ) -> Result<OpenedStream, StreamError> {
     let (fetched, started) = fetch_playlist(client, &url, Kind::Master).await?;
@@ -705,7 +706,10 @@ pub async fn open(
         .on_reconnect(move |_stream: &HlsSource, _token| {
             let n = reconnect_count.fetch_add(1, Ordering::Relaxed) + 1;
             log::warn!("hls source idle past retry_timeout (session count now {n})");
-        });
+        })
+        // Network arrival for the build's starvation rule (review 2, G1): each chunk the fetch
+        // task hands `HlsSource` is one arrival.
+        .on_progress(crate::build::on_progress(arrivals));
     let reader = StreamDownload::from_stream(HlsSource { rx }, storage, settings)
         .await
         .map_err(|e| network(format!("HLS reader: {e}")))?;
