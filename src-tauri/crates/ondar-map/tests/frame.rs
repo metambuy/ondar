@@ -737,3 +737,112 @@ fn own_islets_in_the_padding_are_drawn() {
     }
     assert_eq!((parts, countries.len()), (20, 6), "{countries:?}");
 }
+
+/// The in-pane vertices of a country's own parts of `role` at a view, from the frame's level
+/// (rings the quanta collapse below three vertices are no shape and are skipped), each with the
+/// unit's code.
+fn own_vertices_in_pane(
+    s: &Store,
+    i: usize,
+    pane: &Pane,
+    view: &View,
+    level: f64,
+    role: impl Fn(Role) -> bool,
+) -> Vec<(String, [f64; 2])> {
+    let ct = &s.countries[i];
+    let k = u8::try_from(LADDER.iter().position(|&l| l == level).unwrap()).unwrap();
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    for &u in &ct.units {
+        let unit = &s.units[usize::from(u)];
+        let ul = Laea::new(unit.lat0, unit.lon0);
+        let Some(b) = s.blob(u, k, Layer::Land) else {
+            continue;
+        };
+        let mut ri = 0;
+        for part in &unit.parts {
+            let first = ri;
+            ri += part.rings.len();
+            if !role(part.role) {
+                continue;
+            }
+            for j in 0..part.rings.len() {
+                s.decode(b, first + j, &mut buf).unwrap();
+                if buf.len() < 3 {
+                    continue;
+                }
+                for &[x, y] in &buf {
+                    let (lon, lat) = ul.inv(x, y).unwrap();
+                    let [px, py] = s.project(i, pane, view, lon, lat).unwrap();
+                    if (0.0..=pane.width).contains(&px) && (0.0..=pane.height).contains(&py) {
+                        out.push((String::from_utf8_lossy(&unit.a3).into_owned(), [px, py]));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn is_land_vertex(f: &Frame, [px, py]: [f64; 2]) -> bool {
+    f.land
+        .iter()
+        .flat_map(|sh| sh.rings.iter())
+        .flatten()
+        .any(|&[lx, ly]| (f64::from(lx) - px).abs() < 0.02 && (f64::from(ly) - py).abs() < 0.02)
+}
+
+/// A country's own inset groups are land in its main frame whenever the view is not the fit —
+/// their box is not on screen then (D7) — and in their box only at the fit (review 2, finding 1).
+/// For every country with insets, at the fit nudged in by 0.1 % and at the floor centred on each
+/// inset's centre (clamped into the fit rectangle), every in-pane vertex of an own `Inset` part
+/// is a vertex of a land ring; at the fit, none is. The finding's four must be among those seen:
+/// India's Andaman & Nicobar, Yemen's Socotra, the Aleutians (Alaska's group), the Marquesas.
+/// On `8324e68` the frame skipped an own unit's `Inset` parts at every view, so zoomed onto the
+/// Andamans the pane showed empty sea while Myanmar's frame drew them as a neighbour.
+#[test]
+fn own_insets_are_land_when_the_view_is_not_the_fit() {
+    let s = store();
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, ct) in s.countries.iter().enumerate() {
+        if ct.insets.is_empty() {
+            continue;
+        }
+        let code = String::from_utf8_lossy(&ct.code).into_owned();
+        let fit = s.fit(i, &P).unwrap();
+        let mut views = vec![View {
+            centre: fit.centre,
+            scale: fit.scale * 0.999,
+        }];
+        for ins in &ct.insets {
+            views.push(at(&code, ins.lon0, ins.lat0, FLOOR_KM_PER_PT));
+        }
+        let is_inset = |r: Role| matches!(r, Role::Inset(_));
+        for v in views {
+            let f = s.frame(i, &P, v).unwrap();
+            assert_ne!(f.view, fit, "{code}");
+            for (a3, p) in own_vertices_in_pane(s, i, &P, &f.view, f.level, is_inset) {
+                assert!(
+                    is_land_vertex(&f, p),
+                    "{code} {a3}: an own inset vertex at ({:.2}, {:.2}) is not land at {:?}",
+                    p[0],
+                    p[1],
+                    f.view
+                );
+                seen.insert(code.clone());
+            }
+        }
+        let f = s.frame(i, &P, fit).unwrap();
+        for (a3, p) in own_vertices_in_pane(s, i, &P, &fit, f.level, is_inset) {
+            assert!(
+                !is_land_vertex(&f, p),
+                "{code} {a3}: an own inset vertex at ({:.2}, {:.2}) is land at the fit",
+                p[0],
+                p[1]
+            );
+        }
+    }
+    for code in ["IN", "YE", "US", "PF"] {
+        assert!(seen.contains(code), "{code} not seen: {seen:?}");
+    }
+}

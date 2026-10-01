@@ -221,6 +221,8 @@ impl Store {
         };
         let tol = index::tolerance_km(level, LAND_TOL_PT);
         let main = ct.units.first().copied();
+        // D7: the insets are on screen at the fit view only
+        let at_fit = view == fit_view;
 
         let mut out = Frame {
             view,
@@ -243,11 +245,14 @@ impl Store {
             let unit_l = Laea::new(unit.lat0, unit.lon0);
             // own land: the frame's parts and the small groups outside the usable area (S6's
             // `Dropped`), drawn where the view meets them as a neighbour's would be (review
-            // finding 5); an inset's part is drawn in its box only. `Some(neighbour)` if drawn.
+            // finding 5); an inset's part is drawn in its box at the fit, and as land at every
+            // other view, where its box is not on screen (review 2, finding 1). `Some(neighbour)`
+            // if drawn.
             let drawn = |part: &crate::format::Part| match part.role {
                 _ if !own => (part.omit_in != Some(c16)).then_some(true),
                 Role::Frame | Role::Dropped => Some(false),
-                Role::Inset(_) | Role::NeighbourOnly => None,
+                Role::Inset(_) => (!at_fit).then_some(false),
+                Role::NeighbourOnly => None,
             };
             let Some(b) = self.blob(u16_, k8, Layer::Land) else {
                 // no blob at this level: one missing unit if the index admits a ring this frame
@@ -345,7 +350,7 @@ impl Store {
         }
 
         // insets, at the fit view only (D7)
-        if view == fit_view {
+        if at_fit {
             out.insets = self.insets(c, pane, &mut out.stats);
         }
         Some(out)

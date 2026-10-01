@@ -256,7 +256,8 @@ onda/
         │                         coarsest ≤ scale; clip = view + 2 pt; rings by the index; the main
         │                         unit by translation, others inverse-then-forward; land, neighbours,
         │                         S4 parent copies omitted, own `Dropped` islets drawn as land,
-        │                         subdivisions above 8 km/pt, insets at the fit view only, each box
+        │                         own inset groups drawn as land away from the fit (in their box
+        │                         at it), subdivisions above 8 km/pt, insets at the fit view only, each box
         │                         anchored by its corner at any pane — `Inset::rect_at`; 0.01 pt;
         │                         `missing_blobs` per unit), `project`/`unproject`, `inset_clearance`
         ├── examples/frame_bench.rs  § 7's timings: load, PT/US/RU at fit, a city at the floor and mid
