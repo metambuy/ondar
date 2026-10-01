@@ -707,6 +707,36 @@ crate, no UI), M4b (IPC and the SVG renderer) and M4c (stations, gathering, hit-
 plan is `_handover/m4a-plan.md`, reviewed 2026-09-30 (P1–P4). The instructions field's
 replacement text is `_handover/m4a-instructions-field.md`.
 
+### M4a: decisions during the build (2026-10-01)
+
+Branch `m4a`. Commits 1–4 surfaced three findings (`_handover/last-report-2026-10-01.md`); the
+chat decided them on 2026-10-01, and Martín confirmed (`_handover/OPEN.md`).
+
+**D6, the pan limit: the view stays inside the fit rectangle.** The plan wrote "the centre
+inside the fit rectangle" and, in the same paragraph, "at fit the view is the fit and cannot
+pan". Read literally, the first rule lets the view pan at fit by half a pane, and the plan's
+coverage formula followed it. That reach left the LAEA disc for RU (its corners near the
+antipode), stored every unit at every level, and stretched a neighbour's 0.25 pt bound to
+5.45 pt at 24 km/pt. **The decided wording:** the fit rectangle is the pane at the country's
+widest scale (the fit, or the 1.5 km/pt floor for a country finer than it), centred on the
+frame bbox; **the view stays inside it**. At that scale the view *is* the fit rectangle and
+cannot pan. Zoomed in, the view's centre moves only as far as puts the view's edge on the
+rectangle's. Every frame clips to the view grown by 2 pt. So a view at level k reaches at most
+the fit rectangle grown by 2 pt × the coarsest scale that uses k. Coverage is computed from
+exactly that, through `ondar_map::index`, the module the frame's index will use too. P2 is then
+≤ 0.38 pt at every level, with no remedy needed. The product consequence, for M4b: zoomed in,
+outlying territory such as the Azores cannot be reached by panning, and the insets show at the
+fit view only (D7).
+
+**P4, the simplifier: a per-ring hybrid, no repair** (`65f7927`). Per ring and level, RDP runs
+at the level's tolerance. Its ring is kept if it is simple (no crossing, fold-back or repeated
+vertex; a ring also needs ≥ 3 distinct vertices and non-zero area) and its exact measure is
+within the bound. Otherwise the ring keeps its per-ring VW result. The decision weighed runtime
+vertices (RU's fit frame, R8's payload), not file bytes. RU land at 24 km/pt: VW 13 664, RDP
+3 904, hybrid 12 883. RU's mainland ring (24 183 vertices) gives an RDP ring that is not simple,
+so that ring keeps VW's 11 114. Worldwide the hybrid stores 1.05× RDP's vertices at 1.5 km/pt
+and 2.17× at 24.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:

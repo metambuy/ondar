@@ -17,21 +17,16 @@ use crate::geom;
 use crate::simplify;
 use crate::world::{CountryPlan, GroupRole, World};
 use geo::{Coord, Polygon};
-use ondar_map::codec::QUANTUM_PT;
 use ondar_map::format::{self, BlobIn, Cap, Layer};
+use ondar_map::index;
 use ondar_map::laea::{Laea, R_AUTHALIC_KM, haversine_km};
 use ondar_map::rules::{self, LADDER, Pane};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Land is simplified to within this of the original, points at its level (R3).
-pub const LAND_TOL_PT: f64 = 0.25;
-/// Subdivisions, the same (S7).
-pub const SUB_TOL_PT: f64 = 0.5;
+pub use ondar_map::index::{LAND_TOL_PT, QUANT_PT, SUB_TOL_PT};
 /// Subdivisions are drawn above 8 km/pt, so stored from the level 6 views use (index 2).
 pub const SUB_FIRST_LEVEL: usize = 2;
-/// Half a quantum's diagonal: what the codec adds to a stored bound, points.
-pub const QUANT_PT: f64 = QUANTUM_PT * std::f64::consts::FRAC_1_SQRT_2;
 
 pub struct Ring {
     /// Projected, km, closed (first = last).
@@ -147,7 +142,6 @@ pub struct Built {
     /// RU's blob at 24 km/pt: rings that fell back, and the largest of them (RDP, VW, input).
     pub p4_fallback: (usize, (usize, usize, usize)),
     pub simplifier: Simplifier,
-    pub reach: Reach,
     pub seconds: f64,
 }
 
@@ -157,66 +151,14 @@ fn k_prime(c: f64) -> f64 {
     (2.0 / (1.0 + c.cos())).sqrt()
 }
 
-/// The ground cap (lon, lat, radius km) around a rectangle of a projection: its centre's
-/// inverse and the farthest of 64 samples per edge. `None` radius = the whole sphere (the
-/// rectangle leaves the projection's disc).
-fn rect_cap(l: &Laea, [x0, y0, x1, y1]: [f64; 4]) -> (f64, f64, f64) {
-    let whole = std::f64::consts::PI * R_AUTHALIC_KM;
-    let Some((clon, clat)) = l.inv((x0 + x1) / 2.0, (y0 + y1) / 2.0) else {
-        return (0.0, 0.0, whole);
-    };
-    let mut r = 0f64;
-    for i in 0..=64 {
-        let t = f64::from(i) / 64.0;
-        for (x, y) in [
-            (x0 + t * (x1 - x0), y0),
-            (x0 + t * (x1 - x0), y1),
-            (x0, y0 + t * (y1 - y0)),
-            (x1, y0 + t * (y1 - y0)),
-        ] {
-            match l.inv(x, y) {
-                Some((lon, lat)) => r = r.max(haversine_km(clon, clat, lon, lat)),
-                None => return (clon, clat, whole),
-            }
-        }
-    }
-    (clon, clat, r * 1.01 + 1.0)
+/// The reach of country `p` at level `k` (D6: the view inside the fit rectangle).
+pub fn reach(p: &CountryPlan, k: usize) -> [f64; 4] {
+    index::reach(p.bbox, p.fit, &Pane::GOLDEN, k)
 }
 
-fn caps_meet(c: &Cap, (lon, lat, r): (f64, f64, f64), tol: f64) -> bool {
-    haversine_km(f64::from(c.lon), f64::from(c.lat), lon, lat) <= f64::from(c.radius_km) + r + tol
-}
-
-/// How far a view can reach, by the clamp's two readings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reach {
-    /// The plan's (§ 2, D6 as written): the view's centre anywhere in the fit rectangle, so a
-    /// view at scale s reaches half a view, (W/2 + 2) × s, beyond it.
-    Plan,
-    /// The view itself inside the fit rectangle ("at fit the view is the fit and cannot pan"):
-    /// only the 2 pt clip margin beyond it.
-    Fit,
-}
-
-/// The reach rectangle of country `p` at level `k`, in its frame LAEA, km.
-pub fn reach(p: &CountryPlan, k: usize, mode: Reach) -> [f64; 4] {
-    let pane = Pane::GOLDEN;
-    let [bx0, by0, bx1, by1] = p.bbox;
-    let (cx, cy) = ((bx0 + bx1) / 2.0, (by0 + by1) / 2.0);
-    let top = rules::initial_scale(p.fit);
-    let s_max = LADDER.get(k + 1).copied().unwrap_or(f64::INFINITY).min(top);
-    // the fit rectangle: the pane at the fit, or at the floor for a country finer than it
-    let (hw, hh) = (pane.width / 2.0 * top, pane.height / 2.0 * top);
-    let m = match mode {
-        Reach::Plan => (pane.width.max(pane.height) / 2.0 + 2.0) * s_max,
-        Reach::Fit => 2.0 * s_max,
-    };
-    [cx - hw - m, cy - hh - m, cx + hw + m, cy + hh + m]
-}
-
-/// The country's top level: the one its widest view (the fit, or the floor) uses.
+/// The country's top level: the one its widest view uses.
 pub fn top_level(p: &CountryPlan) -> usize {
-    rules::level_for(rules::initial_scale(p.fit))
+    index::top_level(p.fit)
 }
 
 fn quantise_ring(ring: &[Coord<f64>], level: f64) -> Vec<[i32; 2]> {
@@ -312,7 +254,6 @@ pub fn build(
     plans: &[CountryPlan],
     aliases: &[crate::tables::Alias],
     pins: format::Pins,
-    mode: Reach,
     how: Simplifier,
 ) -> Result<Built, String> {
     let t0 = std::time::Instant::now();
@@ -387,11 +328,11 @@ pub fn build(
     for (pi, p) in plans.iter().enumerate() {
         let l = p.laea();
         for k in 0..=top_level(p) {
-            let rc = rect_cap(&l, reach(p, k, mode));
-            let tol = (LAND_TOL_PT + QUANT_PT) * LADDER[k];
+            let rc = index::ground_cap(&l, reach(p, k));
+            let tol = index::tolerance_km(LADDER[k], LAND_TOL_PT);
             for (u, g) in geoms.iter().enumerate() {
-                if !caps_meet(&world_cap(g), rc, tol)
-                    || !g.rings().any(|r| caps_meet(&r.cap, rc, tol))
+                if !index::cap_meets(&world_cap(g), rc, tol)
+                    || !g.rings().any(|r| index::cap_meets(&r.cap, rc, tol))
                 {
                     continue;
                 }
@@ -435,7 +376,7 @@ pub fn build(
         for &(pi, k) in &drawn_by[u] {
             let p = &plans[pi];
             let fl = p.laea();
-            let rect = reach(p, k, mode);
+            let rect = reach(p, k);
             for (ri, r) in g.rings().enumerate() {
                 let mut best = 0f64;
                 for c in &r.km {
@@ -713,7 +654,6 @@ pub fn build(
         p2,
         p4,
         p4_fallback,
-        reach: mode,
         simplifier: how,
         seconds: t0.elapsed().as_secs_f64(),
     })
@@ -771,48 +711,6 @@ impl Built {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The plan's reach grows the fit rectangle by (W/2 + 2) × the coarsest scale that uses the
-    /// level, capped at the country's widest view; the fit reading by the 2 pt margin only. A
-    /// 288 × 260 km country fits at 1 km/pt: its widest view is the floor's, 1.5, at level 0.
-    #[test]
-    fn the_reach_follows_the_clamp() {
-        let p = CountryPlan {
-            code: "AA".into(),
-            name: String::new(),
-            units: vec![],
-            parts: vec![],
-            groups: vec![],
-            frame_group: 0,
-            lat0: 0.0,
-            lon0: 0.0,
-            bbox: [-144.0, -130.0, 144.0, 130.0],
-            fit: 1.0,
-            overridden: false,
-            alias: false,
-            subdivisions: false,
-            insets: vec![],
-        };
-        assert_eq!(top_level(&p), 0);
-        // the fit rectangle is the pane at the floor (fit 1 < 1.5): 246 × 225 km half
-        assert_eq!(
-            reach(&p, 0, Reach::Plan),
-            [-246.0 - 249.0, -225.0 - 249.0, 246.0 + 249.0, 225.0 + 249.0]
-        );
-        assert_eq!(reach(&p, 0, Reach::Fit), [-249.0, -228.0, 249.0, 228.0]);
-        // fit 20: level 0's views are below 3 km/pt, level 3's below 24 but never past 20
-        let q = CountryPlan {
-            bbox: [-2880.0, -2600.0, 2880.0, 2600.0],
-            fit: 20.0,
-            ..p
-        };
-        assert_eq!(top_level(&q), 3);
-        let r0 = reach(&q, 0, Reach::Plan);
-        assert_eq!(r0[2], 164.0 * 20.0 + 166.0 * 3.0);
-        let r3 = reach(&q, 3, Reach::Plan);
-        assert_eq!(r3[2], 164.0 * 20.0 + 166.0 * 20.0);
-        assert_eq!(reach(&q, 3, Reach::Fit)[2], 164.0 * 20.0 + 2.0 * 20.0);
-    }
 
     #[test]
     fn k_prime_is_one_at_the_centre_and_root_two_at_90_degrees() {

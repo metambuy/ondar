@@ -221,6 +221,11 @@ onda/
         │                         `Option`, counts bounded by what remains)
         ├── clip.rs               Sutherland–Hodgman (rings) and Liang–Barsky (lines) against a
         │                         rectangle, hand-written: no polygon-boolean crate at runtime
+        ├── index.rs              the ring index and the clamp's reach, shared by the tool and the
+        │                         frame: `fit_rect`, `reach` (the fit rectangle + the 2 pt clip
+        │                         margin at the level's coarsest scale — D6), `ground_cap` (a
+        │                         rectangle of a projection as a ground cap; off the disc = the whole
+        │                         sphere), `cap_meets`, `tolerance_km` (bound + codec)
         ├── format.rs             `world.ondarmap` v1: the model (`Unit`, `Part` + `Role`, `Cap`,
         │                         `Country`, `Inset`, `BlobMeta`), the writer (the tool's) and
         │                         `Store::load` (the app's) — one code path. Per blob: a ring table,
@@ -233,7 +238,7 @@ onda/
         │                         workspace member (D4) so the gates cover it; never in the app.
         │                         `cargo run -p ondar-map-build --release -- [--tables DIR]
         │                         [--out FILE] [--report FILE] [--encoding deflate|raw]
-        │                         [--reach plan|fit] [--bench]`; ~25 s on the M4 Pro
+        │                         [--simplifier hybrid|vw] [--bench]`; ~20 s on the M4 Pro
         ├── pins.tsv              the 12 inputs (admin 0, map units, admin 1: .shp/.shx/.dbf/.prj),
         │                         bytes + SHA-256, shared with the fetch script; a mismatch is refused
         ├── overrides.tsv         S2: MY's frame is the peninsula's group (hand-checked, D5)
@@ -262,8 +267,8 @@ onda/
         │                         non-zero area) and within the bound, else that ring's VW; no repair
         ├── store.rs              the resource's contents: storage LAEA per unit (a country's main
         │                         unit in its frame's), roles, the S4 omit-in, ring caps (R10),
-        │                         coverage from the clamp's reach (`Reach::Plan` as § 2 writes it,
-        │                         `Reach::Fit` the view kept inside the fit rectangle), every needed
+        │                         coverage from `index::reach` (D6: the view inside the fit
+        │                         rectangle, + the clip margin and the cap tolerance), every needed
         │                         (unit, level) simplified ring by ring on all cores, subdivisions
         │                         (D2 borders, or polygons where the gate fails), P2 per vertex, P4
         ├── report.rs             the build report (bytes/vertices/bounds per layer and level,
@@ -285,9 +290,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 342 tests `cargo test --workspace -- --list`
-reports (338 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
-**323 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 27, map-build 29):
+export_bindings_<type>` that writes the `.ts` file. So the 344 tests `cargo test --workspace -- --list`
+reports (340 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
+**325 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 30, map-build 28):
 
 | | |
 |---|---|
@@ -329,11 +334,12 @@ reports (338 run, 4 `#[ignore]`d — the map tool's input-bound tests, run local
 | `seam::tests` | 3 — map-build: an Antarctica-shaped ring loses its polar run (10 vertices), stays closed with no seam edge (fails with the strip off); two halves cut at 180° union into one part (fails with the shift off); halves meeting 180° 0.001° apart leave a 111 m notch, closed (fails with the notch kept) |
 | `borders::tests` | 6 — map-build (D2): three squares in a row → 2 interior edges, 8 outline, 2 lines (fails if once-edges are kept); a chain through degree-2 vertices is one line and a degree-4 junction cuts four (fails if chains are not cut); an enclave is one closed line; an edge found three times is counted; a seam edge found twice is not a border (fails if only once-found seam edges are dropped); the gate's 1 m (fails with the tolerance ×10) |
 | `simplify::tests` | 4 — map-build (M4a commits 4 and 4b, mutation-checked): **the hybrid** — a thin band where RDP at 1.2 straightens one side through the other's vertex, so RDP's ring is not simple and the hybrid returns VW's (fails if RDP is kept without the simplicity check), a well-behaved ring keeps RDP's; **`is_simple`** — a bow tie, a spike, a zero-area ring, a repeated vertex, an open fold-back and an open zero-length segment are not simple, a square, a zigzag and a 3 000-vertex ring are, the same ring with two far vertices swapped is not (fails with crossings, fold-backs or repeats unchecked; the area check and the hybrid's bound check are equivalent mutants, the log says why). And Step 0's instrument check on seeded rings — the span bound never below brute force, the grid equal to it (fails if the span bound skips a removed vertex or the grid stops at ring 0); tuning keeps the span bound within t and above 0.8 t, fewer vertices at a larger t, an open line's ends (fails if the bisection or its expansion accepts above t, or with no halvings) |
-| `store::tests` | 3 — map-build: the reach — the plan's grows the fit rectangle by (W/2 + 2) × the coarsest scale the level serves, capped at the widest view, the fit reading by the 2 pt margin (fails without the margin or the cap); k' is 1 at the centre and √2 at 90° (fails inverted); a ring is stored open without repeated quanta (fails if they are kept) |
+| `index::tests` | 3 — map crate (M4a commit 4c, mutation-checked): the fit rectangle is the pane at the widest scale (the floor for a country finer than it) and the reach adds the 2 pt clip margin at the level's coarsest scale (fails without the margin, with the rectangle at the fit, or with the scale uncapped); caps meet within the tolerance and not 1e-6 km past it (fails with the tolerance ignored); a rectangle off the LAEA disc is the whole sphere (fails if the off-disc samples are skipped) |
+| `store::tests` | 2 — map-build: k' is 1 at the centre and √2 at 90° (fails inverted); a ring is stored open without repeated quanta (fails if they are kept) |
 | `input_tests` | 4, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~50 s): Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the 1 m gate passing for AR CL GL ID MN only, no once-edge inside the land past 80 m); two builds byte-identical and every blob within its bound |
 | `geom::tests` | 2 — map-build: rectangle–ring distances (apart 3, diagonal 5, overlapping 0, the ring around the rectangle 0 — fails with containment ignored); R1's centre of a square across 180° is 180° |
 
-Counting `#[test]` attributes in source gives 323 and will not reconcile with the runner's 342
+Counting `#[test]` attributes in source gives 325 and will not reconcile with the runner's 344
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -352,7 +358,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `342 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `344 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -804,7 +810,11 @@ ONDAR.md, "M4: the drawn map — the reversal", and `_handover/m4a-plan.md`.
 - **The frame is the crate's, the pane is Rust's.** The crate takes the pane as an argument;
   the page is told its size and never computes a frame.
 - **The ladder and the clamp:** scales 1.5/3/6/12/24 km/pt, a view uses the coarsest level at or
-  below its scale; zoom is clamped to [1.5 km/pt, fit] and the centre to the fit rectangle.
+  below its scale; zoom is clamped to [1.5 km/pt, fit] and **the view stays inside the fit
+  rectangle** (D6 as decided 2026-10-01: the pane at the widest scale, centred on the frame bbox;
+  at that scale the view is the rectangle and cannot pan). Coverage and the frame's index both go
+  through `ondar_map::index` (`reach`, `ground_cap`, `cap_meets`), so the index never asks for a
+  blob the tool did not store.
   Subdivisions are shown above 8 km/pt, by a build-time flag per country.
 - **No panic from bytes.** The loader reads through one bounded cursor; a corrupt or truncated
   resource is an error, and the app runs without a map.

@@ -7,6 +7,7 @@ use crate::bench::Bench;
 use crate::borders::CountryBorders;
 use crate::store::{Built, QUANT_PT, SubStorage};
 use ondar_map::format::{Encoding, Layer};
+use ondar_map::index::CLIP_MARGIN_PT;
 use ondar_map::rules::LADDER;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -128,12 +129,11 @@ pub fn write(
     let _ = writeln!(r, "## Coverage\n");
     let _ = writeln!(
         r,
-        "Reach: **{:?}**. A unit is stored at level k when a ring's cap meets some country's \
-         reach at k, or it is in an inset at the inset's level. `Plan` (§ 2 as written): the fit \
-         rectangle grown by (W/2 + 2) × the coarsest scale that uses k, capped at the widest \
-         view — the view's centre anywhere in the fit rectangle. `Fit`: the view inside the fit \
-         rectangle, grown by the 2 pt clip margin only.\n",
-        built.reach
+        "D6 (decided 2026-10-01): the view stays inside the fit rectangle (the pane at the \
+         widest scale, centred on the frame bbox). A unit is stored at level k when a ring's cap, \
+         grown by the level's tolerance (bound + codec), meets some country's reach at k — its fit \
+         rectangle grown by the {CLIP_MARGIN_PT} pt clip margin at the coarsest scale that uses \
+         k — or it is in an inset at the inset's level.\n"
     );
     let _ = writeln!(
         r,

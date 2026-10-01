@@ -7,5 +7,6 @@
 pub mod clip;
 pub mod codec;
 pub mod format;
+pub mod index;
 pub mod laea;
 pub mod rules;

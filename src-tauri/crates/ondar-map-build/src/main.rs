@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! cargo run -p ondar-map-build --release -- [--input DIR] [--tables DIR]
-//!     [--out FILE] [--report FILE] [--encoding deflate|raw] [--reach plan|fit] [--bench]
+//!     [--out FILE] [--report FILE] [--encoding deflate|raw] [--bench]
 //! ```
 
 mod bench;
@@ -30,7 +30,6 @@ struct Args {
     out: Option<PathBuf>,
     report: Option<PathBuf>,
     encoding: ondar_map::format::Encoding,
-    reach: store::Reach,
     simplifier: store::Simplifier,
     bench: bool,
 }
@@ -42,7 +41,6 @@ fn args() -> Result<Args, String> {
         out: None,
         report: None,
         encoding: ondar_map::format::Encoding::Deflate,
-        reach: store::Reach::Plan,
         simplifier: store::Simplifier::Hybrid,
         bench: false,
     };
@@ -64,13 +62,6 @@ fn args() -> Result<Args, String> {
                     Some("hybrid") => store::Simplifier::Hybrid,
                     Some("vw") => store::Simplifier::Vw,
                     other => return Err(format!("--simplifier hybrid|vw, not {other:?}")),
-                }
-            }
-            "--reach" => {
-                a.reach = match it.next().as_deref() {
-                    Some("plan") => store::Reach::Plan,
-                    Some("fit") => store::Reach::Fit,
-                    other => return Err(format!("--reach plan|fit, not {other:?}")),
                 }
             }
             "--encoding" => {
@@ -329,7 +320,6 @@ fn run() -> Result<(), String> {
             &inp.plans,
             &inp.aliases,
             header_pins()?,
-            a.reach,
             a.simplifier,
         )?;
         eprintln!(
@@ -496,7 +486,6 @@ mod input_tests {
                 &i.plans,
                 &i.aliases,
                 header_pins().unwrap(),
-                store::Reach::Plan,
                 store::Simplifier::Hybrid,
             )
             .unwrap()
