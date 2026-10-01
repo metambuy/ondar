@@ -374,6 +374,47 @@ fn subdivisions_by_scale() {
     assert_eq!(us(11.99).level, 6.0);
 }
 
+/// An enclave's border is a closed loop on screen (review finding 1): the ACT inside NSW and
+/// Brazil's Distrito Federal inside Goiás at every subdivision level the country's zoom reaches,
+/// and Moscow's exclave Zelenograd at 8.5 km/pt (level 6; from level 12 it is under a point
+/// across and simplifies away) — each one polyline whose last point is its first and which holds
+/// the enclave. Moscow itself is not a case: in NE v5.1.2 it borders Kaluga Oblast, so its border
+/// is open lines between junctions. Fails if the tool stores a closed line as a ring (the closing
+/// vertex dropped), which leaves the loop open by one edge.
+#[test]
+fn enclave_borders_are_closed() {
+    let s = store();
+    let every = [8.5, 12.5, 24.5, f64::INFINITY];
+    for (code, name, lon, lat, scales) in [
+        ("AU", "ACT", 149.0, -35.5, &every[..]),
+        ("BR", "Distrito Federal", -47.8, -15.8, &every[..]),
+        ("RU", "Zelenograd", 37.19, 55.99, &[8.5][..]),
+    ] {
+        let i = c(code);
+        let fit = s.fit(i, &P).unwrap().scale;
+        for &scale in scales {
+            let scale = scale.min(fit);
+            let f = s.frame(i, &P, at(code, lon, lat, scale)).unwrap();
+            assert!(!f.subdivisions.is_empty(), "{code} at {scale}");
+            let [px, py] = s.project(i, &P, &f.view, lon, lat).unwrap();
+            let holds = |l: &Vec<[f32; 2]>| {
+                l.len() >= 4
+                    && l.first() == l.last()
+                    && l.windows(2).fold(false, |odd, w| {
+                        let ([ax, ay], [bx, by]) = (w[0].map(f64::from), w[1].map(f64::from));
+                        odd != ((ay > py) != (by > py)
+                            && px < ax + (py - ay) / (by - ay) * (bx - ax))
+                    })
+            };
+            assert!(
+                f.subdivisions.iter().any(holds),
+                "{code} {name} at {scale} km/pt (level {}): no closed loop holds it",
+                f.level
+            );
+        }
+    }
+}
+
 /// D6: past the fit → the fit; below 1.5 → 1.5; at the widest scale the view is the fit wherever
 /// its centre was asked to be; zoomed in, the centre stays where the view's edge meets the fit
 /// rectangle's; a non-finite view is the fit. Fails if any limit is dropped or the plan's reading

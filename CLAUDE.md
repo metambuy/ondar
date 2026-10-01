@@ -98,9 +98,10 @@ onda/
     │                             derivation, so renaming the real id without it fails the build
     ├── Info.plist                merged at `tauri build`: LSUIElement (dev cannot test it)
     ├── capabilities/default.json scoped to `panel`, the only window; `core:default` only
-    ├── resources/map/            `world.ondarmap` (M4a commit 5: built from NE v5.1.2 by the tool at
-    │                             `4580af0`, deflated per blob, 2 712 523 B — committed, D3; rebuilt
-    │                             only for a rule change) and its build report. `tauri.conf.json`'s
+    ├── resources/map/            `world.ondarmap` (built from NE v5.1.2 by the tool at `56c3515`, the
+    │                             review's enclave fix, deflated per blob, 2 712 599 B, SHA-256
+    │                             `e2775f81…` — committed, D3; rebuilt only for a rule change) and
+    │                             its build report. `tauri.conf.json`'s
     │                             `bundle.resources` maps it to `map/world.ondarmap`: beside the dev
     │                             binary (`target/debug/map/`) and in the bundle's Resources, so
     │                             `resource_dir()/map/world.ondarmap` serves both

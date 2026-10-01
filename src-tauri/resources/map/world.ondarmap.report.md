@@ -1,13 +1,13 @@
 # world.ondarmap — build report
 
-Built by `ondar-map-build` at `4580af035b179c5d429596ecc90f43ee1d02bd41` from Natural Earth 10m v5.1.2 (the 12 pinned inputs below). Format v1, Deflate per blob.
+Built by `ondar-map-build` at `56c35156d91ef2f97b56fe6a549e51017f62ab1d` from Natural Earth 10m v5.1.2 (the 12 pinned inputs below). Format v1, Deflate per blob.
 
 | | |
 |---|---|
-| resource | 2712523 B (2.713 MB) |
-| SHA-256 | `6b931bb525e8e06751eef54781f186081e7c5502b3e378f2144a63a5c8c97476` |
+| resource | 2712599 B (2.713 MB) |
+| SHA-256 | `e2775f811c08f5bc9d52f4653741e8fede00b7d0a1238bd095e306e60f52dc3a` |
 | units / countries / blobs | 267 / 248 / 1131 |
-| build time | 19.8 s total (store 4.2 s, 14 threads) — the ~10 min budget |
+| build time | 19.7 s total (store 4.2 s, 14 threads) — the ~10 min budget |
 
 ## Bytes, vertices and bounds per layer and level
 
@@ -20,11 +20,11 @@ Bounds are the exact measure (every original vertex to the simplified line), poi
 | Land | 6 | 252 | 543479 | 215181 | 911868 | 482362 | 0.2500 | 0.2854 |
 | Land | 12 | 203 | 496049 | 160563 | 689876 | 322050 | 0.2500 | 0.2854 |
 | Land | 24 | 124 | 373958 | 93194 | 407460 | 164492 | 0.2500 | 0.2853 |
-| Subdivisions | 6 | 18 | 133691 | 15003 | 71280 | 45591 | 0.5000 | 0.5353 |
-| Subdivisions | 12 | 10 | 100239 | 6295 | 32072 | 19545 | 0.4998 | 0.5352 |
-| Subdivisions | 24 | 1 | 48679 | 1533 | 8536 | 4647 | 0.4998 | 0.5352 |
+| Subdivisions | 6 | 18 | 133691 | 15021 | 71352 | 45638 | 0.5000 | 0.5353 |
+| Subdivisions | 12 | 10 | 100239 | 6306 | 32116 | 19559 | 0.4998 | 0.5352 |
+| Subdivisions | 24 | 1 | 48679 | 1541 | 8568 | 4662 | 0.4998 | 0.5352 |
 
-Total blob bytes: 4539816 B raw (4.540 MB), 2545987 B deflated per blob (2.546 MB). Neighbour-only blobs (a unit at a level only other countries' frames need): 1015404 B raw, 536436 B deflated = 21.1 % of the deflated total. Max bound: land 0.2500 pt, subdivisions 0.5000 pt (spec 0.25 / 0.5).
+Total blob bytes: 4539964 B raw (4.540 MB), 2546063 B deflated per blob (2.546 MB). Neighbour-only blobs (a unit at a level only other countries' frames need): 1015404 B raw, 536436 B deflated = 21.1 % of the deflated total. Max bound: land 0.2500 pt, subdivisions 0.5000 pt (spec 0.25 / 0.5).
 
 ## Coverage
 
@@ -104,16 +104,16 @@ The gate (decided 2026-10-01): every once-found edge whose midpoint lies inside 
 
 Edge-match shares over the 18: 132758 edges found twice (interior borders), 297851 once (the outline), 22 along the seam; the gate passes for 18 of 18.
 
-Subdivision bytes: 69783 B deflated (111888 B raw), against 527 856 B deflated when 13 of the 18 were stored as polygons (commit 4, VW).
+Subdivision bytes: 69859 B deflated (112036 B raw), against 527 856 B deflated when 13 of the 18 were stored as polygons (commit 4, VW).
 
 ## D1 — raw or deflated
 
-`Store::load` from a file (read + parse + inflate + CRC), release build, 10 warm-ups + 100 runs; the clock reads in 18 ns.
+`Store::load` from a file (read + parse + inflate + CRC), release build, 10 warm-ups + 100 runs; the clock reads in 14 ns.
 
 | encoding | bytes | load median ms | p90 ms |
 |---|---|---|---|
-| raw | 4706352 | 0.59 | 0.65 |
-| deflated per blob | 2712523 | 17.54 | 18.53 |
+| raw | 4706500 | 0.60 | 0.63 |
+| deflated per blob | 2712599 | 17.70 | 18.22 |
 
 The rule: deflate unless its load exceeds 50 ms → **Deflate**.
 
