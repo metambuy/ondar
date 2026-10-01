@@ -221,7 +221,8 @@ impl Store {
             return Err(LoadError::Malformed("ladder"));
         }
         let units = read_units(&mut c).ok_or(LoadError::Malformed("units"))?;
-        let countries = read_countries(&mut c).ok_or(LoadError::Malformed("countries"))?;
+        let countries =
+            read_countries(&mut c, units.len()).ok_or(LoadError::Malformed("countries"))?;
         let blobs = read_blob_table(&mut c).ok_or(LoadError::Malformed("blob table"))?;
         let region = c.take(c.remaining()).unwrap_or_default();
         let mut raw = Vec::with_capacity(blobs.len());
@@ -464,7 +465,8 @@ fn read_units(c: &mut Cursor) -> Option<Vec<Unit>> {
     Some(units)
 }
 
-fn read_countries(c: &mut Cursor) -> Option<Vec<Country>> {
+/// `n_units`: the units table's length, which every unit index a country names must be under.
+fn read_countries(c: &mut Cursor, n_units: usize) -> Option<Vec<Country>> {
     let n = c.count(60)?;
     let mut countries = Vec::with_capacity(n);
     for _ in 0..n {
@@ -528,8 +530,13 @@ fn read_countries(c: &mut Cursor) -> Option<Vec<Country>> {
             sub_lines,
         });
     }
-    // every unit index a country names must exist
-    Some(countries)
+    // every unit index a country names must exist (review finding 6: the comment stood here and
+    // nothing checked it)
+    countries
+        .iter()
+        .flat_map(|ct| ct.units.iter())
+        .all(|&u| usize::from(u) < n_units)
+        .then_some(countries)
 }
 
 fn read_blob_table(c: &mut Cursor) -> Option<Vec<BlobMeta>> {
@@ -1067,6 +1074,32 @@ pub(crate) mod tests {
                 Some(LoadError::Malformed("ladder")),
                 "{ladder:?}"
             );
+        }
+    }
+
+    /// Every unit a country names must exist (review finding 6: the comment claimed the check
+    /// and nothing did it). A country naming unit 9 999 of 2 is `Malformed("countries")`, not a
+    /// store whose every `units[ct.units[0]]` panics; the last real index (1) loads.
+    #[test]
+    fn a_country_names_only_units_that_exist() {
+        for (named, ok) in [(1u16, true), (2, false), (9_999, false)] {
+            let mut countries = synthetic_countries();
+            countries[0].units.push(named);
+            let b = write(
+                &header(),
+                &synthetic_units(),
+                &countries,
+                &synthetic_blobs(),
+                Encoding::Raw,
+            )
+            .unwrap();
+            match Store::load(&b) {
+                Ok(_) => assert!(ok, "unit {named} loaded"),
+                Err(e) => {
+                    assert!(!ok, "unit {named}: {e}");
+                    assert_eq!(e, LoadError::Malformed("countries"));
+                }
+            }
         }
     }
 
