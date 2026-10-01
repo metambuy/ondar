@@ -587,12 +587,12 @@ pub fn s4_matches(world: &World, aliases: &[Alias]) -> Vec<S4Match> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use geo::LineString;
 
     /// A small square of side `km` centred at (lat, lon).
-    fn square(lat: f64, lon: f64, km: f64) -> Polygon<f64> {
+    pub fn square(lat: f64, lon: f64, km: f64) -> Polygon<f64> {
         let l = Laea::new(lat, lon);
         let h = km / 2.0;
         let c: Vec<(f64, f64)> = [(-h, -h), (h, -h), (h, h), (-h, h), (-h, -h)]
@@ -602,7 +602,7 @@ mod tests {
         Polygon::new(LineString::from(c), vec![])
     }
 
-    fn unit(a3: &str, code: &str, parts: Vec<Polygon<f64>>) -> Unit {
+    pub fn unit(a3: &str, code: &str, parts: Vec<Polygon<f64>>) -> Unit {
         Unit {
             a3: a3.into(),
             code: Some(code.into()),

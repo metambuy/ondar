@@ -712,6 +712,88 @@ impl Built {
 mod tests {
     use super::*;
 
+    /// Coverage on a synthetic world, where only the rule under test can store a blob: country
+    /// AA (a 400 km square, top level 0) lists an inset group whose scale needs level 1 — nothing
+    /// else asks for AA's unit at level 1 — and a `-99` unit sits just past the disc around AA's
+    /// level-0 reach, along its diagonal, by half the level's tolerance — nothing else asks for
+    /// it. Fails with the inset rule dropped or the cap tolerance ignored (both are invisible on
+    /// the real data: other countries' reaches store those blobs, and the disc around a reach is
+    /// wider than the tolerance everywhere a ring happens to lie).
+    #[test]
+    fn coverage_stores_the_inset_level_and_the_tolerance_band() {
+        use crate::world::tests::{square, unit};
+        let inset_part = square(0.0, 30.0, 1001f64.sqrt());
+        let row = crate::tables::InsetRow {
+            code: "AA".into(),
+            lat: 0.0,
+            lon: 30.0,
+            keep: String::new(),
+            corner: format::Corner::TopLeft,
+            rect: [2.0, 2.0, 18.0, 30.0],
+            label: "Far".into(),
+        };
+        let probe = |world: &World| {
+            crate::world::plan_country("AA", &[0], world, None, &[&row], false).unwrap()
+        };
+        // place the neighbour from AA's plan alone
+        let w0 = World::new(
+            vec![unit(
+                "AAA",
+                "AA",
+                vec![square(0.0, 0.0, 400.0), inset_part.clone()],
+            )],
+            vec![],
+            &[],
+        )
+        .unwrap();
+        let p0 = probe(&w0);
+        let l = p0.laea();
+        let g = index::ground_cap(&l, reach(&p0, 0));
+        let tol = index::tolerance_km(LADDER[0], LAND_TOL_PT);
+        let side = 1.0;
+        let r_cap = side / 2.0 * 2f64.sqrt() * 1.001 + 0.01 + 0.01;
+        let dist = g.2 + r_cap + tol / 2.0;
+        // along the bearing 45° from the reach's centre (g is centred on the bbox's centre)
+        let ang = dist / R_AUTHALIC_KM;
+        let (lat, lon) = (
+            ang.to_degrees() / 2f64.sqrt(),
+            ang.to_degrees() / 2f64.sqrt(),
+        );
+        let mut nb = unit("BBB", "--", vec![square(g.1 + lat, g.0 + lon, side)]);
+        nb.code = None;
+        let w = World::new(
+            vec![
+                unit("AAA", "AA", vec![square(0.0, 0.0, 400.0), inset_part]),
+                nb,
+            ],
+            vec![],
+            &[],
+        )
+        .unwrap();
+        let p = probe(&w);
+        assert_eq!(top_level(&p), 0);
+        assert_eq!(
+            rules::level_for(p.insets[0].scale),
+            1,
+            "{}",
+            p.insets[0].scale
+        );
+        let pins = format::Pins {
+            tool_git: "0".repeat(40),
+            ne_tag: String::new(),
+            inputs: vec![],
+        };
+        let b = build(&w, &[], &[p], &[], pins, Simplifier::Vw).unwrap();
+        let has = |u: usize, k: usize| {
+            b.blobs
+                .iter()
+                .any(|x| x.owner == u && x.level == k && x.layer == Layer::Land)
+        };
+        assert!(has(0, 0) && has(0, 1), "the inset's level");
+        assert!(has(1, 0), "the neighbour in the tolerance band");
+        assert!(!has(1, 1) && !has(0, 2));
+    }
+
     #[test]
     fn k_prime_is_one_at_the_centre_and_root_two_at_90_degrees() {
         assert_eq!(k_prime(0.0), 1.0);
