@@ -1,0 +1,9 @@
+[package]
+name = "ondar-map"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "The drawn map for Ondar: spherical LAEA, the bundled resource's format and loader, framing. No Tauri dependency, no network dependency."
+
+[dependencies]
