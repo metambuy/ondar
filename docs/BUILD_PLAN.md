@@ -184,18 +184,19 @@ from a bundled resource. The satellite map was reversed 2026-09-24 and the rever
 
 **4a — Geodata and the `ondar-map` crate (no UI)**
 
-- [ ] The build tool `ondar-map-build` (a workspace member): Natural Earth 10m v5.1.2 admin 0,
+- [x] The build tool `ondar-map-build` (a workspace member): Natural Earth 10m v5.1.2 admin 0,
       map units and admin 1, pinned by SHA-256 and refused on a mismatch; never in CI
-- [ ] The frame rules: grouping at 300 km ground distance, the frame group (MY by override),
+- [x] The frame rules: grouping at 300 km ground distance, the frame group (MY by override),
       the centre from the antimeridian-aware bbox (AQ pole-centred), the fit and the 1.5 km/pt
       floor, the inset table, subdivisions above 8 km/pt, the code aliases, the antimeridian seam
-- [ ] The ladder 1.5/3/6/12/24 km/pt, each unit once per level, simplified per ring to a
+- [x] The ladder 1.5/3/6/12/24 km/pt, each unit once per level, simplified per ring to a
       measured ≤ 0.25 pt (subdivisions 0.5 pt), with a per-ring index
-- [ ] `src-tauri/resources/map/world.ondarmap` committed with its build report and golden tables
-- [ ] The `ondar-map` crate: the LAEA, the codec, a loader that never panics on bytes,
+- [x] `src-tauri/resources/map/world.ondarmap` committed with its build report and golden tables
+- [x] The `ondar-map` crate: the LAEA, the codec, a loader that never panics on bytes,
       `lookup`/`fit`/`clamp`/`frame`, and its tests on the shipped resource
-- [ ] The resource loaded at startup from `resource_dir()`, in dev and in the bundle
-- [ ] Record the installed bundle size in ONDAR.md
+- [x] The resource loaded at startup from `resource_dir()`, in dev and in the bundle
+- [x] Record the installed bundle size in ONDAR.md (10 576 KiB, from 7 908; built 2026-10-01 on
+      branch `m4a`, ONDAR.md "M4a: built and measured")
 
 **4b — IPC and the SVG renderer**
 

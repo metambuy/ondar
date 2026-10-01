@@ -340,7 +340,8 @@ TypeScript, stop — it belongs in Rust.
 - **The map is a bundled vector resource** (Natural Earth 10m, one file). Its finest level is
   1.5 km/pt, which is also the zoom-in limit. Step 0 measured 4.55 MB deflated per blob and
   9.3 MB raw for the shared store (`_handover/m4-step0-report.md`, Q2b), so the 100 MB
-  acceptance of 2026-09-07 is moot. The installed size after M4a is recorded in "M4a" below.
+  acceptance of 2026-09-07 is moot. The installed size after M4a: `Ondar.app` 10 576 KiB, against
+7 908 before (the resource 2 712 523 B; "M4a: built and measured" below).
   (Replaced 2026-09-30, the reversal: the satellite map's "offline resolution is capped" and
   "bundle size" bullets.)
 - **20.7 % of radio-browser stations have coordinates** — measured 2026-09-21 over 25 236
@@ -701,8 +702,10 @@ stations carry coordinates.
 **What decides the data.** Step 0 (`_handover/m4-step0-report.md`, four review rounds, R1–R10)
 measured the rules M4a builds on: the centre as the midpoint of the antimeridian-aware bbox, AQ
 pole-centred; the authalic sphere; a global scale ladder 1.5/3/6/12/24 km/pt, each unit once per
-level; per-ring Visvalingam–Whyatt simplification bisected to a measured ≤ 0.25 pt; a per-ring
-index; Antarctica's polar seam stripped. M4 is split into M4a (geodata and the `ondar-map`
+level; simplification to a measured ≤ 0.25 pt per ring — built as **the hybrid** (RDP where its
+ring stays simple and within the bound, else that ring's Visvalingam–Whyatt bisected to the
+bound; "M4a: decisions during the build" below); a per-ring index; Antarctica's polar seam
+stripped. M4 is split into M4a (geodata and the `ondar-map`
 crate, no UI), M4b (IPC and the SVG renderer) and M4c (stations, gathering, hit-testing); the
 plan is `_handover/m4a-plan.md`, reviewed 2026-09-30 (P1–P4). The instructions field's
 replacement text is `_handover/m4a-instructions-field.md`.
@@ -734,8 +737,9 @@ vertex; a ring also needs ≥ 3 distinct vertices and non-zero area) and its exa
 within the bound. Otherwise the ring keeps its per-ring VW result. The decision weighed runtime
 vertices (RU's fit frame, R8's payload), not file bytes. RU land at 24 km/pt: VW 13 664, RDP
 3 904, hybrid 12 883. RU's mainland ring (24 183 vertices) gives an RDP ring that is not simple,
-so that ring keeps VW's 11 114. Worldwide the hybrid stores 1.05× RDP's vertices at 1.5 km/pt
-and 2.17× at 24.
+so that ring keeps VW's 11 114. Worldwide, in the shipped resource, the hybrid stores 1.045×
+RDP's vertices at 1.5 km/pt and 2.268× at 24 (the build report's P4 table; the 2.17× first
+written here was measured under the plan's reach, before D6).
 
 **D2's gate: on its intent.** The plan's gate required every once-found admin-1 edge to lie
 within 1 m of admin 0. That measures whether NE's admin-0 and admin-1 coasts coincide, which NE
@@ -746,6 +750,65 @@ a border — is within **375 m** (0.25 pt at 1.5 km/pt) of the admin-0 rings, an
 three times or more. Measured: all 18 pass, the farthest such edge is 79 m (US), and all 18 are
 stored as interior borders. Subdivisions take 69 783 B deflated, against 527 856 B when 13 of
 the 18 were polygons.
+
+### M4a: built and measured (2026-10-01)
+
+Branch `m4a`. Commits, each pushed alone with CI green before the next (runs in
+`_handover/last-report-2026-10-01.md`):
+
+| | commit | what |
+|---|---|---|
+| 0 | `bb090cf` | docs: the reversal |
+| 0b | `37a1039` | the list effect's dependency list |
+| 1 | `8d2e9c1` | `ondar-map`: the spherical LAEA and Q5's reference table |
+| 2 | `733d743` | the resource format: codec, writer, a loader that never panics on bytes |
+| 3 | `370a64c` | `ondar-map-build`: NE reader, pins, frame rules |
+| 4 | `7f126d7` | the ladder, per-ring simplification to a measured bound, the ring index |
+| 4b | `65f7927` | the per-ring RDP/VW hybrid (P4) |
+| 4c | `47218f2` | D6, the view inside the fit rectangle; `ondar_map::index` |
+| 4d | `4580af0` | D2's gate on its intent |
+| 5 | `3dda925` | `world.ondarmap`, its report, the golden tables, `bundle.resources` |
+| 6 | `52e1880` | `frame`: lookup, fit, clamp, frame; the frame tests; `frame_bench` |
+| 7 | `40a36f0` | the shell loads the resource at startup |
+
+**The resource.** `src-tauri/resources/map/world.ondarmap` is 2 712 523 B, deflated per blob
+(SHA-256 `6b931bb5…`). It was built by the tool at `4580af0` from Natural Earth 10m v5.1.2 in
+19.7 s, and the build is reproducible. Contents: 267 units, 248 countries and 1 131 blobs; the
+blobs are 2 545 987 B deflated (4 539 816 raw) plus 166 536 B of tables. **The bound drawn on
+screen** is the simplification's plus the codec's: land is simplified to ≤ 0.25 pt and quantised
+to ≤ 0.035 pt more (half a 0.05 pt quantum's diagonal), so ≤ 0.2854 pt drawn; subdivisions
+≤ 0.5 + 0.035 pt. A neighbour drawn in another country's projection is stretched by at most
+1.40×, ≤ 0.376 pt (P2). **Two vertex counts in the build report differ, by design.** The P4
+table's "stored" counts each chosen ring before quantisation. The bytes table's "vertices out"
+counts it after, once the codec has dropped consecutive vertices that fall in the same quantum.
+That is 36 vertices at 1.5 km/pt and 2 850 at 24, where more tiny islands collapse (confirmed in
+`store.rs`: `quantise_ring` is the only step between the two counts).
+
+**Bytes against Step 0, by cause** (each file read from disk). Step 0's Q2b had 4.55 MB deflated
+(9.31 MB raw) and 2.28 M vertices. Commit 4 had 4.04 MB and 1.75 M (per-ring ε and the plan's
+reach, unseparated). D6's reach took it to 3.89 MB and 1.68 M, the hybrid to 3.04 MB and 1.20 M,
+and D2's borders to 2.71 MB and 1.07 M.
+
+**Acceptance** (`_handover/m4a-acceptance.md`; release, 10 + 100 runs, median / p90):
+- load from the bundle: 17.1 / 17.6 ms, and `ms=18.8` in the app;
+- PT fit 0.17 ms; Lisbon at the floor 0.13 ms;
+- US fit 2.23 ms; New York at the floor 1.16 ms, at mid zoom 0.99 ms;
+- RU fit **4.28 ms** (target ≤ 12, gate 30); Vladivostok 0.56 ms, at mid zoom 0.80 ms;
+- the sweep over all 248 fits: p90 1.57 ms, max 4.33 ms (RU);
+- `bytes_out` (R8's baseline): RU at fit 780 646 B, against Q2b's 1.59 MB;
+- the installed `Ondar.app`: 10 576 KiB, against 7 908 before;
+- no network crate under `ondar-map`.
+The RU rule (RDP retried at smaller ε on rings whose RDP ring is not simple) was not needed.
+
+**For M4b.** Coverage is computed and tested for the golden pane, 328 × 300 × 20. A pane of
+another aspect (the ANMITE's 328 × 178) has a coarser fit, so its views can admit units that were
+not stored. The frame skips them and counts them in `FrameStats::missing_blobs`; it never fails.
+M4b's acceptance reads that counter at the real pane.
+
+**Versions** (from `Cargo.lock`): the tool adds `shapefile` 0.9.0, `dbase` 0.8.0, `geo` 0.33.1,
+`geo-types` 0.7.20 and `i_overlay` 4.5.2, and uses `sha2` 0.10.9, already in the tree via
+tauri-codegen. The runtime crate `ondar-map` depends only on `flate2` 1.1.10, `serde` 1.0.229
+and `thiserror` 2.0.20.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
