@@ -49,8 +49,9 @@ pub struct FrameStats {
     pub vertices: usize,
     pub rings_considered: usize,
     pub rings_skipped: usize,
-    /// Units the index admitted at this level with no blob stored (0 at the golden pane: the
-    /// coverage test).
+    /// Blobs the frame needed and the resource does not store, counted per unit (review finding
+    /// 9): a unit the index admitted at the view's level, once per inset for a unit holding its
+    /// parts, and the country's subdivisions. 0 at the golden pane (the coverage test).
     pub missing_blobs: usize,
 }
 
@@ -240,22 +241,33 @@ impl Store {
             let own = ct.units.contains(&u16_);
             let same = main == Some(u16_);
             let unit_l = Laea::new(unit.lat0, unit.lon0);
-            let blob = self.blob(u16_, k8, Layer::Land);
+            // own land: the frame's parts and the small groups outside the usable area (S6's
+            // `Dropped`), drawn where the view meets them as a neighbour's would be (review
+            // finding 5); an inset's part is drawn in its box only. `Some(neighbour)` if drawn.
+            let drawn = |part: &crate::format::Part| match part.role {
+                _ if !own => (part.omit_in != Some(c16)).then_some(true),
+                Role::Frame | Role::Dropped => Some(false),
+                Role::Inset(_) | Role::NeighbourOnly => None,
+            };
+            let Some(b) = self.blob(u16_, k8, Layer::Land) else {
+                // no blob at this level: one missing unit if the index admits a ring this frame
+                // would draw — counted per unit, no ring considered (review finding 9)
+                let admitted = unit.parts.iter().any(|p| {
+                    drawn(p).is_some()
+                        && p.rings
+                            .iter()
+                            .any(|cap| !use_index || index::cap_meets(cap, ground, tol))
+                });
+                out.stats.missing_blobs += usize::from(admitted);
+                continue;
+            };
             let mut ri = 0usize;
             for part in &unit.parts {
                 let first = ri;
                 ri += part.rings.len();
-                // own land: the frame's parts and the small groups outside the usable area (S6's
-                // `Dropped`), drawn where the view meets them as a neighbour's would be (review
-                // finding 5); an inset's part is drawn in its box only
-                let neighbour = match part.role {
-                    _ if !own => true,
-                    Role::Frame | Role::Dropped => false,
-                    Role::Inset(_) | Role::NeighbourOnly => continue,
-                };
-                if neighbour && part.omit_in == Some(c16) {
+                let Some(neighbour) = drawn(part) else {
                     continue;
-                }
+                };
                 let mut shape = Shape::default();
                 for (j, cap) in part.rings.iter().enumerate() {
                     if use_index && !index::cap_meets(cap, ground, tol) {
@@ -263,10 +275,6 @@ impl Store {
                         continue;
                     }
                     out.stats.rings_considered += 1;
-                    let Some(b) = blob else {
-                        out.stats.missing_blobs += 1;
-                        break;
-                    };
                     if self.decode(b, first + j, &mut buf).is_none() {
                         continue;
                     }
@@ -365,7 +373,12 @@ impl Store {
                     continue;
                 };
                 let unit_l = Laea::new(unit.lat0, unit.lon0);
-                let blob = self.blob(u, k8, Layer::Land);
+                let Some(b) = self.blob(u, k8, Layer::Land) else {
+                    // one missing unit, however many of its parts the inset holds (finding 9)
+                    let holds = unit.parts.iter().any(|p| p.role == Role::Inset(i8_));
+                    stats.missing_blobs += usize::from(holds);
+                    continue;
+                };
                 let mut ri = 0usize;
                 for part in &unit.parts {
                     let first = ri;
@@ -373,10 +386,6 @@ impl Store {
                     if part.role != Role::Inset(i8_) {
                         continue;
                     }
-                    let Some(b) = blob else {
-                        stats.missing_blobs += 1;
-                        continue;
-                    };
                     let mut shape = Shape::default();
                     for j in 0..part.rings.len() {
                         if self.decode(b, first + j, &mut buf).is_none() {
@@ -439,5 +448,85 @@ impl Store {
                 (ins.label.clone(), d)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::tests::{
+        cap, header, synthetic_blobs, synthetic_countries, synthetic_units,
+    };
+    use crate::format::{Encoding, Part, Unit, write};
+
+    /// `missing_blobs` counts units, as documented (review finding 9): a neighbour unit with three
+    /// parts in view and no blob at the frame's level adds one missing blob, and its rings are not
+    /// counted as considered — none was decoded; an inset of two parts whose level has no blob is
+    /// one missing blob, as an inset of one part was. On `dddb4da` the two added 4 (one per part),
+    /// and `rings_considered` counted the three rings never read. The unindexed frame agrees.
+    #[test]
+    fn missing_blobs_counts_units_not_parts() {
+        let mut units = synthetic_units();
+        let part = |lon: f32| Part {
+            role: Role::NeighbourOnly,
+            omit_in: None,
+            rings: vec![cap(lon, 40.0, 60.0)],
+        };
+        units.push(Unit {
+            a3: *b"ESP",
+            code: None,
+            name: "three parts, no blob".into(),
+            lat0: 40.0,
+            lon0: -7.0,
+            cap: cap(-7.0, 40.0, 200.0),
+            parts: vec![part(-7.2), part(-7.0), part(-6.8)],
+        });
+        // a second part for the Azores inset (unit 0), its ring in unit 0's two blobs
+        units[0].parts.push(Part {
+            role: Role::Inset(0),
+            omit_in: None,
+            rings: vec![cap(-25.0, 37.8, 50.0)],
+        });
+        let mut blobs = synthetic_blobs();
+        for b in blobs
+            .iter_mut()
+            .filter(|b| b.owner == 0 && b.layer == Layer::Land)
+        {
+            b.rings.push(vec![[0, 0], [100, 0], [100, 100]]);
+        }
+        let b = write(
+            &header(),
+            &units,
+            &synthetic_countries(),
+            &blobs,
+            Encoding::Raw,
+        )
+        .unwrap();
+        let s = Store::load(&b).unwrap();
+        let pane = Pane::GOLDEN;
+        let fit = s.fit(0, &pane).unwrap();
+        let with = |f: Frame| (f.stats.missing_blobs, f.stats.rings_considered);
+        let (base, base_unindexed) = {
+            // the same resource without the extra unit: what the rest of the frame considers
+            let b = write(
+                &header(),
+                &synthetic_units(),
+                &synthetic_countries(),
+                &synthetic_blobs(),
+                Encoding::Raw,
+            )
+            .unwrap();
+            let s0 = Store::load(&b).unwrap();
+            (
+                with(s0.frame(0, &pane, fit).unwrap()),
+                with(s0.frame_unindexed(0, &pane, fit).unwrap()),
+            )
+        };
+        // the base frame's own count: its inset's level has no blob in the synthetic resource
+        assert_eq!(with(s.frame(0, &pane, fit).unwrap()), (base.0 + 1, base.1));
+        assert_eq!(
+            with(s.frame_unindexed(0, &pane, fit).unwrap()),
+            (base_unindexed.0 + 1, base_unindexed.1)
+        );
     }
 }

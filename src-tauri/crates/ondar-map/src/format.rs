@@ -773,7 +773,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn cap(lon: f32, lat: f32, r: f32) -> Cap {
+    pub(crate) fn cap(lon: f32, lat: f32, r: f32) -> Cap {
         Cap {
             lon,
             lat,
@@ -803,7 +803,7 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    fn synthetic_units() -> Vec<Unit> {
+    pub(crate) fn synthetic_units() -> Vec<Unit> {
         vec![
             Unit {
                 a3: *b"PRT",
@@ -841,7 +841,7 @@ pub(crate) mod tests {
         ]
     }
 
-    fn synthetic_countries() -> Vec<Country> {
+    pub(crate) fn synthetic_countries() -> Vec<Country> {
         vec![Country {
             code: *b"PT",
             name: "Portugal".into(),
@@ -865,7 +865,7 @@ pub(crate) mod tests {
         }]
     }
 
-    fn synthetic_blobs() -> Vec<BlobIn> {
+    pub(crate) fn synthetic_blobs() -> Vec<BlobIn> {
         let mut rng = Rng(42);
         let mut ring = |n: usize| -> Vec<[i32; 2]> {
             (0..n)
