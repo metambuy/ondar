@@ -1062,6 +1062,7 @@ pub(crate) mod tests {
             ("clip.rs", include_str!("clip.rs")),
             ("format.rs", include_str!("format.rs")),
             ("index.rs", include_str!("index.rs")),
+            ("frame.rs", include_str!("frame.rs")),
         ];
         for (name, src) in files {
             let code = src.split("#[cfg(test)]").next().unwrap_or(src);

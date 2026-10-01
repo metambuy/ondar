@@ -238,7 +238,17 @@ onda/
         │                         raw or deflated (D1), CRC32 of the raw bytes; the loader never
         │                         panics (bounded cursor, per-blob and total raw caps, the ring table
         │                         must tile the blob, a blob's ring count must match its owner's)
+        ├── frame.rs              framing (M4a commit 6): `Store::lookup` (R7: uppercase; `XX`, unknown →
+        │                         `NoMap`), `fit` (bbox centre, S1 floor), `clamp` (D6: scale into
+        │                         [1.5, widest], the view inside the fit rectangle), `frame` (level =
+        │                         coarsest ≤ scale; clip = view + 2 pt; rings by the index; the main
+        │                         unit by translation, others inverse-then-forward; land, neighbours,
+        │                         S4 parent copies omitted, subdivisions above 8 km/pt, insets at the
+        │                         fit view only; 0.01 pt), `project`/`unproject`, `inset_clearance`
+        ├── examples/frame_bench.rs  § 7's timings: load, PT/US/RU at fit, a city at the floor and mid
+        │                         zoom (10 + 100 runs, median / p90, reversed), `bytes_out`, the sweep
         ├── tests/resource.rs     tests on the shipped resource (pins, spec, loader fuzz, coverage)
+        ├── tests/frame.rs        § 5's frame tests on the shipped resource
         └── fixtures/             `laea-reference.tsv` (Step 0's Q5: pyproj + d3-geo at 37 points),
                                   `step0-fit.tsv` (Q1-merged's 239 fits), `golden-fit.tsv` and
                                   `golden-insets.tsv` (the resource's frames, from `--tables`)
@@ -301,9 +311,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 350 tests `cargo test --workspace -- --list`
-reports (346 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
-**331 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 34, map-build 30):
+export_bindings_<type>` that writes the `.ts` file. So the 360 tests `cargo test --workspace -- --list`
+reports (356 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
+**341 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 44, map-build 30):
 
 | | |
 |---|---|
@@ -347,11 +357,12 @@ reports (346 run, 4 `#[ignore]`d — the map tool's input-bound tests, run local
 | `simplify::tests` | 4 — map-build (M4a commits 4 and 4b, mutation-checked): **the hybrid** — a thin band where RDP at 1.2 straightens one side through the other's vertex, so RDP's ring is not simple and the hybrid returns VW's (fails if RDP is kept without the simplicity check), a well-behaved ring keeps RDP's; **`is_simple`** — a bow tie, a spike, a zero-area ring, a repeated vertex, an open fold-back and an open zero-length segment are not simple, a square, a zigzag and a 3 000-vertex ring are, the same ring with two far vertices swapped is not (fails with crossings, fold-backs or repeats unchecked; the area check and the hybrid's bound check are equivalent mutants, the log says why). And Step 0's instrument check on seeded rings — the span bound never below brute force, the grid equal to it (fails if the span bound skips a removed vertex or the grid stops at ring 0); tuning keeps the span bound within t and above 0.8 t, fewer vertices at a larger t, an open line's ends (fails if the bisection or its expansion accepts above t, or with no halvings) |
 | `index::tests` | 3 — map crate (M4a commit 4c, mutation-checked): the fit rectangle is the pane at the widest scale (the floor for a country finer than it) and the reach adds the 2 pt clip margin at the level's coarsest scale (fails without the margin, with the rectangle at the fit, or with the scale uncapped); caps meet within the tolerance and not 1e-6 km past it (fails with the tolerance ignored); a rectangle off the LAEA disc is the whole sphere (fails if the off-disc samples are skipped) |
 | `resource` (`ondar-map/tests/resource.rs`) | 4 — map crate, integration tests on the shipped `world.ondarmap` (M4a commit 5; ~35 s in a debug build): the header's pins equal `pins.tsv`, v5.1.2, the authalic radius, the ladder, 267 units / 248 countries; every blob within 0.25 / 0.5 pt; the loader on the real file (every truncation of the first 4 KiB, 200 seeded lengths → `Err`; 400 seeded mutations → no panic, every ring of an `Ok` decoded); **`coverage_matches_clamp`** — for every country and level, the views at the level's finest and coarsest scale in each corner of D6's fit rectangle (computed from D6's wording, not `index::fit_rect`) and at its centre, each with the 2 pt clip margin: every ring whose cap meets the clip rectangle by the frame index's own test (`index::ground_cap`, `cap_meets`, the level's tolerance) has its blob, subdivisions above 8 km/pt, insets at their level. Mutation-checked by rebuilding the resource with the tool mutated (`_handover/m4a-mutate-resource.sh`): fails without the clip margin or with a level's coarsest scale taken as its own ("Australia: unit NFK at level 3 is not stored"); the cap tolerance and the inset rule are invisible on the real data (killed by `store::tests` on a synthetic world), the fit rectangle at the fit for a country finer than the floor is equivalent on it (every unit is stored at level 0) |
+| `frame` (`ondar-map/tests/frame.rs`) | 10 — map crate, on the shipped resource (M4a commit 6; mutation-checked, the resource rebuilt from a mutated tool where the rule lives there): the golden table for all 248 to its printed precision; Step 0 reproduced (237 codes; MY, AQ, MM); the antimeridian — FJ 1.9495 and RU 28.0107, and at the floor over Chukotka (67° N, 180°) and Taveuni the point lies in one land ring with land strictly on both sides of 180° and no edge within 0.01° of it (the plan's 179.9999° is below the quantum; fails with RU/FJ unstitched); Antarctica pole-centred, no vertex past −89.99°, simplified, Peter I in the frame (fails with the pole centre removed); the 14 insets ≥ 12 pt, inside their boxes, apart, and none at a zoomed view (fails with insets at every view); RE's frame omits France's copy of the island (fails with the S4 omit-in ignored); R7's lookup; subdivisions above 8 km/pt only; D6's clamp (fails on the plan's reading or either zoom limit); the index exact against `frame_unindexed` for PT/US/RU at fit, floor and mid (fails with the index's tolerance dropped). Equivalent mutants: `XX` (no such country), the subdivision flag (no blob for an unflagged country) |
 | `store::tests` | 3 — map-build: coverage on a synthetic world where only the rule under test can store the blob — an inset whose level only the inset rule needs, a `-99` unit just past the disc around the reach by half the level's tolerance (fails with the inset rule dropped or the tolerance ignored; doubling the tolerance passes); k' is 1 at the centre and √2 at 90° (fails inverted); a ring is stored open without repeated quanta (fails if they are kept) |
 | `input_tests` | 4, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~50 s): Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the gate passing for all 18, no once-edge inside the land past 80 m; fails with the inside-land filter dropped); two builds byte-identical and every blob within its bound |
 | `geom::tests` | 2 — map-build: rectangle–ring distances (apart 3, diagonal 5, overlapping 0, the ring around the rectangle 0 — fails with containment ignored); R1's centre of a square across 180° is 180° |
 
-Counting `#[test]` attributes in source gives 331 and will not reconcile with the runner's 350
+Counting `#[test]` attributes in source gives 341 and will not reconcile with the runner's 360
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -370,7 +381,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `350 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `360 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands

@@ -11,3 +11,10 @@ description = "The drawn map for Ondar: spherical LAEA, the bundled resource's f
 # ondar-audio and png); no new dependency.
 flate2 = "1"
 thiserror = "2"
+# `Serialize` on the frame types: the bench's `bytes_out` now, and M4b's IPC payload (after R8's
+# transport measurement). Already in the tree (every crate here uses it).
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# The bench's `bytes_out` (R8's baseline). In the tree.
+serde_json = "1"
