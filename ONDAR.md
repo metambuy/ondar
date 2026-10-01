@@ -876,6 +876,26 @@ clear the land. At 328 × 178 four of the 14 boxes are under S6's 12 pt
 The other ten clear by 19.7 pt or more. Madeira, which finding 2 named, clears by 68.6 pt. This
 is M4b's acceptance, not a gate here.
 
+**Code review 2, 2026-10-01.** Fable 5.1 reviewed the fix range `dddb4da..8324e68`
+(`_handover/m4a-review2-findings-2026-10-01.md`). The chat accepted all six findings and a second
+pass's check (`m4a-review2-triage-2026-10-01.md`). Each fix went test first, with its failure
+recorded on `8324e68` (`_handover/m4a-review2/`). Each was mutation-checked
+(`m4a-mutations.log`, "review 2") and pushed alone with CI green. Finding 1, `a227449`: a
+country's own inset groups are land in its frame at every view but the fit, where they stay in
+their box (D7); `missing_blobs` follows. `frame_bench` is unchanged but for `rings_skipped`.
+Finding 2, `26b28f4`: the tool's S6 clearance measures the frame and dropped groups, clipped to
+the pane plus the 2 pt margin as the frame clips them. Without the clip, Jan Mayen, off Norway's
+pane and never drawn, read Svalbard's box at 14.2 pt where the screen shows 61.1. The resource
+rebuilt from that tree differs from `e2775f81…` only in the header's tool commit, so it was not
+re-committed. All 14 clearances agree with the runtime's to 0.1 pt. Finding 3, `4022466`:
+`Store::clamp` is `clamp_view`. Finding 4, `4fb01f3`: at the fit view an inset whose box leaves
+the pane or overlaps another is not drawn and is counted in `FrameStats::insets_dropped`; it is
+never moved onto the land. At 328 × 60 two of 14 are drawn, at 328 × 178 all 14. M4b's
+acceptance requires `insets_dropped = 0` and 12 pt clearance at the real pane. Finding 5,
+`945ce4c`: a missing subdivisions blob counts only when a line meets the view. Finding 6,
+`f44e424`: `project` and `unproject` answer `None` for a pane that is not valid. The second
+pass, `f526d34`: the tool refuses a unit that is the main unit of two countries.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
