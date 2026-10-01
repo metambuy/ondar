@@ -259,11 +259,24 @@ pub fn build(
     let t0 = std::time::Instant::now();
     let nu = world.units.len();
 
-    // storage LAEA per unit
+    // storage LAEA per unit: a country's main unit in its frame's. The frame reprojects its main
+    // unit by translation alone, so a unit may be the main unit of one country only (review 2,
+    // second pass); the build is refused otherwise
     let mut centre: Vec<Option<(f64, f64)>> = vec![None; nu];
+    let mut main_of: Vec<Option<&str>> = vec![None; nu];
     for p in plans {
         if let Some(&main) = p.units.first() {
-            centre[main] = Some((p.lat0, p.lon0));
+            let (Some(c), Some(owner)) = (centre.get_mut(main), main_of.get_mut(main)) else {
+                return Err(format!("{}: main unit {main} is not in the world", p.code));
+            };
+            if let Some(first) = owner {
+                return Err(format!(
+                    "unit {} is the main unit of {first} and {}",
+                    world.units[main].a3, p.code
+                ));
+            }
+            *c = Some((p.lat0, p.lon0));
+            *owner = Some(p.code.as_str());
         }
     }
     let geoms: Vec<UnitGeom> = job(nu, |u| {
@@ -789,6 +802,45 @@ mod tests {
         assert!(has(0, 0) && has(0, 1), "the inset's level");
         assert!(has(1, 0), "the neighbour in the tolerance band");
         assert!(!has(1, 1) && !has(0, 2));
+    }
+
+    /// A unit is the main unit of one country at most (review 2, second pass): the frame
+    /// reprojects a country's main unit by translation alone, so a unit stored in one country's
+    /// LAEA and framed as another's main unit would be drawn in the wrong place. Two plans naming
+    /// the same main unit are refused; on `8324e68` the last one's centre won silently.
+    #[test]
+    fn a_main_unit_shared_by_two_countries_is_refused() {
+        use crate::world::tests::{square, unit};
+        let w = World::new(
+            vec![unit("AAA", "AA", vec![square(0.0, 0.0, 400.0)])],
+            vec![],
+            &[],
+        )
+        .unwrap();
+        let p = crate::world::plan_country("AA", &[0], &w, None, &[], false).unwrap();
+        let mut q = crate::world::plan_country("AA", &[0], &w, None, &[], false).unwrap();
+        q.code = "BB".into();
+        q.lat0 += 1.0;
+        let pins = || format::Pins {
+            tool_git: "0".repeat(40),
+            ne_tag: String::new(),
+            inputs: vec![],
+        };
+        assert!(
+            build(
+                &w,
+                &[],
+                std::slice::from_ref(&p),
+                &[],
+                pins(),
+                Simplifier::Vw
+            )
+            .is_ok()
+        );
+        let e = build(&w, &[], &[p, q], &[], pins(), Simplifier::Vw)
+            .err()
+            .expect("a shared main unit builds");
+        assert!(e.contains("main unit"), "{e}");
     }
 
     #[test]
