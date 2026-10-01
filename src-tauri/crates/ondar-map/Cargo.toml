@@ -7,3 +7,7 @@ publish = false
 description = "The drawn map for Ondar: spherical LAEA, the bundled resource's format and loader, framing. No Tauri dependency, no network dependency."
 
 [dependencies]
+# Inflate per blob (D1) and the blobs' CRC32 (`flate2::Crc`). Already in the tree (1.1.10, via
+# ondar-audio and png); no new dependency.
+flate2 = "1"
+thiserror = "2"

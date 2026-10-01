@@ -4,5 +4,8 @@
 //! No Tauri dependency and no network dependency: the resource is built at build time from
 //! Natural Earth and bundled; this crate only reads it.
 
+pub mod clip;
+pub mod codec;
+pub mod format;
 pub mod laea;
 pub mod rules;

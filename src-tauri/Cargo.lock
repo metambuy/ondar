@@ -3019,6 +3019,10 @@ dependencies = [
 [[package]]
 name = "ondar-map"
 version = "0.1.0"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "ondar-stations"

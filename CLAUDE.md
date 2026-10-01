@@ -213,6 +213,18 @@ onda/
         ├── rules.rs              the rules shared with the build tool: `Pane` (+ `GOLDEN` 328 ×
         │                         300 × 20), `fit_scale`, `initial_scale` (S1 floor 1.5), `LADDER`
         │                         1.5/3/6/12/24 km/pt, `level_for` (the coarsest level ≤ the scale)
+        ├── codec.rs              a ring as `i16` deltas of 0.05 pt quanta at its level from an `i32`
+        │                         first vertex, escape pair `(i16::MIN, i16::MIN)` + `i32`; lossless
+        │                         to 0.0354 pt; `Cursor`, the one bounded reader (every read an
+        │                         `Option`, counts bounded by what remains)
+        ├── clip.rs               Sutherland–Hodgman (rings) and Liang–Barsky (lines) against a
+        │                         rectangle, hand-written: no polygon-boolean crate at runtime
+        ├── format.rs             `world.ondarmap` v1: the model (`Unit`, `Part` + `Role`, `Cap`,
+        │                         `Country`, `Inset`, `BlobMeta`), the writer (the tool's) and
+        │                         `Store::load` (the app's) — one code path. Per blob: a ring table,
+        │                         raw or deflated (D1), CRC32 of the raw bytes; the loader never
+        │                         panics (bounded cursor, per-blob and total raw caps, the ring table
+        │                         must tile the blob, a blob's ring count must match its owner's)
         └── fixtures/             `laea-reference.tsv` (Step 0's Q5: pyproj + d3-geo at 37 points)
                                   + PROVENANCE.md
 ```
@@ -228,9 +240,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 293 tests `cargo test --workspace`
-reports break down as **274 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64,
-map 7):
+export_bindings_<type>` that writes the `.ts` file. So the 312 tests `cargo test --workspace`
+reports break down as **293 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64,
+map 26):
 
 | | |
 |---|---|
@@ -262,9 +274,12 @@ map 7):
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 | `laea::tests` | 4 — **map** crate (M4a, 2026-10-01; each mutation-checked, `_handover/m4a-mutations.log`): the 37 Q5 points forward against pyproj and d3-geo and back by the inverse within 1e-6 km, Snyder's example (R = 3) to 1e-7 (fails on the mean radius 6 371.0088, `k' = √(1/d)`, a sign in y or in the inverse, degrees for radians); `lon_interval` across 180° (fails with the wrap-around gap dropped); `wrap_lon`; the antipode and outside the disc are `None` |
+| `codec::tests` | 5 — map crate (M4a commit 2, mutation-checked): seeded random rings at every level, small steps and steps past `i16`, back within 0.0354 pt (fails on a delta's sign); a delta of exactly `i16::MIN` is escaped (fails if only out-of-range deltas are); every truncation, a trailing byte and a vertex count past the bytes are `None` (fails with the remaining-bytes check dropped); `quantise` refuses past `i32` and NaN; `Cursor::count` bounded by what remains (fails unbounded) |
+| `clip::tests` | 7 — map crate: Sutherland–Hodgman on a square, a ring with a hole (each ring alone, the hole stays a hole), a triangle across a corner (the corner a vertex), no intersection (a bbox that meets but a triangle that does not) → empty, a ring containing the window → the window, a ring inside unchanged (fails on an inverted inside test or a wrong crossing point); Liang–Barsky: a line leaving and re-entering is two pieces cut at the boundary (fails on t0/t1 swapped) |
+| `format::tests` | 7 — map crate: the writer's output loads back to the same tables and quanta, raw and deflated; **the loader never panics**: every truncation of the first 4 KiB and 1 000 seeded lengths → `Err`, 10 000 seeded 1–8-byte mutations → `Ok` or `Err` with every ring of an `Ok` decoded (on a synthetic resource; the shipped one joins at commit 5); a flipped raw byte → `Corrupt { blob, "crc" }` (fails with the CRC skipped); version 2 → `Version(2)`, bad magic → `Magic`; a blob whose ring count differs from its owner's → `Corrupt { "owner" }`; the ring table must tile the blob and give each ring its minimum length (each fails with its check dropped — the fuzz cannot reach these behind the CRC; mutation log); **no panic shape** in the crate's non-test code — the `adts.rs` scan over every module (fails on an added `.unwrap()` or `bytes[a..b]`) |
 | `rules::tests` | 3 — map crate: 288 × 260 km fills the golden pane at 1 km/pt, the ANMITE's 328 × 178 binds on h / 138 (fails on padding once, or `min` for `max`); the S1 floor; `level_for` 28.01 → 24, 12.0 → 12, 11.99 → 6 (fails on `<` for `≤`) |
 
-Counting `#[test]` attributes in source gives 274 and will not reconcile with the runner's 293
+Counting `#[test]` attributes in source gives 293 and will not reconcile with the runner's 312
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -283,7 +298,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `293 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `312 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
