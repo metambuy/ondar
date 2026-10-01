@@ -737,6 +737,16 @@ vertices (RU's fit frame, R8's payload), not file bytes. RU land at 24 km/pt: VW
 so that ring keeps VW's 11 114. Worldwide the hybrid stores 1.05× RDP's vertices at 1.5 km/pt
 and 2.17× at 24.
 
+**D2's gate: on its intent.** The plan's gate required every once-found admin-1 edge to lie
+within 1 m of admin 0. That measures whether NE's admin-0 and admin-1 coasts coincide, which NE
+does not promise, and it failed for 13 of the 18 countries on islets admin 0 lacks and on coast
+offsets of up to 143 m. **The decided gate:** every once-found edge whose midpoint lies inside
+the country's admin-0 land — an interior border found on one side only, the failure that loses
+a border — is within **375 m** (0.25 pt at 1.5 km/pt) of the admin-0 rings, and no edge is found
+three times or more. Measured: all 18 pass, the farthest such edge is 79 m (US), and all 18 are
+stored as interior borders. Subdivisions take 69 783 B deflated, against 527 856 B when 13 of
+the 18 were polygons.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:

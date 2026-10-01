@@ -243,11 +243,14 @@ pub fn write(
     let _ = writeln!(r, "## D2 — subdivisions as interior borders\n");
     let _ = writeln!(
         r,
-        "The gate as planned: every once-found edge within 1 m of the country's admin-0 rings, no \
-         edge found 3+ times. A country failing it is stored as the prototype's polygons (the \
-         plan's fallback). `inside` counts the far once-edges whose midpoint lies inside the \
-         country's admin-0 land — an interior border found on one side only, the failure the gate \
-         is for — and their farthest distance.\n"
+        "The gate (decided 2026-10-01): every once-found edge whose midpoint lies inside the \
+         country's admin-0 land — an interior border found on one side only — within {:.0} m of \
+         the admin-0 rings, and no edge found 3+ times; a country failing it is stored as the \
+         prototype's polygons. `inside` counts the once-edges more than 1 m from the rings whose \
+         midpoint is inside the land (closer ones lie on the rings); `far once` counts every \
+         once-edge more than 1 m away (coast differences between NE's two layers, islets admin 0 \
+         lacks).\n",
+        crate::borders::GATE_INSIDE_KM * 1000.0
     );
     let _ = writeln!(
         r,
@@ -295,6 +298,23 @@ pub fn write(
         borders.iter().map(|b| b.census.seam).sum::<usize>(),
         borders.iter().filter(|b| b.passes()).count(),
         borders.len()
+    );
+    let (sub_raw, sub_def) = built
+        .blobs
+        .iter()
+        .filter(|b| b.layer == Layer::Subdivisions)
+        .map(|b| {
+            let raw = ondar_map::format::blob_raw(&b.rings);
+            (
+                raw.len(),
+                ondar_map::format::deflate(&raw).map_or(0, |d| d.len()),
+            )
+        })
+        .fold((0, 0), |(a, b), (x, y)| (a + x, b + y));
+    let _ = writeln!(
+        r,
+        "Subdivision bytes: {sub_def} B deflated ({sub_raw} B raw), against 527 856 B deflated \
+         when 13 of the 18 were stored as polygons (commit 4, VW).\n"
     );
 
     // D1

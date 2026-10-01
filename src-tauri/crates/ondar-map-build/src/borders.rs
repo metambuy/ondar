@@ -4,15 +4,24 @@
 //! draws it). Interior edges are chained into polylines between junctions (vertices of degree
 //! ≠ 2); a closed loop of degree-2 vertices (an enclave) is one closed line.
 //!
-//! The gate, executed by the tool: every once-found edge must lie on the country's admin-0 rings
-//! (both ends within 1 m), and no edge may be found three times or more. If it fails, the
-//! subdivisions fall back to the prototype's polygons and the report says so.
+//! The gate, executed by the tool (decided 2026-10-01, replacing the plan's 1 m test, which
+//! measured whether NE's admin-0 and admin-1 coasts coincide — NE does not promise that): every
+//! once-found edge whose midpoint lies inside the country's admin-0 land — an interior border
+//! found on one side only — is within `GATE_INSIDE_KM` of the admin-0 rings, and no edge is
+//! found three times or more. If it fails, the subdivisions fall back to the prototype's polygons
+//! and the report says so.
 
 use crate::seam::on_seam;
 use geo::{Coord, Polygon};
 use std::collections::{BTreeMap, BTreeSet};
 
 type Key = (u64, u64);
+
+/// The gate's bound: 0.25 pt at 1.5 km/pt, km.
+pub const GATE_INSIDE_KM: f64 = 0.375;
+/// A once-edge within this of the admin-0 rings lies on them; only farther ones are tested for
+/// being inside the land (the containment test is the expensive part), km.
+pub const ON_RING_KM: f64 = 0.001;
 
 /// A once-found edge's two ends and its distance to admin 0, km.
 pub type FarEdge = (Coord<f64>, Coord<f64>, f64);
@@ -292,6 +301,18 @@ mod tests {
         assert!(c.lines.is_empty());
     }
 
+    /// The rule: 375 m inside the land passes, 375.001 m fails, an edge found three times fails
+    /// whatever the distances. Fails at 1 m (the plan's test) or with the 3+ check dropped.
+    #[test]
+    fn the_gate_rule() {
+        assert!(judge(0.0, 0));
+        assert!(judge(0.079, 0));
+        assert!(judge(0.375, 0));
+        assert!(!judge(0.375_001, 0));
+        assert!(!judge(0.0, 1));
+        assert!(!judge(f64::INFINITY, 0));
+    }
+
     #[test]
     fn the_gate_measures_once_edges_against_admin0() {
         let id = |c: Coord<f64>| Some(c);
@@ -325,8 +346,14 @@ pub struct CountryBorders {
 
 impl CountryBorders {
     pub fn passes(&self) -> bool {
-        self.gate_far == 0 && self.census.thrice_or_more == 0
+        judge(self.far_inside_worst_km, self.census.thrice_or_more)
     }
+}
+
+/// The gate's rule on its two measures: the farthest once-edge inside the land (km), and the
+/// edges found three times or more.
+pub fn judge(far_inside_worst_km: f64, thrice_or_more: usize) -> bool {
+    far_inside_worst_km <= GATE_INSIDE_KM && thrice_or_more == 0
 }
 
 pub fn for_country(
@@ -375,7 +402,7 @@ pub fn for_country(
             }
         }
     }
-    let (far, gate_worst_km) = gate(&census.once, &segments, fwd, 0.001);
+    let (far, gate_worst_km) = gate(&census.once, &segments, fwd, ON_RING_KM);
     let land: Vec<&Polygon<f64>> = plan
         .units
         .iter()

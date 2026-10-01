@@ -448,9 +448,9 @@ mod input_tests {
         assert_eq!(inputs().world.seam_edges_left, 0);
     }
 
-    /// D2's census for the 18: no edge found three times; the 1 m gate passes for AR, CL, GL,
-    /// ID and MN only (measured 2026-10-01); no once-edge inside a country's land is more than
-    /// 80 m from its admin-0 rings.
+    /// D2's census for the 18: no edge found three times; the gate (once-edges inside the land
+    /// within 375 m of admin 0) passes for all 18; the farthest is under 80 m (79 m, US,
+    /// measured 2026-10-01).
     #[test]
     #[ignore]
     fn the_edge_gate_for_the_18() {
@@ -463,12 +463,7 @@ mod input_tests {
             .collect();
         assert_eq!(b.len(), 18);
         assert!(b.iter().all(|x| x.census.thrice_or_more == 0));
-        let pass: Vec<&str> = b
-            .iter()
-            .filter(|x| x.passes())
-            .map(|x| x.code.as_str())
-            .collect();
-        assert_eq!(pass, ["AR", "CL", "GL", "ID", "MN"]);
+        assert!(b.iter().all(|x| x.passes()));
         let inside = b.iter().map(|x| x.far_inside_worst_km).fold(0.0, f64::max);
         assert!(inside < 0.080, "{inside} km");
     }
