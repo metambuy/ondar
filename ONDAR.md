@@ -341,7 +341,8 @@ TypeScript, stop — it belongs in Rust.
   1.5 km/pt, which is also the zoom-in limit. Step 0 measured 4.55 MB deflated per blob and
   9.3 MB raw for the shared store (`_handover/m4-step0-report.md`, Q2b), so the 100 MB
   acceptance of 2026-09-07 is moot. The installed size after M4a: `Ondar.app` 10 576 KiB, against
-7 908 before (the resource 2 712 523 B; "M4a: built and measured" below).
+7 908 before (the resource 2 712 523 B; "M4a: built and measured" below; 2 712 599 B since the
+code review's rebuild, "M4a: code review, 2026-10-01").
   (Replaced 2026-09-30, the reversal: the satellite map's "offline resolution is capped" and
   "bundle size" bullets.)
 - **20.7 % of radio-browser stations have coordinates** — measured 2026-09-21 over 25 236
@@ -809,6 +810,71 @@ M4b's acceptance reads that counter at the real pane.
 `geo-types` 0.7.20 and `i_overlay` 4.5.2, and uses `sha2` 0.10.9, already in the tree via
 tauri-codegen. The runtime crate `ondar-map` depends only on `flate2` 1.1.10, `serde` 1.0.229
 and `thiserror` 2.0.20.
+
+### M4a: code review, 2026-10-01
+
+Fable 5.1 reviewed `c5178da..dddb4da` (`_handover/m4a-review-findings-2026-10-01.md`); the chat
+triaged it (`m4a-review-triage-2026-10-01.md`). All nine findings were accepted. Six were crash or
+behaviour findings, so the branch did not merge on that review. Each fix was written test first,
+its failure recorded on `dddb4da` (`_handover/m4a-fixes/`), mutation-checked
+(`_handover/m4a-mutations.log`) and pushed alone with CI green before the next.
+
+| # | commit | what |
+|---|---|---|
+| 7 | `9108154` | one `rect_ring_distance` (+ `seg_dist`, `segments_cross`) in `ondar_map::rules`, the tool's semantics (touching counts); `geom.rs` adapts `geo::Coord` to it |
+| 1 | `56c3515` | the tool keeps an enclave's closing vertex: subdivision lines are quantised as polylines |
+| 1 | `458ee1e` | the resource rebuilt at `56c3515` |
+| 4 | `20aaa09` | `Pane::is_valid` guards `fit_scale`; the clamp is max-then-min; `no_panic_shape` refuses `.clamp(` |
+| 2 | `8998b8f` | `Inset::rect_at(pane)`: a box keeps its golden distance from its corner |
+| 5 | `ff9a75a` | an own unit's `Dropped` parts are drawn as land |
+| 3 | `0eb9ca0` | `Store::load` refuses a ladder other than `LADDER` |
+| 6 | `11b56e3` | `read_countries` refuses a unit index past the units table |
+| 9 + 8 | `d411223` | `missing_blobs` per unit; `thiserror`'s justification |
+
+**The resource after the review.** 2 712 599 B, SHA-256 `e2775f81…`, built by the tool at
+`56c3515` from a clean tree with `--bench`. The tool records its commit in the header. Finding 7's
+rebuild differed from the shipped file only in those 40 bytes: with `4580af0` restored, its SHA
+was `6b931bb5…`. Finding 4's `seg_dist` change was checked the same way. `golden-fit.tsv` and
+`golden-insets.tsv` from `--tables` are byte-identical to the fixtures. **The 76 bytes.** Each
+closed subdivision line gains its closing vertex, one 4-byte delta pair:
+
+| level km/pt | closed lines | raw B | deflated B |
+|---|---|---|---|
+| 6 | 18 | +72 | +47 |
+| 12 | 11 | +44 | +14 |
+| 24 | 8 | +32 | +15 |
+
+The file grows by the deflated total, 76 B. Land is unchanged.
+
+**What the fixes found beyond the findings.**
+- Moscow, named in finding 1, is not an enclave in NE v5.1.2: it borders Kaluga Oblast, so its
+  border is open lines between junctions. The test uses the ACT, Distrito Federal and Moscow's
+  exclave Zelenograd. Zelenograd is under a point across from 12 km/pt and simplifies away there.
+- Two own `Dropped` rings decode to one vertex at their country's fit level: the Coral Sea
+  Islands and one of Colombia's islets. The quanta collapse them. No frame can draw them, own or
+  neighbour, so finding 5's test skips rings under three vertices. Finding 5 draws 20 parts in
+  6 countries at the golden fit.
+- Finding 9 had a twin: the insets also counted a missing blob per part. Both now count per unit.
+
+**`frame_bench` after finding 5** (release, 10 + 100 runs; `_handover/m4a-fixes/f5-frame-bench.log`):
+- PT fit 0.154 ms, US 2.142 ms, RU 4.165 ms (p90 4.270);
+- the sweep's p90 1.617 ms, max 4.269 ms (RU), 0 missing blobs;
+- `bytes_out` unchanged for PT and US; RU at fit 780 764 B, +118 B from the closed loops and the
+  own islets.
+
+**For M4b: the insets at the ANMITE's pane.** Finding 2 anchors the boxes. It does not make them
+clear the land. At 328 × 178 four of the 14 boxes are under S6's 12 pt
+(`_handover/m4a-fixes/f2-clearance-328x178.md`):
+
+| inset | clearance pt |
+|---|---|
+| Alaska | 0 |
+| Hawaii | 0 |
+| Marquesas | 0.48 |
+| Socotra | 8.80 |
+
+The other ten clear by 19.7 pt or more. Madeira, which finding 2 named, clears by 68.6 pt. This
+is M4b's acceptance, not a gate here.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
