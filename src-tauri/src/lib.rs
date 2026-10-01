@@ -4,6 +4,7 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+mod map;
 // The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
 #[cfg(debug_assertions)]
 mod measure;
@@ -176,6 +177,7 @@ pub fn run() {
             let stations_for_events = stations.clone();
             app.manage(AppState { engine, stations });
 
+            map::setup(app);
             panel::setup(app)?;
             tray::setup(app)?;
             #[cfg(debug_assertions)]

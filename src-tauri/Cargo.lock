@@ -3149,6 +3149,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "ondar-audio",
+ "ondar-map",
  "ondar-stations",
  "serde",
  "serde_json",

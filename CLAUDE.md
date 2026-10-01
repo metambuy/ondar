@@ -120,6 +120,11 @@ onda/
     │   │                         commit and fallback paths; the tray-screen placement log
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
+    │   ├── map.rs                the map resource (M4a commit 7): `MapState` (a `OnceLock` set once),
+    │   │                         loaded on its own thread from `resource_dir()/map/world.ondarmap`,
+    │   │                         one line — `map resource loaded path=… bytes=… units=… countries=…
+    │   │                         ms=…` or `map resource unavailable reason=…` (the app runs without
+    │   │                         it); no command reads it yet (M4b)
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
     │   │                         flood; holds 3 of the shell's tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
@@ -311,9 +316,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 360 tests `cargo test --workspace -- --list`
-reports (356 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
-**341 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 44, map-build 30):
+export_bindings_<type>` that writes the `.ts` file. So the 361 tests `cargo test --workspace -- --list`
+reports (357 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
+**342 hand-written + 19 ts-rs-generated** (audio 182, shell 41, stations 64, map 44, map-build 30):
 
 | | |
 |---|---|
@@ -343,6 +348,7 @@ reports (356 run, 4 `#[ignore]`d — the map tool's input-bound tests, run local
 | `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
+| `map::tests` | 1 — shell crate (M4a commit 7): the shipped resource loads through the shell's path rule (`resources/` + `map/world.ondarmap`; fails with `map/` dropped), a missing file and a non-resource are reasons, not panics |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 | `laea::tests` | 4 — **map** crate (M4a, 2026-10-01; each mutation-checked, `_handover/m4a-mutations.log`): the 37 Q5 points forward against pyproj and d3-geo and back by the inverse within 1e-6 km, Snyder's example (R = 3) to 1e-7 (fails on the mean radius 6 371.0088, `k' = √(1/d)`, a sign in y or in the inverse, degrees for radians); `lon_interval` across 180° (fails with the wrap-around gap dropped); `wrap_lon`; the antipode and outside the disc are `None` |
 | `codec::tests` | 5 — map crate (M4a commit 2, mutation-checked): seeded random rings at every level, small steps and steps past `i16`, back within 0.0354 pt (fails on a delta's sign); a delta of exactly `i16::MIN` is escaped (fails if only out-of-range deltas are); every truncation, a trailing byte and a vertex count past the bytes are `None` (fails with the remaining-bytes check dropped); `quantise` refuses past `i32` and NaN; `Cursor::count` bounded by what remains (fails unbounded) |
@@ -362,7 +368,7 @@ reports (356 run, 4 `#[ignore]`d — the map tool's input-bound tests, run local
 | `input_tests` | 4, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~50 s): Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the gate passing for all 18, no once-edge inside the land past 80 m; fails with the inside-land filter dropped); two builds byte-identical and every blob within its bound |
 | `geom::tests` | 2 — map-build: rectangle–ring distances (apart 3, diagonal 5, overlapping 0, the ring around the rectangle 0 — fails with containment ignored); R1's centre of a square across 180° is 180° |
 
-Counting `#[test]` attributes in source gives 341 and will not reconcile with the runner's 360
+Counting `#[test]` attributes in source gives 342 and will not reconcile with the runner's 361
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -381,7 +387,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `360 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `361 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
