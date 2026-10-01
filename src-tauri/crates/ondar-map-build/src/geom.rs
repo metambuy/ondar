@@ -3,6 +3,7 @@
 use geo::{Coord, LineString, Polygon};
 use ondar_map::format::Cap;
 use ondar_map::laea::{Laea, haversine_km, lon_midpoint, wrap_lon};
+use ondar_map::rules;
 
 /// Every ring of a polygon, exterior first.
 pub fn rings(p: &Polygon<f64>) -> impl Iterator<Item = &LineString<f64>> {
@@ -58,72 +59,25 @@ pub fn bbox<'a>(ps: impl IntoIterator<Item = &'a Polygon<f64>>) -> Option<[f64; 
     b
 }
 
+// S6's distance and its two helpers live in `ondar_map::rules` (one copy for the tool and the
+// frame, review finding 7); these adapt `geo::Coord`.
+fn xy(c: Coord<f64>) -> [f64; 2] {
+    [c.x, c.y]
+}
+
 pub fn seg_dist(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
-    let (dx, dy) = (b.x - a.x, b.y - a.y);
-    let l2 = dx * dx + dy * dy;
-    let t = if l2 > 0.0 {
-        (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (p.x - a.x - t * dx).hypot(p.y - a.y - t * dy)
+    rules::seg_dist(xy(p), xy(a), xy(b))
 }
 
 /// Whether segments `a`–`b` and `c`–`d` intersect (touching counts).
 pub fn segments_cross(a: Coord<f64>, b: Coord<f64>, c: Coord<f64>, d: Coord<f64>) -> bool {
-    let o = |p: Coord<f64>, q: Coord<f64>, r: Coord<f64>| {
-        ((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)).signum()
-    };
-    let (o1, o2, o3, o4) = (o(a, b, c), o(a, b, d), o(c, d, a), o(c, d, b));
-    if o1 != o2 && o3 != o4 {
-        return true;
-    }
-    let on = |p: Coord<f64>, q: Coord<f64>, r: Coord<f64>| seg_dist(r, p, q) == 0.0;
-    on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)
+    rules::segments_cross(xy(a), xy(b), xy(c), xy(d))
 }
 
 /// The distance (same units) from a rectangle `[x0, y0, x1, y1]` to a ring; 0 if they meet or
 /// one holds the other.
 pub fn rect_ring_distance(rect: [f64; 4], ring: &[Coord<f64>]) -> f64 {
-    let [x0, y0, x1, y1] = rect;
-    let corners = [
-        Coord { x: x0, y: y0 },
-        Coord { x: x1, y: y0 },
-        Coord { x: x1, y: y1 },
-        Coord { x: x0, y: y1 },
-    ];
-    let inside_rect = |p: &Coord<f64>| p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
-    if ring.iter().any(inside_rect) {
-        return 0.0;
-    }
-    // a corner inside the ring (even-odd)
-    let in_ring = |p: Coord<f64>| {
-        let mut inside = false;
-        for w in ring.windows(2) {
-            if let [a, b] = w
-                && (a.y > p.y) != (b.y > p.y)
-                && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x)
-            {
-                inside = !inside;
-            }
-        }
-        inside
-    };
-    if corners.iter().any(|&c| in_ring(c)) {
-        return 0.0;
-    }
-    let mut best = f64::INFINITY;
-    for w in ring.windows(2) {
-        let [a, b] = [w[0], w[1]];
-        for i in 0..4 {
-            let (c, d) = (corners[i], corners[(i + 1) % 4]);
-            if segments_cross(a, b, c, d) {
-                return 0.0;
-            }
-            best = best.min(seg_dist(a, c, d)).min(seg_dist(c, a, b));
-        }
-    }
-    best
+    rules::rect_ring_distance(rect, ring.iter().copied().map(xy))
 }
 
 /// A cap around lon/lat points: centred on their R1 centre, radius the farthest point (km).

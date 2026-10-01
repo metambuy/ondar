@@ -405,74 +405,15 @@ impl Store {
                     .land
                     .iter()
                     .flat_map(|s| s.rings.iter())
-                    .map(|r| rect_ring_distance([x, y, x + w, y + h], r))
+                    .map(|r| {
+                        rules::rect_ring_distance(
+                            [x, y, x + w, y + h],
+                            r.iter().map(|&[x, y]| [f64::from(x), f64::from(y)]),
+                        )
+                    })
                     .fold(f64::INFINITY, f64::min);
                 (ins.label.clone(), d)
             })
             .collect()
     }
-}
-
-fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let ([px, py], [ax, ay], [bx, by]) = (p, a, b);
-    let (dx, dy) = (bx - ax, by - ay);
-    let l2 = dx * dx + dy * dy;
-    let t = if l2 > 0.0 {
-        (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (px - ax - t * dx).hypot(py - ay - t * dy)
-}
-
-fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
-    let o = |[px, py]: [f64; 2], [qx, qy]: [f64; 2], [rx, ry]: [f64; 2]| {
-        ((qx - px) * (ry - py) - (qy - py) * (rx - px)).signum()
-    };
-    o(a, b, c) != o(a, b, d) && o(c, d, a) != o(c, d, b)
-}
-
-/// The distance from a rectangle to a closed ring (pane points); 0 if they meet or one holds the
-/// other.
-fn rect_ring_distance([x0, y0, x1, y1]: [f64; 4], ring: &[[f32; 2]]) -> f64 {
-    let r: Vec<[f64; 2]> = ring
-        .iter()
-        .map(|&[x, y]| [f64::from(x), f64::from(y)])
-        .collect();
-    let inside = |[x, y]: [f64; 2]| x >= x0 && x <= x1 && y >= y0 && y <= y1;
-    if r.iter().any(|&p| inside(p)) {
-        return 0.0;
-    }
-    let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-    let edges = || {
-        r.iter()
-            .copied()
-            .zip(r.iter().copied().cycle().skip(1))
-            .take(r.len())
-    };
-    let in_ring = |[px, py]: [f64; 2]| {
-        edges().fold(false, |odd, ([ax, ay], [bx, by])| {
-            let crosses = (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax);
-            odd != crosses
-        })
-    };
-    if corners.iter().any(|&c| in_ring(c)) {
-        return 0.0;
-    }
-    let sides: Vec<([f64; 2], [f64; 2])> = corners
-        .iter()
-        .copied()
-        .zip(corners.iter().copied().cycle().skip(1))
-        .take(4)
-        .collect();
-    let mut best = f64::INFINITY;
-    for (a, b) in edges() {
-        for &(c, d) in &sides {
-            if cross(a, b, c, d) {
-                return 0.0;
-            }
-            best = best.min(seg_dist(a, c, d)).min(seg_dist(c, a, b));
-        }
-    }
-    best
 }

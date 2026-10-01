@@ -84,6 +84,78 @@ pub fn inset_scale(w_km: f64, h_km: f64, rect: [f64; 4]) -> Option<f64> {
     (aw > 0.0 && ah > 0.0).then(|| (w_km / aw).max(h_km / ah))
 }
 
+/// The distance from `p` to the segment `a`–`b` (same units).
+pub fn seg_dist([px, py]: [f64; 2], [ax, ay]: [f64; 2], [bx, by]: [f64; 2]) -> f64 {
+    let (dx, dy) = (bx - ax, by - ay);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 {
+        (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (px - ax - t * dx).hypot(py - ay - t * dy)
+}
+
+/// Whether the segments `a`–`b` and `c`–`d` intersect; touching (an end on the other segment,
+/// collinear overlap) counts.
+pub fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let o = |[px, py]: [f64; 2], [qx, qy]: [f64; 2], [rx, ry]: [f64; 2]| {
+        ((qx - px) * (ry - py) - (qy - py) * (rx - px)).signum()
+    };
+    if o(a, b, c) != o(a, b, d) && o(c, d, a) != o(c, d, b) {
+        return true;
+    }
+    let on = |p, q, r| seg_dist(r, p, q) == 0.0;
+    on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)
+}
+
+/// The distance (same units) from a rectangle `[x0, y0, x1, y1]` to a ring — open or closed
+/// (first == last); 0 if they meet or one holds the other (even-odd). S6's clearance: the build
+/// tool's check at the golden pane and the frame's `inset_clearance` share this one function.
+pub fn rect_ring_distance(
+    [x0, y0, x1, y1]: [f64; 4],
+    ring: impl IntoIterator<Item = [f64; 2]>,
+) -> f64 {
+    let r: Vec<[f64; 2]> = ring.into_iter().collect();
+    let inside = |[x, y]: [f64; 2]| x >= x0 && x <= x1 && y >= y0 && y <= y1;
+    if r.iter().any(|&p| inside(p)) {
+        return 0.0;
+    }
+    // every edge, the closing one included (a closed ring adds a zero-length edge: no effect)
+    let edges = || {
+        r.iter()
+            .copied()
+            .zip(r.iter().copied().cycle().skip(1))
+            .take(r.len())
+    };
+    let in_ring = |[px, py]: [f64; 2]| {
+        edges().fold(false, |odd, ([ax, ay], [bx, by])| {
+            let crosses = (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax);
+            odd != crosses
+        })
+    };
+    let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    if corners.iter().any(|&c| in_ring(c)) {
+        return 0.0;
+    }
+    let sides: Vec<([f64; 2], [f64; 2])> = corners
+        .iter()
+        .copied()
+        .zip(corners.iter().copied().cycle().skip(1))
+        .take(4)
+        .collect();
+    let mut best = f64::INFINITY;
+    for (a, b) in edges() {
+        for &(c, d) in &sides {
+            if segments_cross(a, b, c, d) {
+                return 0.0;
+            }
+            best = best.min(seg_dist(a, c, d)).min(seg_dist(c, a, b));
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +204,42 @@ mod tests {
             Some(10.0)
         );
         assert_eq!(inset_scale(1.0, 1.0, [0.0, 0.0, 8.0, 16.0]), None);
+    }
+
+    /// S6's distance, open and closed rings alike: apart, diagonal, overlapping, a ring around
+    /// the rectangle, and a ring whose edge only touches a side (collinear) — 0, as the tool
+    /// counted it before the two copies were one (review finding 7).
+    #[test]
+    fn rect_ring_distances() {
+        let sq = |x: f64, y: f64| vec![[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]];
+        let closed = |x: f64, y: f64| {
+            let mut r = sq(x, y);
+            r.push([x, y]);
+            r
+        };
+        let rect = [0.0, 0.0, 2.0, 2.0];
+        for ring in [sq(5.0, 0.5), closed(5.0, 0.5)] {
+            assert_eq!(rect_ring_distance(rect, ring), 3.0);
+        }
+        assert_eq!(rect_ring_distance(rect, sq(1.5, 1.5)), 0.0);
+        assert_eq!(rect_ring_distance(rect, sq(5.0, 6.0)), 5.0);
+        let big = vec![[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0]];
+        assert_eq!(rect_ring_distance(rect, big), 0.0);
+        // an edge lying along the rectangle's right side, no vertex inside it
+        let touching = vec![[2.0, -1.0], [2.0, 3.0], [4.0, 3.0], [4.0, -1.0]];
+        assert_eq!(rect_ring_distance(rect, touching), 0.0);
+        assert!(segments_cross(
+            [2.0, -1.0],
+            [2.0, 3.0],
+            [2.0, 0.0],
+            [2.0, 2.0]
+        ));
+        assert!(!segments_cross(
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 0.0]
+        ));
     }
 
     /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6.
