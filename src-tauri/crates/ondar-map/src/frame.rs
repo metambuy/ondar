@@ -51,7 +51,8 @@ pub struct FrameStats {
     pub rings_skipped: usize,
     /// Blobs the frame needed and the resource does not store, counted per unit (review finding
     /// 9): a unit the index admitted at the view's level, once per inset for a unit holding its
-    /// parts, and the country's subdivisions. 0 at the golden pane (the coverage test).
+    /// parts, and the country's subdivisions when one of its lines meets the view. 0 at the
+    /// golden pane (the coverage test).
     pub missing_blobs: usize,
     /// Insets not drawn at the fit view because their box, anchored at this pane, leaves the
     /// pane or overlaps another inset's box (review 2, finding 4). 0 at the golden pane, where
@@ -350,7 +351,15 @@ impl Store {
                         }
                     }
                 }
-                None => out.stats.missing_blobs += 1,
+                // one missing blob if a line the index admits would be drawn, as for the land
+                // (review 2, finding 5)
+                None => {
+                    let admitted = ct
+                        .sub_lines
+                        .iter()
+                        .any(|cap| !use_index || index::cap_meets(cap, ground, stol));
+                    out.stats.missing_blobs += usize::from(admitted);
+                }
             }
         }
 
@@ -549,6 +558,85 @@ mod tests {
         assert_eq!(
             with(s.frame_unindexed(0, &pane, fit).unwrap()),
             (base_unindexed.0 + 1, base_unindexed.1)
+        );
+    }
+
+    /// The subdivisions count a missing blob only when one of the country's lines meets the view,
+    /// as the land does (review 2, finding 5). A synthetic country 4 000 km across (fit 15.4
+    /// km/pt, level 3) whose subdivisions are stored at level 2 only: a line far from the view
+    /// adds nothing to `missing_blobs` — on `8324e68` it added 1 — and a line in the view, or
+    /// just past it within the level's tolerance, adds one. The unindexed frame admits every
+    /// line, as it admits every land ring.
+    #[test]
+    fn subdivisions_count_a_missing_blob_only_in_view() {
+        let resource = |subdivisions: bool, line: crate::format::Cap| {
+            let mut countries = synthetic_countries();
+            countries[0].bbox_km = [-2000.0, -2000.0, 2000.0, 2000.0];
+            countries[0].subdivisions = subdivisions;
+            countries[0].sub_lines = vec![line];
+            let b = write(
+                &header(),
+                &synthetic_units(),
+                &countries,
+                &synthetic_blobs(),
+                Encoding::Raw,
+            )
+            .unwrap();
+            Store::load(&b).unwrap()
+        };
+        let pane = Pane::GOLDEN;
+        let near = cap(-8.0, 40.0, 100.0);
+        let far = cap(100.0, -40.0, 50.0);
+        let missing = |s: &Store, indexed: bool| {
+            let fit = s.fit(0, &pane).unwrap();
+            assert!(fit.scale > rules::SUBDIVISIONS_ABOVE_KM_PER_PT, "{fit:?}");
+            assert_eq!(rules::level_for(fit.scale), 3);
+            let f = if indexed {
+                s.frame(0, &pane, fit)
+            } else {
+                s.frame_unindexed(0, &pane, fit)
+            };
+            f.unwrap().stats.missing_blobs
+        };
+        let base = missing(&resource(false, near), true);
+        assert_eq!(
+            missing(&resource(true, far), true),
+            base,
+            "a line out of view"
+        );
+        assert_eq!(
+            missing(&resource(true, near), true),
+            base + 1,
+            "a line in view"
+        );
+        let base_u = missing(&resource(false, near), false);
+        assert_eq!(missing(&resource(true, far), false), base_u + 1);
+        // a 1 km line just past the view's ground cap, north by half the level's tolerance: in
+        // view by the index's test, as the coverage test reads it (fails with the tolerance off)
+        let s0 = resource(false, near);
+        let fit = s0.fit(0, &pane).unwrap();
+        let ct = &s0.countries[0];
+        let (hw, hh) = (
+            (pane.width / 2.0 + CLIP_MARGIN_PT) * fit.scale,
+            (pane.height / 2.0 + CLIP_MARGIN_PT) * fit.scale,
+        );
+        let [cx, cy] = fit.centre;
+        let g = index::ground_cap(
+            &Laea::new(ct.lat0, ct.lon0),
+            [cx - hw, cy - hh, cx + hw, cy + hh],
+        );
+        let stol = index::tolerance_km(LADDER[3], SUB_TOL_PT);
+        let d = g.2 + 1.0 + stol / 2.0;
+        let edge = cap(
+            g.0 as f32,
+            (g.1 + (d / crate::laea::R_AUTHALIC_KM).to_degrees()) as f32,
+            1.0,
+        );
+        assert!(!index::cap_meets(&edge, g, 0.0) && index::cap_meets(&edge, g, stol));
+        assert_eq!(
+            missing(&resource(true, edge), true),
+            base + 1,
+            "a line in the band"
         );
     }
 }
