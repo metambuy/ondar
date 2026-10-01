@@ -846,3 +846,75 @@ fn own_insets_are_land_when_the_view_is_not_the_fit() {
         assert!(seen.contains(code), "{code} not seen: {seen:?}");
     }
 }
+
+/// An inset box that leaves the pane or overlaps another box is not drawn (review 2, finding 4).
+/// At 328 × 60 most boxes leave the pane (Alaska's bottom-left box at y −4), and France's French
+/// Guiana (top-left) and Réunion (bottom-left, 8 pt above the bottom) are both inside it and on
+/// top of each other, so of all 14 only Guadeloupe & Martinique and Hawaii (bottom-left, now
+/// at y 18–50, beside Alaska's dropped box) are drawn; at 328 × 178 all 14 are. Every drawn box is inside the pane and apart from every other inset's box, and every
+/// inset not drawn is counted in `FrameStats::insets_dropped`. On `8324e68` every box was drawn
+/// wherever `rect_at` put it.
+#[test]
+fn an_inset_that_does_not_fit_the_pane_is_not_drawn() {
+    let s = store();
+    let pane = |height: f64| Pane {
+        width: 328.0,
+        height,
+        padding: 20.0,
+    };
+    for (pane, want) in [
+        (pane(60.0), vec!["Guadeloupe & Martinique", "Hawaii"]),
+        (pane(178.0), Vec::new()),
+    ] {
+        let mut drawn = Vec::new();
+        let mut total = 0;
+        let mut dropped = 0;
+        for (i, ct) in s.countries.iter().enumerate() {
+            if ct.insets.is_empty() {
+                continue;
+            }
+            total += ct.insets.len();
+            let f = s.frame(i, &pane, s.fit(i, &pane).unwrap()).unwrap();
+            for ins in &f.insets {
+                let [x, y, w, h] = ins.rect.map(f64::from);
+                let what = format!("{} {} at 328×{}", ct.name, ins.label, pane.height);
+                assert!(
+                    x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height,
+                    "{what}: [{x}, {y}, {w}, {h}] leaves the pane"
+                );
+                for other in ct.insets.iter().filter(|o| o.label != ins.label) {
+                    let [ox, oy, ow, oh] = other.rect_at(&pane);
+                    assert!(
+                        x + w <= ox || ox + ow <= x || y + h <= oy || oy + oh <= y,
+                        "{what}: overlaps {}",
+                        other.label
+                    );
+                }
+                drawn.push(ins.label.clone());
+            }
+            assert_eq!(
+                f.insets.len() + f.stats.insets_dropped,
+                ct.insets.len(),
+                "{} at 328×{}",
+                ct.name,
+                pane.height
+            );
+            dropped += f.stats.insets_dropped;
+            // the clearance is reported for the drawn boxes only
+            let labels: Vec<String> = s
+                .inset_clearance(i, &pane)
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect();
+            let want_labels: Vec<String> = f.insets.iter().map(|ins| ins.label.clone()).collect();
+            assert_eq!(labels, want_labels, "{} at 328×{}", ct.name, pane.height);
+        }
+        assert_eq!(total, 14);
+        assert_eq!(dropped, 14 - drawn.len(), "328×{}", pane.height);
+        if want.is_empty() {
+            assert_eq!(drawn.len(), 14, "328×{}: {drawn:?}", pane.height);
+        } else {
+            assert_eq!(drawn, want, "328×{}", pane.height);
+        }
+    }
+}

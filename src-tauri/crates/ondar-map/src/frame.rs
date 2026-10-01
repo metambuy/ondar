@@ -53,6 +53,10 @@ pub struct FrameStats {
     /// 9): a unit the index admitted at the view's level, once per inset for a unit holding its
     /// parts, and the country's subdivisions. 0 at the golden pane (the coverage test).
     pub missing_blobs: usize,
+    /// Insets not drawn at the fit view because their box, anchored at this pane, leaves the
+    /// pane or overlaps another inset's box (review 2, finding 4). 0 at the golden pane, where
+    /// the tool checked the boxes; M4b's acceptance requires 0 at the real pane.
+    pub insets_dropped: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -71,7 +75,8 @@ impl format::Inset {
     /// The box at `pane`, x, y, w, h points: the golden pane's box kept at its distance from the
     /// corner it is anchored to (S6; review finding 2) — a right corner moves with the pane's
     /// width, a bottom corner with its height, the size never changes. At the golden pane it is
-    /// `rect`. Whether it clears the land at another pane is M4b's to judge.
+    /// `rect`. A box that leaves the pane or overlaps another is not drawn (`insets_dropped`);
+    /// whether it clears the land at another pane is M4b's to judge.
     pub fn rect_at(&self, pane: &Pane) -> [f64; 4] {
         let [x, y, w, h] = self.rect.map(f64::from);
         let (dx, dy) = (
@@ -362,12 +367,22 @@ impl Store {
         };
         let mut buf = Vec::new();
         let mut out = Vec::new();
-        for (i, ins) in ct.insets.iter().enumerate() {
+        let boxes: Vec<[f64; 4]> = ct.insets.iter().map(|ins| ins.rect_at(pane)).collect();
+        for (i, (ins, &[rx, ry, rw, rh])) in ct.insets.iter().zip(&boxes).enumerate() {
+            // drawn only inside the pane and apart from every other box at this pane (review 2,
+            // finding 4): never moved, never clamped onto the land
+            let inside = rx >= 0.0 && ry >= 0.0 && rx + rw <= pane.width && ry + rh <= pane.height;
+            let apart = boxes.iter().enumerate().all(|(j, &[ox, oy, ow, oh])| {
+                j == i || rx + rw <= ox || ox + ow <= rx || ry + rh <= oy || oy + oh <= ry
+            });
+            if !(inside && apart) {
+                stats.insets_dropped += 1;
+                continue;
+            }
             let k = rules::level_for(ins.scale);
             let (Ok(k8), Ok(i8_)) = (u8::try_from(k), u8::try_from(i)) else {
                 continue;
             };
-            let [rx, ry, rw, rh] = ins.rect_at(pane);
             let (acx, acy, _, _) = rules::inset_area([rx, ry, rw, rh]);
             let il = Laea::new(ins.lat0, ins.lon0);
             let [icx, icy] = ins.centre_km;
@@ -427,18 +442,20 @@ impl Store {
         out
     }
 
-    /// Per inset, its box's distance to the country's land at the fit view, points (S6: ≥ 12).
+    /// Per inset drawn at the fit view, its box's distance to the country's land there, points
+    /// (S6: ≥ 12). An inset not drawn at this pane (`insets_dropped`) has no entry.
     pub fn inset_clearance(&self, c: usize, pane: &Pane) -> Vec<(String, f64)> {
-        let (Some(ct), Some(fit)) = (self.countries.get(c), self.fit(c, pane)) else {
+        let Some(fit) = self.fit(c, pane) else {
             return Vec::new();
         };
         let Some(frame) = self.frame(c, pane, fit) else {
             return Vec::new();
         };
-        ct.insets
+        frame
+            .insets
             .iter()
             .map(|ins| {
-                let [x, y, w, h] = ins.rect_at(pane);
+                let [x, y, w, h] = ins.rect.map(f64::from);
                 let d = frame
                     .land
                     .iter()
