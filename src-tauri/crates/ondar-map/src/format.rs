@@ -215,6 +215,11 @@ impl Store {
             return Err(LoadError::Version(version));
         }
         let header = read_header(&mut c).ok_or(LoadError::Malformed("header"))?;
+        // the frame picks a level's index and tolerance from the compiled ladder and decodes at
+        // the file's scale for that index: the two must be one (review finding 3)
+        if header.ladder.as_slice() != crate::rules::LADDER.as_slice() {
+            return Err(LoadError::Malformed("ladder"));
+        }
         let units = read_units(&mut c).ok_or(LoadError::Malformed("units"))?;
         let countries = read_countries(&mut c).ok_or(LoadError::Malformed("countries"))?;
         let blobs = read_blob_table(&mut c).ok_or(LoadError::Malformed("blob table"))?;
@@ -772,7 +777,27 @@ pub(crate) mod tests {
     /// A small resource with every feature: two units (one with a hole, one `-99`), a country
     /// with an inset and subdivision lines, land at two levels, subdivisions at one.
     pub fn synthetic(encoding: Encoding) -> Vec<u8> {
-        let units = vec![
+        with_header_encoded(&header(), encoding)
+    }
+
+    /// The synthetic resource under another header (raw).
+    fn with_header(h: &Header) -> Vec<u8> {
+        with_header_encoded(h, Encoding::Raw)
+    }
+
+    fn with_header_encoded(h: &Header, encoding: Encoding) -> Vec<u8> {
+        write(
+            h,
+            &synthetic_units(),
+            &synthetic_countries(),
+            &synthetic_blobs(),
+            encoding,
+        )
+        .unwrap()
+    }
+
+    fn synthetic_units() -> Vec<Unit> {
+        vec![
             Unit {
                 a3: *b"PRT",
                 code: Some(*b"PT"),
@@ -806,8 +831,11 @@ pub(crate) mod tests {
                     rings: vec![cap(46.0, 9.7, 400.0)],
                 }],
             },
-        ];
-        let countries = vec![Country {
+        ]
+    }
+
+    fn synthetic_countries() -> Vec<Country> {
+        vec![Country {
             code: *b"PT",
             name: "Portugal".into(),
             units: vec![0],
@@ -827,7 +855,10 @@ pub(crate) mod tests {
                 scale: 7.37,
             }],
             sub_lines: vec![cap(-8.0, 40.0, 100.0)],
-        }];
+        }]
+    }
+
+    fn synthetic_blobs() -> Vec<BlobIn> {
         let mut rng = Rng(42);
         let mut ring = |n: usize| -> Vec<[i32; 2]> {
             (0..n)
@@ -839,7 +870,7 @@ pub(crate) mod tests {
                 })
                 .collect()
         };
-        let blobs = vec![
+        vec![
             BlobIn {
                 owner: 0,
                 level: 0,
@@ -868,8 +899,7 @@ pub(crate) mod tests {
                 bound_pt: 0.49,
                 rings: vec![ring(25)],
             },
-        ];
-        write(&header(), &units, &countries, &blobs, encoding).unwrap()
+        ]
     }
 
     /// Every ring of every blob decodes; a panic anywhere fails the caller.
@@ -1013,6 +1043,31 @@ pub(crate) mod tests {
                 why: "owner"
             }
         );
+    }
+
+    /// The file's ladder must be the compiled `LADDER` (review finding 3): the frame picks a
+    /// level's index and tolerance from the compiled ladder and decodes at the file's scale for
+    /// that index, so a resource with a shorter or shifted ladder loaded and drew rings at the
+    /// wrong scale (×1.33 for `[2, 4, …]`). A ladder that is increasing and positive but not
+    /// `LADDER` is `Malformed("ladder")`; the compiled one loads.
+    #[test]
+    fn the_ladder_must_be_the_compiled_one() {
+        let s = synthetic(Encoding::Raw);
+        assert!(Store::load(&s).is_ok());
+        for ladder in [
+            vec![1.5, 3.0, 6.0, 12.0],
+            vec![2.0, 4.0, 8.0, 16.0, 32.0],
+            vec![1.5, 3.0, 6.0, 12.0, 24.0, 48.0],
+        ] {
+            let mut h = header();
+            h.ladder = ladder.clone();
+            let loaded = Store::load(&with_header(&h));
+            assert_eq!(
+                loaded.err(),
+                Some(LoadError::Malformed("ladder")),
+                "{ladder:?}"
+            );
+        }
     }
 
     /// A blob's ring table must tile its bytes exactly: a ring past the end, bytes the table
