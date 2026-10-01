@@ -1,0 +1,18 @@
+# Natural Earth 10m cultural, tag v5.1.2 (commit f1890d9f152c896d250a77557a5751a93d494776),
+# raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/10m_cultural/<file>.
+# Copied from M4a Step 0, Q6 (_handover/m4-step0/ne/SHA256SUMS, 2026-09-30; each file fetched twice
+# from GitHub and from naturalearthdata.com, byte-identical). The tool refuses an input whose SHA-256
+# or size differs; scripts/fetch-natural-earth.sh checks the same table.
+# file	bytes	sha256
+ne_10m_admin_0_countries.shp	8806224	7ce119ef6342e43cff7c0c3004e0911ab7ec1988a14734372031d2012180e7bc
+ne_10m_admin_0_countries.shx	2164	ca19ec112d054c77bc8f7ac00e3b110d5dff32cc9bcf4cd1b8b66bdd0f611d32
+ne_10m_admin_0_countries.dbf	878482	c5dbd3dd5fd7e2ef49051fc88562c03819e8ea63a382642df6eadd1243bf4b49
+ne_10m_admin_0_countries.prj	145	a02a27b1d1982c8516d83398e85a3c8b1aef1713c13ef4d84d7bde17430c07c4
+ne_10m_admin_0_map_units.shp	8878092	e62f2508578b812aeca46cd3d2f208e0a6ff141fb0d4048c0d984839f7917bcc
+ne_10m_admin_0_map_units.shx	2484	5d5081948127a1b3153866ba6d6671df47ba26522175482ada82f1d413328c39
+ne_10m_admin_0_map_units.dbf	1124400	0e0c5817fbf299fe9f65ba5f1e5abe66b5a84d6d16bda5b7fafba3861f2e5b20
+ne_10m_admin_0_map_units.prj	145	a02a27b1d1982c8516d83398e85a3c8b1aef1713c13ef4d84d7bde17430c07c4
+ne_10m_admin_1_states_provinces.shp	20998780	c6f5c8b4b1320d9417033762419c6df1eb423989cd880fba78ea0b1e3522cbe4
+ne_10m_admin_1_states_provinces.shx	36868	37a9e2bc79ed31d3bdea3cb62d928f77281a1c88d645cd33430231c75dbcf350
+ne_10m_admin_1_states_provinces.dbf	15161514	445a8a9bea889634faf0af18081830df0b05b8471fc6af8dc42aecdd7a71bba1
+ne_10m_admin_1_states_provinces.prj	145	a02a27b1d1982c8516d83398e85a3c8b1aef1713c13ef4d84d7bde17430c07c4

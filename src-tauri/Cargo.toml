@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/ondar-audio", "crates/ondar-stations", "crates/ondar-map"]
+members = [".", "crates/ondar-audio", "crates/ondar-stations", "crates/ondar-map", "crates/ondar-map-build"]
 resolver = "2"
 
 [workspace.package]

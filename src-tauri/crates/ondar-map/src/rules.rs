@@ -61,6 +61,29 @@ pub fn level_for(scale: f64) -> usize {
         .unwrap_or(0)
 }
 
+/// An inset's land is fitted inside its box less this padding on every side, points.
+pub const INSET_PAD_PT: f64 = 4.0;
+/// …and above a label strip this tall along the box's bottom edge, points.
+pub const INSET_LABEL_PT: f64 = 8.0;
+/// No inset box comes closer than this to its country's land at the initial view (S6), points.
+pub const INSET_CLEARANCE_PT: f64 = 12.0;
+
+/// The area of an inset box `[x, y, w, h]` (points, y down) its land is fitted into:
+/// `(centre_x, centre_y, width, height)`.
+pub fn inset_area([x, y, w, h]: [f64; 4]) -> (f64, f64, f64, f64) {
+    let (aw, ah) = (
+        w - 2.0 * INSET_PAD_PT,
+        h - INSET_LABEL_PT - 2.0 * INSET_PAD_PT,
+    );
+    (x + w / 2.0, y + INSET_PAD_PT + ah / 2.0, aw, ah)
+}
+
+/// The scale (km/pt) at which a `w` × `h` km group fills its inset box's area.
+pub fn inset_scale(w_km: f64, h_km: f64, rect: [f64; 4]) -> Option<f64> {
+    let (_, _, aw, ah) = inset_area(rect);
+    (aw > 0.0 && ah > 0.0).then(|| (w_km / aw).max(h_km / ah))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +113,25 @@ mod tests {
     fn initial_scale_floor() {
         assert_eq!(initial_scale(0.102), 1.5);
         assert_eq!(initial_scale(2.2187), 2.2187);
+    }
+
+    /// The Azores' box on the style page, 92 × 52 at (10, 24): the land area is 84 × 36 pt,
+    /// centred 4 pt below the top and above the 8 pt label strip.
+    #[test]
+    fn inset_box_arithmetic() {
+        assert_eq!(
+            inset_area([10.0, 24.0, 92.0, 52.0]),
+            (56.0, 46.0, 84.0, 36.0)
+        );
+        assert_eq!(
+            inset_scale(840.0, 36.0, [10.0, 24.0, 92.0, 52.0]),
+            Some(10.0)
+        );
+        assert_eq!(
+            inset_scale(84.0, 360.0, [10.0, 24.0, 92.0, 52.0]),
+            Some(10.0)
+        );
+        assert_eq!(inset_scale(1.0, 1.0, [0.0, 0.0, 8.0, 16.0]), None);
     }
 
     /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6.
