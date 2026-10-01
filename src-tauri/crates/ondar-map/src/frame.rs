@@ -149,7 +149,8 @@ impl Store {
         })
     }
 
-    /// A lon/lat point in pane points at a view.
+    /// A lon/lat point in pane points at a view; `None` for a pane that is not valid (review 2,
+    /// finding 6), an unknown country or a point the projection cannot reach.
     pub fn project(
         &self,
         c: usize,
@@ -158,6 +159,9 @@ impl Store {
         lon: f64,
         lat: f64,
     ) -> Option<[f64; 2]> {
+        if !pane.is_valid() {
+            return None;
+        }
         let ct = self.countries.get(c)?;
         let [x, y] = Laea::new(ct.lat0, ct.lon0).fwd(lon, lat)?;
         let [cx, cy] = view.centre;
@@ -167,7 +171,7 @@ impl Store {
         ])
     }
 
-    /// A pane point back to (lon, lat) at a view.
+    /// A pane point back to (lon, lat) at a view; `None` as for `project`.
     pub fn unproject(
         &self,
         c: usize,
@@ -176,6 +180,9 @@ impl Store {
         x: f64,
         y: f64,
     ) -> Option<(f64, f64)> {
+        if !pane.is_valid() {
+            return None;
+        }
         let ct = self.countries.get(c)?;
         let [cx, cy] = view.centre;
         Laea::new(ct.lat0, ct.lon0).inv(

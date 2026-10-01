@@ -634,8 +634,8 @@ fn index_is_exact() {
 }
 
 /// A pane that is not a pane — a negative or zero side, a negative padding, a non-finite field —
-/// frames nothing and never panics (review finding 4): `fit_scale`, `fit`, `clamp`, `frame` and
-/// `inset_clearance` answer `None` / empty. The finding's pane, −10 × 300 with −20 padding, has a
+/// frames nothing and never panics (review finding 4): `fit_scale`, `fit`, `clamp_view`, `frame`,
+/// `inset_clearance`, `project` and `unproject` (review 2, finding 6) answer `None` / empty. The finding's pane, −10 × 300 with −20 padding, has a
 /// positive usable area (30 × 340), so on `dddb4da` `fit_scale` accepted it and `clamp` panicked
 /// in `f64::clamp` (min > max); the release profile aborts on a panic.
 #[test]
@@ -662,6 +662,10 @@ fn a_bad_pane_is_none_not_a_panic() {
         assert_eq!(s.fit(pt, &bad), None, "{bad:?}");
         assert!(s.frame(pt, &bad, view).is_none(), "{bad:?}");
         assert!(s.inset_clearance(pt, &bad).is_empty(), "{bad:?}");
+        // the two M4b reads with: a pane that is not a pane projects nothing (review 2, finding 6;
+        // on `8324e68` `project` gave `Some([-54.09, 191.74])` at −10 × 300)
+        assert_eq!(s.project(pt, &bad, &view, -9.14, 38.72), None, "{bad:?}");
+        assert_eq!(s.unproject(pt, &bad, &view, 164.0, 150.0), None, "{bad:?}");
     }
     // a pane with no padding is a pane
     assert!(s.frame(pt, &pane(328.0, 178.0, 0.0), view).is_some());

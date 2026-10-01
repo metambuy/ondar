@@ -49,7 +49,8 @@ impl Pane {
 
 /// The fit: the scale (km/pt) at which a projected bbox of `w` × `h` km just fills the usable
 /// area. `None` for a pane that is not valid or has no usable area — every frame function goes
-/// through here, so none of them sees such a pane.
+/// through here, so none of them sees such a pane; `project` and `unproject`, which need no fit,
+/// check `Pane::is_valid` themselves (review 2, finding 6).
 pub fn fit_scale(w_km: f64, h_km: f64, pane: &Pane) -> Option<f64> {
     let (uw, uh) = pane.usable();
     if !pane.is_valid() || uw <= 0.0 || uh <= 0.0 {
