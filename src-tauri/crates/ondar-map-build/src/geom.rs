@@ -1,7 +1,8 @@
 //! Geometry helpers on `geo` types: projection, bounds, caps, point–segment distances.
 
 use geo::{Coord, LineString, Polygon};
-use ondar_map::laea::{Laea, lon_midpoint, wrap_lon};
+use ondar_map::format::Cap;
+use ondar_map::laea::{Laea, haversine_km, lon_midpoint, wrap_lon};
 
 /// Every ring of a polygon, exterior first.
 pub fn rings(p: &Polygon<f64>) -> impl Iterator<Item = &LineString<f64>> {
@@ -123,6 +124,30 @@ pub fn rect_ring_distance(rect: [f64; 4], ring: &[Coord<f64>]) -> f64 {
         }
     }
     best
+}
+
+/// A cap around lon/lat points: centred on their R1 centre, radius the farthest point (km).
+pub fn cap<'a>(points: impl IntoIterator<Item = &'a Coord<f64>> + Clone) -> Option<Cap> {
+    let mut lons: Vec<f64> = points.clone().into_iter().map(|c| wrap_lon(c.x)).collect();
+    let (lo, hi) = points
+        .clone()
+        .into_iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), c| {
+            (lo.min(c.y), hi.max(c.y))
+        });
+    let lon = lon_midpoint(&mut lons)?;
+    let lat = (lo + hi) / 2.0;
+    let r = points
+        .into_iter()
+        .map(|c| haversine_km(lon, lat, c.x, c.y))
+        .fold(0.0, f64::max);
+    Some(Cap {
+        lon: lon as f32,
+        lat: lat as f32,
+        // f32 rounding of the centre moves it by < 1 m; the margin covers it and the straight
+        // projected edges between vertices
+        radius_km: (r * 1.001 + 0.01) as f32,
+    })
 }
 
 #[cfg(test)]

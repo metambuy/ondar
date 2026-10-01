@@ -227,11 +227,13 @@ onda/
         │                         raw or deflated (D1), CRC32 of the raw bytes; the loader never
         │                         panics (bounded cursor, per-blob and total raw caps, the ring table
         │                         must tile the blob, a blob's ring count must match its owner's)
-        └── fixtures/             `laea-reference.tsv` (Step 0's Q5: pyproj + d3-geo at 37 points)
-                                  + PROVENANCE.md
+        └── fixtures/             `laea-reference.tsv` (Step 0's Q5: pyproj + d3-geo at 37 points),
+                                  `step0-fit.tsv` (Q1-merged's 239 fits) + PROVENANCE.md
     └── crates/ondar-map-build/   the build-time tool (M4a): Natural Earth → the map resource. A
         │                         workspace member (D4) so the gates cover it; never in the app.
-        │                         `cargo run -p ondar-map-build --release -- --tables DIR`
+        │                         `cargo run -p ondar-map-build --release -- [--tables DIR]
+        │                         [--out FILE] [--report FILE] [--encoding deflate|raw]
+        │                         [--reach plan|fit] [--bench]`; ~25 s on the M4 Pro
         ├── pins.tsv              the 12 inputs (admin 0, map units, admin 1: .shp/.shx/.dbf/.prj),
         │                         bytes + SHA-256, shared with the fetch script; a mismatch is refused
         ├── overrides.tsv         S2: MY's frame is the peninsula's group (hand-checked, D5)
@@ -252,9 +254,21 @@ onda/
         ├── borders.rs            D2: the admin-1 edge census (twice = an interior border, once =
         │                         the outline, along the seam = neither), lines chained between
         │                         junctions, and the gate (once-edges within 1 m of admin 0)
-        ├── geom.rs               projection, bounds, rectangle–ring distance
-        └── main.rs               `load` (pins → NE → world → plans) and `--tables` (fit, insets,
-                                  S4, borders TSVs)
+        ├── simplify.rs           R3 per ring: VW-preserve's ε bisected (14–16 evaluations) until the
+        │                         O(n) span bound is within the tolerance; the exact measure (grid)
+        │                         is the stored figure; RDP + validity for P4's comparison only
+        ├── store.rs              the resource's contents: storage LAEA per unit (a country's main
+        │                         unit in its frame's), roles, the S4 omit-in, ring caps (R10),
+        │                         coverage from the clamp's reach (`Reach::Plan` as § 2 writes it,
+        │                         `Reach::Fit` the view kept inside the fit rectangle), every needed
+        │                         (unit, level) simplified ring by ring on all cores, subdivisions
+        │                         (D2 borders, or polygons where the gate fails), P2 per vertex, P4
+        ├── report.rs             the build report (bytes/vertices/bounds per layer and level,
+        │                         coverage, P4, P2, R9, D2, D1, insets, S4, pins, SHA-256)
+        ├── bench.rs              D1: `Store::load` from a file, raw against deflated per blob
+        ├── geom.rs               projection, bounds, caps, rectangle–ring distance
+        └── main.rs               `load` (pins → NE → world → plans), the build, `--tables`, and
+                                  the `#[ignore]`d input tests
 ```
 
 That root `onda/` is **not** a missed rename. The project is Ondar, but the working directory
@@ -268,9 +282,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 331 tests `cargo test --workspace`
-reports break down as **312 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64,
-map 27, map-build 18):
+export_bindings_<type>` that writes the `.ts` file. So the 340 tests `cargo test --workspace -- --list`
+reports (336 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
+**321 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 27, map-build 27):
 
 | | |
 |---|---|
@@ -311,9 +325,12 @@ map 27, map-build 18):
 | `world::tests` | 3 — map-build: two parts 299 km apart are one group, 301 km two (fails at 298 or 301); the override's anchor picks its group, the largest part's group must then be an inset, an anchor in no part is refused (fails with the override ignored); S6 — a remote 999 km² group is dropped, 1 001 km² is refused unlisted and an inset listed, a box over the land and an anchor 150 km off are refused (fails at 998 or 1 002 km², with the clearance or the anchor bound off) |
 | `seam::tests` | 3 — map-build: an Antarctica-shaped ring loses its polar run (10 vertices), stays closed with no seam edge (fails with the strip off); two halves cut at 180° union into one part (fails with the shift off); halves meeting 180° 0.001° apart leave a 111 m notch, closed (fails with the notch kept) |
 | `borders::tests` | 6 — map-build (D2): three squares in a row → 2 interior edges, 8 outline, 2 lines (fails if once-edges are kept); a chain through degree-2 vertices is one line and a degree-4 junction cuts four (fails if chains are not cut); an enclave is one closed line; an edge found three times is counted; a seam edge found twice is not a border (fails if only once-found seam edges are dropped); the gate's 1 m (fails with the tolerance ×10) |
+| `simplify::tests` | 2 — map-build (M4a commit 4, mutation-checked): Step 0's instrument check on seeded rings — the span bound never below brute force, the grid equal to it (fails if the span bound skips a removed vertex or the grid stops at ring 0); tuning keeps the span bound within t and above 0.8 t, fewer vertices at a larger t, an open line's ends (fails if the bisection or its expansion accepts above t, or with no halvings) |
+| `store::tests` | 3 — map-build: the reach — the plan's grows the fit rectangle by (W/2 + 2) × the coarsest scale the level serves, capped at the widest view, the fit reading by the 2 pt margin (fails without the margin or the cap); k' is 1 at the centre and √2 at 90° (fails inverted); a ring is stored open without repeated quanta (fails if they are kept) |
+| `input_tests` | 4, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~50 s): Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the 1 m gate passing for AR CL GL ID MN only, no once-edge inside the land past 80 m); two builds byte-identical and every blob within its bound |
 | `geom::tests` | 2 — map-build: rectangle–ring distances (apart 3, diagonal 5, overlapping 0, the ring around the rectangle 0 — fails with containment ignored); R1's centre of a square across 180° is 180° |
 
-Counting `#[test]` attributes in source gives 312 and will not reconcile with the runner's 331
+Counting `#[test]` attributes in source gives 321 and will not reconcile with the runner's 340
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -332,7 +349,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `331 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `340 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
