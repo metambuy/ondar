@@ -27,6 +27,17 @@ impl Pane {
         padding: 20.0,
     };
 
+    /// A pane is finite, its sides positive and its padding not negative (review finding 4: a
+    /// negative side with a negative padding has a positive usable area).
+    pub fn is_valid(&self) -> bool {
+        [self.width, self.height, self.padding]
+            .iter()
+            .all(|v| v.is_finite())
+            && self.width > 0.0
+            && self.height > 0.0
+            && self.padding >= 0.0
+    }
+
     /// The usable area inside the padding, points.
     pub fn usable(&self) -> (f64, f64) {
         (
@@ -37,10 +48,11 @@ impl Pane {
 }
 
 /// The fit: the scale (km/pt) at which a projected bbox of `w` × `h` km just fills the usable
-/// area. `None` for a pane with no usable area.
+/// area. `None` for a pane that is not valid or has no usable area — every frame function goes
+/// through here, so none of them sees such a pane.
 pub fn fit_scale(w_km: f64, h_km: f64, pane: &Pane) -> Option<f64> {
     let (uw, uh) = pane.usable();
-    if uw <= 0.0 || uh <= 0.0 || !uw.is_finite() || !uh.is_finite() {
+    if !pane.is_valid() || uw <= 0.0 || uh <= 0.0 {
         return None;
     }
     Some((w_km / uw).max(h_km / uh))
@@ -85,11 +97,14 @@ pub fn inset_scale(w_km: f64, h_km: f64, rect: [f64; 4]) -> Option<f64> {
 }
 
 /// The distance from `p` to the segment `a`–`b` (same units).
+// max then min: the crate's no-panic scan refuses `.clamp(` (review finding 4); the bounds here
+// are constants, but one rule for the whole crate is the one the scan can check
+#[allow(clippy::manual_clamp)]
 pub fn seg_dist([px, py]: [f64; 2], [ax, ay]: [f64; 2], [bx, by]: [f64; 2]) -> f64 {
     let (dx, dy) = (bx - ax, by - ay);
     let l2 = dx * dx + dy * dy;
     let t = if l2 > 0.0 {
-        (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0)
+        (((px - ax) * dx + (py - ay) * dy) / l2).max(0.0).min(1.0)
     } else {
         0.0
     };

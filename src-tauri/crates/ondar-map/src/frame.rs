@@ -109,14 +109,15 @@ impl Store {
             return Some(fit);
         }
         let top = fit.scale;
-        let scale = view.scale.clamp(rules::FLOOR_KM_PER_PT.min(top), top);
+        // max then min, never `f64::clamp`, which panics when min > max (finding 4)
+        let scale = view.scale.max(rules::FLOOR_KM_PER_PT.min(top)).min(top);
         let [fx, fy] = fit.centre;
         let (rx, ry) = (
             pane.width / 2.0 * (top - scale),
             pane.height / 2.0 * (top - scale),
         );
         Some(View {
-            centre: [vx.clamp(fx - rx, fx + rx), vy.clamp(fy - ry, fy + ry)],
+            centre: [vx.max(fx - rx).min(fx + rx), vy.max(fy - ry).min(fy + ry)],
             scale,
         })
     }
@@ -169,7 +170,7 @@ impl Store {
     }
 
     fn frame_with(&self, c: usize, pane: &Pane, view: View, use_index: bool) -> Option<Frame> {
-        let view = self.clamp(c, pane, view)?;
+        let view = Store::clamp(self, c, pane, view)?;
         let fit_view = self.fit(c, pane)?;
         let ct = self.countries.get(c)?;
         let k = rules::level_for(view.scale);

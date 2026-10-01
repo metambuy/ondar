@@ -540,3 +540,37 @@ fn index_is_exact() {
         }
     }
 }
+
+/// A pane that is not a pane — a negative or zero side, a negative padding, a non-finite field —
+/// frames nothing and never panics (review finding 4): `fit_scale`, `fit`, `clamp`, `frame` and
+/// `inset_clearance` answer `None` / empty. The finding's pane, −10 × 300 with −20 padding, has a
+/// positive usable area (30 × 340), so on `dddb4da` `fit_scale` accepted it and `clamp` panicked
+/// in `f64::clamp` (min > max); the release profile aborts on a panic.
+#[test]
+fn a_bad_pane_is_none_not_a_panic() {
+    let s = store();
+    let pt = c("PT");
+    let view = s.fit(pt, &P).unwrap();
+    let pane = |width: f64, height: f64, padding: f64| Pane {
+        width,
+        height,
+        padding,
+    };
+    for bad in [
+        pane(-10.0, 300.0, -20.0),
+        pane(328.0, -10.0, -200.0),
+        pane(0.0, 300.0, -20.0),
+        pane(328.0, 300.0, -20.0),
+        pane(328.0, 300.0, f64::NAN),
+        pane(f64::INFINITY, 300.0, 20.0),
+        pane(328.0, f64::NAN, 20.0),
+    ] {
+        assert_eq!(s.clamp(pt, &bad, view), None, "{bad:?}");
+        assert_eq!(s.fit_scale(pt, &bad), None, "{bad:?}");
+        assert_eq!(s.fit(pt, &bad), None, "{bad:?}");
+        assert!(s.frame(pt, &bad, view).is_none(), "{bad:?}");
+        assert!(s.inset_clearance(pt, &bad).is_empty(), "{bad:?}");
+    }
+    // a pane with no padding is a pane
+    assert!(s.frame(pt, &pane(328.0, 178.0, 0.0), view).is_some());
+}

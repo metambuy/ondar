@@ -1046,7 +1046,9 @@ pub(crate) mod tests {
     /// `#[cfg(test)]` in any module.
     #[test]
     fn no_panic_shape() {
-        const SHAPES: [&str; 6] = [
+        const SHAPES: [&str; 7] = [
+            // `f64::clamp` panics when min > max or either is NaN (review finding 4)
+            ".clamp(",
             "unreachable!",
             "panic!",
             "todo!",
