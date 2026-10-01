@@ -666,3 +666,74 @@ fn a_bad_pane_is_none_not_a_panic() {
     // a pane with no padding is a pane
     assert!(s.frame(pt, &pane(328.0, 178.0, 0.0), view).is_some());
 }
+
+/// A country's own small island groups in the padding band are drawn (review finding 5). At the
+/// golden pane's fit, every vertex of an own `Dropped` part (< 1 000 km², outside the usable
+/// area, not an inset) that falls inside the pane is a vertex of a land ring — as it already was
+/// when another country's frame drew the same part as a neighbour. 20 parts in 6 countries: the
+/// South Orkneys (AQ), Lord Howe (AU), Trindade and Fernando de Noronha (BR), San Andrés (CO),
+/// the Bonin Islands (JP), PF. On `dddb4da` the frame skipped an own
+/// unit's `Dropped` parts, so zoomed and panned onto one the pane showed empty sea.
+#[test]
+fn own_islets_in_the_padding_are_drawn() {
+    let s = store();
+    let mut buf = Vec::new();
+    let (mut parts, mut countries) = (0, std::collections::BTreeSet::new());
+    for (i, ct) in s.countries.iter().enumerate() {
+        let v = s.fit(i, &P).unwrap();
+        let f = s.frame(i, &P, v).unwrap();
+        let k = u8::try_from(rules::level_for(v.scale)).unwrap();
+        let land: Vec<[f32; 2]> = f
+            .land
+            .iter()
+            .flat_map(|sh| sh.rings.iter())
+            .flatten()
+            .copied()
+            .collect();
+        for &u in &ct.units {
+            let unit = &s.units[usize::from(u)];
+            let ul = Laea::new(unit.lat0, unit.lon0);
+            let Some(b) = s.blob(u, k, Layer::Land) else {
+                continue;
+            };
+            let mut ri = 0;
+            for part in &unit.parts {
+                let first = ri;
+                ri += part.rings.len();
+                if part.role != Role::Dropped {
+                    continue;
+                }
+                let mut seen = false;
+                for j in 0..part.rings.len() {
+                    s.decode(b, first + j, &mut buf).unwrap();
+                    // a ring the quanta collapsed below three vertices is no shape to draw, own
+                    // or neighbour (the Coral Sea Islands' at AU's fit level: one vertex)
+                    if buf.len() < 3 {
+                        continue;
+                    }
+                    for &[x, y] in &buf {
+                        let (lon, lat) = ul.inv(x, y).unwrap();
+                        let [px, py] = s.project(i, &P, &f.view, lon, lat).unwrap();
+                        if !(0.0..=P.width).contains(&px) || !(0.0..=P.height).contains(&py) {
+                            continue;
+                        }
+                        seen = true;
+                        assert!(
+                            land.iter()
+                                .any(|&[lx, ly]| (f64::from(lx) - px).abs() < 0.02
+                                    && (f64::from(ly) - py).abs() < 0.02),
+                            "{} {}: an own islet's vertex at ({px:.2}, {py:.2}) is not drawn",
+                            ct.name,
+                            String::from_utf8_lossy(&unit.a3)
+                        );
+                    }
+                }
+                if seen {
+                    parts += 1;
+                    countries.insert(ct.name.clone());
+                }
+            }
+        }
+    }
+    assert_eq!((parts, countries.len()), (20, 6), "{countries:?}");
+}

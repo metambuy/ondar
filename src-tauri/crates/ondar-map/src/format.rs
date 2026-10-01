@@ -79,7 +79,9 @@ pub enum Role {
     Frame,
     /// Drawn in the country's inset with this index, at the fit view.
     Inset(u8),
-    /// Neither: too small and too far (S6). Never drawn in its own frame.
+    /// Neither an inset nor inside the frame's usable area: under 1 000 km² and not listed (S6).
+    /// Drawn as the country's land wherever the view meets it (review finding 5: in the padding
+    /// band at the fit, or zoomed and panned onto it), as a neighbour's view draws it.
     Dropped,
     /// A unit with no country (`-99`): only ever a neighbour.
     NeighbourOnly,

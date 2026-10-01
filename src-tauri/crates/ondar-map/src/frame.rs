@@ -245,10 +245,13 @@ impl Store {
             for part in &unit.parts {
                 let first = ri;
                 ri += part.rings.len();
+                // own land: the frame's parts and the small groups outside the usable area (S6's
+                // `Dropped`), drawn where the view meets them as a neighbour's would be (review
+                // finding 5); an inset's part is drawn in its box only
                 let neighbour = match part.role {
                     _ if !own => true,
-                    Role::Frame => false,
-                    _ => continue,
+                    Role::Frame | Role::Dropped => false,
+                    Role::Inset(_) | Role::NeighbourOnly => continue,
                 };
                 if neighbour && part.omit_in == Some(c16) {
                     continue;
