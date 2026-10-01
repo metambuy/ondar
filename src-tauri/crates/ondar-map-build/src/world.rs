@@ -10,6 +10,7 @@ use crate::tables::{Alias, InsetRow, Override};
 use geo::{Area, ChamberlainDuquetteArea, Contains, Coord, Distance, Euclidean, Point, Polygon};
 use ondar_map::laea::Laea;
 use ondar_map::rules::{self, Pane};
+use ondar_map::{clip, index};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Parts closer than this on the ground chain into one group (the survey's rule).
@@ -433,13 +434,30 @@ pub fn plan_country(
         x: (c.x - cx) / s0 + pane.width / 2.0,
         y: (cy - c.y) / s0 + pane.height / 2.0,
     };
+    // the land the frame draws at the initial view, which `Store::inset_clearance` measures
+    // (review 2, finding 2): the frame's groups and the small ones it drops, clipped as the
+    // frame clips them — to the pane grown by the clip margin — so a dropped group off the pane
+    // (Jan Mayen, 6 pt above Norway's) counts no more here than on screen
+    let clip_pt = [
+        -index::CLIP_MARGIN_PT,
+        -index::CLIP_MARGIN_PT,
+        pane.width + index::CLIP_MARGIN_PT,
+        pane.height + index::CLIP_MARGIN_PT,
+    ];
     let land_rings: Vec<Vec<Coord<f64>>> = groups
         .iter()
-        .filter(|g| g.role == GroupRole::Frame)
+        .filter(|g| matches!(g.role, GroupRole::Frame | GroupRole::Dropped))
         .flat_map(|g| g.parts.iter())
         .flat_map(|&i| {
             geom::rings(&proj[i])
-                .map(|r| r.0.iter().map(to_pt).collect())
+                .map(|r| {
+                    let pts: Vec<[f64; 2]> = r.0.iter().map(to_pt).map(|c| [c.x, c.y]).collect();
+                    clip::clip_ring(&pts, &clip_pt)
+                        .into_iter()
+                        .map(|[x, y]| Coord { x, y })
+                        .collect::<Vec<_>>()
+                })
+                .filter(|r| r.len() >= 3)
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -729,6 +747,60 @@ pub(crate) mod tests {
             plan_country("AA", &[0], &w, None, &[&far], false)
                 .unwrap_err()
                 .contains("from the anchor")
+        );
+    }
+
+    /// S6's clearance is measured against the land the frame draws: the frame's groups and the
+    /// small ones it drops into the padding band (review 2, finding 2). A 4 000 km square (fit
+    /// 15.4 km/pt, its sides at x 34 and 294 pt), a 20 km islet 400 km east of it — its own
+    /// group, under 1 000 km², outside the usable area and inside the pane at (320, 150) — and a
+    /// remote inset whose box sits 14 pt right of the square and ~4 pt above the islet. Refused;
+    /// on `8324e68` it built, its clearance read from the square alone (14 pt). The same box
+    /// with no islet builds.
+    #[test]
+    fn s6_clearance_counts_the_dropped_groups() {
+        let (lon, lat) = Laea::new(0.0, 0.0).inv(2400.0, 0.0).unwrap();
+        let main = square(0.0, 0.0, 4000.0);
+        let islet = square(lat, lon, 20.0);
+        let remote = square(0.0, 90.0, 40.0);
+        let row = InsetRow {
+            code: "AA".into(),
+            lat: 0.0,
+            lon: 90.0,
+            keep: String::new(),
+            corner: ondar_map::format::Corner::TopRight,
+            rect: [308.0, 120.0, 18.0, 25.0],
+            label: "Remote".into(),
+        };
+        let without = world_of(vec![unit("AAA", "AA", vec![main.clone(), remote.clone()])]);
+        let p = plan_country("AA", &[0], &without, None, &[&row], false).unwrap();
+        assert!(
+            (p.insets[0].clearance_pt - 14.0).abs() < 0.5,
+            "{}",
+            p.insets[0].clearance_pt
+        );
+        let with = world_of(vec![unit(
+            "AAA",
+            "AA",
+            vec![main.clone(), remote.clone(), islet],
+        )]);
+        let e = plan_country("AA", &[0], &with, None, &[&row], false).unwrap_err();
+        assert!(e.contains("pt from the land"), "{e}");
+        // the same islet off the pane, past the frame's 2 pt clip margin (x 332.4–333.7 pt, the
+        // clip ends at 330) and level with the box, 6.4 pt right of it: the frame does not draw
+        // it, so the box stands, as it does on screen
+        let (lon, lat) = Laea::new(0.0, 0.0).inv(2600.0, 277.0).unwrap();
+        let off = world_of(vec![unit(
+            "AAA",
+            "AA",
+            vec![main, remote, square(lat, lon, 20.0)],
+        )]);
+        let p = plan_country("AA", &[0], &off, None, &[&row], false).unwrap();
+        assert!(p.groups.iter().any(|g| g.role == GroupRole::Dropped));
+        assert!(
+            (p.insets[0].clearance_pt - 14.0).abs() < 0.5,
+            "{}",
+            p.insets[0].clearance_pt
         );
     }
 }
