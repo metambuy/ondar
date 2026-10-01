@@ -553,19 +553,16 @@ pub fn build(
             let closed = line.len() > 3 && line.first() == line.last();
             let tuned = simplify_one(line, closed, t, how, &mut b);
             b.vertices_in += line.len();
-            let q: Vec<[i32; 2]> = if closed {
-                quantise_ring(&tuned.line, LADDER[k])
-            } else {
-                let mut q: Vec<[i32; 2]> = Vec::new();
-                for c in &tuned.line {
-                    if let Some(v) = ondar_map::codec::quantise([c.x, c.y], LADDER[k])
-                        && q.last() != Some(&v)
-                    {
-                        q.push(v);
-                    }
+            // a line is drawn as a polyline: an enclave's loop keeps its closing vertex, or the
+            // edge back to its start is never drawn (review finding 1; `quantise_ring` drops it)
+            let mut q: Vec<[i32; 2]> = Vec::new();
+            for c in &tuned.line {
+                if let Some(v) = ondar_map::codec::quantise([c.x, c.y], LADDER[k])
+                    && q.last() != Some(&v)
+                {
+                    q.push(v);
                 }
-                q
-            };
+            }
             b.vertices_out += q.len();
             b.bound_pt = b.bound_pt.max(tuned.bound / LADDER[k]);
             b.evaluations += tuned.evaluations;
