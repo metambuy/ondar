@@ -518,7 +518,7 @@ fn clamp_limits() {
     let fit = s.fit(i, &P).unwrap();
     let far = [fit.centre[0] + 5000.0, fit.centre[1] - 5000.0];
     assert_eq!(
-        s.clamp(
+        s.clamp_view(
             i,
             &P,
             View {
@@ -530,7 +530,7 @@ fn clamp_limits() {
         fit
     );
     assert_eq!(
-        s.clamp(
+        s.clamp_view(
             i,
             &P,
             View {
@@ -542,7 +542,7 @@ fn clamp_limits() {
         fit
     );
     let floor = s
-        .clamp(
+        .clamp_view(
             i,
             &P,
             View {
@@ -553,7 +553,7 @@ fn clamp_limits() {
         .unwrap();
     assert_eq!(floor.scale, FLOOR_KM_PER_PT);
     let z = s
-        .clamp(
+        .clamp_view(
             i,
             &P,
             View {
@@ -574,7 +574,7 @@ fn clamp_limits() {
             < 1e-9
     );
     assert_eq!(
-        s.clamp(
+        s.clamp_view(
             i,
             &P,
             View {
@@ -590,7 +590,7 @@ fn clamp_limits() {
     let vf = s.fit(va, &P).unwrap();
     assert_eq!(vf.scale, 1.5);
     assert_eq!(
-        s.clamp(
+        s.clamp_view(
             va,
             &P,
             View {
@@ -657,7 +657,7 @@ fn a_bad_pane_is_none_not_a_panic() {
         pane(f64::INFINITY, 300.0, 20.0),
         pane(328.0, f64::NAN, 20.0),
     ] {
-        assert_eq!(s.clamp(pt, &bad, view), None, "{bad:?}");
+        assert_eq!(s.clamp_view(pt, &bad, view), None, "{bad:?}");
         assert_eq!(s.fit_scale(pt, &bad), None, "{bad:?}");
         assert_eq!(s.fit(pt, &bad), None, "{bad:?}");
         assert!(s.frame(pt, &bad, view).is_none(), "{bad:?}");

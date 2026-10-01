@@ -1138,7 +1138,9 @@ pub(crate) mod tests {
     #[test]
     fn no_panic_shape() {
         const SHAPES: [&str; 7] = [
-            // `f64::clamp` panics when min > max or either is NaN (review finding 4)
+            // `f64::clamp` panics when min > max or either is NaN (review finding 4); the
+            // crate's own view clamp is `Store::clamp_view`, which the pattern does not match
+            // (review 2, finding 3)
             ".clamp(",
             "unreachable!",
             "panic!",

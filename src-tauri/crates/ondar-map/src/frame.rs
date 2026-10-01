@@ -123,7 +123,7 @@ impl Store {
     /// D6: the scale into [1.5, widest] and the view inside the fit rectangle (the pane at the
     /// widest scale, centred on the frame bbox) — at the widest scale the view is the fit and
     /// cannot pan. A non-finite view is the fit.
-    pub fn clamp(&self, c: usize, pane: &Pane, view: View) -> Option<View> {
+    pub fn clamp_view(&self, c: usize, pane: &Pane, view: View) -> Option<View> {
         let fit = self.fit(c, pane)?;
         let [vx, vy] = view.centre;
         if !(vx.is_finite() && vy.is_finite() && view.scale.is_finite()) {
@@ -191,7 +191,7 @@ impl Store {
     }
 
     fn frame_with(&self, c: usize, pane: &Pane, view: View, use_index: bool) -> Option<Frame> {
-        let view = Store::clamp(self, c, pane, view)?;
+        let view = self.clamp_view(c, pane, view)?;
         let fit_view = self.fit(c, pane)?;
         let ct = self.countries.get(c)?;
         let k = rules::level_for(view.scale);
