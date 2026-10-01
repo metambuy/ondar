@@ -121,7 +121,8 @@ pub enum Corner {
 pub struct Inset {
     pub label: String,
     pub corner: Corner,
-    /// x, y, w, h on the golden pane, points.
+    /// x, y, w, h on the golden pane, points; at another pane the box keeps its distance from
+    /// `corner` (`rect_at`, frame.rs).
     pub rect: [f32; 4],
     /// The inset's own LAEA (R1 on its group), the group's bbox centre in it (km) and its scale.
     pub lat0: f64,

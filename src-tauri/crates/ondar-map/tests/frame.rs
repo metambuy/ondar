@@ -295,6 +295,98 @@ fn insets_clear_12pt() {
     assert!(s.frame(pt, &P, nudged).unwrap().insets.is_empty());
 }
 
+/// An inset box keeps its golden-pane distance from the corner it is anchored to, at any pane
+/// (review finding 2): at the ANMITE's 328 × 178, at a larger 400 × 360 and at the golden pane,
+/// every one of the 14 boxes is inside the pane, its size unchanged, its gaps to its corner's two
+/// edges the golden pane's, and its land inside it. On `dddb4da` the boxes were the golden pane's
+/// absolute coordinates: at 328 × 178 Alaska sat at y 236..292, below the pane. Clearance from the
+/// land at another pane is M4b's acceptance, not asserted here.
+#[test]
+fn insets_anchor_by_corner() {
+    use ondar_map::format::Corner;
+    let s = store();
+    let g = P;
+    for pane in [
+        Pane {
+            width: 328.0,
+            height: 178.0,
+            padding: 20.0,
+        },
+        Pane {
+            width: 400.0,
+            height: 360.0,
+            padding: 20.0,
+        },
+        P,
+    ] {
+        let mut n = 0;
+        for (i, ct) in s.countries.iter().enumerate() {
+            if ct.insets.is_empty() {
+                continue;
+            }
+            let f = s.frame(i, &pane, s.fit(i, &pane).unwrap()).unwrap();
+            assert_eq!(f.insets.len(), ct.insets.len(), "{}", ct.name);
+            // the clearance is measured from the box where the frame draws it
+            let clearance = s.inset_clearance(i, &pane);
+            for ((got, _), (label, d)) in f.insets.iter().zip(&ct.insets).zip(&clearance) {
+                let [x, y, w, h] = got.rect.map(f64::from);
+                let want = f
+                    .land
+                    .iter()
+                    .flat_map(|sh| sh.rings.iter())
+                    .map(|r| {
+                        rules::rect_ring_distance(
+                            [x, y, x + w, y + h],
+                            r.iter().map(|p| p.map(f64::from)),
+                        )
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                assert!((d - want).abs() < 1e-3, "{label}: clearance {d} vs {want}");
+            }
+            for (got, stored) in f.insets.iter().zip(&ct.insets) {
+                let [x, y, w, h] = got.rect.map(f64::from);
+                let [gx, gy, gw, gh] = stored.rect.map(f64::from);
+                let what = format!(
+                    "{} {} at {}×{}",
+                    ct.name, got.label, pane.width, pane.height
+                );
+                assert!(
+                    x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height,
+                    "{what}: [{x}, {y}, {w}, {h}] leaves the pane"
+                );
+                assert_eq!((w, h), (gw, gh), "{what}: size");
+                let (left, top) = match stored.corner {
+                    Corner::TopLeft => (true, true),
+                    Corner::TopRight => (false, true),
+                    Corner::BottomLeft => (true, false),
+                    Corner::BottomRight => (false, false),
+                };
+                let gap_x = |x: f64, w: f64, pw: f64| if left { x } else { pw - (x + w) };
+                let gap_y = |y: f64, h: f64, ph: f64| if top { y } else { ph - (y + h) };
+                assert!(
+                    (gap_x(x, w, pane.width) - gap_x(gx, gw, g.width)).abs() < 1e-3
+                        && (gap_y(y, h, pane.height) - gap_y(gy, gh, g.height)).abs() < 1e-3,
+                    "{what}: [{x}, {y}] is not anchored to {:?}",
+                    stored.corner
+                );
+                assert!(!got.land.is_empty(), "{what}: no land");
+                for p in got.land.iter().flat_map(|sh| sh.rings.iter()).flatten() {
+                    let [px, py] = p.map(f64::from);
+                    assert!(
+                        px >= x - 0.01
+                            && px <= x + w + 0.01
+                            && py >= y - 0.01
+                            && py <= y + h + 0.01,
+                        "{what}: land outside the box"
+                    );
+                }
+                n += 1;
+            }
+        }
+        assert_eq!(n, 14);
+    }
+}
+
 /// S4: in Réunion's own frame, France's copy of the island (the parent's identical part) is not
 /// drawn as a neighbour: no neighbour ring's vertex mean lies inside Réunion's land (a first
 /// vertex would sit on the shared coast). Fails with the omit-in ignored.

@@ -9,7 +9,7 @@
 //! 0.01 pt.
 
 use crate::clip::{self, Rect};
-use crate::format::{Layer, Role, Store};
+use crate::format::{self, Corner, Layer, Role, Store};
 use crate::index::{self, CLIP_MARGIN_PT, LAND_TOL_PT, SUB_TOL_PT};
 use crate::laea::Laea;
 use crate::rules::{self, LADDER, Pane};
@@ -64,6 +64,26 @@ pub struct Frame {
     /// At the fit view only (D7).
     pub insets: Vec<Inset>,
     pub stats: FrameStats,
+}
+
+impl format::Inset {
+    /// The box at `pane`, x, y, w, h points: the golden pane's box kept at its distance from the
+    /// corner it is anchored to (S6; review finding 2) — a right corner moves with the pane's
+    /// width, a bottom corner with its height, the size never changes. At the golden pane it is
+    /// `rect`. Whether it clears the land at another pane is M4b's to judge.
+    pub fn rect_at(&self, pane: &Pane) -> [f64; 4] {
+        let [x, y, w, h] = self.rect.map(f64::from);
+        let (dx, dy) = (
+            pane.width - Pane::GOLDEN.width,
+            pane.height - Pane::GOLDEN.height,
+        );
+        match self.corner {
+            Corner::TopLeft => [x, y, w, h],
+            Corner::TopRight => [x + dx, y, w, h],
+            Corner::BottomLeft => [x, y + dy, w, h],
+            Corner::BottomRight => [x + dx, y + dy, w, h],
+        }
+    }
 }
 
 fn round(v: f64) -> f32 {
@@ -315,12 +335,12 @@ impl Store {
 
         // insets, at the fit view only (D7)
         if view == fit_view {
-            out.insets = self.insets(c, &mut out.stats);
+            out.insets = self.insets(c, pane, &mut out.stats);
         }
         Some(out)
     }
 
-    fn insets(&self, c: usize, stats: &mut FrameStats) -> Vec<Inset> {
+    fn insets(&self, c: usize, pane: &Pane, stats: &mut FrameStats) -> Vec<Inset> {
         let Some(ct) = self.countries.get(c) else {
             return Vec::new();
         };
@@ -331,7 +351,7 @@ impl Store {
             let (Ok(k8), Ok(i8_)) = (u8::try_from(k), u8::try_from(i)) else {
                 continue;
             };
-            let [rx, ry, rw, rh] = ins.rect.map(f64::from);
+            let [rx, ry, rw, rh] = ins.rect_at(pane);
             let (acx, acy, _, _) = rules::inset_area([rx, ry, rw, rh]);
             let il = Laea::new(ins.lat0, ins.lon0);
             let [icx, icy] = ins.centre_km;
@@ -383,7 +403,7 @@ impl Store {
             }
             out.push(Inset {
                 label: ins.label.clone(),
-                rect: ins.rect,
+                rect: [rx, ry, rw, rh].map(|v| v as f32),
                 land,
             });
         }
@@ -401,7 +421,7 @@ impl Store {
         ct.insets
             .iter()
             .map(|ins| {
-                let [x, y, w, h] = ins.rect.map(f64::from);
+                let [x, y, w, h] = ins.rect_at(pane);
                 let d = frame
                     .land
                     .iter()
