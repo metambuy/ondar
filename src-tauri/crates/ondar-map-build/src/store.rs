@@ -66,10 +66,47 @@ pub struct BlobOut {
     pub ring_bounds_pt: Vec<f64>,
     pub evaluations: usize,
     pub neighbour_only: bool,
-    /// For P4's question: RDP at the same tolerance, vertices (open) and rings it leaves
-    /// invalid (self-intersecting, or fewer than three vertices) — what a repair would face.
-    pub rdp_vertices: usize,
-    pub rdp_invalid: usize,
+    /// P4: open vertex counts of the two candidates per ring, summed — per-ring VW and RDP at
+    /// the same tolerance — and the rings that took VW's (RDP not simple or over the bound).
+    pub vertices_vw: usize,
+    pub vertices_rdp: usize,
+    /// The chosen rings' open vertex count before quantisation (VW's, RDP's or the hybrid's).
+    pub vertices_chosen: usize,
+    pub fallbacks: usize,
+    /// The fallen-back ring with the most VW vertices: (its RDP count, VW count, input count).
+    pub largest_fallback: (usize, usize, usize),
+}
+
+/// Which simplification is stored (P4's rule: the hybrid if every bound holds and the build
+/// stays under ~10 min; else VW).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Simplifier {
+    Hybrid,
+    Vw,
+}
+
+fn simplify_one(
+    line: &[Coord<f64>],
+    closed: bool,
+    t: f64,
+    how: Simplifier,
+    b: &mut BlobOut,
+) -> simplify::Tuned {
+    let h = simplify::hybrid(line, closed, t);
+    b.vertices_vw += h.vw;
+    b.vertices_rdp += h.rdp;
+    let chosen = match how {
+        Simplifier::Hybrid => {
+            b.fallbacks += usize::from(h.pick == simplify::Pick::Vw);
+            h.chosen
+        }
+        Simplifier::Vw => simplify::tune(line, closed, t),
+    };
+    b.vertices_chosen += chosen.line.len().saturating_sub(usize::from(closed));
+    if how == Simplifier::Hybrid && h.pick == simplify::Pick::Vw && h.vw > b.largest_fallback.1 {
+        b.largest_fallback = (h.rdp, h.vw, line.len().saturating_sub(usize::from(closed)));
+    }
+    chosen
 }
 
 /// Per country: how its subdivisions are stored.
@@ -105,7 +142,11 @@ pub struct Built {
     pub subs: Vec<SubPlan>,
     pub p2: Vec<P2>,
     /// P4: RU's land at 24 km/pt: (input vertices, per-ring VW, RDP at the same tolerance).
-    pub p4: (usize, usize, usize),
+    /// P4: RU's land at 24 km/pt — (input, per-ring VW, RDP, stored) open vertices.
+    pub p4: (usize, usize, usize, usize),
+    /// RU's blob at 24 km/pt: rings that fell back, and the largest of them (RDP, VW, input).
+    pub p4_fallback: (usize, (usize, usize, usize)),
+    pub simplifier: Simplifier,
     pub reach: Reach,
     pub seconds: f64,
 }
@@ -272,6 +313,7 @@ pub fn build(
     aliases: &[crate::tables::Alias],
     pins: format::Pins,
     mode: Reach,
+    how: Simplifier,
 ) -> Result<Built, String> {
     let t0 = std::time::Instant::now();
     let nu = world.units.len();
@@ -464,14 +506,14 @@ pub fn build(
             ring_bounds_pt: Vec::new(),
             evaluations: 0,
             neighbour_only: !own_need[u][k],
-            rdp_vertices: 0,
-            rdp_invalid: 0,
+            vertices_vw: 0,
+            vertices_rdp: 0,
+            vertices_chosen: 0,
+            fallbacks: 0,
+            largest_fallback: (0, 0, 0),
         };
         for r in geoms[u].rings() {
-            let (rv, valid) = simplify::rdp_ring(&r.km, t);
-            b.rdp_vertices += rv;
-            b.rdp_invalid += usize::from(!valid);
-            let tuned = simplify::tune(&r.km, true, t);
+            let tuned = simplify_one(&r.km, true, t, how, &mut b);
             b.vertices_in += r.km.len().saturating_sub(1);
             let q = quantise_ring(&tuned.line, LADDER[k]);
             b.vertices_out += q.len();
@@ -512,9 +554,25 @@ pub fn build(
             .and_then(|p| p.units.first().copied());
         let k = LADDER.len() - 1;
         let blob = blobs.iter().find(|b| Some(b.owner) == ru && b.level == k);
-        blob.map_or((0, 0, 0), |b| {
-            (b.vertices_in, b.vertices_out, b.rdp_vertices)
+        blob.map_or((0, 0, 0, 0), |b| {
+            (
+                b.vertices_in,
+                b.vertices_vw,
+                b.vertices_rdp,
+                b.vertices_chosen,
+            )
         })
+    };
+
+    let p4_fallback = {
+        let ru = plans
+            .iter()
+            .find(|p| p.code == "RU")
+            .and_then(|p| p.units.first().copied());
+        blobs
+            .iter()
+            .find(|b| Some(b.owner) == ru && b.level == LADDER.len() - 1)
+            .map_or((0, (0, 0, 0)), |b| (b.fallbacks, b.largest_fallback))
     };
 
     // subdivisions
@@ -544,12 +602,15 @@ pub fn build(
             ring_bounds_pt: Vec::new(),
             evaluations: 0,
             neighbour_only: false,
-            rdp_vertices: 0,
-            rdp_invalid: 0,
+            vertices_vw: 0,
+            vertices_rdp: 0,
+            vertices_chosen: 0,
+            fallbacks: 0,
+            largest_fallback: (0, 0, 0),
         };
         for (line, _) in &s.lines {
             let closed = line.len() > 3 && line.first() == line.last();
-            let tuned = simplify::tune(line, closed, t);
+            let tuned = simplify_one(line, closed, t, how, &mut b);
             b.vertices_in += line.len();
             let q: Vec<[i32; 2]> = if closed {
                 quantise_ring(&tuned.line, LADDER[k])
@@ -651,7 +712,9 @@ pub fn build(
         subs,
         p2,
         p4,
+        p4_fallback,
         reach: mode,
+        simplifier: how,
         seconds: t0.elapsed().as_secs_f64(),
     })
 }

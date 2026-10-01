@@ -191,14 +191,144 @@ pub fn tune(line: &[Coord<f64>], closed: bool, t: f64) -> Tuned {
     }
 }
 
-/// RDP at the same tolerance, for P4's comparison only (its displacement is ≤ t by
-/// construction; it does not keep a ring simple): the open ring's vertex count, and whether the
-/// result is a valid ring (simple, at least three vertices).
-pub fn rdp_ring(ring: &[Coord<f64>], t: f64) -> (usize, bool) {
-    use geo::{Simplify, Validation};
-    let p = Polygon::new(LineString::from(ring.to_vec()), vec![]).simplify(t);
-    let n = p.exterior().0.len().saturating_sub(1);
-    (n, n >= 3 && p.is_valid())
+/// RDP at tolerance `t` (its displacement is ≤ t by construction; it does not keep a ring
+/// simple). A closed ring stays closed; geo keeps at least four coordinates of a ring.
+pub fn rdp(line: &[Coord<f64>], closed: bool, t: f64) -> Vec<Coord<f64>> {
+    use geo::Simplify;
+    let ls = LineString::from(line.to_vec());
+    if closed {
+        Polygon::new(ls, vec![]).simplify(t).exterior().0.clone()
+    } else {
+        ls.simplify(t).0
+    }
+}
+
+fn turn(a: Coord<f64>, b: Coord<f64>, c: Coord<f64>) -> bool {
+    // a fold back at b: collinear and reversing
+    let (u, v) = ((b.x - a.x, b.y - a.y), (c.x - b.x, c.y - b.y));
+    u.0 * v.1 - u.1 * v.0 == 0.0 && u.0 * v.0 + u.1 * v.1 < 0.0
+}
+
+/// Whether a line is simple: no two non-adjacent segments meet, no segment folds back onto the
+/// next, no zero-length segment; a closed ring (first = last) also needs three distinct vertices
+/// and a non-zero area. Segments are bucketed in a uniform grid, so a ring of n vertices costs
+/// about O(n) rather than geo's O(n²) `is_valid`.
+pub fn is_simple(line: &[Coord<f64>], closed: bool) -> bool {
+    let n = line.len();
+    if n < 2 || line.windows(2).any(|w| w[0] == w[1]) {
+        return false;
+    }
+    let segs = n - 1;
+    if closed {
+        if line.first() != line.last() || n < 4 {
+            return false;
+        }
+        let mut distinct: Vec<(u64, u64)> = line[..segs]
+            .iter()
+            .map(|c| (c.x.to_bits(), c.y.to_bits()))
+            .collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        let area: f64 = line
+            .windows(2)
+            .map(|w| w[0].x * w[1].y - w[1].x * w[0].y)
+            .sum();
+        if distinct.len() < 3 || area == 0.0 || turn(line[segs - 1], line[0], line[1]) {
+            return false;
+        }
+    }
+    if line.windows(3).any(|w| turn(w[0], w[1], w[2])) {
+        return false;
+    }
+    let adjacent = |i: usize, j: usize| j == i + 1 || (closed && i == 0 && j == segs - 1);
+    let (mut x0, mut y0, mut x1, mut y1) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for c in line {
+        (x0, y0, x1, y1) = (x0.min(c.x), y0.min(c.y), x1.max(c.x), y1.max(c.y));
+    }
+    let cell = ((x1 - x0).max(y1 - y0) / (segs as f64).sqrt()).max(1e-9);
+    let key = |x: f64, y: f64| {
+        (
+            ((x - x0) / cell).floor() as i64,
+            ((y - y0) / cell).floor() as i64,
+        )
+    };
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for i in 0..segs {
+        let (a, b) = (line[i], line[i + 1]);
+        let (kx0, ky0) = key(a.x.min(b.x), a.y.min(b.y));
+        let (kx1, ky1) = key(a.x.max(b.x), a.y.max(b.y));
+        for gx in kx0..=kx1 {
+            for gy in ky0..=ky1 {
+                grid.entry((gx, gy)).or_default().push(i);
+            }
+        }
+    }
+    for bucket in grid.values() {
+        for (p, &i) in bucket.iter().enumerate() {
+            for &j in &bucket[p + 1..] {
+                let (i, j) = (i.min(j), i.max(j));
+                if !adjacent(i, j)
+                    && crate::geom::segments_cross(line[i], line[i + 1], line[j], line[j + 1])
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Rdp,
+    Vw,
+}
+
+pub struct Hybrid {
+    pub chosen: Tuned,
+    pub pick: Pick,
+    /// Open vertex counts of the two candidates (a closed ring's repeated last one not counted).
+    pub vw: usize,
+    pub rdp: usize,
+}
+
+fn open_len(line: &[Coord<f64>], closed: bool) -> usize {
+    line.len().saturating_sub(usize::from(closed))
+}
+
+/// The per-ring hybrid (P4, decided 2026-10-01): RDP at `t`, kept if the result is simple and
+/// its exact measure is within `t`; otherwise this ring's per-ring VW. No repair step.
+pub fn hybrid(line: &[Coord<f64>], closed: bool, t: f64) -> Hybrid {
+    let vw = tune(line, closed, t);
+    let r = rdp(line, closed, t);
+    let (vw_n, rdp_n) = (open_len(&vw.line, closed), open_len(&r, closed));
+    if is_simple(&r, closed) {
+        let bound = exact(line, &r, t.max(1e-9));
+        if bound <= t {
+            let evaluations = vw.evaluations + 1;
+            return Hybrid {
+                chosen: Tuned {
+                    line: r,
+                    bound,
+                    evaluations,
+                },
+                pick: Pick::Rdp,
+                vw: vw_n,
+                rdp: rdp_n,
+            };
+        }
+    }
+    Hybrid {
+        chosen: vw,
+        pick: Pick::Vw,
+        vw: vw_n,
+        rdp: rdp_n,
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +372,99 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn c(x: f64, y: f64) -> Coord<f64> {
+        Coord { x, y }
+    }
+
+    /// A thin band: the bottom edge dips 1.0 below its chord, the top edge's middle vertex sits
+    /// 0.5 above that dip but 2.5 below its own chord. RDP at 1.2 straightens the bottom and keeps
+    /// the top's vertex, so the result crosses itself; the hybrid must return VW's ring, which is
+    /// simple. Fails if the hybrid keeps RDP without the simplicity check.
+    #[test]
+    fn a_self_intersecting_rdp_ring_falls_back_to_vw() {
+        let ring = vec![
+            c(0.0, 0.0),
+            c(2.5, -0.5),
+            c(5.0, -1.0),
+            c(7.5, -0.5),
+            c(10.0, 0.0),
+            c(10.0, 2.0),
+            c(5.0, -0.5),
+            c(0.0, 2.0),
+            c(0.0, 0.0),
+        ];
+        assert!(is_simple(&ring, true));
+        let r = rdp(&ring, true, 1.2);
+        assert!(!is_simple(&r, true), "RDP gave a simple ring: {r:?}");
+        let h = hybrid(&ring, true, 1.2);
+        assert_eq!(h.pick, Pick::Vw);
+        assert_eq!(h.chosen.line, tune(&ring, true, 1.2).line);
+        assert!(is_simple(&h.chosen.line, true));
+        // a well-behaved ring keeps RDP's result
+        let w = wiggle(400, 6.0, 9);
+        let h = hybrid(&w, true, 1.0);
+        assert_eq!(h.pick, Pick::Rdp);
+        assert!(h.chosen.bound <= 1.0 && h.rdp <= h.vw);
+    }
+
+    /// The simplicity check: a bow tie, a spike folding back, a zero-area ring and a repeated
+    /// vertex are not simple; a square and an open zigzag are; a long ring with two far-apart
+    /// vertices swapped crosses itself across many grid cells.
+    #[test]
+    fn simplicity() {
+        let sq = [
+            c(0.0, 0.0),
+            c(1.0, 0.0),
+            c(1.0, 1.0),
+            c(0.0, 1.0),
+            c(0.0, 0.0),
+        ];
+        assert!(is_simple(&sq, true));
+        let bow = [
+            c(0.0, 0.0),
+            c(1.0, 1.0),
+            c(1.0, 0.0),
+            c(0.0, 1.0),
+            c(0.0, 0.0),
+        ];
+        assert!(!is_simple(&bow, true));
+        let spike = [
+            c(0.0, 0.0),
+            c(2.0, 0.0),
+            c(1.0, 0.0),
+            c(1.0, 1.0),
+            c(0.0, 0.0),
+        ];
+        assert!(!is_simple(&spike, true));
+        let flat = [c(0.0, 0.0), c(1.0, 0.0), c(2.0, 0.0), c(0.0, 0.0)];
+        assert!(!is_simple(&flat, true));
+        let rep = [
+            c(0.0, 0.0),
+            c(1.0, 0.0),
+            c(1.0, 0.0),
+            c(1.0, 1.0),
+            c(0.0, 0.0),
+        ];
+        assert!(!is_simple(&rep, true));
+        let zig: Vec<Coord<f64>> = (0..50).map(|i| c(f64::from(i), f64::from(i % 2))).collect();
+        assert!(is_simple(&zig, false));
+        let mut back = zig.clone();
+        back.push(c(10.5, -1.0));
+        assert!(!is_simple(&back, false));
+        // open lines where only one check can see the fault: a fold-back with no third
+        // segment to touch, and a zero-length segment between two others
+        let fold = [c(0.0, 0.0), c(2.0, 0.0), c(1.0, 0.0)];
+        assert!(!is_simple(&fold, false));
+        let repeat = [c(0.0, 0.0), c(1.0, 0.0), c(1.0, 0.0)];
+        assert!(!is_simple(&repeat, false));
+        let ok = wiggle(3000, 2.0, 3);
+        assert!(is_simple(&ok, true));
+        let mut big = ok.clone();
+        let n = big.len();
+        big.swap(10, n / 2);
+        assert!(!is_simple(&big, true));
     }
 
     /// Tuning meets the tolerance exactly measured, and keeps fewer vertices at a larger

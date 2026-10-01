@@ -256,7 +256,10 @@ onda/
         │                         junctions, and the gate (once-edges within 1 m of admin 0)
         ├── simplify.rs           R3 per ring: VW-preserve's ε bisected (14–16 evaluations) until the
         │                         O(n) span bound is within the tolerance; the exact measure (grid)
-        │                         is the stored figure; RDP + validity for P4's comparison only
+        │                         is the stored figure. The stored ring is the **hybrid** (P4, decided
+        │                         2026-10-01): RDP at the tolerance if `is_simple` (grid-bucketed: no
+        │                         crossing, fold-back or repeat; a ring also ≥ 3 distinct vertices and
+        │                         non-zero area) and within the bound, else that ring's VW; no repair
         ├── store.rs              the resource's contents: storage LAEA per unit (a country's main
         │                         unit in its frame's), roles, the S4 omit-in, ring caps (R10),
         │                         coverage from the clamp's reach (`Reach::Plan` as § 2 writes it,
@@ -282,9 +285,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 340 tests `cargo test --workspace -- --list`
-reports (336 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
-**321 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 27, map-build 27):
+export_bindings_<type>` that writes the `.ts` file. So the 342 tests `cargo test --workspace -- --list`
+reports (338 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
+**323 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64, map 27, map-build 29):
 
 | | |
 |---|---|
@@ -325,12 +328,12 @@ reports (336 run, 4 `#[ignore]`d — the map tool's input-bound tests, run local
 | `world::tests` | 3 — map-build: two parts 299 km apart are one group, 301 km two (fails at 298 or 301); the override's anchor picks its group, the largest part's group must then be an inset, an anchor in no part is refused (fails with the override ignored); S6 — a remote 999 km² group is dropped, 1 001 km² is refused unlisted and an inset listed, a box over the land and an anchor 150 km off are refused (fails at 998 or 1 002 km², with the clearance or the anchor bound off) |
 | `seam::tests` | 3 — map-build: an Antarctica-shaped ring loses its polar run (10 vertices), stays closed with no seam edge (fails with the strip off); two halves cut at 180° union into one part (fails with the shift off); halves meeting 180° 0.001° apart leave a 111 m notch, closed (fails with the notch kept) |
 | `borders::tests` | 6 — map-build (D2): three squares in a row → 2 interior edges, 8 outline, 2 lines (fails if once-edges are kept); a chain through degree-2 vertices is one line and a degree-4 junction cuts four (fails if chains are not cut); an enclave is one closed line; an edge found three times is counted; a seam edge found twice is not a border (fails if only once-found seam edges are dropped); the gate's 1 m (fails with the tolerance ×10) |
-| `simplify::tests` | 2 — map-build (M4a commit 4, mutation-checked): Step 0's instrument check on seeded rings — the span bound never below brute force, the grid equal to it (fails if the span bound skips a removed vertex or the grid stops at ring 0); tuning keeps the span bound within t and above 0.8 t, fewer vertices at a larger t, an open line's ends (fails if the bisection or its expansion accepts above t, or with no halvings) |
+| `simplify::tests` | 4 — map-build (M4a commits 4 and 4b, mutation-checked): **the hybrid** — a thin band where RDP at 1.2 straightens one side through the other's vertex, so RDP's ring is not simple and the hybrid returns VW's (fails if RDP is kept without the simplicity check), a well-behaved ring keeps RDP's; **`is_simple`** — a bow tie, a spike, a zero-area ring, a repeated vertex, an open fold-back and an open zero-length segment are not simple, a square, a zigzag and a 3 000-vertex ring are, the same ring with two far vertices swapped is not (fails with crossings, fold-backs or repeats unchecked; the area check and the hybrid's bound check are equivalent mutants, the log says why). And Step 0's instrument check on seeded rings — the span bound never below brute force, the grid equal to it (fails if the span bound skips a removed vertex or the grid stops at ring 0); tuning keeps the span bound within t and above 0.8 t, fewer vertices at a larger t, an open line's ends (fails if the bisection or its expansion accepts above t, or with no halvings) |
 | `store::tests` | 3 — map-build: the reach — the plan's grows the fit rectangle by (W/2 + 2) × the coarsest scale the level serves, capped at the widest view, the fit reading by the 2 pt margin (fails without the margin or the cap); k' is 1 at the centre and √2 at 90° (fails inverted); a ring is stored open without repeated quanta (fails if they are kept) |
 | `input_tests` | 4, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~50 s): Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the 1 m gate passing for AR CL GL ID MN only, no once-edge inside the land past 80 m); two builds byte-identical and every blob within its bound |
 | `geom::tests` | 2 — map-build: rectangle–ring distances (apart 3, diagonal 5, overlapping 0, the ring around the rectangle 0 — fails with containment ignored); R1's centre of a square across 180° is 180° |
 
-Counting `#[test]` attributes in source gives 321 and will not reconcile with the runner's 340
+Counting `#[test]` attributes in source gives 323 and will not reconcile with the runner's 342
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -349,7 +352,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `340 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `342 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands

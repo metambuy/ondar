@@ -31,6 +31,7 @@ struct Args {
     report: Option<PathBuf>,
     encoding: ondar_map::format::Encoding,
     reach: store::Reach,
+    simplifier: store::Simplifier,
     bench: bool,
 }
 
@@ -42,6 +43,7 @@ fn args() -> Result<Args, String> {
         report: None,
         encoding: ondar_map::format::Encoding::Deflate,
         reach: store::Reach::Plan,
+        simplifier: store::Simplifier::Hybrid,
         bench: false,
     };
     let mut it = std::env::args().skip(1);
@@ -57,6 +59,13 @@ fn args() -> Result<Args, String> {
             "--out" => a.out = Some(val()?),
             "--report" => a.report = Some(val()?),
             "--bench" => a.bench = true,
+            "--simplifier" => {
+                a.simplifier = match it.next().as_deref() {
+                    Some("hybrid") => store::Simplifier::Hybrid,
+                    Some("vw") => store::Simplifier::Vw,
+                    other => return Err(format!("--simplifier hybrid|vw, not {other:?}")),
+                }
+            }
             "--reach" => {
                 a.reach = match it.next().as_deref() {
                     Some("plan") => store::Reach::Plan,
@@ -321,14 +330,17 @@ fn run() -> Result<(), String> {
             &inp.aliases,
             header_pins()?,
             a.reach,
+            a.simplifier,
         )?;
         eprintln!(
-            "store built in {:.1} s: {} blobs, P4 RU land at 24 km/pt: {} in, {} per-ring VW, {} RDP",
+            "store built in {:.1} s: {} blobs; P4 RU land at 24 km/pt: {} in, {} per-ring VW, {} RDP, {} stored ({:?})",
             built.seconds,
             built.blobs.len(),
             built.p4.0,
             built.p4.1,
-            built.p4.2
+            built.p4.2,
+            built.p4.3,
+            built.simplifier
         );
         let bench = if a.bench {
             Some(bench::run(&built)?)
@@ -485,6 +497,7 @@ mod input_tests {
                 &i.aliases,
                 header_pins().unwrap(),
                 store::Reach::Plan,
+                store::Simplifier::Hybrid,
             )
             .unwrap()
         };

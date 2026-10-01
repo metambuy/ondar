@@ -151,34 +151,52 @@ pub fn write(
     let _ = writeln!(r);
 
     // P4
-    let _ = writeln!(r, "## P4 — per-ring VW against RDP\n");
-    let (vin, vw, rdp) = built.p4;
+    let _ = writeln!(r, "## P4 — the simplifier\n");
+    let (vin, vw, rdp, chosen) = built.p4;
     let _ = writeln!(
         r,
-        "RU land at 24 km/pt (open rings, RU's frame LAEA, after the seam stitch): **{vin} in, \
-         {vw} per-ring VW, {rdp} RDP** at the same 6 km tolerance — VW keeps {:.2}× RDP. Q2b \
-         (one ε per country, closed rings): 36 756 in, 16 667 VW, 4 128 RDP (4.04×).\n",
-        vw as f64 / rdp.max(1) as f64
+        "Stored: **{:?}**. The hybrid (decided 2026-10-01): per ring and level, RDP at the level's \
+         tolerance, kept if simple (no self-intersection, ≥ 3 distinct vertices, non-zero area) \
+         and its exact measure is within the bound; else that ring's per-ring VW. No repair. The \
+         rule: ship the hybrid if every bound holds and the build stays under ~10 min, else VW.\n",
+        built.simplifier
     );
     let _ = writeln!(
         r,
-        "| level km/pt | land vertices, per-ring VW | RDP, same tolerance | VW / RDP | RDP rings invalid (of) |\n|---|---|---|---|---|"
+        "RU land at 24 km/pt (open rings, RU's frame LAEA, after the seam stitch): **{vin} in; \
+         per-ring VW {vw}, RDP {rdp}, stored {chosen}** (commit 4 measured VW 13 664, RDP 3 904; \
+         Q2b one ε per country 16 667 against RDP 4 128). In that blob {} ring(s) fell back to \
+         VW; the largest has {} vertices in, RDP {} (not simple, or over the bound), VW {}.\n",
+        built.p4_fallback.0, built.p4_fallback.1.2, built.p4_fallback.1.0, built.p4_fallback.1.1
     );
-    for (k, l) in LADDER.iter().enumerate() {
-        let bs: Vec<_> = built
-            .blobs
-            .iter()
-            .filter(|b| b.layer == Layer::Land && b.level == k)
-            .collect();
-        let vw: usize = bs.iter().map(|b| b.vertices_out).sum();
-        let rdp: usize = bs.iter().map(|b| b.rdp_vertices).sum();
-        let rings: usize = bs.iter().map(|b| b.rings.len()).sum();
-        let bad: usize = bs.iter().map(|b| b.rdp_invalid).sum();
-        let _ = writeln!(
-            r,
-            "| {l} | {vw} | {rdp} | {:.2} | {bad} ({rings}) |",
-            vw as f64 / rdp.max(1) as f64
-        );
+    let _ = writeln!(
+        r,
+        "Open vertices before quantisation, summed over the stored blobs:\n\n| layer | level km/pt | rings | per-ring VW | RDP | stored | stored / RDP | rings that fell back to VW |\n|---|---|---|---|---|---|---|---|"
+    );
+    for layer in [Layer::Land, Layer::Subdivisions] {
+        for (k, l) in LADDER.iter().enumerate() {
+            let bs: Vec<_> = built
+                .blobs
+                .iter()
+                .filter(|b| b.layer == layer && b.level == k)
+                .collect();
+            if bs.is_empty() {
+                continue;
+            }
+            let sum = |f: fn(&&crate::store::BlobOut) -> usize| bs.iter().map(f).sum::<usize>();
+            let (vw, rdp, ch) = (
+                sum(|b| b.vertices_vw),
+                sum(|b| b.vertices_rdp),
+                sum(|b| b.vertices_chosen),
+            );
+            let _ = writeln!(
+                r,
+                "| {layer:?} | {l} | {} | {vw} | {rdp} | {ch} | {:.3} | {} |",
+                sum(|b| b.rings.len()),
+                ch as f64 / rdp.max(1) as f64,
+                sum(|b| b.fallbacks)
+            );
+        }
     }
     let _ = writeln!(r);
 
