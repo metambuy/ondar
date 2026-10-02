@@ -671,6 +671,31 @@ fn a_bad_pane_is_none_not_a_panic() {
     assert!(s.frame(pt, &pane(328.0, 178.0, 0.0), view).is_some());
 }
 
+/// A view that is not a view projects nothing (review 3, finding 1): a scale of 0, negative, NaN
+/// or ∞, or a centre not finite, gives `None` from `project` and `unproject`, as a bad pane does.
+/// On `b3cf735` a scale of 0 gave `Some([inf, -inf])`.
+#[test]
+fn a_bad_view_is_none() {
+    let s = store();
+    let pt = c("PT");
+    let fit = s.fit(pt, &P).unwrap();
+    let with = |centre: [f64; 2], scale: f64| View { centre, scale };
+    for bad in [
+        with(fit.centre, 0.0),
+        with(fit.centre, -fit.scale),
+        with(fit.centre, f64::NAN),
+        with(fit.centre, f64::INFINITY),
+        with([f64::NAN, fit.centre[1]], fit.scale),
+        with([fit.centre[0], f64::INFINITY], fit.scale),
+    ] {
+        assert_eq!(s.project(pt, &P, &bad, -9.14, 38.72), None, "{bad:?}");
+        assert_eq!(s.unproject(pt, &P, &bad, 164.0, 150.0), None, "{bad:?}");
+    }
+    // the fit itself still projects
+    assert!(s.project(pt, &P, &fit, -9.14, 38.72).is_some());
+    assert!(s.unproject(pt, &P, &fit, 164.0, 150.0).is_some());
+}
+
 /// A country's own small island groups in the padding band are drawn (review finding 5). At the
 /// golden pane's fit, every vertex of an own `Dropped` part (< 1 000 km², outside the usable
 /// area, not an inset) that falls inside the pane is a vertex of a land ring — as it already was

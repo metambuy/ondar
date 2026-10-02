@@ -21,6 +21,13 @@ pub struct View {
     pub scale: f64,
 }
 
+impl View {
+    /// A finite centre and a finite scale above 0 (review 3, finding 1).
+    pub fn is_valid(&self) -> bool {
+        self.centre.iter().all(|v| v.is_finite()) && self.scale.is_finite() && self.scale > 0.0
+    }
+}
+
 /// What a radio-browser code frames (R7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lookup {
@@ -149,8 +156,10 @@ impl Store {
         })
     }
 
-    /// A lon/lat point in pane points at a view; `None` for a pane that is not valid (review 2,
-    /// finding 6), an unknown country or a point the projection cannot reach.
+    /// A lon/lat point in pane points at a view, as given (not clamped); `None` for a pane that is
+    /// not valid (review 2, finding 6), a view that is not valid — a scale not finite or ≤ 0, a
+    /// centre not finite (review 3, finding 1) — an unknown country or a point the projection
+    /// cannot reach.
     pub fn project(
         &self,
         c: usize,
@@ -159,7 +168,7 @@ impl Store {
         lon: f64,
         lat: f64,
     ) -> Option<[f64; 2]> {
-        if !pane.is_valid() {
+        if !pane.is_valid() || !view.is_valid() {
             return None;
         }
         let ct = self.countries.get(c)?;
@@ -180,7 +189,7 @@ impl Store {
         x: f64,
         y: f64,
     ) -> Option<(f64, f64)> {
-        if !pane.is_valid() {
+        if !pane.is_valid() || !view.is_valid() {
             return None;
         }
         let ct = self.countries.get(c)?;

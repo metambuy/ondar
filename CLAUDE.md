@@ -227,7 +227,8 @@ onda/
         ├── rules.rs              the rules shared with the build tool: `Pane` (+ `GOLDEN` 328 ×
         │                         300 × 20; `is_valid`: finite, sides > 0, padding ≥ 0 — `fit_scale`
         │                         answers `None` otherwise, so no frame function sees a bad pane;
-        │                         `project`/`unproject` check `is_valid` themselves),
+        │                         `project`/`unproject` check `is_valid` themselves, and the
+        │                         view's: `View::is_valid`, a finite centre and scale > 0),
         │                         `fit_scale`, `initial_scale` (S1 floor 1.5), `LADDER` 1.5/3/6/12/24
         │                         km/pt, `level_for` (the coarsest level ≤ the scale), and S6's
         │                         `rect_ring_distance` (+ `seg_dist`, `segments_cross`), the one copy
