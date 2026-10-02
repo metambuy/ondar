@@ -62,8 +62,9 @@ pub struct FrameStats {
     /// golden pane (the coverage test).
     pub missing_blobs: usize,
     /// Insets not drawn at the fit view because their box, anchored at this pane, leaves the
-    /// pane or overlaps another inset's box (review 2, finding 4). 0 at the golden pane, where
-    /// the tool checked the boxes; M4b's acceptance requires 0 at the real pane.
+    /// pane or overlaps a box drawn before it in table order (review 2, finding 4; review 3,
+    /// finding 2). 0 at the golden pane, where the tool checked the boxes; M4b's acceptance
+    /// requires 0 at the real pane.
     pub insets_dropped: usize,
 }
 
@@ -83,8 +84,8 @@ impl format::Inset {
     /// The box at `pane`, x, y, w, h points: the golden pane's box kept at its distance from the
     /// corner it is anchored to (S6; review finding 2) — a right corner moves with the pane's
     /// width, a bottom corner with its height, the size never changes. At the golden pane it is
-    /// `rect`. A box that leaves the pane or overlaps another is not drawn (`insets_dropped`);
-    /// whether it clears the land at another pane is M4b's to judge.
+    /// `rect`. A box that leaves the pane or overlaps one drawn before it is not drawn
+    /// (`insets_dropped`); whether it clears the land at another pane is M4b's to judge.
     pub fn rect_at(&self, pane: &Pane) -> [f64; 4] {
         let [x, y, w, h] = self.rect.map(f64::from);
         let (dx, dy) = (
@@ -392,13 +393,15 @@ impl Store {
         };
         let mut buf = Vec::new();
         let mut out = Vec::new();
-        let boxes: Vec<[f64; 4]> = ct.insets.iter().map(|ins| ins.rect_at(pane)).collect();
-        for (i, (ins, &[rx, ry, rw, rh])) in ct.insets.iter().zip(&boxes).enumerate() {
-            // drawn only inside the pane and apart from every other box at this pane (review 2,
-            // finding 4): never moved, never clamped onto the land
+        let mut drawn: Vec<[f64; 4]> = Vec::new();
+        for (i, ins) in ct.insets.iter().enumerate() {
+            // in table order, drawn iff inside the pane and apart from every box already drawn
+            // (review 2, finding 4; review 3, finding 2: a box not drawn blocks nothing): never
+            // moved, never clamped onto the land
+            let [rx, ry, rw, rh] = ins.rect_at(pane);
             let inside = rx >= 0.0 && ry >= 0.0 && rx + rw <= pane.width && ry + rh <= pane.height;
-            let apart = boxes.iter().enumerate().all(|(j, &[ox, oy, ow, oh])| {
-                j == i || rx + rw <= ox || ox + ow <= rx || ry + rh <= oy || oy + oh <= ry
+            let apart = drawn.iter().all(|&[ox, oy, ow, oh]| {
+                rx + rw <= ox || ox + ow <= rx || ry + rh <= oy || oy + oh <= ry
             });
             if !(inside && apart) {
                 stats.insets_dropped += 1;
@@ -408,6 +411,7 @@ impl Store {
             let (Ok(k8), Ok(i8_)) = (u8::try_from(k), u8::try_from(i)) else {
                 continue;
             };
+            drawn.push([rx, ry, rw, rh]);
             let (acx, acy, _, _) = rules::inset_area([rx, ry, rw, rh]);
             let il = Laea::new(ins.lat0, ins.lon0);
             let [icx, icy] = ins.centre_km;

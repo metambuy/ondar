@@ -696,6 +696,46 @@ fn a_bad_view_is_none() {
     assert!(s.unproject(pt, &P, &fit, 164.0, 150.0).is_some());
 }
 
+/// A box that leaves the pane does not drop an inset it would overlap (review 3, finding 2): the
+/// US's Alaska box moved right so that, at 328 × 60, it leaves the pane at the top and its
+/// off-pane extent overlaps Hawaii's. Hawaii is drawn and Alaska alone counted. On `b3cf735`
+/// both were dropped — two lost for one.
+#[test]
+fn an_off_pane_box_does_not_drop_an_inset() {
+    let p =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources/map/world.ondarmap");
+    let mut s = Store::load(&std::fs::read(p).unwrap()).unwrap();
+    let us = c("US");
+    let alaska = s.countries[us]
+        .insets
+        .iter()
+        .position(|i| i.label == "Alaska")
+        .unwrap();
+    // golden (8, 236, 84, 56) → (60, 236, 84, 56): x 60..144 meets Hawaii's 98..158
+    s.countries[us].insets[alaska].rect[0] = 60.0;
+    let pane = Pane {
+        width: 328.0,
+        height: 60.0,
+        padding: 20.0,
+    };
+    let [ax, ay, aw, ah] = s.countries[us].insets[alaska].rect_at(&pane);
+    let hawaii = s.countries[us]
+        .insets
+        .iter()
+        .find(|i| i.label == "Hawaii")
+        .unwrap()
+        .rect_at(&pane);
+    let [hx, hy, hw, hh] = hawaii;
+    // the premise: Alaska leaves the pane, Hawaii is inside it, and the two overlap
+    assert!(ay < 0.0);
+    assert!(hx >= 0.0 && hy >= 0.0 && hx + hw <= pane.width && hy + hh <= pane.height);
+    assert!(!(ax + aw <= hx || hx + hw <= ax || ay + ah <= hy || hy + hh <= ay));
+    let f = s.frame(us, &pane, s.fit(us, &pane).unwrap()).unwrap();
+    let labels: Vec<&str> = f.insets.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, ["Hawaii"]);
+    assert_eq!(f.stats.insets_dropped, 1);
+}
+
 /// A country's own small island groups in the padding band are drawn (review finding 5). At the
 /// golden pane's fit, every vertex of an own `Dropped` part (< 1 000 km², outside the usable
 /// area, not an inset) that falls inside the pane is a vertex of a land ring — as it already was
@@ -892,7 +932,12 @@ fn an_inset_that_does_not_fit_the_pane_is_not_drawn() {
         padding: 20.0,
     };
     for (pane, want) in [
-        (pane(60.0), vec!["Guadeloupe & Martinique", "Hawaii"]),
+        // French Guiana and Réunion meet at 328 × 60: the first in table order is drawn, the
+        // second dropped (review 3, finding 2; on `b3cf735` both were dropped)
+        (
+            pane(60.0),
+            vec!["French Guiana", "Guadeloupe & Martinique", "Hawaii"],
+        ),
         (pane(178.0), Vec::new()),
     ] {
         let mut drawn = Vec::new();
@@ -911,8 +956,9 @@ fn an_inset_that_does_not_fit_the_pane_is_not_drawn() {
                     x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height,
                     "{what}: [{x}, {y}, {w}, {h}] leaves the pane"
                 );
-                for other in ct.insets.iter().filter(|o| o.label != ins.label) {
-                    let [ox, oy, ow, oh] = other.rect_at(&pane);
+                // apart from every box drawn, not from every box (review 3, finding 2)
+                for other in f.insets.iter().filter(|o| o.label != ins.label) {
+                    let [ox, oy, ow, oh] = other.rect.map(f64::from);
                     assert!(
                         x + w <= ox || ox + ow <= x || y + h <= oy || oy + oh <= y,
                         "{what}: overlaps {}",
@@ -920,6 +966,28 @@ fn an_inset_that_does_not_fit_the_pane_is_not_drawn() {
                     );
                 }
                 drawn.push(ins.label.clone());
+            }
+            // and every inset not drawn leaves the pane or meets a box drawn before it in
+            // table order: the rule is an iff
+            let mut before: Vec<[f64; 4]> = Vec::new();
+            for ins in &ct.insets {
+                let [x, y, w, h] = ins.rect_at(&pane);
+                let is_drawn = f.insets.iter().any(|d| d.label == ins.label);
+                let inside = x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height;
+                let apart = before.iter().all(|&[ox, oy, ow, oh]| {
+                    x + w <= ox || ox + ow <= x || y + h <= oy || oy + oh <= y
+                });
+                assert_eq!(
+                    is_drawn,
+                    inside && apart,
+                    "{} {} at 328×{}",
+                    ct.name,
+                    ins.label,
+                    pane.height
+                );
+                if is_drawn {
+                    before.push([x, y, w, h]);
+                }
             }
             assert_eq!(
                 f.insets.len() + f.stats.insets_dropped,
