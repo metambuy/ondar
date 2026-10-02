@@ -1,0 +1,10 @@
+# ondar-map fixtures
+
+| file | from | what |
+|---|---|---|
+| `laea-reference.tsv` | M4a Step 0, Q5 (2026-09-30): `_handover/m4-step0/q5/points-rust.tsv` (case, centre, radius, point), `points-pyproj.tsv` (`py_sph_*`) and `points-d3.tsv`, joined by case, values copied verbatim | 37 points: Snyder's worked example (USGS PP 1395, pp. 332–333: R = 3, φ1 = 40° N, λ0 = 100° W; 20° S, 100° E) and, for PRT, USA, RUS and FJI, the centre, the four bbox corners, a point 60° north, 90° east, the North Pole and (RUS, FJI) both sides of the antimeridian. Projected by pyproj 3.6.1 (PROJ 9.3.0, `+proj=laea +R=…`) and d3-geo 3.1.1 (`geoAzimuthalEqualArea`, scale R), in metres, y up. The three implementations (with the Step 0 prototype) agree to 1.214e-8 m (`q5-laea-verify.log`). |
+
+The R column is the WGS84 authalic radius, 6 371 007.2 m, except Snyder's R = 3.
+| `step0-fit.tsv` | M4a Step 0, Q1-merged (`_handover/m4-step0/q1-merged.tsv`, 2026-09-30): the `iso` and `fit_merged` columns, verbatim | 239 codes' fit at the golden pane (km/pt, printed to 4 decimals) under the brief's rules, by the prototype verified in Q0/Q1: largest part's group, lon/lat-bbox centre (AQ included, not pole-centred), no override. The tool's reproduction allows the fixture's rounding (half a unit in the 4th decimal) beside 0.05 %. |
+| `golden-fit.tsv` | `ondar-map-build --tables` on the shipped `world.ondarmap`'s build (tool `4580af0`, NE v5.1.2, 2026-10-01) | The 248 countries' frame: code, main unit, name, R1 centre, the frame bbox in km, fit and initial scale at the golden pane, level, the subdivision / override / alias flags, insets, parts and groups. Hand-checked against `step0-fit.tsv` (the diff is in commit 5's message: MY, AQ as expected; six micro-states within the fixture's rounding) and by the chat at P3. The frame tests (M4a commit 6) compare the resource against it. |
+| `golden-insets.tsv` | the same run | The 14 insets as resolved: box on the golden pane, group, anchor distance, own LAEA, scale, level, clearance. |

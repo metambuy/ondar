@@ -23,7 +23,7 @@ export default function About({ onBack }: { onBack: () => void }) {
       <h1 className={styles.heading}>{info ? `${info.name} ${info.version}` : "Ondar"}</h1>
       <p className={styles.line}>A macOS menu bar radio player.</p>
       <p className={styles.muted}>
-        Station data from radio-browser.info. Map imagery: NASA Blue Marble. Audio: rodio and
+        Station data from radio-browser.info. Map: made with Natural Earth. Audio: rodio and
         Symphonia.
       </p>
       <div className={styles.row}>

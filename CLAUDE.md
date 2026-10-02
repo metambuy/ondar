@@ -11,7 +11,7 @@
 
 **Ondar** — a macOS menu bar internet radio player. Tauri v2 shell, Rust core, thin
 React/TypeScript view layer. Rust audio pipeline with a real 10-band equalizer, station data
-from radio-browser.info, a bundled NASA Blue Marble satellite map.
+from radio-browser.info, a drawn map built from Natural Earth and bundled (M4).
 
 Target platform is **macOS only** (Apple Silicon first, universal binary at release). Do not
 add Windows/Linux code paths.
@@ -37,7 +37,7 @@ in TS, the design is wrong; move it to Rust and emit an event.
 | M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
 | M2 | Tray + NSPanel popover | **done** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) merged 2026-09-21 (`2a9bae9`, tagged `m2d-done`) |
 | M3 | Station API + SQLite cache + country/station UI | **in progress** — **M3b built** on branch `m3b` from 2026-09-23 (plan `_handover/m3b-plan.md`; Step 0 folded into the commits: 1a `fbb0a79` harness · 1b `de87005` country control + station list + the TS runner · 1c `b4bbfbc` Now Playing · 2 `d1129a3` the list measured at 50/327/750, no virtualisation · 4 `bb2452d` favourites/recents, presets retired · 5 `33400f5` the click endpoint · 6 `155d14d` prefetch from bitrate · 7 docs `e23e48d`; **acceptance run 2026-09-23** — 10 items, 7 as built; B `f829b1e` and C `298c342` fixed and re-run PASS; **A, the output keeping the first session's sample rate, is M1's defect and is deferred to its own measured work after the merge, before M4**; **`/code-review` 2026-09-23**: eight findings fixed, one commit each, `3631085`…`f8f8c59` plus the closing docs commit — ONDAR.md, "M3b: the collapsed view…", its acceptance and "Code review, 2026-09-23" paragraphs; **merged 2026-09-24** (`f7af9dc`, tagged `m3b-done`)); Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); **merged 2026-09-23** (`92cfe3f`, tagged `m3a-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) fixed on branch `a-sample-rate` (`ebb414f`), acceptance A1–A4 PASS 2026-09-24 (ONDAR.md, "Defect A"); merged 2026-09-24 (`b7e050a`, tagged `defect-a-done`); **M3c (HLS, the ADTS half) built on branch `m3c` 2026-09-24** — plan `_handover/m3c-plan.md` (reviewed, Step 0 gate passed), commits `7b19720` lint · `659950d` fixtures · `ce6a247` playlist · `c37963b` segment · `a3ec612` fetch layer, each pushed alone and CI green; **acceptance X1–X5, X7 PASS** (`_handover/m3c-acceptance.md`: Antena 1 18 min at 1.0000, 0 underruns; HE-AAC and `FFF9` stations play; TS/video refused in < 1 s, 3 / 2 requests, no vote; Wi-Fi off 20 s recovers in 20.7 s with one click — X6, 2026-09-25); tests **217 + 15** at acceptance; two scoped `/code-review` rounds 2026-09-25 (ONDAR.md "Code review, 2026-09-25" and "Code review 2, 2026-09-25": `cce9ffa`…`fe120a2`, then `0f045b3`, `50036ee`, `b07e04e`, `d61d524`, `a746fe6` + docs), **233 + 15** after them; round 3 (`fe120a2..9a6a059`, ONDAR.md "Code review 3") fixed its one behaviour finding in `4a6e3a7`, **234 + 15**; **merged 2026-09-26** (`8b5b1fb`, tagged `m3c-done`); then **defect B** (unbounded `Connecting`) before M4 — **built on branch `defect-b` 2026-09-28/29**: C0 `f95e530` error head · C1 `5740b96` terminal only before audio · C2 `00ddac2` the build bound · C2b `a83fe78` clippy over the workspace · C3 `5bc9483` `adts.rs` · C4 `a8585c6` the front end wired · C4b `49e6a72` the bound counts elapsed time; **acceptance X1–X4 PASS 2026-09-29** (`_handover/b-acceptance.md`: FFF9 mounts at 1.0000 over 11 min each, 0 underruns; main left an AAC+ mount stuck on 1 of 3 runs, the branch never), X1/X1b re-run after C4b at 20.205 / 20.178 s (X1 5 ms over the re-run's 20.2 s rule, open); ONDAR.md "Defect B"; **`/code-review` 2026-09-29**: ten findings, all accepted (`_handover/b-review-triage-2026-09-29.md`); the chat's round-7 design error behind findings 1–3 (a hung reconnect uncounted, the prefetch inside the bound, HLS never `Network`) fixed by redesigning the bound on a byte clock and a build stamp: F1 `2784efd` (checked by the chat on five points) · F2 `128dc08` cancelled build emits nothing · F3 `f3008cd` no pass-through after alignment · F4 `dd469e4` `audio/x-aac`, one header parser, one MIME parser — each test-first, recorded failing on `da36489`, pushed alone, CI green; **re-acceptance X1, X1b, X3, X5 PASS 2026-09-29** (X1 20.100 s after the first byte, X5's slow stream plays at 27.3 / 44.0 s, both confirmed on screen); **280 + 15**; **`/code-review` 2 2026-09-30** (`b-review2-findings.md`): the gaps were per-read fill times, not network arrival (a 32 KiB read is 8.2 s at 32 kbit/s, so every unsyncable build below ~52 kbit/s read `Starved`), a stale-emit race, no margin at exactly 10 kbit/s; fixed as G1a `ed907f0` the no-bytes margin · G1b `34547bf` arrival stamped by `on_progress` per open · G2 `afe6c2e` session events generation-gated · G3 docs — each test-first, recorded failing on `688c9fd` (`_handover/b-g/`), pushed alone, CI green; **re-acceptance X1, X1b, X6 PASS 2026-09-30** (X1 20.024 s, X1b 20.091 s `Starved` on a 5.01 s gap, X6 — a steady 32 kbit/s unsyncable body — terminal `unsupported_format` at 20.102 s where `688c9fd` backed off on an 8.20 s "gap"; X1 and X6 confirmed on screen); ONDAR.md "Code review 2 and G1–G3"; **285 + 15**; the Fable verification of `688c9fd..HEAD` (`_handover/b-verify-findings.md`: findings 1–3 fixed, no crash, no behaviour finding) **CLEAN 2026-09-30**; **merged 2026-09-30** (`dc9200d`, tagged `defect-b-done`); the carried items (review 2's 5 and 7, the verification's "other") on branch `post-defect-b` |
-| M4 | Map (tile pyramid, Leaflet, markers) | |
+| M4 | Map — the drawn map (reversal applied 2026-09-30) | **split M4a/M4b/M4c** (ONDAR.md, "M4: the drawn map — the reversal"); **M4a** (geodata + the `ondar-map` crate, no UI) **built on branch `m4a`** 2026-10-01 — plan `_handover/m4a-plan.md`; commits 1–7 `8d2e9c1`…`40a36f0` (the hybrid `65f7927`, D6 `47218f2`, D2's gate `4580af0`, the resource `3dda925`, frame `52e1880`, the loader `40a36f0`), each pushed alone and CI green; P3 resource check passed; **acceptance PASS** (`_handover/m4a-acceptance.md`: RU fit 4.28 ms, sweep p90 1.57 ms, load 17 ms, `Ondar.app` 10 576 KiB from 7 908); ONDAR.md "M4a: decisions during the build" and "M4a: built and measured"; **`/code-review` 2026-10-01** (Fable): nine findings, all accepted (`_handover/m4a-review-triage-2026-10-01.md`), fixed test-first, each recorded failing on `dddb4da`, pushed alone, CI green: `9108154` · `56c3515` + `458ee1e` (the resource rebuilt, 2 712 599 B, `e2775f81…`) · `20aaa09` · `8998b8f` · `ff9a75a` · `0eb9ca0` · `11b56e3` · `d411223` + docs (ONDAR.md "M4a: code review, 2026-10-01"); **369 + 15**; **`/code-review` 2 2026-10-01** (Fable, `dddb4da..8324e68`): six findings and a second pass's check, all accepted, fixed test first, each recorded failing on `8324e68` (`_handover/m4a-review2/`), pushed alone, CI green: `a227449` · `26b28f4` (the resource rebuilt byte-identical but for the header's commit, not re-committed) · `4022466` · `4fb01f3` · `945ce4c` · `f44e424` · `f526d34` + docs (ONDAR.md "Code review 2, 2026-10-01"); **374 + 15**; next **`/code-review` 3 2026-10-01** (Fable, `8324e68..b3cf735`; `_handover/m4a-review3-findings.md`, triage `m4a-review3-triage-2026-10-02.md`): six findings, no crash; 1–3 fixed test first, each recorded failing on `b3cf735` (`_handover/m4a-review3/`), pushed alone, CI green: `6e8ff4b` an invalid view projects nothing · `cc38823` an inset dropped only for a box already drawn · `fd529f2` `clamp_view` snaps within 1e-6 of the fit; 6 in the docs commit; 4 and 5 carried to M4b (ONDAR.md "Code review 3, 2026-10-02"); **377 + 15**; no fourth review — the chat reads the fix diff, then the merge |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
 | M6 | Signing, notarisation, DMG | |
 
@@ -57,6 +57,8 @@ onda/
 │                                 instructions field, not this repo
 ├── scripts/stall-server.py       local Icecast-alike for stall/reconnect testing
 ├── scripts/check-tokens.sh       fails `pnpm lint` on a style literal outside tokens.css
+├── scripts/fetch-natural-earth.sh  fetches the map tool's 12 Natural Earth inputs (v5.1.2) into
+│                                 `ondar-map-build/input/` and checks them against its `pins.tsv`
 ├── vite.config.ts, tsconfig.json vite builds one entry, panel.html — the explicit input map is
 │                                 what makes the bundle ship it
 ├── panel.html                    the popover page: transparent root (load-bearing) + the entry
@@ -89,12 +91,20 @@ onda/
 │   ├── api.ts                    THE Rust boundary: invoke wrappers + event listeners
 │   └── bindings/                 GENERATED by ts-rs — do not edit by hand
 └── src-tauri/
-    ├── Cargo.toml                workspace: ".", "crates/ondar-audio", "crates/ondar-stations"
+    ├── Cargo.toml                workspace: ".", "crates/ondar-audio", "crates/ondar-stations",
+    │                             "crates/ondar-map", "crates/ondar-map-build"
     ├── tauri.conf.json
     ├── tauri.dev.conf.json       dev-only overlay: identifier `<id>.dev`; a shell test pins the
     │                             derivation, so renaming the real id without it fails the build
     ├── Info.plist                merged at `tauri build`: LSUIElement (dev cannot test it)
     ├── capabilities/default.json scoped to `panel`, the only window; `core:default` only
+    ├── resources/map/            `world.ondarmap` (built from NE v5.1.2 by the tool at `56c3515`, the
+    │                             review's enclave fix, deflated per blob, 2 712 599 B, SHA-256
+    │                             `e2775f81…` — committed, D3; rebuilt only for a rule change) and
+    │                             its build report. `tauri.conf.json`'s
+    │                             `bundle.resources` maps it to `map/world.ondarmap`: beside the dev
+    │                             binary (`target/debug/map/`) and in the bundle's Resources, so
+    │                             `resource_dir()/map/world.ondarmap` serves both
     ├── icons/                    ondar-icon-master.svg is the source; the PNGs/icns derive
     │                             from it. tray/ holds the 4 template glyphs (22/44 ×
     │                             idle/playing) — pure black on alpha, icon_as_template(true).
@@ -111,6 +121,11 @@ onda/
     │   │                         commit and fallback paths; the tray-screen placement log
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
+    │   ├── map.rs                the map resource (M4a commit 7): `MapState` (a `OnceLock` set once),
+    │   │                         loaded on its own thread from `resource_dir()/map/world.ondarmap`,
+    │   │                         one line — `map resource loaded path=… bytes=… units=… countries=…
+    │   │                         ms=…` or `map resource unavailable reason=…` (the app runs without
+    │   │                         it); no command reads it yet (M4b)
     │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
     │   │                         flood; holds 3 of the shell's tests, including the
     │   │                         bare-`cargo test` tripwire (see Commands)
@@ -203,6 +218,108 @@ onda/
         │                         means the write succeeded, not just the fetch) through a sink
         ├── fixtures/             census slices + PROVENANCE.md (the data's stated freedoms)
         └── (scripts/fixture-slice.py regenerates the PT slice)
+    └── crates/ondar-map/         the drawn map's pure core (M4a). No Tauri dependency, no network
+        │                         dependency.
+        ├── laea.rs               the spherical LAEA, hand-written (Snyder PP 1395; `proj4rs` 0.2's
+        │                         is wrong in y), on the WGS84 authalic radius 6 371.0072 km; the
+        │                         inverse's latitude by atan2; `haversine_km`; `lon_interval` (the
+        │                         shortest longitude span, antimeridian-aware — R1)
+        ├── rules.rs              the rules shared with the build tool: `Pane` (+ `GOLDEN` 328 ×
+        │                         300 × 20; `is_valid`: finite, sides > 0, padding ≥ 0 — `fit_scale`
+        │                         answers `None` otherwise, so no frame function sees a bad pane;
+        │                         `project`/`unproject` check `is_valid` themselves, and the
+        │                         view's: `View::is_valid`, a finite centre and scale > 0),
+        │                         `fit_scale`, `initial_scale` (S1 floor 1.5), `LADDER` 1.5/3/6/12/24
+        │                         km/pt, `level_for` (the coarsest level ≤ the scale), and S6's
+        │                         `rect_ring_distance` (+ `seg_dist`, `segments_cross`), the one copy
+        │                         the tool's clearance check and the frame's `inset_clearance` share
+        ├── codec.rs              a ring as `i16` deltas of 0.05 pt quanta at its level from an `i32`
+        │                         first vertex, escape pair `(i16::MIN, i16::MIN)` + `i32`; lossless
+        │                         to 0.0354 pt; `Cursor`, the one bounded reader (every read an
+        │                         `Option`, counts bounded by what remains)
+        ├── clip.rs               Sutherland–Hodgman (rings) and Liang–Barsky (lines) against a
+        │                         rectangle, hand-written: no polygon-boolean crate at runtime
+        ├── index.rs              the ring index and the clamp's reach, shared by the tool and the
+        │                         frame: `fit_rect`, `reach` (the fit rectangle + the 2 pt clip
+        │                         margin at the level's coarsest scale — D6), `ground_cap` (a
+        │                         rectangle of a projection as a ground cap; off the disc = the whole
+        │                         sphere), `cap_meets`, `tolerance_km` (bound + codec)
+        ├── format.rs             `world.ondarmap` v1: the model (`Unit`, `Part` + `Role`, `Cap`,
+        │                         `Country`, `Inset`, `BlobMeta`), the writer (the tool's) and
+        │                         `Store::load` (the app's) — one code path. Per blob: a ring table,
+        │                         raw or deflated (D1), CRC32 of the raw bytes; the loader never
+        │                         panics (bounded cursor, per-blob and total raw caps, the ring table
+        │                         must tile the blob, a blob's ring count must match its owner's,
+        │                         the file's ladder must be `LADDER`, every unit a country names
+        │                         must exist)
+        ├── frame.rs              framing (M4a commit 6): `Store::lookup` (R7: uppercase; `XX`, unknown →
+        │                         `NoMap`), `fit` (bbox centre, S1 floor), `clamp_view` (D6: scale into
+        │                         [1.5, widest], the view inside the fit rectangle; a scale within
+        │                         `FIT_SNAP`, 1e-6, of the widest is the fit — review 3), `frame` (level =
+        │                         coarsest ≤ scale; clip = view + 2 pt; rings by the index; the main
+        │                         unit by translation, others inverse-then-forward; land, neighbours,
+        │                         S4 parent copies omitted, own `Dropped` islets drawn as land,
+        │                         own inset groups drawn as land away from the fit (in their box
+        │                         at it), subdivisions above 8 km/pt, insets at the fit view only, each box
+        │                         anchored by its corner at any pane — `Inset::rect_at` — and drawn
+        │                         only inside the pane and apart from the boxes drawn before it in table
+        │                         order, else counted in `insets_dropped`; 0.01 pt;
+        │                         `missing_blobs` per unit), `project`/`unproject`, `inset_clearance`
+        ├── examples/frame_bench.rs  § 7's timings: load, PT/US/RU at fit, a city at the floor and mid
+        │                         zoom (10 + 100 runs, median / p90, reversed), `bytes_out`, the sweep
+        ├── tests/resource.rs     tests on the shipped resource (pins, spec, loader fuzz, coverage)
+        ├── tests/frame.rs        § 5's frame tests on the shipped resource
+        └── fixtures/             `laea-reference.tsv` (Step 0's Q5: pyproj + d3-geo at 37 points),
+                                  `step0-fit.tsv` (Q1-merged's 239 fits), `golden-fit.tsv` and
+                                  `golden-insets.tsv` (the resource's frames, from `--tables`)
+                                  + PROVENANCE.md
+    └── crates/ondar-map-build/   the build-time tool (M4a): Natural Earth → the map resource. A
+        │                         workspace member (D4) so the gates cover it; never in the app.
+        │                         `cargo run -p ondar-map-build --release -- [--tables DIR]
+        │                         [--out FILE] [--report FILE] [--encoding deflate|raw]
+        │                         [--simplifier hybrid|vw] [--bench]`; ~20 s on the M4 Pro
+        ├── pins.tsv              the 12 inputs (admin 0, map units, admin 1: .shp/.shx/.dbf/.prj),
+        │                         bytes + SHA-256, shared with the fetch script; a mismatch is refused
+        ├── overrides.tsv         S2: MY's frame is the peninsula's group (hand-checked, D5)
+        ├── insets.tsv            S6: the 14 insets — anchor, corner, box on the golden pane, label
+        ├── aliases.tsv           R7/S4: the nine codes drawn from their NE map unit
+        ├── input/                the NE files (gitignored; never in CI)
+        ├── ne.rs                 the shapefile + dBASE reader (`ISO_A2_EH` is the code field)
+        ├── seam.rs               R9: Antarctica's polar run stripped; RU's and FJ's halves on the
+        │                         seam shifted east, unioned, and the ≤ 154 m notches where the
+        │                         halves' coasts meet 180° apart closed; `seam_edges` (must be 0)
+        ├── world.rs              the frame rules over all of NE: 267 units, 248 countries; grouping
+        │                         (< 300 km on the ground), the frame group (largest part or the
+        │                         override), R1 centre (AQ at the pole), the fit at the golden pane,
+        │                         in-frame groups, S6 insets matched by nearest part (≤ 100 km),
+        │                         each box inside the pane, apart, ≥ 12 pt from the land the frame
+        │                         draws (frame + dropped groups, clipped to the pane + 2 pt) at the
+        │                         initial view (a refusal names the largest box that would clear at
+        │                         each corner), the subdivision flag (fit > 8), S4 part matching
+        ├── borders.rs            D2: the admin-1 edge census (twice = an interior border, once =
+        │                         the outline, along the seam = neither), lines chained between
+        │                         junctions, and the gate (decided 2026-10-01): every once-edge
+        │                         whose midpoint is inside the country's admin-0 land within 375 m
+        │                         (0.25 pt at 1.5 km/pt) of the admin-0 rings, none found 3+ times
+        ├── simplify.rs           R3 per ring: VW-preserve's ε bisected (14–16 evaluations) until the
+        │                         O(n) span bound is within the tolerance; the exact measure (grid)
+        │                         is the stored figure. The stored ring is the **hybrid** (P4, decided
+        │                         2026-10-01): RDP at the tolerance if `is_simple` (grid-bucketed: no
+        │                         crossing, fold-back or repeat; a ring also ≥ 3 distinct vertices and
+        │                         non-zero area) and within the bound, else that ring's VW; no repair
+        ├── store.rs              the resource's contents: storage LAEA per unit (a country's main
+        │                         unit in its frame's), roles, the S4 omit-in, ring caps (R10),
+        │                         coverage from `index::reach` (D6: the view inside the fit
+        │                         rectangle, + the clip margin and the cap tolerance), every needed
+        │                         (unit, level) simplified ring by ring on all cores, subdivisions
+        │                         (D2 borders, or polygons where the gate fails), P2 per vertex, P4
+        ├── report.rs             the build report (bytes/vertices/bounds per layer and level,
+        │                         coverage, P4, P2, R9, D2, D1, insets, S4, pins, SHA-256)
+        ├── bench.rs              D1: `Store::load` from a file, raw against deflated per blob
+        ├── geom.rs               projection, bounds, caps; `geo::Coord` adapters to `ondar_map::rules`'
+        │                         rectangle–ring distance, segment distance and crossing test
+        └── main.rs               `load` (pins → NE → world → plans), the build, `--tables`, and
+                                  the `#[ignore]`d input tests
 ```
 
 That root `onda/` is **not** a missed rename. The project is Ondar, but the working directory
@@ -216,8 +333,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 286 tests `cargo test --workspace`
-reports break down as **267 hand-written + 19 ts-rs-generated** (audio 182, shell 40, stations 64):
+export_bindings_<type>` that writes the `.ts` file. So the 377 tests `cargo test --workspace -- --list`
+reports (373 run, 4 `#[ignore]`d — the map tool's input-bound tests, run locally) break down as
+**358 hand-written + 19 ts-rs-generated** (audio 182, shell 41, stations 64, map 58, map-build 32):
 
 | | |
 |---|---|
@@ -247,9 +365,28 @@ reports break down as **267 hand-written + 19 ts-rs-generated** (audio 182, shel
 | `panel::tests` | 30 — in the **shell** crate; three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
+| `map::tests` | 1 — shell crate (M4a commit 7): the shipped resource loads through the shell's path rule (`resources/` + `map/world.ondarmap`; fails with `map/` dropped), a missing file and a non-resource are reasons, not panics |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
+| `laea::tests` | 4 — **map** crate (M4a, 2026-10-01; each mutation-checked, `_handover/m4a-mutations.log`): the 37 Q5 points forward against pyproj and d3-geo and back by the inverse within 1e-6 km, Snyder's example (R = 3) to 1e-7 (fails on the mean radius 6 371.0088, `k' = √(1/d)`, a sign in y or in the inverse, degrees for radians); `lon_interval` across 180° (fails with the wrap-around gap dropped); `wrap_lon`; the antipode and outside the disc are `None` |
+| `codec::tests` | 5 — map crate (M4a commit 2, mutation-checked): seeded random rings at every level, small steps and steps past `i16`, back within 0.0354 pt (fails on a delta's sign); a delta of exactly `i16::MIN` is escaped (fails if only out-of-range deltas are); every truncation, a trailing byte and a vertex count past the bytes are `None` (fails with the remaining-bytes check dropped); `quantise` refuses past `i32` and NaN; `Cursor::count` bounded by what remains (fails unbounded) |
+| `clip::tests` | 7 — map crate: Sutherland–Hodgman on a square, a ring with a hole (each ring alone, the hole stays a hole), a triangle across a corner (the corner a vertex), no intersection (a bbox that meets but a triangle that does not) → empty, a ring containing the window → the window, a ring inside unchanged (fails on an inverted inside test or a wrong crossing point); Liang–Barsky: a line leaving and re-entering is two pieces cut at the boundary (fails on t0/t1 swapped) |
+| `format::tests` | 9 — map crate: **review (2026-10-01), findings 3 and 6:** a ladder that is increasing and positive but not `LADDER` (`[1.5…12]`, `[2…32]`, `[1.5…48]`) is `Malformed("ladder")` (on `dddb4da` it loaded; killed with the check off, by length only, by the first level only); a country naming unit 2 or 9 999 of 2 is `Malformed("countries")`, unit 1 loads (on `dddb4da`: "unit 2 loaded"; killed with the check off, on `<=`, on the main unit only). The writer's output loads back to the same tables and quanta, raw and deflated; **the loader never panics**: every truncation of the first 4 KiB and 1 000 seeded lengths → `Err`, 10 000 seeded 1–8-byte mutations → `Ok` or `Err` with every ring of an `Ok` decoded (on a synthetic resource; the shipped one joins at commit 5); a flipped raw byte → `Corrupt { blob, "crc" }` (fails with the CRC skipped); version 2 → `Version(2)`, bad magic → `Magic`; a blob whose ring count differs from its owner's → `Corrupt { "owner" }`; the ring table must tile the blob and give each ring its minimum length (each fails with its check dropped — the fuzz cannot reach these behind the CRC; mutation log); **no panic shape** in the crate's non-test code — the `adts.rs` scan over every module, and since review finding 4 `.clamp(` (`f64::clamp` panics on min > max; fails on an added `.unwrap()`, `bytes[a..b]` or `.clamp(`: on `dddb4da` "frame.rs:112") |
+| `rules::tests` | 5 — map crate: **review finding 7 (2026-10-01):** S6's one `rect_ring_distance` on open and closed rings — apart 3, diagonal 5, overlapping 0, a ring around the rectangle 0, a ring along a side 0, a touching segment counts as a crossing (the tool's semantics; the resource rebuilt on it is byte-identical past the header's commit). 288 × 260 km fills the golden pane at 1 km/pt, the ANMITE's 328 × 178 binds on h / 138 (fails on padding once, or `min` for `max`); the S1 floor; `level_for` 28.01 → 24, 12.0 → 12, 11.99 → 6 (fails on `<` for `≤`); the inset box's area (the Azores' 92 × 52 → 84 × 36 above the 8 pt label strip; fails with the strip dropped) |
+| `pins::tests` | 2 — **map-build** crate (M4a commit 3, each mutation-checked): the table holds 12 pins; a temp file with one flipped byte, or one more byte, is refused before it is read (fails with the check skipped; the size check alone is an equivalent mutant — the SHA covers it) |
+| `tables::tests` | 2 — map-build: the shipped `overrides.tsv` (1), `insets.tsv` (14), `aliases.tsv` (9) parse; a malformed row names its line |
+| `world::tests` | 4 — map-build: **review 2 (2026-10-01), finding 2:** S6's clearance counts a dropped islet in the padding band ~4 pt from a box (refused; on `8324e68` it built at 14.0 pt) and not one past the frame's 2 pt clip margin (killed with the land unclipped or by `Frame` groups only). Also two parts 299 km apart are one group, 301 km two (fails at 298 or 301); the override's anchor picks its group, the largest part's group must then be an inset, an anchor in no part is refused (fails with the override ignored); S6 — a remote 999 km² group is dropped, 1 001 km² is refused unlisted and an inset listed, a box over the land and an anchor 150 km off are refused (fails at 998 or 1 002 km², with the clearance or the anchor bound off) |
+| `seam::tests` | 3 — map-build: an Antarctica-shaped ring loses its polar run (10 vertices), stays closed with no seam edge (fails with the strip off); two halves cut at 180° union into one part (fails with the shift off); halves meeting 180° 0.001° apart leave a 111 m notch, closed (fails with the notch kept) |
+| `borders::tests` | 7 — map-build (D2): three squares in a row → 2 interior edges, 8 outline, 2 lines (fails if once-edges are kept); a chain through degree-2 vertices is one line and a degree-4 junction cuts four (fails if chains are not cut); an enclave is one closed line; an edge found three times is counted; a seam edge found twice is not a border (fails if only once-found seam edges are dropped); the 1 m on-ring prefilter (fails with the tolerance ×10); **the gate's rule** (M4a commit 4d): 375 m inside the land passes, 375.001 m fails, a 3+ edge fails (fails at the plan's 1 m, on `<` for `≤`, or with the 3+ check dropped) |
+| `simplify::tests` | 4 — map-build (M4a commits 4 and 4b, mutation-checked): **the hybrid** — a thin band where RDP at 1.2 straightens one side through the other's vertex, so RDP's ring is not simple and the hybrid returns VW's (fails if RDP is kept without the simplicity check), a well-behaved ring keeps RDP's; **`is_simple`** — a bow tie, a spike, a zero-area ring, a repeated vertex, an open fold-back and an open zero-length segment are not simple, a square, a zigzag and a 3 000-vertex ring are, the same ring with two far vertices swapped is not (fails with crossings, fold-backs or repeats unchecked; the area check and the hybrid's bound check are equivalent mutants, the log says why). And Step 0's instrument check on seeded rings — the span bound never below brute force, the grid equal to it (fails if the span bound skips a removed vertex or the grid stops at ring 0); tuning keeps the span bound within t and above 0.8 t, fewer vertices at a larger t, an open line's ends (fails if the bisection or its expansion accepts above t, or with no halvings) |
+| `frame::tests` | 2 — map crate, **review 2 (2026-10-01), finding 5:** a missing subdivisions blob is counted only when a line meets the view, or lies past it within the tolerance (on `8324e68` a line out of view counted: 3 for 2; killed with the count unconditional, never, by the index in the unindexed frame, and without the tolerance). Review finding 9 (2026-10-01): on the synthetic resource a neighbour unit of three parts in view with no blob, and a two-part inset whose level has no blob, add one `missing_blobs` each and no considered ring, indexed and unindexed (on `dddb4da`: `(5, 5)` for `(2, 2)`; killed per part for land, per part for the inset, dropped, and with the ring caps ignored — `index_is_exact`) |
+| `index::tests` | 3 — map crate (M4a commit 4c, mutation-checked): the fit rectangle is the pane at the widest scale (the floor for a country finer than it) and the reach adds the 2 pt clip margin at the level's coarsest scale (fails without the margin, with the rectangle at the fit, or with the scale uncapped); caps meet within the tolerance and not 1e-6 km past it (fails with the tolerance ignored); a rectangle off the LAEA disc is the whole sphere (fails if the off-disc samples are skipped) |
+| `resource` (`ondar-map/tests/resource.rs`) | 4 — map crate, integration tests on the shipped `world.ondarmap` (M4a commit 5; ~35 s in a debug build): the header's pins equal `pins.tsv`, v5.1.2, the authalic radius, the ladder, 267 units / 248 countries; every blob within 0.25 / 0.5 pt; the loader on the real file (every truncation of the first 4 KiB, 200 seeded lengths → `Err`; 400 seeded mutations → no panic, every ring of an `Ok` decoded); **`coverage_matches_clamp`** — for every country and level, the views at the level's finest and coarsest scale in each corner of D6's fit rectangle (computed from D6's wording, not `index::fit_rect`) and at its centre, each with the 2 pt clip margin: every ring whose cap meets the clip rectangle by the frame index's own test (`index::ground_cap`, `cap_meets`, the level's tolerance) has its blob, subdivisions above 8 km/pt, insets at their level. Mutation-checked by rebuilding the resource with the tool mutated (`_handover/m4a-mutate-resource.sh`): fails without the clip margin or with a level's coarsest scale taken as its own ("Australia: unit NFK at level 3 is not stored"); the cap tolerance and the inset rule are invisible on the real data (killed by `store::tests` on a synthetic world), the fit rectangle at the fit for a country finer than the floor is equivalent on it (every unit is stored at level 0) |
+| `frame` (`ondar-map/tests/frame.rs`) | 19 — map crate, **review 3 (2026-10-02), each recorded failing on `b3cf735` (`_handover/m4a-review3/`) and mutation-checked:** finding 1 — `a_bad_view_is_none`: a scale of 0, negative, NaN or ∞, or a centre not finite, gives `None` from `project` and `unproject` (on `b3cf735` `Some([-inf, inf])`; killed with each clause of `View::is_valid` dropped and with `unproject` unguarded); finding 2 — `an_inset_that_does_not_fit_the_pane_is_not_drawn` now checks overlap against the drawn boxes and pins the rule as an iff in table order, and at 328 × 60 French Guiana is drawn beside Guadeloupe & Martinique and Hawaii (on `b3cf735` it and Réunion were both dropped); `an_off_pane_box_does_not_drop_an_inset` moves Alaska's box over Hawaii's and off the pane — Hawaii drawn, one dropped (on `b3cf735` none drawn; killed with every box pushed, none pushed, the inside check dropped); finding 3 — `a_view_a_hair_below_the_fit_is_the_fit`: for US, PT and FR a view at fit × (1 − 1e-12), panned 1 km, is the fit and frames as it, at × 0.99 it is not and draws no inset (on `b3cf735` the US view was not the fit and its frame lost Alaska and Hawaii; killed with the snap removed, at 0, at 0.02, keeping the view's centre). **Review 2 (2026-10-01), each recorded failing on `8324e68` (`_handover/m4a-review2/`) and mutation-checked:** finding 1 — for every country with insets, at the fit nudged in and at the floor on each inset, every in-pane vertex of an own `Inset` part is land, and at the fit none is (IN, YE, US, PF among those seen; on `8324e68` "IN IND: an own inset vertex at (269.76, 237.81) is not land"; killed never drawn, drawn at the fit, drawn as neighbours); finding 4 — at 328 × 60 only Guadeloupe & Martinique and Hawaii are drawn, at 328 × 178 all 14, every drawn box inside the pane and apart, `drawn + insets_dropped` = the country's insets, `inset_clearance` for the drawn only (on `8324e68` "Galápagos at 328×60: [240, -8, 80, 60] leaves the pane"; killed without either check, the count, or the clearance over every inset); finding 6 — `a_bad_pane_is_none_not_a_panic` adds `project` and `unproject` (on `8324e68` `Some([-54.09, 191.74])`). Then on the shipped resource (M4a commit 6; mutation-checked, the resource rebuilt from a mutated tool where the rule lives there): the golden table for all 248 to its printed precision; Step 0 reproduced (237 codes; MY, AQ, MM); the antimeridian — FJ 1.9495 and RU 28.0107, and at the floor over Chukotka (67° N, 180°) and Taveuni the point lies in one land ring with land strictly on both sides of 180° and no edge within 0.01° of it (the plan's 179.9999° is below the quantum; fails with RU/FJ unstitched); Antarctica pole-centred, no vertex past −89.99°, simplified, Peter I in the frame (fails with the pole centre removed); the 14 insets ≥ 12 pt, inside their boxes, apart, and none at a zoomed view (fails with insets at every view); RE's frame omits France's copy of the island (fails with the S4 omit-in ignored); R7's lookup; subdivisions above 8 km/pt only; D6's clamp (fails on the plan's reading or either zoom limit); the index exact against `frame_unindexed` for PT/US/RU at fit, floor and mid (fails with the index's tolerance dropped). Equivalent mutants: `XX` (no such country), the subdivision flag (no blob for an unflagged country). **Review (2026-10-01), four more, each recorded failing on `dddb4da` (`_handover/m4a-fixes/`) and mutation-checked:** finding 1 — the ACT and Distrito Federal at every subdivision level and Zelenograd at level 6 are closed loops that hold them ("AU ACT at 8.5 km/pt (level 6): no closed loop holds it"; killed by the tool mutated back to `quantise_ring`; Moscow is not an enclave in NE v5.1.2); finding 4 — seven bad panes give `None` from `clamp` (now `clamp_view`), `fit_scale`, `fit`, `frame` and an empty `inset_clearance` (on `dddb4da`: "min > max, or either was NaN"); finding 2 — at 328 × 178, 400 × 360 and the golden pane the 14 boxes are inside the pane, their size and corner gaps the golden pane's, their land inside, `inset_clearance` measured from the drawn box ("Galápagos at 328×178: [240, 232, 80, 60] leaves the pane"); finding 5 — every in-pane vertex of an own `Dropped` ring at the golden fit is drawn, 20 parts in 6 countries ("Antarctica ATA: an own islet's vertex at (39.83, 19.15) is not drawn") |
+| `store::tests` | 4 — map-build: **review 2 (2026-10-01), second pass:** a unit that is the main unit of two countries is refused (on `8324e68` it built). Also coverage on a synthetic world where only the rule under test can store the blob — an inset whose level only the inset rule needs, a `-99` unit just past the disc around the reach by half the level's tolerance (fails with the inset rule dropped or the tolerance ignored; doubling the tolerance passes); k' is 1 at the centre and √2 at 90° (fails inverted); a ring is stored open without repeated quanta (fails if they are kept) |
+| `input_tests` | 4, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~50 s): Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the gate passing for all 18, no once-edge inside the land past 80 m; fails with the inside-land filter dropped); two builds byte-identical and every blob within its bound |
+| `geom::tests` | 2 — map-build: rectangle–ring distances (apart 3, diagonal 5, overlapping 0, the ring around the rectangle 0 — fails with containment ignored); R1's centre of a square across 180° is 180° |
 
-Counting `#[test]` attributes in source gives 267 and will not reconcile with the runner's 286
+Counting `#[test]` attributes in source gives 358 and will not reconcile with the runner's 377
 until those 19 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
@@ -268,7 +405,7 @@ a reset backoff and a second vote — finding 3; fails on the code before it; a 
 renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
 in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
 toggle are enabled and ★ lists the favourite — acceptance findings B and C).
-Every "tests" figure in this project is written as the two numbers, `286 + 15`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `377 + 15`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands
@@ -300,7 +437,7 @@ cargo clippy --workspace --all-targets -- -D warnings
                               # tests and examples never (defect B C2b, 2026-09-28: a constant
                               # assertion, four unused functions and a complex type had failed
                               # it unseen, and C1's harness dead code with them)
-cargo test --workspace       # every test in ondar_audio, ondar_stations and the shell's ondar_lib
+cargo test --workspace       # every test in ondar_audio, ondar_stations, ondar_map, ondar_map_build and the shell's ondar_lib
                               # (counts: the test table above); the remaining targets have 0. Plain
                               # `cargo test` with no `-p`/`--workspace` only runs the root
                               # `ondar` package (its own tests) and silently skips both crates; this
@@ -703,17 +840,40 @@ HTTP (stream-download, bounded; on_progress → Arrivals) → ClockedReader → 
   a visual spacing has to be. See ONDAR.md, "M2b: coordinates are logical points".
 - M2d: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
 
-## Map invariants (M4 — none of this exists yet)
+## Map invariants (M4; M4a built 2026-10-01 — the renderer and the stations are M4b/M4c)
 
-- Tiles are generated at build time and shipped as app resources. They are **never** fetched
-  from the network at runtime.
-- Blue Marble is equirectangular, so lat/lng → pixel is linear. Use Leaflet's `EPSG4326` CRS;
-  do not reimplement the projection. Note its zoom-0 grid is **2×1**.
-- The map is framed by the selected country's bbox with padding; panning is clamped to that
-  bbox plus a margin.
-- Markers come from Rust, deduplicated and capped (~200 per country).
-- Installed size above 100 MB is accepted (ONDAR.md, 2026-09-07). If it must be cut, drop the
-  deepest zoom level before dropping quality.
+See ONDAR.md, "M4: the drawn map — the reversal", "M4a: decisions during the build" and "M4a:
+built and measured", and `_handover/m4a-plan.md`.
+
+- **The drawn bound:** land is simplified to ≤ 0.25 pt and quantised to ≤ 0.035 pt more
+  (≤ 0.2854 pt on screen), subdivisions ≤ 0.5 + 0.035 pt; a neighbour in another country's
+  projection ≤ 0.376 pt (P2). The simplifier is the per-ring hybrid (RDP if simple and within the
+  bound, else VW).
+- **Coverage is for the golden pane** (328 × 300 × 20). A frame at another pane that admits a
+  unit with no blob skips it and counts it in `FrameStats::missing_blobs`; it never fails.
+
+- **The map resource is built at build time** from Natural Earth 10m v5.1.2, whose inputs are
+  pinned by SHA-256 (a mismatch is refused), and shipped as one bundled resource. It is
+  **never** fetched from the network at runtime; the Natural Earth inputs never enter CI.
+- **Rust owns the map; the webview draws exactly the paths Rust sends.** Projection (spherical
+  LAEA on the authalic radius, 6 371.0072 km), framing, insets, level choice, clipping, station
+  gathering and hit-testing are Rust's. No Leaflet, no tiles.
+- **Never frame or clamp in lon/lat bounds.** The centre is the midpoint of the mainland's
+  antimeridian-aware bbox (Antarctica pole-centred); the fit, the pan limit and every bbox are
+  in projected kilometres, so Russia and Fiji hold.
+- **The frame is the crate's, the pane is Rust's.** The crate takes the pane as an argument;
+  the page is told its size and never computes a frame.
+- **The ladder and the clamp:** scales 1.5/3/6/12/24 km/pt, a view uses the coarsest level at or
+  below its scale; zoom is clamped to [1.5 km/pt, fit] and **the view stays inside the fit
+  rectangle** (D6 as decided 2026-10-01: the pane at the widest scale, centred on the frame bbox;
+  at that scale the view is the rectangle and cannot pan). Coverage and the frame's index both go
+  through `ondar_map::index` (`reach`, `ground_cap`, `cap_meets`), so the index never asks for a
+  blob the tool did not store.
+  Subdivisions are shown above 8 km/pt, by a build-time flag per country.
+- **No panic from bytes.** The loader reads through one bounded cursor; a corrupt or truncated
+  resource is an error, and the app runs without a map.
+- Station coordinates are radio-browser's `geo` only (M2, 2026-09-30); the list stays the
+  navigation.
 
 ## Known risks — check these before trusting this file
 

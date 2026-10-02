@@ -102,7 +102,8 @@ jobs:
         run: pnpm lint
 
       # cargo build, not `pnpm tauri build`: a full bundle is slow and pointless until
-      # M6, and the map tile pyramid must never enter CI.
+      # M6. The Natural Earth inputs (40 MB) never enter CI: the built map resource is
+      # committed, and the build tool's input-bound tests are #[ignore]d.
       - name: cargo build
         working-directory: src-tauri
         run: cargo build

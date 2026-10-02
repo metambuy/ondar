@@ -115,8 +115,9 @@ reach them from the popover.
 - [x] `stations::cache` — SQLite (`rusqlite`, bundled); countries TTL 7 d, station lists TTL
       24 h; serve stale on network failure **with no age ceiling**, reporting the age
 - [x] `store.rs` — favourites and recently-played (SQLite), reachable from the collapsed view
-- [ ] ~~Port `cities.js` → `resources/cities.json`; load into `geo`~~ → **M4** (only the map
-      consumes it; brief D4, 2026-09-21)
+- [ ] ~~Port `cities.js` → `resources/cities.json`; load into `geo`~~ → **not ported** (M1,
+      2026-09-30): no city set in M4; kept for a later coordinate-inference milestone (was → M4,
+      brief D4, 2026-09-21)
 - [x] HLS (M3c): ADTS-AAC media playlists only — live refresh loop + ID3 strip; the MPEG-TS
       demux and audio-variant selection move to after M4 (decided 2026-09-21 from Step 0's
       sample: 5/10 ADTS, 5/10 TS of which 3 carry video). **Built 2026-09-24 on branch `m3c`**
@@ -176,34 +177,53 @@ control and its hand check are M3b's).
 
 ## M4 — Map
 
-**Goal:** the expanded pane shows the selected country on real satellite imagery.
+**Goal:** the expanded pane shows the selected country as a **drawn map**, framed and zoomable,
+from a bundled resource. The satellite map was reversed 2026-09-24 and the reversal applied
+2026-09-30 (ONDAR.md, "M4: the drawn map — the reversal"); M4 is split in three. Plan:
+`_handover/m4a-plan.md`.
 
-**4a — Asset pipeline (build time, not runtime)**
+**4a — Geodata and the `ondar-map` crate (no UI)**
 
-- [ ] Download NASA Blue Marble NG: the 21600×10800 (2 km/px) monthly composite; pick one
-      month — plus optionally Black Marble night lights for dark mode
-- [ ] `tools/tiles/build.sh` using **libvips**:
-      `vips dzsave world.tif tiles --layout google --suffix .webp[Q=80] --tile-size 256`
-- [ ] Keep levels that fit the size budget; record total MB in `docs/map-pipeline.md`
-- [ ] Ship as Tauri `resources`; serve through the asset protocol (CSP allowlisted)
-- [ ] Simplified `countries.geojson` (Natural Earth 50 m, `mapshaper -simplify 8%`) with
-      per-country bounding boxes precomputed into a JSON side-file
+- [x] The build tool `ondar-map-build` (a workspace member): Natural Earth 10m v5.1.2 admin 0,
+      map units and admin 1, pinned by SHA-256 and refused on a mismatch; never in CI
+- [x] The frame rules: grouping at 300 km ground distance, the frame group (MY by override),
+      the centre from the antimeridian-aware bbox (AQ pole-centred), the fit and the 1.5 km/pt
+      floor, the inset table, subdivisions above 8 km/pt, the code aliases, the antimeridian seam
+- [x] The ladder 1.5/3/6/12/24 km/pt, each unit once per level, simplified per ring to a
+      measured ≤ 0.25 pt (subdivisions 0.5 pt), with a per-ring index
+- [x] `src-tauri/resources/map/world.ondarmap` committed with its build report and golden tables
+- [x] The `ondar-map` crate: the LAEA, the codec, a loader that never panics on bytes,
+      `lookup`/`fit`/`clamp`/`frame`, and its tests on the shipped resource
+- [x] The resource loaded at startup from `resource_dir()`, in dev and in the bundle
+- [x] Record the installed bundle size in ONDAR.md (10 576 KiB, from 7 908; built 2026-10-01 on
+      branch `m4a`, ONDAR.md "M4a: built and measured")
 
-**4b — Renderer**
+**4b — IPC and the SVG renderer**
 
-- [ ] Leaflet with `L.CRS.EPSG4326` (note: zoom-0 grid is **2×1**, not the usual 1×1), local
-      `L.tileLayer` over the bundled pyramid
-- [ ] `map.fitBounds(countryBbox, {padding})` on country selection
-- [ ] `maxBounds` = country bbox + margin; `minZoom`/`maxZoom` clamped to available levels
-- [ ] Country outline overlay: all countries faint, selected country bright + inner glow
-- [ ] Station markers (from Rust, capped ~200/country), hover tooltip, click → play
-- [ ] Playing station's marker pulses
-- [ ] Attribution line: "Imagery: NASA Earth Observatory" in the about panel
-- [ ] Dark mode: swap tile layer (night lights) or apply a tuned filter
+- [ ] IPC `map_frame` and view commands with `ts-rs` types; the payload transport chosen from a
+      measured Russia-at-fit figure (Step 0's R8)
+- [ ] The SVG in both themes (Sand, Ink), drawing exactly the paths Rust sends
+- [ ] Pan and zoom: gestures in the non-activating `NSPanel` measured first; insets while zoomed
+      decided there
+- [ ] The list stays the navigation; the map is never the only route to a station
 
-**Exit:** pick Portugal → the country fills the frame at good resolution; pick Russia → you
-can pan across it at a readable zoom without losing the frame; the map never requests the
-network. Record the measured installed bundle size in ONDAR.md.
+**4c — Stations**
+
+- [ ] Dots gathered by 10 km ground distance, radius `min(6, 2.5 + 0.6·ln n)` pt, no numbers
+- [ ] `map_hit` (a click on a dot plays), the playing dot marked
+- [ ] Coordinates from radio-browser's `geo` only
+- [ ] **Step 0's R6, for its brief:** a station more than 25 km outside every part of its
+      country is not drawn (PT's two Brazilian stations and the Zürich one are the cases), and
+      a country with 0 geo stations shows a "no coordinates" state (MT)
+
+**Exit:** PT shows the mainland with the Azores and Madeira insets; RU fits at ~28 km/pt with
+its 86 subdivisions and zooms to 1.5 km/pt; the map never requests the network; the installed
+size is recorded in ONDAR.md.
+
+**After M4:**
+
+- [ ] Coordinate inference in Rust (city-level, drawn as approximate) — Amendment 1, M2;
+      PixelRadio's heuristics are a reference, not an inheritance.
 
 ---
 
@@ -249,7 +269,7 @@ music; CPU stays low (single digits) while playing; the tray icon animates while
 - [ ] Universal binary (aarch64 + x86_64)
 - [ ] `tauri-plugin-updater` with a signed update feed
 - [ ] Crash/error reporting decision (opt-in or none — no silent telemetry)
-- [ ] README with screenshots, credits (NASA, radio-browser.info), licence
+- [ ] README with screenshots, credits (Natural Earth, radio-browser.info), licence
 
 **Exit:** a notarised DMG that a stranger can open on a clean Mac without Gatekeeper warnings.
 
@@ -283,11 +303,10 @@ Every milestone closes with the same ritual:
    change after the SQLite cache lands orphans that cache) and **M6, hard** (once a signed
    artifact exists, macOS keys preferences, app support and keychain items to the identifier, so
    a change loses user settings silently on upgrade).
-3. **Blue Marble month** — one fixed month, or all twelve switching with the calendar
-   (twelve months multiplies the bundle; almost certainly one).
-4. **Night-lights dark mode** — worth the extra tile set, or a filter on the day imagery?
-5. **Deepest zoom level** — how much bundle size are you willing to spend? The single biggest
-   lever on download size.
+3. ~~**Blue Marble month**~~ — **moot (2026-09-24, drawn map).**
+4. ~~**Night-lights dark mode**~~ — **moot (2026-09-24, drawn map):** the night theme is Ink.
+5. ~~**Deepest zoom level**~~ — **moot (2026-09-24, drawn map):** the finest level is 1.5 km/pt,
+   Step 0's ladder.
 6. ~~**HLS streams**~~ **Settled 2026-09-21: supported, in Rust, split.** Measured at M3 Step 0:
    3.8 % of an eight-country sample (9.7 % in PT); of ten sampled, five ADTS-AAC media
    playlists and five MPEG-TS (three with video). ADTS ships in M3 as M3c; the TS demux moves

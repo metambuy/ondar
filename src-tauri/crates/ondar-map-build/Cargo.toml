@@ -1,0 +1,20 @@
+[package]
+name = "ondar-map-build"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Build-time tool: Natural Earth 10m → src-tauri/resources/map/world.ondarmap (M4a). Never part of the app."
+
+[dependencies]
+# The format writer, the LAEA, the codec and the frame rules: one code path with the app.
+ondar-map = { path = "../ondar-map" }
+# The pure-Rust shapefile + dBASE reader (0.9.0; `geo-types` converts records to geo polygons).
+# Nothing in the tree reads shapefiles.
+shapefile = { version = "0.9", features = ["geo-types"] }
+# Geometry the build needs and the app must not carry: VW-preserve simplification, the boolean
+# union for the antimeridian seam, Chamberlain–Duquette areas, polygon distance (0.33.1, as the
+# Step 0 prototype verified).
+geo = "0.33"
+# The inputs' SHA-256 pins. Already in the tree (0.10.9, via tauri-codegen).
+sha2 = "0.10"

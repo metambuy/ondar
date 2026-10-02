@@ -1,0 +1,23 @@
+[package]
+name = "ondar-map"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "The drawn map for Ondar: spherical LAEA, the bundled resource's format and loader, framing. No Tauri dependency, no network dependency."
+
+[dependencies]
+# Inflate per blob (D1) and the blobs' CRC32 (`flate2::Crc`). Already in the tree (1.1.10, via
+# ondar-audio and png); no new dependency.
+flate2 = "1"
+# Derives `LoadError`'s `Display` and `Error` (one error type for the loader, as the shell's
+# `OndarError` and the engine's errors are). Already in the tree (2.0.20, via the shell,
+# ondar-audio and ondar-stations); no new dependency.
+thiserror = "2"
+# `Serialize` on the frame types: the bench's `bytes_out` now, and M4b's IPC payload (after R8's
+# transport measurement). Already in the tree (every crate here uses it).
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# The bench's `bytes_out` (R8's baseline). In the tree.
+serde_json = "1"

@@ -1,0 +1,23 @@
+# S6 — the inset table (hand-checked, D5; corners and labels are design, judged at M4b's
+# screenshots). A non-frame group is an inset iff it is listed here; every group of 1 000 km² or
+# more outside the frame must be listed (the tool refuses otherwise). A row matches the group
+# whose nearest part is nearest its anchor (≤ 100 km; two rows on one group are refused). The box
+# is x, y, w, h on the golden pane (328 × 300), points; the tool refuses a box closer than 12 pt
+# to the country's land at the initial view, outside the pane, or overlapping another box.
+# PT and US boxes are the style page's (ondar-map-style-chosen.html, 2026-09-24); the rest 80 × 60
+# at a corner, 8 pt from the pane's edges, proposed here.
+# code	lat	lon	keep	corner	x	y	w	h	label
+PT	38.38	-27.31	area 2 606 km²	top-left	10	24	92	52	Azores
+PT	32.76	-16.94	station (812 km²; 3 live stations, 2026-09-30)	top-left	10	84	52	40	Madeira
+ES	28.35	-15.68	area 7 446 km²	bottom-right	240	232	80	60	Canary Islands
+US	63.97	-152.23	area 1 495 711 km²	bottom-left	8	236	84	56	Alaska
+US	20.26	-156.32	area 16 892 km²	bottom-left	98	258	60	32	Hawaii
+FR	3.93	-53.24	area 83 552 km²	top-left	8	8	60	44	French Guiana
+FR	15.59	-61.32	area 2 764 km²	top-right	260	8	60	44	Guadeloupe & Martinique
+FR	-21.12	55.54	area 2 590 km²	bottom-left	8	248	60	44	Réunion
+EC	-0.55	-90.91	area 7 736 km²	bottom-right	240	232	80	60	Galápagos
+IN	11.12	92.97	area 7 135 km²	bottom-right	240	232	80	60	Andaman & Nicobar
+MY	2.5	113.5	area 197 359 km² (Borneo, under the override)	top-right	240	8	80	60	Sabah & Sarawak
+NO	78.81	18.31	area 61 559 km²	top-left	8	8	80	60	Svalbard
+PF	-9.38	-139.58	area 1 079 km²	top-right	240	8	80	60	Marquesas
+YE	12.49	53.80	area 3 830 km²	bottom-right	240	232	80	60	Socotra

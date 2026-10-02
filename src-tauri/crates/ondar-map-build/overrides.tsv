@@ -1,0 +1,4 @@
+# S2 — frame-group overrides (hand-checked, D5). The frame is the group whose part contains the
+# anchor, not the group holding the largest part. The tool refuses an anchor in no group.
+# code	lat	lon	reason
+MY	4.04	102.18	S2: the peninsula holds 8 of 9 census coordinates within 25 km (Q1-merged, 2026-09-30); Borneo 1

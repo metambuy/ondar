@@ -1,0 +1,12 @@
+# R7 / S4 — radio-browser codes with no admin-0 unit, drawn from their NE map unit
+# (ne_10m_admin_0_map_units, GU_A3). The uppercase rule and XX → no map are in code, not here.
+# code	gu_a3	parent_adm0_a3
+RE	REU	FRA
+GF	GUF	FRA
+MQ	MTQ	FRA
+YT	MYT	FRA
+GP	GLP	FRA
+BQ	NLY	NLD
+SJ	NSV	NOR
+CC	CCK	IOA
+CX	CXR	IOA

@@ -1,6 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
+*Last updated: 2026-09-30, later (M4's reversal: the drawn map replaces the satellite map; pan
+and zoom kept; M4 split into M4a/M4b/M4c — see "M4: the drawn map — the reversal").
+Previously 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
 times, not arrival; G1–G3 and the re-acceptance — see "Defect B", "Code review 2 and G1–G3";
 instrument instance eighteen). Previously 2026-09-29, later (defect B's `/code-review`: ten findings, the bound redesigned on a
 byte clock and build stamp, F1–F4, re-accepted — see "Defect B", "The code review and the
@@ -32,10 +34,14 @@ audio-first.
 It is **not** a port of PixelRadio. The only inheritance from PixelRadio is:
 
 - the **station data source** (radio-browser.info) and the query/filter logic learned there,
-- the **city database** (`cities.js`, ~500 cities with lat/lng, grouped by ISO alpha-2),
+- the **city database** (`cities.js`, ~500 cities with lat/lng, grouped by ISO alpha-2) —
+  **not used in M4**; kept for a possible later coordinate-inference feature (decision M1,
+  2026-09-30),
 - the **country/region groupings** and the API-etiquette rules (`clickStation` on play),
-- a **supplementary coordinate database** for stations that radio-browser leaves ungeolocated
-  (files to be supplied by Martín at M4).
+- ~~a **supplementary coordinate database** for stations that radio-browser leaves
+  ungeolocated~~ — **not used** (decision M2, 2026-09-30): the map draws radio-browser's own
+  coordinates; a later milestone may infer city-level coordinates in Rust and draw them
+  visibly as approximate.
 
 Everything else — rendering, aesthetic, audio pipeline, state model — is rebuilt from scratch.
 
@@ -62,25 +68,31 @@ work area of the display the tray icon is on, so "expanded" is a function of the
 "M2d: the expanded height is capped to the work area". Grows *in place* — it stays a menu bar
 popover, never a separate window):
 
-- Satellite map section revealed above the station list
-- Map is framed on the currently selected country
-- Pan and zoom inside the frame; for large countries (Russia, USA, Brazil) the viewport
-  moves rather than shrinking the country to illegibility
+- A drawn map revealed above the station list, framed on the selected country: the mainland
+  fitted to the pane, outlying territory in insets, neighbours in a quieter tone, subdivisions
+  for large countries.
+- Pan and zoom inside the frame: the fit is the initial view and the zoom-out limit, 1.5 km/pt
+  the zoom-in limit; for large countries (Russia, USA, Brazil) the subdivisions give the fit
+  view its scale, and zooming in brings the coastline detail the resource carries per level.
 - Station markers on the map; click a marker to play
 - Equalizer panel (toggle between map and EQ, or EQ as a second expanded pane)
 
 ## Aesthetic
 
-Satellite imagery, not pixel art. The reference points are Apple's own menu bar surfaces:
-translucent material (`NSVisualEffectView` vibrancy), SF Symbols or a matching icon set,
-SF Pro type, 8pt spacing rhythm, subtle depth, no drop shadows on flat elements, full
-light/dark support driven by the system appearance.
+A drawn map, not satellite imagery and not pixel art. The reference points for the chrome are
+Apple's own menu bar surfaces: translucent material (`NSVisualEffectView` vibrancy), SF Symbols
+or a matching icon set, SF Pro type, 8pt spacing rhythm, subtle depth, no drop shadows on flat
+elements, full light/dark support driven by the system appearance.
 
-Map imagery is **NASA Blue Marble Next Generation**, bundled offline. Country outlines are
-drawn as thin translucent strokes over the imagery; the selected country gets a brighter
-stroke and a faint inner glow. Consider shipping the **Black Marble (night lights)** variant
-as the dark-mode map — city lights are a natural fit for a radio product and it solves dark
-mode elegantly.
+The map is **drawn from Natural Earth 10m shapes** (public domain), designed twice: **Sand** by
+day (flat fill, sea `#D3E0E3`, land `#E6D5B1`, neighbours `#EFE9DC`, hairline edge `#8F7A55`),
+**Ink** by night (sea `#121A25`, two-tone land `#524A3E`/`#6B5E47`, neighbours `#262C34`). The
+sea is drawn, not vibrancy. The country is fitted to the pane on an equal-area projection centred
+on its mainland; outlying territory (Azores, Madeira; Alaska, Hawaii) sits in insets with the
+territory's name; countries coarser than 8 km/pt show their subdivisions. Stations gather by
+distance on the ground into one dot per place, sized by count, with no numbers on the map. The
+full colour and size table is the "Ondar map style" artifact (v3). Decided 2026-09-24 after
+true-size mockups of satellite imagery and of drawn styles (m4-design/DIRECTION.md).
 
 The tray icon is a monochrome template image so macOS tints it correctly; it gets a subtle
 animated state when audio is playing. Note: there is no animated-template-image API; this is
@@ -96,8 +108,8 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). Pinned `rev = c9ec213…` since M2a; see "Verified versions". |
 | Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. Since M2a the centred position is clamped into the work area (`NSScreen.visibleFrame`) of the display under the icon. See "M2a: the tray path, measured". |
 | Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; confirmed by eye 2026-09-16 over a bright, busy backdrop (Martín).** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
-| Map rendering | **Leaflet**, `L.CRS.EPSG4326` | Pan/zoom/markers for free; Blue Marble is already plate carrée. **Tile grid at zoom 0 is 2×1** (360°×180°), so the slicer must emit that layout or a custom `L.CRS` must be defined. |
-| Map imagery | **NASA Blue Marble NG**, 2 km/px (21600×10800), sliced to a WebP tile pyramid, bundled | Public domain, offline, no API key. Full level shipped; see bundle size below. |
+| Map rendering | **Inline SVG in the webview, drawing exactly the paths Rust sends** | Projection (spherical LAEA, authalic radius), framing, insets, level choice, clipping, station gathering and hit-testing all run in Rust (`ondar-map`); the webview is a renderer. Leaflet and the tile pyramid are gone (2026-09-24/30). |
+| Map data | **Natural Earth 10m admin 0 + admin 1, tag v5.1.2, pinned by SHA-256**, built at build time into one bundled resource (a global scale ladder 1.5/3/6/12/24 km/pt, each unit once per level, simplified to a measured ≤ 0.25 pt) | Public domain, offline, no API key. Credited in About anyway. Station coordinates are radio-browser's `geo` only (decision M2, 2026-09-30); no city set in M4. |
 | Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
@@ -303,7 +315,8 @@ TypeScript, stop — it belongs in Rust.
   was added 2026-09-28 (the drift audit): `git diff` ignores untracked files, so a new exported
   type whose `.ts` was never committed passed. It is
   `cargo build`, not `pnpm tauri build`: a full bundle is slow and pointless before M6, and
-  the tile pyramid must never enter CI. Node and pnpm are pinned to the development
+  the Natural Earth inputs (40 MB) never enter CI: the built resource is committed, and the
+  tool's input-bound tests are `#[ignore]`d. Node and pnpm are pinned to the development
   machine's majors (Node 26; pnpm from `package.json`'s `packageManager`, so the lockfile,
   local installs and CI cannot drift apart).
   **First run green** on `fba1133`, 5m6s cold-cache:
@@ -324,18 +337,20 @@ TypeScript, stop — it belongs in Rust.
   ceiling by `RING_SECONDS`. Raising `RING_SECONDS` to 4 would close it at the cost of memory
   and of a longer worst-case resume everywhere else. Titles are late on these stations; audio
   is unaffected. See "The prefetch knee".
-- **Offline map resolution is capped.** Blue Marble NG tops out at 500 m/px (eight 21600×21600
-  tiles) and we ship the 2 km/px 21600×10800 composite. Small countries will be shown at
-  native resolution and upscale gently past that; this is accepted, not a bug.
-- **Bundle size.** The full 2 km/px level is ~233 Mpx; as lossy WebP that is roughly 45–90 MB
-  for the base level plus ~33% for the rest of the pyramid. **Decision (2026-09-07): an
-  installed size above 100 MB is acceptable.** Measure real numbers at M4 and record them
-  here. If Black Marble is also shipped, expect roughly double.
+- **The map is a bundled vector resource** (Natural Earth 10m, one file). Its finest level is
+  1.5 km/pt, which is also the zoom-in limit. Step 0 measured 4.55 MB deflated per blob and
+  9.3 MB raw for the shared store (`_handover/m4-step0-report.md`, Q2b), so the 100 MB
+  acceptance of 2026-09-07 is moot. The installed size after M4a: `Ondar.app` 10 576 KiB, against
+7 908 before (the resource 2 712 523 B; "M4a: built and measured" below; 2 712 599 B since the
+code review's rebuild, "M4a: code review, 2026-10-01").
+  (Replaced 2026-09-30, the reversal: the satellite map's "offline resolution is capped" and
+  "bundle size" bullets.)
 - **20.7 % of radio-browser stations have coordinates** — measured 2026-09-21 over 25 236
   stations in eight countries (7 % RU to 38 % BR; `_handover/m3-step0-logs/p3-census.tsv`),
   an eight-country sample, not a global figure. The inherited "~30 %" is retired. Map markers
   are therefore sparse; the country dropdown, not the map, is the primary navigation. The map
-  is context and delight. The PixelRadio supplementary coordinate DB will raise coverage (M4).
+  is context and delight. Coordinates are radio-browser's only (M2, 2026-09-30); a later
+  milestone may infer more.
 - ~~**BLOCKER: `src-tauri/icons/icon.png` is a 1×1 placeholder.**~~ **Resolved 2026-09-13.**
   It had stopped being cosmetic: the bundler failed with `Failed to create app icon: No
   matching IconType` and produced nothing, so no bundle could be built at all and
@@ -663,6 +678,245 @@ What that does to the recorded conclusions:
 M2a's `panel shown` log line printed `class=`, so a revert cannot go unnoticed again; since M2c
 the line is `panel show reason=… effective=true class=… key=…` (the tripwire is the `class=`
 field, whatever the line is called).
+
+### M4: the drawn map — the reversal (2026-09-30)
+
+**Decided 2026-09-24** (Martín, `_handover/m4-design/DIRECTION.md` § DECIDED), after true-size
+mockups of satellite imagery (real Blue Marble and Black Marble pixels in the 328 × 300 pt pane)
+and of drawn styles. Martín preferred "our own design rather than NASA's photograph". **Applied
+2026-09-30** in M4a's first commit, as the reversal rule requires. What it reverses:
+
+| Before | Now |
+|---|---|
+| Aesthetic: satellite imagery, NASA Blue Marble bundled offline, Black Marble considered for dark mode | A drawn map from Natural Earth 10m: Sand by day, Ink by night, the sea drawn; the full table is the "Ondar map style" artifact, v3 |
+| Stack: Leaflet, `L.CRS.EPSG4326`, a WebP tile pyramid | Inline SVG drawing the paths Rust sends; projection, framing, insets, clipping, gathering and hit-testing in Rust (`ondar-map`) — the Tauri weight the tile pyramid carried moves to the boundary rule |
+| Constraints: offline resolution capped at 2 km/px; an installed size above 100 MB accepted (2026-09-07) | One vector resource, 4.55 MB deflated per blob at Step 0; the 100 MB acceptance is moot |
+| BUILD_PLAN open questions 3–5 (Blue Marble month, night lights, deepest zoom) | Moot |
+| The PixelRadio supplementary coordinate database, and `cities.js` ported | Neither used in M4 (decisions M1, M2): radio-browser's `geo` only; coordinate inference is a later milestone |
+
+**What was kept.** The M4 brief first proposed no pan or zoom. **Amendment 1 (Martín,
+2026-09-30, M4 YES) kept them**: the fit is the initial view and the zoom-out limit, 1.5 km/pt
+the zoom-in limit, and the pan is clamped in projected kilometres, never in lon/lat. So the
+Product-shape pan/zoom line is amended, not reversed. The list stays the navigation: 20.7 % of
+stations carry coordinates.
+
+**What decides the data.** Step 0 (`_handover/m4-step0-report.md`, four review rounds, R1–R10)
+measured the rules M4a builds on: the centre as the midpoint of the antimeridian-aware bbox, AQ
+pole-centred; the authalic sphere; a global scale ladder 1.5/3/6/12/24 km/pt, each unit once per
+level; simplification to a measured ≤ 0.25 pt per ring — built as **the hybrid** (RDP where its
+ring stays simple and within the bound, else that ring's Visvalingam–Whyatt bisected to the
+bound; "M4a: decisions during the build" below); a per-ring index; Antarctica's polar seam
+stripped. M4 is split into M4a (geodata and the `ondar-map`
+crate, no UI), M4b (IPC and the SVG renderer) and M4c (stations, gathering, hit-testing); the
+plan is `_handover/m4a-plan.md`, reviewed 2026-09-30 (P1–P4). The instructions field's
+replacement text is `_handover/m4a-instructions-field.md`.
+
+### M4a: decisions during the build (2026-10-01)
+
+Branch `m4a`. Commits 1–4 surfaced three findings (`_handover/last-report-2026-10-01.md`); the
+chat decided them on 2026-10-01, and Martín confirmed (`_handover/OPEN.md`).
+
+**D6, the pan limit: the view stays inside the fit rectangle.** The plan wrote "the centre
+inside the fit rectangle" and, in the same paragraph, "at fit the view is the fit and cannot
+pan". Read literally, the first rule lets the view pan at fit by half a pane, and the plan's
+coverage formula followed it. That reach left the LAEA disc for RU (its corners near the
+antipode), stored every unit at every level, and stretched a neighbour's 0.25 pt bound to
+5.45 pt at 24 km/pt. **The decided wording:** the fit rectangle is the pane at the country's
+widest scale (the fit, or the 1.5 km/pt floor for a country finer than it), centred on the
+frame bbox; **the view stays inside it**. At that scale the view *is* the fit rectangle and
+cannot pan. Zoomed in, the view's centre moves only as far as puts the view's edge on the
+rectangle's. Every frame clips to the view grown by 2 pt. So a view at level k reaches at most
+the fit rectangle grown by 2 pt × the coarsest scale that uses k. Coverage is computed from
+exactly that, through `ondar_map::index`, the module the frame's index will use too. P2 is then
+≤ 0.38 pt at every level, with no remedy needed. The product consequence, for M4b: zoomed in,
+outlying territory such as the Azores cannot be reached by panning, and the insets show at the
+fit view only (D7).
+
+**P4, the simplifier: a per-ring hybrid, no repair** (`65f7927`). Per ring and level, RDP runs
+at the level's tolerance. Its ring is kept if it is simple (no crossing, fold-back or repeated
+vertex; a ring also needs ≥ 3 distinct vertices and non-zero area) and its exact measure is
+within the bound. Otherwise the ring keeps its per-ring VW result. The decision weighed runtime
+vertices (RU's fit frame, R8's payload), not file bytes. RU land at 24 km/pt: VW 13 664, RDP
+3 904, hybrid 12 883. RU's mainland ring (24 183 vertices) gives an RDP ring that is not simple,
+so that ring keeps VW's 11 114. Worldwide, in the shipped resource, the hybrid stores 1.045×
+RDP's vertices at 1.5 km/pt and 2.268× at 24 (the build report's P4 table; the 2.17× first
+written here was measured under the plan's reach, before D6).
+
+**D2's gate: on its intent.** The plan's gate required every once-found admin-1 edge to lie
+within 1 m of admin 0. That measures whether NE's admin-0 and admin-1 coasts coincide, which NE
+does not promise, and it failed for 13 of the 18 countries on islets admin 0 lacks and on coast
+offsets of up to 143 m. **The decided gate:** every once-found edge whose midpoint lies inside
+the country's admin-0 land — an interior border found on one side only, the failure that loses
+a border — is within **375 m** (0.25 pt at 1.5 km/pt) of the admin-0 rings, and no edge is found
+three times or more. Measured: all 18 pass, the farthest such edge is 79 m (US), and all 18 are
+stored as interior borders. Subdivisions take 69 783 B deflated, against 527 856 B when 13 of
+the 18 were polygons.
+
+### M4a: built and measured (2026-10-01)
+
+Branch `m4a`. Commits, each pushed alone with CI green before the next (runs in
+`_handover/last-report-2026-10-01.md`):
+
+| | commit | what |
+|---|---|---|
+| 0 | `bb090cf` | docs: the reversal |
+| 0b | `37a1039` | the list effect's dependency list |
+| 1 | `8d2e9c1` | `ondar-map`: the spherical LAEA and Q5's reference table |
+| 2 | `733d743` | the resource format: codec, writer, a loader that never panics on bytes |
+| 3 | `370a64c` | `ondar-map-build`: NE reader, pins, frame rules |
+| 4 | `7f126d7` | the ladder, per-ring simplification to a measured bound, the ring index |
+| 4b | `65f7927` | the per-ring RDP/VW hybrid (P4) |
+| 4c | `47218f2` | D6, the view inside the fit rectangle; `ondar_map::index` |
+| 4d | `4580af0` | D2's gate on its intent |
+| 5 | `3dda925` | `world.ondarmap`, its report, the golden tables, `bundle.resources` |
+| 6 | `52e1880` | `frame`: lookup, fit, clamp, frame; the frame tests; `frame_bench` |
+| 7 | `40a36f0` | the shell loads the resource at startup |
+
+**The resource.** `src-tauri/resources/map/world.ondarmap` is 2 712 523 B, deflated per blob
+(SHA-256 `6b931bb5…`). It was built by the tool at `4580af0` from Natural Earth 10m v5.1.2 in
+19.7 s, and the build is reproducible. Contents: 267 units, 248 countries and 1 131 blobs; the
+blobs are 2 545 987 B deflated (4 539 816 raw) plus 166 536 B of tables. **The bound drawn on
+screen** is the simplification's plus the codec's: land is simplified to ≤ 0.25 pt and quantised
+to ≤ 0.035 pt more (half a 0.05 pt quantum's diagonal), so ≤ 0.2854 pt drawn; subdivisions
+≤ 0.5 + 0.035 pt. A neighbour drawn in another country's projection is stretched by at most
+1.40×, ≤ 0.376 pt (P2). **Two vertex counts in the build report differ, by design.** The P4
+table's "stored" counts each chosen ring before quantisation. The bytes table's "vertices out"
+counts it after, once the codec has dropped consecutive vertices that fall in the same quantum.
+That is 36 vertices at 1.5 km/pt and 2 850 at 24, where more tiny islands collapse (confirmed in
+`store.rs`: `quantise_ring` is the only step between the two counts).
+
+**Bytes against Step 0, by cause** (each file read from disk). Step 0's Q2b had 4.55 MB deflated
+(9.31 MB raw) and 2.28 M vertices. Commit 4 had 4.04 MB and 1.75 M (per-ring ε and the plan's
+reach, unseparated). D6's reach took it to 3.89 MB and 1.68 M, the hybrid to 3.04 MB and 1.20 M,
+and D2's borders to 2.71 MB and 1.07 M.
+
+**Acceptance** (`_handover/m4a-acceptance.md`; release, 10 + 100 runs, median / p90):
+- load from the bundle: 17.1 / 17.6 ms, and `ms=18.8` in the app;
+- PT fit 0.17 ms; Lisbon at the floor 0.13 ms;
+- US fit 2.23 ms; New York at the floor 1.16 ms, at mid zoom 0.99 ms;
+- RU fit **4.28 ms** (target ≤ 12, gate 30); Vladivostok 0.56 ms, at mid zoom 0.80 ms;
+- the sweep over all 248 fits: p90 1.57 ms, max 4.33 ms (RU);
+- `bytes_out` (R8's baseline): RU at fit 780 646 B, against Q2b's 1.59 MB;
+- the installed `Ondar.app`: 10 576 KiB, against 7 908 before;
+- no network crate under `ondar-map`.
+The RU rule (RDP retried at smaller ε on rings whose RDP ring is not simple) was not needed.
+
+**For M4b.** Coverage is computed and tested for the golden pane, 328 × 300 × 20. A pane of
+another aspect (the ANMITE's 328 × 178) has a coarser fit, so its views can admit units that were
+not stored. The frame skips them and counts them in `FrameStats::missing_blobs`; it never fails.
+M4b's acceptance reads that counter at the real pane.
+
+**Versions** (from `Cargo.lock`): the tool adds `shapefile` 0.9.0, `dbase` 0.8.0, `geo` 0.33.1,
+`geo-types` 0.7.20 and `i_overlay` 4.5.2, and uses `sha2` 0.10.9, already in the tree via
+tauri-codegen. The runtime crate `ondar-map` depends only on `flate2` 1.1.10, `serde` 1.0.229
+and `thiserror` 2.0.20.
+
+### M4a: code review, 2026-10-01
+
+Fable 5.1 reviewed `c5178da..dddb4da` (`_handover/m4a-review-findings-2026-10-01.md`); the chat
+triaged it (`m4a-review-triage-2026-10-01.md`). All nine findings were accepted. Six were crash or
+behaviour findings, so the branch did not merge on that review. Each fix was written test first,
+its failure recorded on `dddb4da` (`_handover/m4a-fixes/`), mutation-checked
+(`_handover/m4a-mutations.log`) and pushed alone with CI green before the next.
+
+| # | commit | what |
+|---|---|---|
+| 7 | `9108154` | one `rect_ring_distance` (+ `seg_dist`, `segments_cross`) in `ondar_map::rules`, the tool's semantics (touching counts); `geom.rs` adapts `geo::Coord` to it |
+| 1 | `56c3515` | the tool keeps an enclave's closing vertex: subdivision lines are quantised as polylines |
+| 1 | `458ee1e` | the resource rebuilt at `56c3515` |
+| 4 | `20aaa09` | `Pane::is_valid` guards `fit_scale`; the clamp is max-then-min; `no_panic_shape` refuses `.clamp(` |
+| 2 | `8998b8f` | `Inset::rect_at(pane)`: a box keeps its golden distance from its corner |
+| 5 | `ff9a75a` | an own unit's `Dropped` parts are drawn as land |
+| 3 | `0eb9ca0` | `Store::load` refuses a ladder other than `LADDER` |
+| 6 | `11b56e3` | `read_countries` refuses a unit index past the units table |
+| 9 + 8 | `d411223` | `missing_blobs` per unit; `thiserror`'s justification |
+
+**The resource after the review.** 2 712 599 B, SHA-256 `e2775f81…`, built by the tool at
+`56c3515` from a clean tree with `--bench`. The tool records its commit in the header. Finding 7's
+rebuild differed from the shipped file only in those 40 bytes: with `4580af0` restored, its SHA
+was `6b931bb5…`. Finding 4's `seg_dist` change was checked the same way. `golden-fit.tsv` and
+`golden-insets.tsv` from `--tables` are byte-identical to the fixtures. **The 76 bytes.** Each
+closed subdivision line gains its closing vertex, one 4-byte delta pair:
+
+| level km/pt | closed lines | raw B | deflated B |
+|---|---|---|---|
+| 6 | 18 | +72 | +47 |
+| 12 | 11 | +44 | +14 |
+| 24 | 8 | +32 | +15 |
+
+The file grows by the deflated total, 76 B. Land is unchanged.
+
+**What the fixes found beyond the findings.**
+- Moscow, named in finding 1, is not an enclave in NE v5.1.2: it borders Kaluga Oblast, so its
+  border is open lines between junctions. The test uses the ACT, Distrito Federal and Moscow's
+  exclave Zelenograd. Zelenograd is under a point across from 12 km/pt and simplifies away there.
+- Two own `Dropped` rings decode to one vertex at their country's fit level: the Coral Sea
+  Islands and one of Colombia's islets. The quanta collapse them. No frame can draw them, own or
+  neighbour, so finding 5's test skips rings under three vertices. Finding 5 draws 20 parts in
+  6 countries at the golden fit.
+- Finding 9 had a twin: the insets also counted a missing blob per part. Both now count per unit.
+
+**`frame_bench` after finding 5** (release, 10 + 100 runs; `_handover/m4a-fixes/f5-frame-bench.log`):
+- PT fit 0.154 ms, US 2.142 ms, RU 4.165 ms (p90 4.270);
+- the sweep's p90 1.617 ms, max 4.269 ms (RU), 0 missing blobs;
+- `bytes_out` unchanged for PT and US; RU at fit 780 764 B, +118 B from the closed loops and the
+  own islets.
+
+**For M4b: the insets at the ANMITE's pane.** Finding 2 anchors the boxes. It does not make them
+clear the land. At 328 × 178 four of the 14 boxes are under S6's 12 pt
+(`_handover/m4a-fixes/f2-clearance-328x178.md`):
+
+| inset | clearance pt |
+|---|---|
+| Alaska | 0 |
+| Hawaii | 0 |
+| Marquesas | 0.48 |
+| Socotra | 8.80 |
+
+The other ten clear by 19.7 pt or more. Madeira, which finding 2 named, clears by 68.6 pt. This
+is M4b's acceptance, not a gate here.
+
+**Code review 2, 2026-10-01.** Fable 5.1 reviewed the fix range `dddb4da..8324e68`
+(`_handover/m4a-review2-findings-2026-10-01.md`). The chat accepted all six findings and a second
+pass's check (`m4a-review2-triage-2026-10-01.md`). Each fix went test first, with its failure
+recorded on `8324e68` (`_handover/m4a-review2/`). Each was mutation-checked
+(`m4a-mutations.log`, "review 2") and pushed alone with CI green. Finding 1, `a227449`: a
+country's own inset groups are land in its frame at every view but the fit, where they stay in
+their box (D7); `missing_blobs` follows. `frame_bench` is unchanged but for `rings_skipped`.
+Finding 2, `26b28f4`: the tool's S6 clearance measures the frame and dropped groups, clipped to
+the pane plus the 2 pt margin as the frame clips them. Without the clip, Jan Mayen, off Norway's
+pane and never drawn, read Svalbard's box at 14.2 pt where the screen shows 61.1. The resource
+rebuilt from that tree differs from `e2775f81…` only in the header's tool commit, so it was not
+re-committed. All 14 clearances agree with the runtime's to 0.1 pt. Finding 3, `4022466`:
+`Store::clamp` is `clamp_view`. Finding 4, `4fb01f3`: at the fit view an inset whose box leaves
+the pane or overlaps another is not drawn and is counted in `FrameStats::insets_dropped`; it is
+never moved onto the land. At 328 × 60 two of 14 are drawn, at 328 × 178 all 14. M4b's
+acceptance requires `insets_dropped = 0` and 12 pt clearance at the real pane. Finding 5,
+`945ce4c`: a missing subdivisions blob counts only when a line meets the view. Finding 6,
+`f44e424`: `project` and `unproject` answer `None` for a pane that is not valid. The second
+pass, `f526d34`: the tool refuses a unit that is the main unit of two countries.
+
+**Code review 3, 2026-10-02.** Fable 5.1 reviewed round 2's diff, `8324e68..b3cf735`
+(`_handover/m4a-review3-findings.md`). It found six findings and no crash. The chat triaged them
+in `m4a-review3-triage-2026-10-02.md`, under a rule set before the review: this round blocks only
+on a crash or a behaviour finding in the code under review. Findings 1–3 were fixed test first,
+each failure recorded on `b3cf735` (`_handover/m4a-review3/`), mutation-checked, and pushed alone
+with CI green. Finding 1, `6e8ff4b`: `project` and `unproject` answer `None` for a view that is
+not valid, meaning a scale not finite or not above 0, or a centre not finite. A scale of 0 gave
+`Some([-inf, inf])`. Finding 2, `cc38823`, decided by the chat: in table order, an inset is drawn
+if and only if its box is inside the pane and apart from every box already drawn. Any other is
+counted in `insets_dropped`, and a box not drawn blocks nothing. At 328 × 60, French Guiana and
+Réunion overlap, and both were dropped. Now French Guiana is drawn and three of 14 show. Finding
+3, `fd529f2`: `clamp_view` snaps a view whose scale is at least the fit's × (1 − 1e-6) to the
+fit, centre and all. The frame decides the insets and the remote groups' land on `view == fit`,
+and a US view at the fit × (1 − 1e-12) had lost Alaska and Hawaii. The snap moves a point at the
+golden pane's corner by 0.0002 pt. Finding 6 is CLAUDE.md's `world.rs` line, fixed in the docs
+commit. **Two items carry to M4b's brief.** Finding 4: the inset-box rule, inside the pane and
+apart, is written twice, in `world.rs` and in `frame.rs`; one `rules::box_fits` and
+`boxes_apart` should serve both. They agree at the golden pane today, where every box is drawn.
+Finding 5: the clip rectangle, the pane grown by 2 pt, is built by hand in `world.rs` and in
+`frame.rs`; one `index::clip_rect(pane)` should serve both, with `to_pt` returning `[f64; 2]`.
+There is no fourth review: the chat reads the fix diff, then the branch merges.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -2784,8 +3038,10 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    findings, the bound redesigned and fixed in F1–F4 (`2784efd`…`dd469e4`), re-accepted; the last
    scoped review and the merge to come, before M4 — see "Defect B".
    See "M3c: HLS, the ADTS half", "Defect A".
-4. **M4 — Map.** Tile slicing, Leaflet CRS, country outlines, markers, PixelRadio
-   coordinate DB merge. Record measured bundle size.
+4. **M4 — Map**, split (2026-09-30): **M4a** geodata + the `ondar-map` crate (no UI); **M4b**
+   IPC + the SVG renderer with pan and zoom; **M4c** stations, gathering, hit-testing. Drawn map
+   decided 2026-09-24 (`m4-design/DIRECTION.md`); Step 0 measured 2026-09-30. Record the
+   installed bundle size at M4a.
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
@@ -3060,6 +3316,7 @@ rather than assumed closed.
 
 - **Popover** — the tray-anchored `NSPanel` window; the whole app UI.
 - **Collapsed / Expanded** — the two popover heights.
-- **Tile pyramid** — the pre-sliced Blue Marble WebP levels shipped as app resources.
+- **Map resource** — the one file the build tool writes from Natural Earth: every unit's rings
+  at each ladder level, plus the per-country frame tables.
 - **Station** — a radio-browser record: uuid, name, url_resolved, codec, bitrate, country, geo.
 - **EQ band** — one biquad peaking filter with a fixed centre frequency and adjustable gain.
