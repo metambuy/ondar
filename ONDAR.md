@@ -896,6 +896,28 @@ acceptance requires `insets_dropped = 0` and 12 pt clearance at the real pane. F
 `f44e424`: `project` and `unproject` answer `None` for a pane that is not valid. The second
 pass, `f526d34`: the tool refuses a unit that is the main unit of two countries.
 
+**Code review 3, 2026-10-02.** Fable 5.1 reviewed round 2's diff, `8324e68..b3cf735`
+(`_handover/m4a-review3-findings.md`). It found six findings and no crash. The chat triaged them
+in `m4a-review3-triage-2026-10-02.md`, under a rule set before the review: this round blocks only
+on a crash or a behaviour finding in the code under review. Findings 1–3 were fixed test first,
+each failure recorded on `b3cf735` (`_handover/m4a-review3/`), mutation-checked, and pushed alone
+with CI green. Finding 1, `6e8ff4b`: `project` and `unproject` answer `None` for a view that is
+not valid, meaning a scale not finite or not above 0, or a centre not finite. A scale of 0 gave
+`Some([-inf, inf])`. Finding 2, `cc38823`, decided by the chat: in table order, an inset is drawn
+if and only if its box is inside the pane and apart from every box already drawn. Any other is
+counted in `insets_dropped`, and a box not drawn blocks nothing. At 328 × 60, French Guiana and
+Réunion overlap, and both were dropped. Now French Guiana is drawn and three of 14 show. Finding
+3, `fd529f2`: `clamp_view` snaps a view whose scale is at least the fit's × (1 − 1e-6) to the
+fit, centre and all. The frame decides the insets and the remote groups' land on `view == fit`,
+and a US view at the fit × (1 − 1e-12) had lost Alaska and Hawaii. The snap moves a point at the
+golden pane's corner by 0.0002 pt. Finding 6 is CLAUDE.md's `world.rs` line, fixed in the docs
+commit. **Two items carry to M4b's brief.** Finding 4: the inset-box rule, inside the pane and
+apart, is written twice, in `world.rs` and in `frame.rs`; one `rules::box_fits` and
+`boxes_apart` should serve both. They agree at the golden pane today, where every box is drawn.
+Finding 5: the clip rectangle, the pane grown by 2 pt, is built by hand in `world.rs` and in
+`frame.rs`; one `index::clip_rect(pane)` should serve both, with `to_pt` returning `[f64; 2]`.
+There is no fourth review: the chat reads the fix diff, then the branch merges.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
