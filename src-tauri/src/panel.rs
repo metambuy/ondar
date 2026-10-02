@@ -184,6 +184,9 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         after.0,
         after.contains(NSWindowStyleMask::NonactivatingPanel)
     );
+    // M4b commit 1, the pinch spike (removable): a magnification recognizer on the content view,
+    // log-only until the gate passes (`magnify.rs`).
+    crate::magnify::install(ns);
 
     let window = app
         .get_webview_window(PANEL_LABEL)
