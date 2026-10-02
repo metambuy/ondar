@@ -1,6 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-09-30, later (M4's reversal: the drawn map replaces the satellite map; pan
+*Last updated: 2026-10-02 (M4b begins on branch `m4b`: Step 0 measured — `_handover/m4b-step0-report.md` —
+the brief and the plan reviewed, `_handover/m4b-plan.md`; the "M4b" section lands with the build).
+Previously 2026-09-30, later (M4's reversal: the drawn map replaces the satellite map; pan
 and zoom kept; M4 split into M4a/M4b/M4c — see "M4: the drawn map — the reversal").
 Previously 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
 times, not arrival; G1–G3 and the re-acceptance — see "Defect B", "Code review 2 and G1–G3";
@@ -860,7 +862,9 @@ The file grows by the deflated total, 76 B. Land is unchanged.
 - PT fit 0.154 ms, US 2.142 ms, RU 4.165 ms (p90 4.270);
 - the sweep's p90 1.617 ms, max 4.269 ms (RU), 0 missing blobs;
 - `bytes_out` unchanged for PT and US; RU at fit 780 764 B, +118 B from the closed loops and the
-  own islets.
+  own islets. (After review 2's `4fb01f3` it is 780 783 B: the 19 bytes are the serialised
+  `,"insets_dropped":0` field `FrameStats` gained there — M4b Step 0's `pane_sweep` and
+  `frame_bench` both read 780 783 on `f7a3fd8`.)
 
 **For M4b: the insets at the ANMITE's pane.** Finding 2 anchors the boxes. It does not make them
 clear the land. At 328 × 178 four of the 14 boxes are under S6's 12 pt
