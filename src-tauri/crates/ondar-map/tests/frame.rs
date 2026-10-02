@@ -696,6 +696,34 @@ fn a_bad_view_is_none() {
     assert!(s.unproject(pt, &P, &fit, 164.0, 150.0).is_some());
 }
 
+/// A view a hair finer than the fit is the fit (review 3, finding 3): `clamp_view` snaps a scale
+/// at or above `top × (1 − 1e-6)` to the fit, so the frame there is the fit's — insets drawn,
+/// the remote groups not drawn as land. On `b3cf735` a view at `top × (1 − 1e-12)` lost the US's
+/// two insets. At `top × 0.99` the view is not the fit and draws no inset.
+#[test]
+fn a_view_a_hair_below_the_fit_is_the_fit() {
+    let s = store();
+    for code in ["US", "PT", "FR"] {
+        let i = c(code);
+        let fit = s.fit(i, &P).unwrap();
+        let at_fit = s.frame(i, &P, fit).unwrap();
+        assert!(!at_fit.insets.is_empty(), "{code}");
+        // panned 1 km too: the snap is to the fit, centre and all
+        let near = View {
+            centre: [fit.centre[0] + 1.0, fit.centre[1] - 1.0],
+            scale: fit.scale * (1.0 - 1e-12),
+        };
+        assert_eq!(s.clamp_view(i, &P, near), Some(fit), "{code}");
+        assert_eq!(s.frame(i, &P, near).unwrap(), at_fit, "{code}");
+        let zoomed = View {
+            scale: fit.scale * 0.99,
+            ..fit
+        };
+        assert_ne!(s.clamp_view(i, &P, zoomed), Some(fit), "{code}");
+        assert!(s.frame(i, &P, zoomed).unwrap().insets.is_empty(), "{code}");
+    }
+}
+
 /// A box that leaves the pane does not drop an inset it would overlap (review 3, finding 2): the
 /// US's Alaska box moved right so that, at 328 × 60, it leaves the pane at the top and its
 /// off-pane extent overlaps Hawaii's. Hawaii is drawn and Alaska alone counted. On `b3cf735`

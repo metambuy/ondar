@@ -254,7 +254,8 @@ onda/
         │                         must exist)
         ├── frame.rs              framing (M4a commit 6): `Store::lookup` (R7: uppercase; `XX`, unknown →
         │                         `NoMap`), `fit` (bbox centre, S1 floor), `clamp_view` (D6: scale into
-        │                         [1.5, widest], the view inside the fit rectangle), `frame` (level =
+        │                         [1.5, widest], the view inside the fit rectangle; a scale within
+        │                         `FIT_SNAP`, 1e-6, of the widest is the fit — review 3), `frame` (level =
         │                         coarsest ≤ scale; clip = view + 2 pt; rings by the index; the main
         │                         unit by translation, others inverse-then-forward; land, neighbours,
         │                         S4 parent copies omitted, own `Dropped` islets drawn as land,

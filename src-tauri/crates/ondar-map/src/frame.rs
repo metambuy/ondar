@@ -101,6 +101,11 @@ impl format::Inset {
     }
 }
 
+/// A scale at or above `fit × (1 − FIT_SNAP)` is the fit (review 3, finding 3). Snapping 1e-6 of
+/// the scale moves a point at the golden pane's corner, 222 pt from its centre, by 0.0002 pt;
+/// any zoom step is far larger.
+pub const FIT_SNAP: f64 = 1e-6;
+
 fn round(v: f64) -> f32 {
     ((v * 100.0).round() / 100.0) as f32
 }
@@ -136,7 +141,9 @@ impl Store {
 
     /// D6: the scale into [1.5, widest] and the view inside the fit rectangle (the pane at the
     /// widest scale, centred on the frame bbox) — at the widest scale the view is the fit and
-    /// cannot pan. A non-finite view is the fit.
+    /// cannot pan. A non-finite view is the fit, and so is a scale within `FIT_SNAP` of the
+    /// widest (review 3, finding 3): the frame decides the insets and the remote groups' land
+    /// on `view == fit`, so a view a hair finer than the fit must not flip them.
     pub fn clamp_view(&self, c: usize, pane: &Pane, view: View) -> Option<View> {
         let fit = self.fit(c, pane)?;
         let [vx, vy] = view.centre;
@@ -144,6 +151,9 @@ impl Store {
             return Some(fit);
         }
         let top = fit.scale;
+        if view.scale >= top * (1.0 - FIT_SNAP) {
+            return Some(fit);
+        }
         // max then min, never `f64::clamp`, which panics when min > max (finding 4)
         let scale = view.scale.max(rules::FLOOR_KM_PER_PT.min(top)).min(top);
         let [fx, fy] = fit.centre;
