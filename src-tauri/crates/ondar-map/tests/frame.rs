@@ -1043,3 +1043,133 @@ fn an_inset_that_does_not_fit_the_pane_is_not_drawn() {
         }
     }
 }
+
+/// Svalbard's clearance read 61.1 pt at the golden pane and 1.97 at 328 × 178 (Step 0, M4b).
+/// The cause, measured on the shipped resource rather than inferred: at NO's fit at 178 the land
+/// ring nearest the Svalbard box is Jan Mayen (71.0° N, 8.5° W) — an own `Dropped` group, drawn
+/// as land since `ff9a75a`, which the shorter pane's coarser fit brings on screen — and with that
+/// one ring excluded the box clears the rest of the land by ≥ 40 pt. Fails if the nearest ring is
+/// the mainland or Bear Island: then the cause is something else and commit 4's corner choice
+/// for Svalbard waits on it.
+#[test]
+fn svalbard_clearance_at_178_is_jan_mayen() {
+    use ondar_map::laea::haversine_km;
+    let s = store();
+    let no = c("NO");
+    let pane = Pane {
+        width: 328.0,
+        height: 178.0,
+        padding: 20.0,
+    };
+    let fit = s.fit(no, &pane).unwrap();
+    let f = s.frame(no, &pane, fit).unwrap();
+    let ins = f
+        .insets
+        .iter()
+        .find(|i| i.label == "Svalbard")
+        .expect("Svalbard is drawn at 328 × 178");
+    let [x, y, w, h] = ins.rect.map(f64::from);
+    let rect = [x, y, x + w, y + h];
+    let rings: Vec<&Vec<[f32; 2]>> = f.land.iter().flat_map(|sh| sh.rings.iter()).collect();
+    let dist = |r: &[[f32; 2]]| rules::rect_ring_distance(rect, r.iter().map(|p| p.map(f64::from)));
+    let (nearest, d_near) = rings
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i, dist(r)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
+    // Step 0's figure, as `inset_clearance` reports it
+    let (_, reported) = s
+        .inset_clearance(no, &pane)
+        .into_iter()
+        .find(|(l, _)| l == "Svalbard")
+        .unwrap();
+    assert!((reported - d_near).abs() < 1e-6, "{reported} vs {d_near}");
+    assert!(d_near < 12.0, "Svalbard clears at 178: {d_near:.2} pt");
+    // the nearest ring's vertex mean, back on the ground: within 100 km of Jan Mayen
+    let r = rings[nearest];
+    let n = r.len() as f64;
+    let (mx, my) = r.iter().fold((0.0, 0.0), |(sx, sy), p| {
+        (sx + f64::from(p[0]), sy + f64::from(p[1]))
+    });
+    let (lon, lat) = s.unproject(no, &pane, &f.view, mx / n, my / n).unwrap();
+    let km = haversine_km(lon, lat, -8.5, 71.0);
+    assert!(
+        km <= 100.0,
+        "the nearest ring ({} vertices, {d_near:.2} pt) is at {lat:.2}° N {lon:.2}° E, {km:.0} km from Jan Mayen",
+        r.len()
+    );
+    // every other ring: the mainland and the islands keep their distance
+    let rest = rings
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != nearest)
+        .map(|(_, r)| dist(r))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        rest >= 40.0,
+        "with Jan Mayen excluded the box clears {rest:.2} pt"
+    );
+    eprintln!(
+        "svalbard at 328×178: nearest ring {} vertices at {d_near:.2} pt, ({lat:.3}, {lon:.3}), {km:.1} km from Jan Mayen; the rest ≥ {rest:.2} pt",
+        r.len()
+    );
+}
+
+/// The frame clips to `index::clip_rect`, the pane grown by 2 pt on every side (review 3,
+/// finding 5): at the golden fit the neighbours of RU, FR, DE and NO cross all four edges, so
+/// the clipped vertices' extremes are exactly −2 and 330 in x and −2 and 302 in y (Sutherland–
+/// Hodgman puts a vertex on the clip edge), and no vertex lies outside; at 328 × 178 DE's and
+/// NO's reach −2, 330, −2 and 180. Fails with the margin dropped from the frame (0 and 328) or
+/// applied in km at the view's scale.
+#[test]
+fn the_frame_clips_to_the_margin() {
+    use ondar_map::index::{CLIP_MARGIN_PT, clip_rect};
+    let s = store();
+    let anmite = Pane {
+        width: 328.0,
+        height: 178.0,
+        padding: 20.0,
+    };
+    for (pane, codes) in [
+        (P, vec!["RU", "FR", "DE", "NO"]),
+        (anmite, vec!["DE", "NO"]),
+    ] {
+        let [x0, y0, x1, y1] = clip_rect(&pane);
+        assert_eq!(x0, -CLIP_MARGIN_PT);
+        assert_eq!((x1, y1), (pane.width + 2.0, pane.height + 2.0));
+        for code in codes {
+            let i = c(code);
+            let f = s.frame(i, &pane, s.fit(i, &pane).unwrap()).unwrap();
+            let mut lo = [f64::INFINITY; 2];
+            let mut hi = [f64::NEG_INFINITY; 2];
+            for p in f.neighbours.iter().flat_map(|sh| sh.rings.iter()).flatten() {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(f64::from(p[k]));
+                    hi[k] = hi[k].max(f64::from(p[k]));
+                }
+            }
+            assert_eq!(
+                (lo, hi),
+                ([x0, y0], [x1, y1]),
+                "{code} at {}×{}: the neighbours' extent",
+                pane.width,
+                pane.height
+            );
+            for p in f
+                .land
+                .iter()
+                .chain(&f.neighbours)
+                .flat_map(|sh| sh.rings.iter())
+                .chain(&f.subdivisions)
+                .flatten()
+            {
+                let [x, y] = p.map(f64::from);
+                assert!(
+                    x >= x0 && x <= x1 && y >= y0 && y <= y1,
+                    "{code}: ({x}, {y}) outside the clip rect"
+                );
+            }
+        }
+    }
+}

@@ -74,6 +74,38 @@ pub fn level_for(scale: f64) -> usize {
         .unwrap_or(0)
 }
 
+/// The zoom controls' row, `− fit +` (Z1, C1; review P5): its size, points…
+pub const CONTROLS_SIZE_PT: [f64; 2] = [74.0, 24.0];
+/// …and its distance from the pane's bottom and right edges, points.
+pub const CONTROLS_MARGIN_PT: f64 = 8.0;
+
+/// The controls' rect `[x, y, w, h]` at a pane: the bottom-right corner, `CONTROLS_MARGIN_PT`
+/// in from the pane's bottom and right edges. The tool, the frame and the page read this one
+/// function — the corner is reserved (C1): the controls' rect is the first box placed at every
+/// band, so no inset box overlaps it. The controls may sit over land; they are not an inset.
+pub fn controls_rect(pane: &Pane) -> [f64; 4] {
+    let [w, h] = CONTROLS_SIZE_PT;
+    [
+        pane.width - CONTROLS_MARGIN_PT - w,
+        pane.height - CONTROLS_MARGIN_PT - h,
+        w,
+        h,
+    ]
+}
+
+/// Whether a box `[x, y, w, h]` (points, y down) lies inside the pane; a box whose edge lies on
+/// the pane's edge fits. The one box rule for the tool and the frame (review 3, finding 4): the
+/// tool refuses what this refuses, the frame drops what this refuses, and nothing else.
+pub fn box_fits([x, y, w, h]: [f64; 4], pane: &Pane) -> bool {
+    x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height
+}
+
+/// Whether two boxes `[x, y, w, h]` are apart: they share no area (boxes that touch along an
+/// edge or at a corner are apart). The other half of the one box rule.
+pub fn boxes_apart([ax, ay, aw, ah]: [f64; 4], [bx, by, bw, bh]: [f64; 4]) -> bool {
+    ax + aw <= bx || bx + bw <= ax || ay + ah <= by || by + bh <= ay
+}
+
 /// An inset's land is fitted inside its box less this padding on every side, points.
 pub const INSET_PAD_PT: f64 = 4.0;
 /// …and above a label strip this tall along the box's bottom edge, points.
@@ -256,6 +288,72 @@ mod tests {
             [2.0, 0.0],
             [3.0, 0.0]
         ));
+    }
+
+    /// The one box rule (review 3, finding 4). `box_fits`: a box on the pane's edge fits, 0.01 pt
+    /// past any edge does not (fails on a strict compare, or with a margin — the clip margin,
+    /// say — allowed past the edge). `boxes_apart`: boxes touching along an edge or at a corner
+    /// are apart, boxes sharing 0.01 pt are not (fails on `<` for `<=`). Both read like the tool's
+    /// and the frame's former inline copies, which is the point.
+    #[test]
+    fn the_one_box_rule() {
+        let pane = Pane {
+            width: 328.0,
+            height: 178.0,
+            padding: 20.0,
+        };
+        assert!(box_fits([0.0, 0.0, 328.0, 178.0], &pane));
+        assert!(box_fits([248.0, 118.0, 80.0, 60.0], &pane));
+        assert!(!box_fits([-0.01, 0.0, 80.0, 60.0], &pane));
+        assert!(!box_fits([0.0, -0.01, 80.0, 60.0], &pane));
+        assert!(!box_fits([248.01, 0.0, 80.0, 60.0], &pane));
+        assert!(!box_fits([0.0, 118.01, 80.0, 60.0], &pane));
+        assert!(
+            !box_fits([0.0, 0.0, 330.0, 10.0], &pane),
+            "the clip margin is not the pane"
+        );
+        assert!(!box_fits([f64::NAN, 0.0, 1.0, 1.0], &pane));
+
+        let a = [8.0, 8.0, 80.0, 60.0];
+        assert!(
+            boxes_apart(a, [88.0, 8.0, 80.0, 60.0]),
+            "touching along an edge"
+        );
+        assert!(boxes_apart(a, [8.0, 68.0, 80.0, 60.0]));
+        assert!(
+            boxes_apart(a, [88.0, 68.0, 80.0, 60.0]),
+            "touching at a corner"
+        );
+        assert!(boxes_apart([88.0, 8.0, 80.0, 60.0], a), "symmetric");
+        assert!(!boxes_apart(a, [87.99, 8.0, 80.0, 60.0]));
+        assert!(!boxes_apart(a, [8.0, 67.99, 80.0, 60.0]));
+        assert!(
+            !boxes_apart(a, [20.0, 20.0, 10.0, 10.0]),
+            "one inside the other"
+        );
+        assert!(!boxes_apart(a, a));
+    }
+
+    /// The controls' row (C1, review P5): 74 × 24 pt, 8 pt from the pane's bottom and right
+    /// edges, inside the pane at 178 and 300 — `[246, 146, 74, 24]` and `[246, 268, 74, 24]`
+    /// (fails with either margin dropped or the size transposed).
+    #[test]
+    fn the_controls_rect_is_bottom_right() {
+        for (h, want) in [
+            (178.0, [246.0, 146.0, 74.0, 24.0]),
+            (300.0, [246.0, 268.0, 74.0, 24.0]),
+        ] {
+            let pane = Pane {
+                width: 328.0,
+                height: h,
+                padding: 20.0,
+            };
+            let r = controls_rect(&pane);
+            assert_eq!(r, want, "at {h}");
+            assert!(box_fits(r, &pane));
+            assert_eq!(pane.width - (r[0] + r[2]), CONTROLS_MARGIN_PT);
+            assert_eq!(pane.height - (r[1] + r[3]), CONTROLS_MARGIN_PT);
+        }
     }
 
     /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6.

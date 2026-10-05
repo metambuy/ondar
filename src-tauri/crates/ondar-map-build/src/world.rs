@@ -430,69 +430,63 @@ pub fn plan_country(
 
     // the boxes: inside the pane, apart, and ≥ 12 pt from the land at the initial view
     let s0 = rules::initial_scale(fit);
-    let to_pt = |c: &Coord<f64>| Coord {
-        x: (c.x - cx) / s0 + pane.width / 2.0,
-        y: (cy - c.y) / s0 + pane.height / 2.0,
+    let to_pt = |c: &Coord<f64>| -> [f64; 2] {
+        [
+            (c.x - cx) / s0 + pane.width / 2.0,
+            (cy - c.y) / s0 + pane.height / 2.0,
+        ]
     };
     // the land the frame draws at the initial view, which `Store::inset_clearance` measures
     // (review 2, finding 2): the frame's groups and the small ones it drops, clipped as the
-    // frame clips them — to the pane grown by the clip margin — so a dropped group off the pane
-    // (Jan Mayen, 6 pt above Norway's) counts no more here than on screen
-    let clip_pt = [
-        -index::CLIP_MARGIN_PT,
-        -index::CLIP_MARGIN_PT,
-        pane.width + index::CLIP_MARGIN_PT,
-        pane.height + index::CLIP_MARGIN_PT,
-    ];
-    let land_rings: Vec<Vec<Coord<f64>>> = groups
+    // frame clips them — to `index::clip_rect`, the frame's own (review 3, finding 5) — so a
+    // dropped group off the pane (Jan Mayen, 6 pt above Norway's) counts no more here than on
+    // screen
+    let clip_pt = index::clip_rect(&pane);
+    let land_rings: Vec<Vec<[f64; 2]>> = groups
         .iter()
         .filter(|g| matches!(g.role, GroupRole::Frame | GroupRole::Dropped))
         .flat_map(|g| g.parts.iter())
         .flat_map(|&i| {
             geom::rings(&proj[i])
                 .map(|r| {
-                    let pts: Vec<[f64; 2]> = r.0.iter().map(to_pt).map(|c| [c.x, c.y]).collect();
+                    let pts: Vec<[f64; 2]> = r.0.iter().map(to_pt).collect();
                     clip::clip_ring(&pts, &clip_pt)
-                        .into_iter()
-                        .map(|[x, y]| Coord { x, y })
-                        .collect::<Vec<_>>()
                 })
                 .filter(|r| r.len() >= 3)
                 .collect::<Vec<_>>()
         })
         .collect();
+    let clear = |r: [f64; 4]| {
+        land_rings
+            .iter()
+            .map(|ring| rules::rect_ring_distance(r, ring.iter().copied()))
+            .fold(f64::INFINITY, f64::min)
+    };
+    // the boxes, by the frame's rule (`rules::box_fits` / `boxes_apart`, review 3, finding 4):
+    // what the tool refuses here the frame would drop, and nothing else
     for k in 0..insets.len() {
-        let [x, y, w, h] = insets[k].row.rect;
+        let rect = insets[k].row.rect;
+        let [x, y, w, h] = rect;
         let r = [x, y, x + w, y + h];
-        if x < 0.0 || y < 0.0 || r[2] > pane.width || r[3] > pane.height {
+        if !rules::box_fits(rect, &pane) {
             return Err(format!(
                 "{code} {}: the box leaves the pane",
                 insets[k].row.label
             ));
         }
         for other in &insets[..k] {
-            let [ox, oy, ow, oh] = other.row.rect;
-            if x < ox + ow && ox < r[2] && y < oy + oh && oy < r[3] {
+            if !rules::boxes_apart(rect, other.row.rect) {
                 return Err(format!(
                     "{code}: boxes {} and {} overlap",
                     other.row.label, insets[k].row.label
                 ));
             }
         }
-        let clearance = land_rings
-            .iter()
-            .map(|ring| geom::rect_ring_distance(r, ring))
-            .fold(f64::INFINITY, f64::min);
+        let clearance = clear(r);
         insets[k].clearance_pt = clearance;
         if clearance < rules::INSET_CLEARANCE_PT {
             // per corner, 8 pt in, the largest box of this aspect that clears: the refusal says
             // where a box would fit
-            let clear = |r: [f64; 4]| {
-                land_rings
-                    .iter()
-                    .map(|ring| geom::rect_ring_distance(r, ring))
-                    .fold(f64::INFINITY, f64::min)
-            };
             let largest = |corner: usize| {
                 let box_at = |f: f64| {
                     let (bw, bh) = (w * f, h * f);

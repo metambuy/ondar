@@ -3,7 +3,8 @@
 //!
 //! A view is a centre in the country's frame LAEA (km) and a scale (km/pt). The pane's origin is
 //! its top-left corner, y down. The level is the coarsest ladder level at or below the scale;
-//! the clip rectangle is the view grown by `index::CLIP_MARGIN_PT`; a ring is read only if its
+//! the clip rectangle is the view grown by `index::CLIP_MARGIN_PT` (`index::clip_rect`, the
+//! tool's too); a ring is read only if its
 //! cap meets the clip rectangle (the index), then decoded, reprojected (the country's main unit
 //! by a translation and a scale, every other unit inverse-then-forward), clipped and rounded to
 //! 0.01 pt.
@@ -240,12 +241,7 @@ impl Store {
             &frame_l,
             [cx - hw - m, cy - hh - m, cx + hw + m, cy + hh + m],
         );
-        let clip_pt: Rect = [
-            -CLIP_MARGIN_PT,
-            -CLIP_MARGIN_PT,
-            pane.width + CLIP_MARGIN_PT,
-            pane.height + CLIP_MARGIN_PT,
-        ];
+        let clip_pt = index::clip_rect(pane);
         let to_pt = |x: f64, y: f64| {
             [
                 (x - cx) / s + pane.width / 2.0,
@@ -407,13 +403,12 @@ impl Store {
         for (i, ins) in ct.insets.iter().enumerate() {
             // in table order, drawn iff inside the pane and apart from every box already drawn
             // (review 2, finding 4; review 3, finding 2: a box not drawn blocks nothing): never
-            // moved, never clamped onto the land
-            let [rx, ry, rw, rh] = ins.rect_at(pane);
-            let inside = rx >= 0.0 && ry >= 0.0 && rx + rw <= pane.width && ry + rh <= pane.height;
-            let apart = drawn.iter().all(|&[ox, oy, ow, oh]| {
-                rx + rw <= ox || ox + ow <= rx || ry + rh <= oy || oy + oh <= ry
-            });
-            if !(inside && apart) {
+            // moved, never clamped onto the land. The rule is `rules::box_fits` / `boxes_apart`,
+            // the tool's too (review 3, finding 4)
+            let rect = ins.rect_at(pane);
+            let [rx, ry, rw, rh] = rect;
+            if !(rules::box_fits(rect, pane) && drawn.iter().all(|&o| rules::boxes_apart(rect, o)))
+            {
                 stats.insets_dropped += 1;
                 continue;
             }
@@ -421,7 +416,7 @@ impl Store {
             let (Ok(k8), Ok(i8_)) = (u8::try_from(k), u8::try_from(i)) else {
                 continue;
             };
-            drawn.push([rx, ry, rw, rh]);
+            drawn.push(rect);
             let (acx, acy, _, _) = rules::inset_area([rx, ry, rw, rh]);
             let il = Laea::new(ins.lat0, ins.lon0);
             let [icx, icy] = ins.centre_km;
