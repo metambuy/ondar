@@ -232,6 +232,123 @@ pub fn write(
         }
     );
 
+    // I1 + C1 (M4b commit 4): the per-band inset scales, the corner table, the labels
+    let _ = writeln!(r, "## Insets per band (I1, C1)\n");
+    let _ = writeln!(
+        r,
+        "At every band height the controls' rect (`rules::controls_rect`, {} × {} pt, {} pt from the \
+         bottom and right) is placed first; each inset row, in table order, takes the largest scale in \
+         whole percent at which its box — the golden size scaled, the label strip and the pads not, \
+         anchored at its corner with the row's gaps — is inside the pane, apart from every box placed \
+         before it and ≥ {} pt from the land the frame draws there. The minimum is a land area of \
+         {} × {} pt (box ≥ 36 × 28). Labels at the artifact's {} pt, 0.6 em a character and 0.3 em a space.\n",
+        ondar_map::rules::CONTROLS_SIZE_PT[0],
+        ondar_map::rules::CONTROLS_SIZE_PT[1],
+        ondar_map::rules::CONTROLS_MARGIN_PT,
+        ondar_map::rules::INSET_CLEARANCE_PT,
+        ondar_map::rules::INSET_MIN_LAND_PT[0],
+        ondar_map::rules::INSET_MIN_LAND_PT[1],
+        ondar_map::rules::INSET_LABEL_FONT_PT
+    );
+    let _ = writeln!(
+        r,
+        "| inset | corner | min % (at) | 140 | 161 | 178 | 200 | 250 | 300 | label pt | inner 178 / 300 |\n|---|---|---|---|---|---|---|---|---|---|---|"
+    );
+    let at = |i: &crate::world::InsetPlan, h: u32| {
+        i.scale_pct
+            .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+            .copied()
+            .unwrap_or(0)
+    };
+    let inner = |i: &crate::world::InsetPlan, h: u32| {
+        let pct = at(i, h);
+        if pct == 0 {
+            "—".to_string()
+        } else {
+            format!(
+                "{:.0}",
+                ondar_map::rules::label_inner_width(ondar_map::rules::inset_box_at(
+                    i.row.rect,
+                    i.row.corner,
+                    &ondar_map::rules::Pane::band(h),
+                    f64::from(pct) / 100.0
+                ))
+            )
+        }
+    };
+    for p in &inp.plans {
+        for i in &p.insets {
+            let (min_i, &min_pct) = i
+                .scale_pct
+                .iter()
+                .enumerate()
+                .min_by_key(|&(_, &p)| p)
+                .unwrap_or((0, &0));
+            let _ = writeln!(
+                r,
+                "| {} {} | {:?} | {min_pct} ({}) | {} | {} | {} | {} | {} | {} | {:.1} | {} / {} |",
+                p.code,
+                i.row.label,
+                i.row.corner,
+                ondar_map::rules::BAND_FLOOR + min_i as u32,
+                at(i, 140),
+                at(i, 161),
+                at(i, 178),
+                at(i, 200),
+                at(i, 250),
+                at(i, 300),
+                ondar_map::rules::label_width_pt(&i.row.label),
+                inner(i, 178),
+                inner(i, 300)
+            );
+        }
+    }
+    let _ = writeln!(
+        r,
+        "\nThe corner table — each box alone after the controls, with its own gaps, at TL / TR / BL: \
+         min % over the bands (at), % at 178, % at 300, the full box's clearance at 161 in pt.\n"
+    );
+    let _ = writeln!(
+        r,
+        "| inset | current | TL | TR | BL |\n|---|---|---|---|---|"
+    );
+    for p in &inp.plans {
+        for i in &p.insets {
+            let cell = |c: &crate::world::CornerChoice| {
+                format!(
+                    "{} ({}) · {} · {} · {:.1}",
+                    c.min_pct, c.min_at, c.pct_178, c.pct_300, c.clearance_161
+                )
+            };
+            let cells: Vec<String> = i.corners.iter().map(cell).collect();
+            let _ = writeln!(
+                r,
+                "| {} {} | {:?} | {} |",
+                p.code,
+                i.row.label,
+                i.row.corner,
+                cells.join(" | ")
+            );
+        }
+    }
+    let gate = crate::world::ship_gate(&inp.plans);
+    let _ = writeln!(
+        r,
+        "\nThe ship gate: {} inset(s) dropped at 178 or 300{}; {} label(s) wider than their box{}.\n",
+        gate.dropped.len(),
+        if gate.dropped.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", gate.dropped.join("; "))
+        },
+        gate.wide_labels.len(),
+        if gate.wide_labels.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", gate.wide_labels.join("; "))
+        }
+    );
+
     // P4
     let _ = writeln!(r, "## P4 — the simplifier\n");
     let (vin, vw, rdp, chosen) = built.p4;

@@ -1,5 +1,8 @@
 //! The frame rules shared by the build tool and the runtime (one code path): the pane, the fit,
-//! the S1 floor, the global ladder and the level a view uses.
+//! the S1 floor, the global ladder and the level a view uses; the one box rule, the controls'
+//! rect and the inset box at a band and a scale (I1, C1).
+
+use crate::format::Corner;
 
 /// The zoom-in limit and the initial scale's floor (S1), km/pt.
 pub const FLOOR_KM_PER_PT: f64 = 1.5;
@@ -133,6 +136,81 @@ pub const INSET_PAD_PT: f64 = 4.0;
 pub const INSET_LABEL_PT: f64 = 8.0;
 /// No inset box comes closer than this to its country's land at the initial view (S6), points.
 pub const INSET_CLEARANCE_PT: f64 = 12.0;
+/// The label's type size, points: the "Ondar map style" artifact (v3, 2026-09-24), specification
+/// row "Inset labels: 8 pt name, bottom-right of the inset; names only". Read at M4b commit 4
+/// (review P3), not assumed; under 9 pt, which the STOP says.
+pub const INSET_LABEL_FONT_PT: f64 = 8.0;
+/// The smallest land area an inset box may fit its land into at any band (I1, decision A): 28 pt
+/// across and 12 pt tall, so with the 8 pt strip and the 4 pt pads unscaled no box is under
+/// 36 × 28 pt. The proposal Martín judges with commit 4's table (review P2).
+pub const INSET_MIN_LAND_PT: [f64; 2] = [28.0, 12.0];
+
+/// The inset box at a band and a scale (I1; M4b commit 4): the golden row's `[x, y, w, h]`
+/// scaled to `w·s × h·s` and anchored at `corner` with the golden row's gaps to its two edges —
+/// a right corner moves with the pane's width, a bottom corner with its height. At the golden
+/// pane and `s = 1` it is the row's rect. The label strip and the pads are inside the box and do
+/// not scale, so the land area is `(w·s − 8) × (h·s − 16)` (`inset_area`).
+pub fn inset_box_at([x, y, w, h]: [f64; 4], corner: Corner, pane: &Pane, s: f64) -> [f64; 4] {
+    let (gap_r, gap_b) = (Pane::GOLDEN.width - x - w, Pane::GOLDEN.height - y - h);
+    let (bw, bh) = (w * s, h * s);
+    let bx = match corner {
+        Corner::TopLeft | Corner::BottomLeft => x,
+        Corner::TopRight | Corner::BottomRight => pane.width - gap_r - bw,
+    };
+    let by = match corner {
+        Corner::TopLeft | Corner::TopRight => y,
+        Corner::BottomLeft | Corner::BottomRight => pane.height - gap_b - bh,
+    };
+    [bx, by, bw, bh]
+}
+
+/// A golden row's box moved to another corner, keeping the gaps it has to its own corner's two
+/// edges (Step 0's corner table did the same): the tool's corner table tries each of TL, TR and
+/// BL this way. `to == from` is the rect itself.
+pub fn inset_rect_at_corner([x, y, w, h]: [f64; 4], from: Corner, to: Corner) -> [f64; 4] {
+    let g = Pane::GOLDEN;
+    let gap_x = match from {
+        Corner::TopLeft | Corner::BottomLeft => x,
+        Corner::TopRight | Corner::BottomRight => g.width - x - w,
+    };
+    let gap_y = match from {
+        Corner::TopLeft | Corner::TopRight => y,
+        Corner::BottomLeft | Corner::BottomRight => g.height - y - h,
+    };
+    let nx = match to {
+        Corner::TopLeft | Corner::BottomLeft => gap_x,
+        Corner::TopRight | Corner::BottomRight => g.width - gap_x - w,
+    };
+    let ny = match to {
+        Corner::TopLeft | Corner::TopRight => gap_y,
+        Corner::BottomLeft | Corner::BottomRight => g.height - gap_y - h,
+    };
+    [nx, ny, w, h]
+}
+
+/// The smallest scale at which a `w × h` golden box still holds the minimum land area: the
+/// larger of `36 / w` and `28 / h` (the strip and the pads do not scale). Hawaii's 60 × 32 needs
+/// 0.875; the Azores' 92 × 52 needs 0.538.
+pub fn inset_min_scale([_, _, w, h]: [f64; 4]) -> f64 {
+    let [lw, lh] = INSET_MIN_LAND_PT;
+    ((lw + 2.0 * INSET_PAD_PT) / w).max((lh + INSET_LABEL_PT + 2.0 * INSET_PAD_PT) / h)
+}
+
+/// A conservative width for a label at `INSET_LABEL_FONT_PT` (review P3): 0.6 em per character
+/// and 0.3 em per space — upper bounds for SF Pro at text sizes — so a label this rule passes is
+/// never clipped on screen. "Azores" is 28.8 pt; "Guadeloupe & Martinique" 105.6.
+pub fn label_width_pt(label: &str) -> f64 {
+    label
+        .chars()
+        .map(|c| if c == ' ' { 0.3 } else { 0.6 })
+        .sum::<f64>()
+        * INSET_LABEL_FONT_PT
+}
+
+/// The width a label may take inside a box `[x, y, w, h]`: the box less the two pads.
+pub fn label_inner_width(rect: [f64; 4]) -> f64 {
+    rect[2] - 2.0 * INSET_PAD_PT
+}
 
 /// The area of an inset box `[x, y, w, h]` (points, y down) its land is fitted into:
 /// `(centre_x, centre_y, width, height)`.
@@ -387,6 +465,80 @@ mod tests {
             assert_eq!(pane.width - (r[0] + r[2]), CONTROLS_MARGIN_PT);
             assert_eq!(pane.height - (r[1] + r[3]), CONTROLS_MARGIN_PT);
         }
+    }
+
+    /// I1's box (M4b commit 4): at the golden pane and `s = 1` the row's rect; at 328 × 178 a
+    /// bottom-left box keeps its 8 pt bottom gap (Alaska's `[8, 236, 84, 56]` → y 114) and a
+    /// top-right one its right gap; at `s = 0.5` the size halves and the gaps stay (fails with the
+    /// gaps scaled, the size unscaled, or a corner's axis mixed up). The minimum scale: Hawaii's
+    /// 60 × 32 needs 0.875 (the height binds), the Azores' 92 × 52 0.538 (the height again:
+    /// 28 / 52), an 80 × 60 box 0.467 (fails with the strip or a pad scaled, or `min` for `max`).
+    #[test]
+    fn the_inset_box_at_a_band_and_a_scale() {
+        let anmite = Pane::band(178);
+        let alaska = [8.0, 236.0, 84.0, 56.0];
+        assert_eq!(
+            inset_box_at(alaska, Corner::BottomLeft, &Pane::GOLDEN, 1.0),
+            alaska
+        );
+        assert_eq!(
+            inset_box_at(alaska, Corner::BottomLeft, &anmite, 1.0),
+            [8.0, 114.0, 84.0, 56.0]
+        );
+        assert_eq!(
+            inset_box_at(alaska, Corner::BottomLeft, &anmite, 0.5),
+            [8.0, 142.0, 42.0, 28.0]
+        );
+        let gm = [260.0, 8.0, 60.0, 44.0];
+        assert_eq!(
+            inset_box_at(gm, Corner::TopRight, &anmite, 0.5),
+            [290.0, 8.0, 30.0, 22.0]
+        );
+        // a row moved to another corner keeps its own gaps (8 right, 8 top): Guadeloupe's box at
+        // BL is [8, 248, 60, 44] on the golden pane and, anchored there at 178, [8, 126, 60, 44]
+        let gm_bl = inset_rect_at_corner(gm, Corner::TopRight, Corner::BottomLeft);
+        assert_eq!(gm_bl, [8.0, 248.0, 60.0, 44.0]);
+        assert_eq!(
+            inset_box_at(gm_bl, Corner::BottomLeft, &anmite, 1.0),
+            [8.0, 126.0, 60.0, 44.0]
+        );
+        assert_eq!(
+            inset_rect_at_corner(alaska, Corner::BottomLeft, Corner::TopRight),
+            [236.0, 8.0, 84.0, 56.0]
+        );
+        assert_eq!(
+            inset_rect_at_corner(gm, Corner::TopRight, Corner::TopRight),
+            gm
+        );
+        assert_eq!(
+            inset_box_at([8.0, 8.0, 80.0, 60.0], Corner::TopLeft, &anmite, 0.75),
+            [8.0, 8.0, 60.0, 45.0]
+        );
+        assert!((inset_min_scale([98.0, 258.0, 60.0, 32.0]) - 0.875).abs() < 1e-12);
+        assert!((inset_min_scale([10.0, 24.0, 92.0, 52.0]) - 28.0 / 52.0).abs() < 1e-12);
+        assert!((inset_min_scale([8.0, 8.0, 80.0, 60.0]) - 28.0 / 60.0).abs() < 1e-12);
+        // a box at its minimum scale holds exactly the minimum land area
+        let r = inset_box_at(
+            [98.0, 258.0, 60.0, 32.0],
+            Corner::BottomLeft,
+            &anmite,
+            0.875,
+        );
+        let (_, _, aw, ah) = inset_area(r);
+        assert!(aw >= INSET_MIN_LAND_PT[0] - 1e-9 && (ah - INSET_MIN_LAND_PT[1]).abs() < 1e-9);
+    }
+
+    /// P3's label metric at the artifact's 8 pt: 0.6 em a character, 0.3 em a space (fails with
+    /// a space counted as a character, or the size assumed at 9 or 10 pt), and the inner width is
+    /// the box less two pads.
+    #[test]
+    fn label_widths_at_the_artifacts_size() {
+        assert_eq!(INSET_LABEL_FONT_PT, 8.0);
+        assert!((label_width_pt("Azores") - 28.8).abs() < 1e-9);
+        assert!((label_width_pt("Guadeloupe & Martinique") - 105.6).abs() < 1e-9);
+        assert!((label_width_pt("Sabah & Sarawak") - (13.0 * 4.8 + 2.0 * 2.4)).abs() < 1e-9);
+        assert_eq!(label_width_pt(""), 0.0);
+        assert_eq!(label_inner_width([0.0, 0.0, 60.0, 44.0]), 52.0);
     }
 
     /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6.

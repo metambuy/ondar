@@ -245,7 +245,7 @@ fn quantise_ring(ring: &[Coord<f64>], level: f64) -> Vec<[i32; 2]> {
     q
 }
 
-fn job<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+pub(crate) fn job<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     let next = AtomicUsize::new(0);
     let out: Mutex<Vec<(usize, T)>> = Mutex::new(Vec::with_capacity(n));
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -441,12 +441,31 @@ pub fn build(
             }
         }
         for ins in &p.insets {
-            let k = rules::level_for(ins.scale);
-            for &gp in &p.groups[ins.group].parts {
-                let (u, _) = p.parts[gp];
-                need[u][k] = true;
-                exact[u][k] = true;
-                own_need[u][k] = true;
+            // the inset's level at the golden box and at every band's scaled box (I1, M4b
+            // commit 4): a smaller box fits the same group at a coarser scale
+            let mut ks = BTreeSet::from([rules::level_for(ins.scale)]);
+            for (i, &pct) in ins.scale_pct.iter().enumerate() {
+                if pct == 0 {
+                    continue;
+                }
+                let h = BAND_FLOOR + i as u32;
+                let rect = rules::inset_box_at(
+                    ins.row.rect,
+                    ins.row.corner,
+                    &Pane::band(h),
+                    f64::from(pct) / 100.0,
+                );
+                if let Some(sc) = rules::inset_scale(ins.size_km[0], ins.size_km[1], rect) {
+                    ks.insert(rules::level_for(sc));
+                }
+            }
+            for k in ks {
+                for &gp in &p.groups[ins.group].parts {
+                    let (u, _) = p.parts[gp];
+                    need[u][k] = true;
+                    exact[u][k] = true;
+                    own_need[u][k] = true;
+                }
             }
         }
     }

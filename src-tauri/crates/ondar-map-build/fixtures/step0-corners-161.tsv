@@ -1,0 +1,87 @@
+# Step 0 (M4b, 2026-10-02): `pane_sweep` at 328 × 161 × 20 on the shipped resource e2775f81… (`f7a3fd8`),
+# the `fit`, `inset` and `corner` lines for the ten countries with insets, verbatim from
+# `_handover/m4b-step0/q4b-pane-328x161-pad20.tsv`. The corner table was computed with no controls
+# rect, each inset alone, the box w·f × h·f anchored at the candidate corner with the row's own gaps;
+# `fit`'s 7th field is `missing_blobs` at the fit view: IN (11) and US (48) framed on partial land
+# there, so their figures are not comparable with the tool's full land model (review P6 compares
+# the eight with 0). Columns: corner  code  label  corner  x y w h  clearance_full  overlaps  fits_at (w×h)
+fit	EC	5.9228	3	1778	22	27643	0	0	969
+inset	EC	Galápagos	240 93 80 60	33.05
+corner	EC	Galápagos	TL	8.0 8.0 80.0 60.0	23.51	0	1.00 (80x60)
+corner	EC	Galápagos	TR	240.0 8.0 80.0 60.0	21.72	0	1.00 (80x60)
+corner	EC	Galápagos	BL	8.0 93.0 80.0 60.0	22.36	0	1.00 (80x60)
+corner	EC	Galápagos	BR	240.0 93.0 80.0 60.0	33.05	0	1.00 (80x60)
+fit	ES	8.0169	6	2490	60	38266	0	0	802
+inset	ES	Canary Islands	240 93 80 60	19.88
+corner	ES	Canary Islands	TL	8.0 8.0 80.0 60.0	5.20	0	0.91 (73x55)
+corner	ES	Canary Islands	TR	240.0 8.0 80.0 60.0	7.10	0	0.95 (76x57)
+corner	ES	Canary Islands	BL	8.0 93.0 80.0 60.0	18.82	0	1.00 (80x60)
+corner	ES	Canary Islands	BR	240.0 93.0 80.0 60.0	19.88	0	1.00 (80x60)
+fit	FR	8.7232	6	8364	106	126896	0	0	792
+inset	FR	French Guiana	8 8 60 44	30.31
+inset	FR	Guadeloupe & Martinique	260 8 60 44	49.60
+inset	FR	Réunion	8 109 60 44	55.15
+corner	FR	French Guiana	TL	8.0 8.0 60.0 44.0	30.31	0	1.00 (60x44)
+corner	FR	French Guiana	TR	260.0 8.0 60.0 44.0	49.60	1	1.00 (60x44)
+corner	FR	French Guiana	BL	8.0 109.0 60.0 44.0	55.15	1	1.00 (60x44)
+corner	FR	French Guiana	BR	260.0 109.0 60.0 44.0	30.31	0	1.00 (60x44)
+corner	FR	Guadeloupe & Martinique	TL	8.0 8.0 60.0 44.0	30.31	1	1.00 (60x44)
+corner	FR	Guadeloupe & Martinique	TR	260.0 8.0 60.0 44.0	49.60	0	1.00 (60x44)
+corner	FR	Guadeloupe & Martinique	BL	8.0 109.0 60.0 44.0	55.15	1	1.00 (60x44)
+corner	FR	Guadeloupe & Martinique	BR	260.0 109.0 60.0 44.0	30.31	0	1.00 (60x44)
+corner	FR	Réunion	TL	8.0 8.0 60.0 44.0	30.31	1	1.00 (60x44)
+corner	FR	Réunion	TR	260.0 8.0 60.0 44.0	49.60	1	1.00 (60x44)
+corner	FR	Réunion	BL	8.0 109.0 60.0 44.0	55.15	0	1.00 (60x44)
+corner	FR	Réunion	BR	260.0 109.0 60.0 44.0	30.31	0	1.00 (60x44)
+fit	IN	25.1370	24	12263	501	190551	11	0	617
+inset	IN	Andaman & Nicobar	240 93 80 60	35.92
+corner	IN	Andaman & Nicobar	TL	8.0 8.0 80.0 60.0	18.14	0	1.00 (80x60)
+corner	IN	Andaman & Nicobar	TR	240.0 8.0 80.0 60.0	18.06	0	1.00 (80x60)
+corner	IN	Andaman & Nicobar	BL	8.0 93.0 80.0 60.0	26.76	0	1.00 (80x60)
+corner	IN	Andaman & Nicobar	BR	240.0 93.0 80.0 60.0	35.92	0	1.00 (80x60)
+fit	MY	4.9974	3	2009	73	31444	0	0	881
+inset	MY	Sabah & Sarawak	240 8 80 60	42.65
+corner	MY	Sabah & Sarawak	TL	8.0 8.0 80.0 60.0	24.43	0	1.00 (80x60)
+corner	MY	Sabah & Sarawak	TR	240.0 8.0 80.0 60.0	42.65	0	1.00 (80x60)
+corner	MY	Sabah & Sarawak	BL	8.0 93.0 80.0 60.0	48.88	0	1.00 (80x60)
+corner	MY	Sabah & Sarawak	BR	240.0 93.0 80.0 60.0	24.44	0	1.00 (80x60)
+fit	NO	11.8683	6	16953	335	257590	0	0	1113
+inset	NO	Svalbard	8 8 80 60	4.72
+corner	NO	Svalbard	TL	8.0 8.0 80.0 60.0	4.72	0	0.91 (73x55)
+corner	NO	Svalbard	TR	240.0 8.0 80.0 60.0	24.49	0	1.00 (80x60)
+corner	NO	Svalbard	BL	8.0 93.0 80.0 60.0	24.50	0	1.00 (80x60)
+corner	NO	Svalbard	BR	240.0 93.0 80.0 60.0	61.94	0	1.00 (80x60)
+fit	PF	8.4532	6	435	93	8081	0	0	566
+inset	PF	Marquesas	240 8 80 60	0.00
+corner	PF	Marquesas	TL	8.0 8.0 80.0 60.0	0.00	0	0.41 (33x24)
+corner	PF	Marquesas	TR	240.0 8.0 80.0 60.0	0.00	0	0.80 (64x48)
+corner	PF	Marquesas	BL	8.0 93.0 80.0 60.0	0.00	0	0.82 (66x49)
+corner	PF	Marquesas	BR	240.0 93.0 80.0 60.0	0.00	0	0.29 (23x17)
+fit	PT	4.7675	3	1095	24	17057	0	0	773
+inset	PT	Azores	10 24 92 52	35.58
+inset	PT	Madeira	10 84 52 40	72.68
+corner	PT	Azores	TL	10.0 24.0 92.0 52.0	35.58	0	1.00 (92x52)
+corner	PT	Azores	TR	226.0 24.0 92.0 52.0	32.67	0	1.00 (92x52)
+corner	PT	Azores	BL	10.0 85.0 92.0 52.0	32.68	1	1.00 (92x52)
+corner	PT	Azores	BR	226.0 85.0 92.0 52.0	44.82	0	1.00 (92x52)
+corner	PT	Madeira	TL	10.0 84.0 52.0 40.0	72.68	0	1.00 (52x40)
+corner	PT	Madeira	TR	266.0 84.0 52.0 40.0	84.82	0	1.00 (52x40)
+corner	PT	Madeira	BL	10.0 37.0 52.0 40.0	74.91	1	1.00 (52x40)
+corner	PT	Madeira	BR	266.0 37.0 52.0 40.0	72.76	0	1.00 (52x40)
+fit	US	24.1632	24	16590	458	251291	48	0	413
+inset	US	Alaska	8 97 84 56	0.00
+inset	US	Hawaii	98 119 60 32	0.00
+corner	US	Alaska	TL	8.0 8.0 84.0 56.0	0.00	0	0.62 (52x35)
+corner	US	Alaska	TR	236.0 8.0 84.0 56.0	0.00	0	0.58 (49x33)
+corner	US	Alaska	BL	8.0 97.0 84.0 56.0	0.00	0	0.81 (68x45)
+corner	US	Alaska	BR	236.0 97.0 84.0 56.0	1.72	0	0.90 (75x50)
+corner	US	Hawaii	TL	98.0 10.0 60.0 32.0	0.00	0	0.03 (2x1)
+corner	US	Hawaii	TR	170.0 10.0 60.0 32.0	0.00	0	0.50 (30x16)
+corner	US	Hawaii	BL	98.0 119.0 60.0 32.0	0.00	0	0.54 (33x17)
+corner	US	Hawaii	BR	170.0 119.0 60.0 32.0	0.00	0	0.00 (0x0)
+fit	YE	5.8856	3	1291	23	19283	0	0	414
+inset	YE	Socotra	240 93 80 60	6.30
+corner	YE	Socotra	TL	8.0 8.0 80.0 60.0	0.00	0	0.75 (60x45)
+corner	YE	Socotra	TR	240.0 8.0 80.0 60.0	0.00	0	0.68 (54x41)
+corner	YE	Socotra	BL	8.0 93.0 80.0 60.0	0.00	0	0.63 (50x38)
+corner	YE	Socotra	BR	240.0 93.0 80.0 60.0	6.30	0	0.94 (75x56)
