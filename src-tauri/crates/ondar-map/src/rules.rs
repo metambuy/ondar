@@ -208,8 +208,8 @@ pub fn label_width_pt(label: &str) -> f64 {
 }
 
 /// The width a label may take inside a box `[x, y, w, h]`: the box less the two pads.
-pub fn label_inner_width(rect: [f64; 4]) -> f64 {
-    rect[2] - 2.0 * INSET_PAD_PT
+pub fn label_inner_width([_, _, w, _]: [f64; 4]) -> f64 {
+    w - 2.0 * INSET_PAD_PT
 }
 
 /// The area of an inset box `[x, y, w, h]` (points, y down) its land is fitted into:

@@ -138,6 +138,10 @@ pub struct InsetTables {
 /// The three corners an inset may use (C1: the bottom-right is the controls').
 pub const INSET_CORNERS: [Corner; 3] = [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft];
 
+/// One band's result in `inset_tables`: the rows' scales in table order, and per row per corner
+/// (TL, TR, BL) the scale alone and the full box's clearance.
+type BandRow = (Vec<u8>, Vec<[(u8, f64); 3]>);
+
 /// The land the frame draws at a band's fit view, in pane points, clipped to `index::clip_rect`
 /// (review 2, finding 2; one rule with the frame): the frame's groups and the dropped ones.
 fn land_at(bbox: [f64; 4], land_km: &[Vec<[f64; 2]>], h: u32) -> Vec<Vec<[f64; 2]>> {
@@ -235,7 +239,7 @@ pub fn inset_tables(
     }
     let n = usize::try_from(BAND_MAX - BAND_FLOOR + 1).unwrap_or(0);
     // per band: the table-order scales, and per row per corner (pct, full-box clearance)
-    let per_band: Vec<(Vec<u8>, Vec<[(u8, f64); 3]>)> = crate::store::job(n, |i| {
+    let per_band: Vec<BandRow> = crate::store::job(n, |i| {
         let h = BAND_FLOOR + i as u32;
         let pane = Pane::band(h);
         let land = land_at(bbox, land_km, h);
