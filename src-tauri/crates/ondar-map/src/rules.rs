@@ -164,6 +164,74 @@ pub fn inset_box_at([x, y, w, h]: [f64; 4], corner: Corner, pane: &Pane, s: f64)
     [bx, by, bw, bh]
 }
 
+/// How one inset box abuts another in the golden table (the stacking rule, M4b commit 4b — the
+/// commit 4 STOP's decision 1): `Beside`, along the row (B to the right of A for a left corner, to
+/// its left for a right corner, their y ranges overlapping), or `Stacked`, along the column (B above
+/// A for a bottom corner, below it for a top corner, their x ranges overlapping); `gap` is the
+/// golden distance between them, points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Abut {
+    Beside { gap: f64 },
+    Stacked { gap: f64 },
+}
+
+/// Whether box `b` abuts box `a`, both anchored at `corner` on the golden pane (`None` if not).
+/// Hawaii `[98, 258, 60, 32]` is `Beside { gap: 6 }` Alaska `[8, 236, 84, 56]` at the bottom-left;
+/// Madeira `[10, 84, 52, 40]` is `Stacked { gap: 8 }` under the Azores `[10, 24, 92, 52]` at the
+/// top-left.
+pub fn abuts(
+    [bx, by, bw, bh]: [f64; 4],
+    [ax, ay, aw, ah]: [f64; 4],
+    corner: Corner,
+) -> Option<Abut> {
+    let y_overlap = by < ay + ah && ay < by + bh;
+    let x_overlap = bx < ax + aw && ax < bx + bw;
+    let beside = match corner {
+        Corner::TopLeft | Corner::BottomLeft => (bx >= ax + aw).then_some(bx - (ax + aw)),
+        Corner::TopRight | Corner::BottomRight => (bx + bw <= ax).then_some(ax - (bx + bw)),
+    };
+    if let Some(gap) = beside
+        && y_overlap
+    {
+        return Some(Abut::Beside { gap });
+    }
+    let stacked = match corner {
+        Corner::BottomLeft | Corner::BottomRight => (by + bh <= ay).then_some(ay - (by + bh)),
+        Corner::TopLeft | Corner::TopRight => (by >= ay + ah).then_some(by - (ay + ah)),
+    };
+    match stacked {
+        Some(gap) if x_overlap => Some(Abut::Stacked { gap }),
+        _ => None,
+    }
+}
+
+/// The inset box at a band and a scale when it abuts another box drawn at `a_rect` (the stacking
+/// rule): along the abutting axis the box keeps the golden gap to A's near edge — Hawaii's left edge
+/// follows Alaska's right edge as Alaska narrows — and along the other axis it anchors at the pane's
+/// edge as `inset_box_at` does. The box stays anchored at the same side, so a smaller scale is a
+/// subset of a larger one (the tool's bisection relies on it).
+pub fn inset_box_beside(
+    golden: [f64; 4],
+    corner: Corner,
+    pane: &Pane,
+    s: f64,
+    a_rect: [f64; 4],
+    abut: Abut,
+) -> [f64; 4] {
+    let [x, y, w, h] = inset_box_at(golden, corner, pane, s);
+    let [ax, ay, aw, ah] = a_rect;
+    match abut {
+        Abut::Beside { gap } => match corner {
+            Corner::TopLeft | Corner::BottomLeft => [ax + aw + gap, y, w, h],
+            Corner::TopRight | Corner::BottomRight => [ax - gap - w, y, w, h],
+        },
+        Abut::Stacked { gap } => match corner {
+            Corner::BottomLeft | Corner::BottomRight => [x, ay - gap - h, w, h],
+            Corner::TopLeft | Corner::TopRight => [x, ay + ah + gap, w, h],
+        },
+    }
+}
+
 /// A golden row's box moved to another corner, keeping the gaps it has to its own corner's two
 /// edges (Step 0's corner table did the same): the tool's corner table tries each of TL, TR and
 /// BL this way. `to == from` is the rect itself.
@@ -526,6 +594,107 @@ mod tests {
         );
         let (_, _, aw, ah) = inset_area(r);
         assert!(aw >= INSET_MIN_LAND_PT[0] - 1e-9 && (ah - INSET_MIN_LAND_PT[1]).abs() < 1e-9);
+    }
+
+    /// The stacking rule (M4b commit 4b): Hawaii is beside Alaska at the bottom-left with a 6 pt
+    /// gap and Madeira under the Azores at the top-left with 8; boxes at different corners, or
+    /// diagonal, do not abut. With Alaska at 83 % at 328 × 178 (`[8, 117.52, 69.72, 46.48]`)
+    /// Hawaii at 100 % sits at x 83.72 (Alaska's right edge + 6), its bottom 10 pt up as before;
+    /// Madeira under a shrunken Azores box follows its bottom + 8. At 100 % and the golden pane the
+    /// stacked box is the row's own rect (fails with the gap dropped, A's far edge taken for its
+    /// near one, or the other axis re-anchored).
+    #[test]
+    fn the_stacking_rule() {
+        let alaska = [8.0, 236.0, 84.0, 56.0];
+        let hawaii = [98.0, 258.0, 60.0, 32.0];
+        let azores = [10.0, 24.0, 92.0, 52.0];
+        let madeira = [10.0, 84.0, 52.0, 40.0];
+        assert_eq!(
+            abuts(hawaii, alaska, Corner::BottomLeft),
+            Some(Abut::Beside { gap: 6.0 })
+        );
+        assert_eq!(
+            abuts(madeira, azores, Corner::TopLeft),
+            Some(Abut::Stacked { gap: 8.0 })
+        );
+        assert_eq!(
+            abuts(alaska, hawaii, Corner::BottomLeft),
+            None,
+            "A does not abut B"
+        );
+        assert_eq!(abuts(azores, madeira, Corner::TopLeft), None);
+        assert_eq!(
+            abuts(hawaii, alaska, Corner::TopRight),
+            None,
+            "at a right corner B would have to lie left of A"
+        );
+        assert_eq!(
+            abuts(
+                [8.0, 8.0, 60.0, 44.0],
+                [260.0, 8.0, 60.0, 44.0],
+                Corner::TopRight
+            ),
+            Some(Abut::Beside { gap: 192.0 })
+        );
+        assert_eq!(
+            abuts(
+                [100.0, 100.0, 20.0, 20.0],
+                [8.0, 236.0, 84.0, 56.0],
+                Corner::BottomLeft
+            ),
+            None,
+            "diagonal"
+        );
+        let anmite = Pane::band(178);
+        let a178 = inset_box_at(alaska, Corner::BottomLeft, &anmite, 0.83);
+        assert!((a178[0] - 8.0).abs() < 1e-9 && (a178[2] - 69.72).abs() < 1e-9);
+        let h = inset_box_beside(
+            hawaii,
+            Corner::BottomLeft,
+            &anmite,
+            1.0,
+            a178,
+            Abut::Beside { gap: 6.0 },
+        );
+        assert!(
+            (h[0] - 83.72).abs() < 1e-9 && (h[1] - 136.0).abs() < 1e-9,
+            "{h:?}"
+        );
+        assert_eq!((h[2], h[3]), (60.0, 32.0));
+        let az = inset_box_at(azores, Corner::TopLeft, &Pane::GOLDEN, 0.5);
+        let m = inset_box_beside(
+            madeira,
+            Corner::TopLeft,
+            &Pane::GOLDEN,
+            1.0,
+            az,
+            Abut::Stacked { gap: 8.0 },
+        );
+        assert_eq!(m, [10.0, 24.0 + 26.0 + 8.0, 52.0, 40.0]);
+        // at 100 % and the golden pane the rule gives the row's own rect
+        let a300 = inset_box_at(alaska, Corner::BottomLeft, &Pane::GOLDEN, 1.0);
+        assert_eq!(
+            inset_box_beside(
+                hawaii,
+                Corner::BottomLeft,
+                &Pane::GOLDEN,
+                1.0,
+                a300,
+                Abut::Beside { gap: 6.0 }
+            ),
+            hawaii
+        );
+        assert_eq!(
+            inset_box_beside(
+                madeira,
+                Corner::TopLeft,
+                &Pane::GOLDEN,
+                1.0,
+                inset_box_at(azores, Corner::TopLeft, &Pane::GOLDEN, 1.0),
+                Abut::Stacked { gap: 8.0 }
+            ),
+            madeira
+        );
     }
 
     /// P3's label metric at the artifact's 8 pt: 0.6 em a character, 0.3 em a space (fails with

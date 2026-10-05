@@ -331,10 +331,28 @@ pub fn write(
             );
         }
     }
+    let _ = writeln!(
+        r,
+        "\n**The stacking rule** (commit 4b, decision 1): a box whose golden rect abuts another's row or \
+         column at the same corner keeps the golden gap to that box's near edge as it shrinks (Hawaii \
+         beside Alaska, Madeira under the Azores). First band each inset is drawn at: {}.\n",
+        inp.plans
+            .iter()
+            .flat_map(|p| p.insets.iter().map(move |i| (p, i)))
+            .map(|(p, i)| format!(
+                "{} {} {}",
+                p.code,
+                i.row.label,
+                crate::world::first_band(i).map_or("never".to_string(), |h| h.to_string())
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let gate = crate::world::ship_gate(&inp.plans);
     let _ = writeln!(
         r,
-        "\nThe ship gate: {} inset(s) dropped at 178 or 300{}; {} label(s) wider than their box{}.\n",
+        "\nThe ship gate (an inset in `MAY_DROP_AT_178`, {:?}, may be dropped at 178 — decision 1, case (c)): {} inset(s) dropped at 178 or 300{}; {} label(s) wider than their box{}.\n",
+        crate::world::MAY_DROP_AT_178,
         gate.dropped.len(),
         if gate.dropped.is_empty() {
             String::new()

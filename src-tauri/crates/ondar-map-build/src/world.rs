@@ -108,6 +108,8 @@ pub struct InsetPlan {
     pub scale_pct: Vec<u8>,
     /// The corner table: this box alone (the controls placed) at TL, TR and BL.
     pub corners: Vec<CornerChoice>,
+    /// The box as placed at each band (`[0.0; 4]` where dropped), the stacking rule applied.
+    pub rects: Vec<[f64; 4]>,
 }
 
 /// One row of the corner table (M4b commit 4): the golden row's box moved to `corner` with its
@@ -133,14 +135,41 @@ pub struct CornerChoice {
 pub struct InsetTables {
     pub scale_pct: Vec<Vec<u8>>,
     pub corners: Vec<Vec<CornerChoice>>,
+    pub rects: Vec<Vec<[f64; 4]>>,
 }
 
 /// The three corners an inset may use (C1: the bottom-right is the controls').
 pub const INSET_CORNERS: [Corner; 3] = [Corner::TopLeft, Corner::TopRight, Corner::BottomLeft];
 
-/// One band's result in `inset_tables`: the rows' scales in table order, and per row per corner
-/// (TL, TR, BL) the scale alone and the full box's clearance.
-type BandRow = (Vec<u8>, Vec<[(u8, f64); 3]>);
+/// One band's result in `inset_tables`: the rows' scales and placed rects in table order, and per
+/// row per corner (TL, TR, BL) the scale alone and the full box's clearance.
+type BandRow = (Vec<(u8, [f64; 4])>, Vec<[(u8, f64); 3]>);
+
+/// The box row `k` abuts in the golden table (the stacking rule, decision 1 of the commit 4 STOP):
+/// the first earlier row at the same corner that `rules::abuts` matches, if any.
+pub fn abut_of(rows: &[&InsetRow], k: usize) -> Option<(usize, rules::Abut)> {
+    let b = rows.get(k)?;
+    rows[..k].iter().enumerate().find_map(|(j, a)| {
+        (a.corner == b.corner)
+            .then(|| rules::abuts(b.rect, a.rect, b.corner).map(|ab| (j, ab)))
+            .flatten()
+    })
+}
+
+/// The box of row `rect` at `corner`, `pane` and scale `s`, beside the box it abuts when that box is
+/// placed (`abut` with A's rect), else by its own anchor.
+fn box_for(
+    rect: [f64; 4],
+    corner: Corner,
+    pane: &Pane,
+    s: f64,
+    abut: Option<([f64; 4], rules::Abut)>,
+) -> [f64; 4] {
+    match abut {
+        Some((a_rect, ab)) => rules::inset_box_beside(rect, corner, pane, s, a_rect, ab),
+        None => rules::inset_box_at(rect, corner, pane, s),
+    }
+}
 
 /// The land the frame draws at a band's fit view, in pane points, clipped to `index::clip_rect`
 /// (review 2, finding 2; one rule with the frame): the frame's groups and the dropped ones.
@@ -192,6 +221,7 @@ fn largest_pct(
     placed: &[[f64; 4]],
     rect: [f64; 4],
     corner: Corner,
+    abut: Option<([f64; 4], rules::Abut)>,
 ) -> u8 {
     let lo = (rules::inset_min_scale(rect) * 100.0).ceil();
     if !(1.0..=100.0).contains(&lo) {
@@ -203,7 +233,7 @@ fn largest_pct(
             land,
             pane,
             placed,
-            rules::inset_box_at(rect, corner, pane, f64::from(pct) / 100.0),
+            box_for(rect, corner, pane, f64::from(pct) / 100.0, abut),
         )
     };
     if !ok(lo) {
@@ -249,18 +279,20 @@ pub fn inset_tables(
             Vec::new()
         };
         let mut placed = base.clone();
+        // per row, its placed rect (None where dropped), for the stacking rule
+        let mut row_rects: Vec<Option<[f64; 4]>> = Vec::with_capacity(rows.len());
         let mut pcts = Vec::with_capacity(rows.len());
-        for row in rows {
-            let pct = largest_pct(&land, &pane, &placed, row.rect, row.corner);
-            if pct > 0 {
-                placed.push(rules::inset_box_at(
-                    row.rect,
-                    row.corner,
-                    &pane,
-                    f64::from(pct) / 100.0,
-                ));
+        for (k, row) in rows.iter().enumerate() {
+            // the stacking rule: beside the box it abuts, when that box is placed at this band
+            let abut = abut_of(rows, k).and_then(|(j, ab)| row_rects[j].map(|r| (r, ab)));
+            let pct = largest_pct(&land, &pane, &placed, row.rect, row.corner, abut);
+            let r = (pct > 0)
+                .then(|| box_for(row.rect, row.corner, &pane, f64::from(pct) / 100.0, abut));
+            if let Some(r) = r {
+                placed.push(r);
             }
-            pcts.push(pct);
+            row_rects.push(r);
+            pcts.push((pct, r.unwrap_or([0.0; 4])));
         }
         let corners = rows
             .iter()
@@ -268,7 +300,7 @@ pub fn inset_tables(
                 INSET_CORNERS.map(|c| {
                     let rect = rules::inset_rect_at_corner(row.rect, row.corner, c);
                     (
-                        largest_pct(&land, &pane, &base, rect, c),
+                        largest_pct(&land, &pane, &base, rect, c, None),
                         clearance_of(&land, rules::inset_box_at(rect, c, &pane, 1.0)),
                     )
                 })
@@ -278,7 +310,10 @@ pub fn inset_tables(
     });
     let at = |h: u32| usize::try_from(h - BAND_FLOOR).unwrap_or(0);
     let scale_pct = (0..rows.len())
-        .map(|k| per_band.iter().map(|(p, _)| p[k]).collect())
+        .map(|k| per_band.iter().map(|(p, _)| p[k].0).collect())
+        .collect();
+    let rects = (0..rows.len())
+        .map(|k| per_band.iter().map(|(p, _)| p[k].1).collect())
         .collect();
     let corners = rows
         .iter()
@@ -308,7 +343,11 @@ pub fn inset_tables(
                 .collect()
         })
         .collect();
-    InsetTables { scale_pct, corners }
+    InsetTables {
+        scale_pct,
+        corners,
+        rects,
+    }
 }
 
 /// `inset_tables` for a planned country, its land re-projected from the world (the frame's groups
@@ -346,6 +385,21 @@ pub struct ShipGate {
     pub wide_labels: Vec<String>,
 }
 
+/// Insets the ship gate lets drop at 328 × 178 (decision 1 of the commit 4 STOP, case (c), measured
+/// at M4b commit 4b): Hawaii's 60 × 32 box meets the 28 × 12 pt land minimum at no corner from 140
+/// to 273, with or without the stacking rule beside Alaska (Alaska is 83 % at 178, which frees 14
+/// pt; the mainland takes the rest), so it is dropped there, counted, and first appears at 274
+/// (88 %), whole from 290. Everything else must be drawn at 178.
+pub const MAY_DROP_AT_178: [&str; 1] = ["Hawaii"];
+
+/// The first band height at which an inset is drawn, if any.
+pub fn first_band(ins: &InsetPlan) -> Option<u32> {
+    ins.scale_pct
+        .iter()
+        .position(|&p| p > 0)
+        .map(|i| BAND_FLOOR + i as u32)
+}
+
 pub fn ship_gate(plans: &[CountryPlan]) -> ShipGate {
     let mut g = ShipGate::default();
     for p in plans {
@@ -358,18 +412,27 @@ pub fn ship_gate(plans: &[CountryPlan]) -> ShipGate {
                     .copied()
                     .unwrap_or(0);
                 if pct == 0 {
+                    if h == 178 && MAY_DROP_AT_178.contains(&ins.row.label.as_str()) {
+                        continue;
+                    }
                     g.dropped.push(format!(
                         "{} {}: dropped at 328 × {h}",
                         p.code, ins.row.label
                     ));
                     continue;
                 }
-                let rect = rules::inset_box_at(
-                    ins.row.rect,
-                    ins.row.corner,
-                    &Pane::band(h),
-                    f64::from(pct) / 100.0,
-                );
+                let rect = ins
+                    .rects
+                    .get(usize::try_from(h - BAND_FLOOR).unwrap_or(0))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        rules::inset_box_at(
+                            ins.row.rect,
+                            ins.row.corner,
+                            &Pane::band(h),
+                            f64::from(pct) / 100.0,
+                        )
+                    });
                 let inner = rules::label_inner_width(rect);
                 if width > inner {
                     g.wide_labels.push(format!(
@@ -707,6 +770,7 @@ pub fn plan_country(
             clearance_pt: f64::NAN,
             scale_pct: Vec::new(),
             corners: Vec::new(),
+            rects: Vec::new(),
         });
     }
     let unlisted: Vec<String> = groups
@@ -816,13 +880,14 @@ pub fn plan_country(
     // I1 + C1: the per-band scales and the corner table (M4b commit 4)
     if !plan.insets.is_empty() {
         let t = inset_tables_for(&plan, world, true);
-        for (ins, (pct, corners)) in plan
+        for (ins, ((pct, corners), rects)) in plan
             .insets
             .iter_mut()
-            .zip(t.scale_pct.into_iter().zip(t.corners))
+            .zip(t.scale_pct.into_iter().zip(t.corners).zip(t.rects))
         {
             ins.scale_pct = pct;
             ins.corners = corners;
+            ins.rects = rects;
         }
     }
     Ok(plan)
@@ -1054,6 +1119,91 @@ pub(crate) mod tests {
         let ok = row(Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], "Azores");
         let (_, p) = bar_with_inset(600.0, 104.0, &ok);
         assert!(ship_gate(std::slice::from_ref(&p)).wide_labels.is_empty());
+    }
+
+    /// The stacking rule in the placement (M4b commit 4b, decision 1): on the 600 × 104 km bar, a
+    /// top-left 80 × 60 box A at (8, 8) (73 % at 178, right edge 66.4) and, beside it in the golden
+    /// table at x 96 (gap 8) with a 2 pt top gap, a 60 × 44 box B: at 178 B follows A's right edge
+    /// — x 74.4, not 96 — and is whole (its bottom 46 clears the bar's top at 64.04); at 300 both are
+    /// whole and B sits at its own 96; at 140 A is dropped (its minimum puts its bottom at 36, the
+    /// bar's top at 45.04; A first appears at 147, where 47 % clears) and B anchors by itself at 96
+    /// at 70 % (44 · s ≤ 45.04 − 12 − 2). `abut_of` names A for B and nothing for A. Fails with the
+    /// rule off (B at 96 at 178), with A's far edge taken, or with a dropped A still followed.
+    #[test]
+    fn a_box_follows_the_box_it_abuts() {
+        let a = row(Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], "A");
+        let b = row(Corner::TopLeft, [96.0, 2.0, 60.0, 44.0], "B");
+        let world = World::new(
+            vec![unit(
+                "AAA",
+                "AA",
+                vec![
+                    rect_km(0.0, 0.0, 600.0, 104.0),
+                    square(0.0, 30.0, 30.0),
+                    square(0.0, 40.0, 30.0),
+                ],
+            )],
+            vec![],
+            &[],
+        )
+        .unwrap();
+        let b2 = InsetRow {
+            lon: 40.0,
+            ..b.clone()
+        };
+        let rows: Vec<&InsetRow> = vec![&a, &b2];
+        assert_eq!(
+            abut_of(&rows, 1),
+            Some((0, rules::Abut::Beside { gap: 8.0 }))
+        );
+        assert_eq!(abut_of(&rows, 0), None);
+        let p = plan_country("AA", &[0], &world, None, &rows, false).unwrap();
+        let at = |k: usize, h: u32| {
+            let i = (h - BAND_FLOOR) as usize;
+            (p.insets[k].scale_pct[i], p.insets[k].rects[i])
+        };
+        assert_eq!(at(0, 178).0, 73);
+        let (pb, rb) = at(1, 178);
+        assert_eq!(pb, 100, "{rb:?}");
+        assert!((rb[0] - 74.4).abs() < 1e-9 && rb[1] == 2.0, "{rb:?}");
+        assert_eq!(at(1, 300), (100, [96.0, 2.0, 60.0, 44.0]));
+        assert_eq!(at(0, 140).0, 0);
+        let (pb, rb) = at(1, 140);
+        assert_eq!(pb, 70);
+        assert!(
+            rb[0] == 96.0
+                && rb[1] == 2.0
+                && (rb[2] - 42.0).abs() < 1e-9
+                && (rb[3] - 30.8).abs() < 1e-9,
+            "{rb:?}"
+        );
+        assert_eq!(first_band(&p.insets[0]), Some(147));
+        assert_eq!(first_band(&p.insets[1]), Some(140));
+    }
+
+    /// The ship gate's one allowance (decision 1, case (c)): a row labelled "Hawaii" dropped at 178
+    /// passes, any other label dropped there is named, and Hawaii dropped at 300 is named too
+    /// (fails with the allowance widened to every label or to 300).
+    #[test]
+    fn hawaii_alone_may_drop_at_178() {
+        let far = row(Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], "Far");
+        let (_, thick) = bar_with_inset(600.0, 200.0, &far);
+        assert_eq!(
+            ship_gate(std::slice::from_ref(&thick)).dropped,
+            vec!["AA Far: dropped at 328 × 178".to_string()]
+        );
+        let hawaii = row(Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], "Hawaii");
+        let (_, thick) = bar_with_inset(600.0, 200.0, &hawaii);
+        assert_eq!(thick.insets[0].scale_pct[38], 0);
+        assert!(ship_gate(std::slice::from_ref(&thick)).dropped.is_empty());
+        // dropped at 300 as well: a box over the land everywhere
+        let over = row(Corner::TopLeft, [150.0, 100.0, 80.0, 60.0], "Hawaii");
+        let (_, p) = bar_with_inset(600.0, 104.0, &over);
+        assert_eq!(p.insets[0].scale_pct[160], 0);
+        assert_eq!(
+            ship_gate(std::slice::from_ref(&p)).dropped,
+            vec!["AA Hawaii: dropped at 328 × 300".to_string()]
+        );
     }
 
     /// Two 10 km squares on the equator, their gap 299 km then 301 km: one group, then two.

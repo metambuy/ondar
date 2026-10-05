@@ -214,12 +214,8 @@ fn inset_bands_table(inp: &Inputs) -> String {
         for i in &p.insets {
             for (k, &pct) in i.scale_pct.iter().enumerate() {
                 let h = ondar_map::rules::BAND_FLOOR + k as u32;
-                let r = ondar_map::rules::inset_box_at(
-                    i.row.rect,
-                    i.row.corner,
-                    &ondar_map::rules::Pane::band(h),
-                    f64::from(pct) / 100.0,
-                );
+                // the placed rect (the stacking rule applied); zero where dropped
+                let r = i.rects.get(k).copied().unwrap_or([0.0; 4]);
                 let _ = writeln!(
                     t,
                     "{}\t{}\t{:?}\t{h}\t{pct}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}",
