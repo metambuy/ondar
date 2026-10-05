@@ -4,8 +4,6 @@
 mod commands;
 mod error;
 mod log_rate_limit;
-// M4b commit 1, the pinch spike (removable): see `magnify.rs`'s header.
-mod magnify;
 mod map;
 // The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
 #[cfg(debug_assertions)]

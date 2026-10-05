@@ -121,13 +121,6 @@ onda/
     │   │                         commit and fallback paths; the tray-screen placement log
     │   ├── tray.rs               template tray icon, click logging, idle/playing swap
     │   ├── error.rs              OndarError → `{ code, message }`
-    │   ├── magnify.rs            M4b commit 1, the pinch spike (Z1) — REMOVABLE: this file, `mod magnify;`
-    │   │                         and one call in `panel::setup`. An `NSMagnificationGestureRecognizer` on
-    │   │                         the content view (objc2, through tauri-nspanel's re-exports; no new
-    │   │                         dependency), its `delays*` flags logged and set false (review P4), one
-    │   │                         `panel magnify state=… magnification=… location=… key=… app_active=…
-    │   │                         frontmost=…` line per state change. Log-only: commit 8 wires it to the
-    │   │                         map's view session if the gate passes; else this commit is reverted
     │   ├── map.rs                the map resource (M4a commit 7): `MapState` (a `OnceLock` set once),
     │   │                         loaded on its own thread from `resource_dir()/map/world.ondarmap`,
     │   │                         one line — `map resource loaded path=… bytes=… units=… countries=…
