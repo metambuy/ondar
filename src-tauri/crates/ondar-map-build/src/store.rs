@@ -787,7 +787,9 @@ pub fn build(
                     lat0: i.lat0,
                     lon0: i.lon0,
                     centre_km: i.centre_km,
+                    size_km: i.size_km,
                     scale: i.scale,
+                    scale_pct: i.scale_pct.clone(),
                 })
                 .collect(),
             sub_lines: subs
@@ -799,7 +801,7 @@ pub fn build(
         .collect();
     let header = format::Header {
         pins,
-        golden_pane: Pane::GOLDEN,
+        bands: format::Bands::BUILT,
         radius_km: R_AUTHALIC_KM,
         ladder: LADDER.to_vec(),
     };

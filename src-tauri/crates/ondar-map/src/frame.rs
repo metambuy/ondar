@@ -10,7 +10,7 @@
 //! 0.01 pt.
 
 use crate::clip::{self, Rect};
-use crate::format::{self, Corner, Layer, Role, Store};
+use crate::format::{self, Layer, Role, Store};
 use crate::index::{self, CLIP_MARGIN_PT, LAND_TOL_PT, SUB_TOL_PT};
 use crate::laea::Laea;
 use crate::rules::{self, LADDER, Pane};
@@ -62,10 +62,11 @@ pub struct FrameStats {
     /// parts, and the country's subdivisions when one of its lines meets the view. 0 at the
     /// golden pane (the coverage test).
     pub missing_blobs: usize,
-    /// Insets not drawn at the fit view because their box, anchored at this pane, leaves the
-    /// pane or overlaps a box drawn before it in table order (review 2, finding 4; review 3,
-    /// finding 2). 0 at the golden pane, where the tool checked the boxes; M4b's acceptance
-    /// requires 0 at the real pane.
+    /// Insets not drawn at the fit view: the band's stored scale is 0 (I1: the box cannot meet
+    /// the minimum there — Hawaii below 274, Svalbard at 225–257), or the box, anchored at this
+    /// pane, leaves the pane, meets the controls' rect or overlaps a box drawn before it in table
+    /// order (review 2, finding 4; review 3, finding 2). 0 at every band but those the tool's
+    /// tables name.
     pub insets_dropped: usize,
 }
 
@@ -82,23 +83,18 @@ pub struct Frame {
 }
 
 impl format::Inset {
-    /// The box at `pane`, x, y, w, h points: the golden pane's box kept at its distance from the
-    /// corner it is anchored to (S6; review finding 2) — a right corner moves with the pane's
-    /// width, a bottom corner with its height, the size never changes. At the golden pane it is
-    /// `rect`. A box that leaves the pane or overlaps one drawn before it is not drawn
-    /// (`insets_dropped`); whether it clears the land at another pane is M4b's to judge.
-    pub fn rect_at(&self, pane: &Pane) -> [f64; 4] {
-        let [x, y, w, h] = self.rect.map(f64::from);
-        let (dx, dy) = (
-            pane.width - Pane::GOLDEN.width,
-            pane.height - Pane::GOLDEN.height,
-        );
-        match self.corner {
-            Corner::TopLeft => [x, y, w, h],
-            Corner::TopRight => [x + dx, y, w, h],
-            Corner::BottomLeft => [x, y + dy, w, h],
-            Corner::BottomRight => [x + dx, y + dy, w, h],
-        }
+    /// The box's scale at a pane (I1): the stored table's entry for the band, the pane's height
+    /// floored and clamped into the resource's range (`Bands::index`), as a fraction; 0 where the
+    /// tool found no placeable box.
+    pub fn scale_at(&self, bands: &format::Bands, pane: &Pane) -> f64 {
+        self.scale_pct
+            .get(bands.index(pane))
+            .map_or(0.0, |&p| f64::from(p) / 100.0)
+    }
+
+    /// The golden rect as `f64`.
+    pub fn golden(&self) -> [f64; 4] {
+        self.rect.map(f64::from)
     }
 }
 
@@ -393,30 +389,74 @@ impl Store {
         Some(out)
     }
 
+    /// The inset boxes at a pane, in table order (I1 + C1, M4b commit 5 — one rule with the
+    /// tool's `inset_tables`): each box is the golden rect at the band's stored scale, anchored at
+    /// its corner with the row's gaps (`rules::inset_box_at`) or, when its golden rect abuts an
+    /// earlier drawn box at the same corner, beside that box with the golden gap (the stacking
+    /// rule, `rules::inset_box_beside`); `None` where the scale is 0, or the box leaves the pane,
+    /// meets the controls' rect or overlaps a box drawn before it (a box not drawn blocks
+    /// nothing — review 3, finding 2). Never moved onto the land, never clamped.
+    pub fn inset_boxes(&self, c: usize, pane: &Pane) -> Vec<Option<[f64; 4]>> {
+        let Some(ct) = self.countries.get(c) else {
+            return Vec::new();
+        };
+        let bands = &self.header.bands;
+        let mut placed: Vec<[f64; 4]> = vec![rules::controls_rect(pane)];
+        let mut out: Vec<Option<[f64; 4]>> = Vec::with_capacity(ct.insets.len());
+        for (i, ins) in ct.insets.iter().enumerate() {
+            let s = ins.scale_at(bands, pane);
+            if s <= 0.0 {
+                out.push(None);
+                continue;
+            }
+            let golden = ins.golden();
+            // the first earlier inset at the same corner whose box this one abuts, if drawn
+            let abut = ct.insets.iter().take(i).enumerate().find_map(|(j, a)| {
+                (a.corner == ins.corner)
+                    .then(|| rules::abuts(golden, a.golden(), ins.corner).map(|ab| (j, ab)))
+                    .flatten()
+            });
+            let rect = match abut.and_then(|(j, ab)| out.get(j).copied().flatten().map(|r| (r, ab)))
+            {
+                Some((a_rect, ab)) => {
+                    rules::inset_box_beside(golden, ins.corner, pane, s, a_rect, ab)
+                }
+                None => rules::inset_box_at(golden, ins.corner, pane, s),
+            };
+            if rules::box_fits(rect, pane) && placed.iter().all(|&o| rules::boxes_apart(rect, o)) {
+                placed.push(rect);
+                out.push(Some(rect));
+            } else {
+                out.push(None);
+            }
+        }
+        out
+    }
+
     fn insets(&self, c: usize, pane: &Pane, stats: &mut FrameStats) -> Vec<Inset> {
         let Some(ct) = self.countries.get(c) else {
             return Vec::new();
         };
         let mut buf = Vec::new();
         let mut out = Vec::new();
-        let mut drawn: Vec<[f64; 4]> = Vec::new();
+        let boxes = self.inset_boxes(c, pane);
         for (i, ins) in ct.insets.iter().enumerate() {
-            // in table order, drawn iff inside the pane and apart from every box already drawn
-            // (review 2, finding 4; review 3, finding 2: a box not drawn blocks nothing): never
-            // moved, never clamped onto the land. The rule is `rules::box_fits` / `boxes_apart`,
-            // the tool's too (review 3, finding 4)
-            let rect = ins.rect_at(pane);
-            let [rx, ry, rw, rh] = rect;
-            if !(rules::box_fits(rect, pane) && drawn.iter().all(|&o| rules::boxes_apart(rect, o)))
-            {
+            let Some(rect) = boxes.get(i).copied().flatten() else {
                 stats.insets_dropped += 1;
                 continue;
-            }
-            let k = rules::level_for(ins.scale);
+            };
+            let [rx, ry, rw, rh] = rect;
+            // the group fitted to this band's box: a smaller box, a coarser scale, maybe a
+            // coarser level — the tool stored the blob for every band's level (commit 4)
+            let [size_w, size_h] = ins.size_km;
+            let Some(scale) = rules::inset_scale(size_w, size_h, rect) else {
+                stats.insets_dropped += 1;
+                continue;
+            };
+            let k = rules::level_for(scale);
             let (Ok(k8), Ok(i8_)) = (u8::try_from(k), u8::try_from(i)) else {
                 continue;
             };
-            drawn.push(rect);
             let (acx, acy, _, _) = rules::inset_area([rx, ry, rw, rh]);
             let il = Laea::new(ins.lat0, ins.lon0);
             let [icx, icy] = ins.centre_km;
@@ -450,7 +490,7 @@ impl Store {
                             .map(|&[x, y]| {
                                 let (lon, lat) = unit_l.inv(x, y)?;
                                 let [x, y] = il.fwd(lon, lat)?;
-                                Some([(x - icx) / ins.scale + acx, (icy - y) / ins.scale + acy])
+                                Some([(x - icx) / scale + acx, (icy - y) / scale + acy])
                             })
                             .collect();
                         let Some(pts) = pts else { continue };
@@ -513,7 +553,7 @@ mod tests {
     use crate::format::tests::{
         cap, header, synthetic_blobs, synthetic_countries, synthetic_units,
     };
-    use crate::format::{Encoding, Part, Unit, write};
+    use crate::format::{Corner, Encoding, Part, Unit, write};
 
     /// `missing_blobs` counts units, as documented (review finding 9): a neighbour unit with three
     /// parts in view and no blob at the frame's level adds one missing blob, and its rings are not
@@ -584,6 +624,76 @@ mod tests {
             with(s.frame_unindexed(0, &pane, fit).unwrap()),
             (base_unindexed.0 + 1, base_unindexed.1)
         );
+    }
+
+    /// The frame's placement reads the stored scales with the stacking rule and the controls' rect
+    /// (M4b commit 5), on a synthetic resource where the real one cannot show it (Hawaii is never
+    /// drawn while Alaska is under 100 %): inset A, top-left `[8, 8, 80, 60]` at 50 % everywhere, is
+    /// `[8, 8, 40, 30]`; inset B, `[96, 8, 60, 44]` beside it in the golden table (gap 8), follows
+    /// A's right edge to x 56; with A's table all 0, B is at its own 96 and A is the one dropped.
+    /// A bottom-left box 250 pt wide at 100 % crosses the controls' rect and is `None`. Fails with
+    /// the stacking rule left out of the frame (B at 96), with the controls not placed (the wide
+    /// box drawn), or with a dropped A still followed.
+    #[test]
+    fn the_frame_places_boxes_by_the_stored_scales() {
+        use crate::format::Inset;
+        let inset = |label: &str, corner: Corner, rect: [f32; 4], pct: u8| Inset {
+            label: label.into(),
+            corner,
+            rect,
+            lat0: 38.4,
+            lon0: -27.3,
+            centre_km: [0.0, 0.0],
+            size_km: [600.0, 300.0],
+            scale: 7.37,
+            scale_pct: vec![pct; crate::format::Bands::BUILT.span()],
+        };
+        let resource = |a_pct: u8| {
+            let mut countries = synthetic_countries();
+            countries[0].insets = vec![
+                inset("A", Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], a_pct),
+                inset("B", Corner::TopLeft, [96.0, 8.0, 60.0, 44.0], 100),
+                inset("Wide", Corner::BottomLeft, [8.0, 252.0, 250.0, 40.0], 100),
+            ];
+            let b = write(
+                &header(),
+                &synthetic_units(),
+                &countries,
+                &synthetic_blobs(),
+                Encoding::Raw,
+            )
+            .unwrap();
+            Store::load(&b).unwrap()
+        };
+        let s = resource(50);
+        let boxes = s.inset_boxes(0, &Pane::GOLDEN);
+        assert_eq!(boxes[0], Some([8.0, 8.0, 40.0, 30.0]));
+        assert_eq!(
+            boxes[1],
+            Some([56.0, 8.0, 60.0, 44.0]),
+            "B beside A's right edge + 8"
+        );
+        assert_eq!(boxes[2], None, "on the controls' rect");
+        let f = s
+            .frame(0, &Pane::GOLDEN, s.fit(0, &Pane::GOLDEN).unwrap())
+            .unwrap();
+        assert_eq!(f.stats.insets_dropped, 1);
+        assert_eq!(f.insets.len(), 2);
+        assert_eq!(f.insets[1].rect, [56.0, 8.0, 60.0, 44.0]);
+        let s = resource(0);
+        let boxes = s.inset_boxes(0, &Pane::GOLDEN);
+        assert_eq!(boxes[0], None);
+        assert_eq!(
+            boxes[1],
+            Some([96.0, 8.0, 60.0, 44.0]),
+            "A dropped: B by itself"
+        );
+        // at 328 × 178 the bottom-left box anchors 8 pt up from the shorter pane and still meets
+        // the controls; A and B keep their top anchors
+        let s = resource(50);
+        let boxes = s.inset_boxes(0, &Pane::band(178));
+        assert_eq!(boxes[1], Some([56.0, 8.0, 60.0, 44.0]));
+        assert_eq!(boxes[2], None);
     }
 
     /// The subdivisions count a missing blob only when one of the country's lines meets the view,

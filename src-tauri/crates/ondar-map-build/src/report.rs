@@ -172,8 +172,14 @@ pub fn write(
     let _ = writeln!(
         r,
         "**Collapsed rings** (fewer than three distinct quanta at the level; stored empty, no \
-         frame can draw them): {}.{}\n",
+         frame can draw them): {}. Kept as empty rings rather than dropped (the commit 4 STOP's \
+         decision 7): the loader requires a land blob's ring count to equal its unit's, part by \
+         part (`Corrupt {{ owner }}`), because the ring index — the caps in the units table — \
+         addresses a blob's rings by position without decoding them; dropping a ring from one \
+         level's blob would need a per-blob ring map, and the slot costs 8 B in the ring table \
+         ({} B raw here, before deflate).{}\n",
         built.collapsed.len(),
+        built.collapsed.len() * 8,
         if built.collapsed.is_empty() {
             String::new()
         } else {

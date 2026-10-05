@@ -1,7 +1,8 @@
 //! Tests on the shipped resource, `src-tauri/resources/map/world.ondarmap` (commit 5): it loads,
 //! it carries the pinned inputs, every blob meets its bound, the loader survives its bytes
-//! mangled, and its coverage matches the clamp (D6). `ONDAR_MAP_RESOURCE=<path>` runs them on
-//! another file — a local build, before it ships (M4b commit 3).
+//! mangled, its coverage matches the clamp (D6) at every band (M4b commits 3 and 5), and its
+//! insets are drawn as I1 and C1 require at 178 and 300. `ONDAR_MAP_RESOURCE=<path>` runs them on
+//! another file — a local build, before it ships.
 
 use ondar_map::format::{Layer, Role, Store};
 use ondar_map::index::{self, CLIP_MARGIN_PT, LAND_TOL_PT, SUB_TOL_PT};
@@ -52,7 +53,8 @@ fn pins_match() {
     assert_eq!(p.tool_git.len(), 40);
     assert_eq!(s.header.radius_km, ondar_map::laea::R_AUTHALIC_KM);
     assert_eq!(s.header.ladder, LADDER.to_vec());
-    assert_eq!(s.header.golden_pane, Pane::GOLDEN);
+    assert_eq!(s.header.bands, ondar_map::format::Bands::BUILT);
+    assert_eq!(s.header.bands.golden(), Pane::GOLDEN);
     assert_eq!((s.units.len(), s.countries.len()), (267, 248));
 }
 
@@ -192,17 +194,29 @@ fn coverage_matches_clamp_at(
                 }
             }
         }
-        for (i, inset) in c.insets.iter().enumerate() {
-            let k = rules::level_for(inset.scale) as u8;
-            for &u in &c.units {
-                let unit = &s.units[usize::from(u)];
-                if unit.parts.iter().any(|p| p.role == Role::Inset(i as u8)) {
-                    assert!(
-                        s.blob(u, k, Layer::Land).is_some(),
-                        "{} inset {}",
-                        c.name,
-                        inset.label
-                    );
+        // every inset's units at the inset's level — at the golden box and at every sampled
+        // band's box, whose smaller area fits the group at a coarser scale (M4b commit 5)
+        for h in heights_for(c) {
+            let boxes = s.inset_boxes(ci, &Pane::band(h));
+            for (i, inset) in c.insets.iter().enumerate() {
+                let mut levels = vec![rules::level_for(inset.scale) as u8];
+                if let Some(rect) = boxes.get(i).copied().flatten()
+                    && let Some(sc) = rules::inset_scale(inset.size_km[0], inset.size_km[1], rect)
+                {
+                    levels.push(rules::level_for(sc) as u8);
+                }
+                for &u in &c.units {
+                    let unit = &s.units[usize::from(u)];
+                    if unit.parts.iter().any(|p| p.role == Role::Inset(i as u8)) {
+                        for &k in &levels {
+                            assert!(
+                                s.blob(u, k, Layer::Land).is_some(),
+                                "{} inset {} at 328 × {h}: level {k}",
+                                c.name,
+                                inset.label
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -210,14 +224,73 @@ fn coverage_matches_clamp_at(
     views
 }
 
-/// The golden pane's coverage (M4a commit 5). Fails if the tool's coverage is smaller than the
-/// clamp's reach: without the clip margin, without the cap tolerance, with the fit rectangle at
-/// the fit for a country finer than the floor, or with a frame index that admits more than the
-/// tool stored.
+/// The bands' coverage on the shipped resource (M4b commit 5; the golden-pane-only form was M4a
+/// commit 5's): every country at its sampled band heights. Fails if the tool's coverage is smaller
+/// than the clamp's reach at any sampled band — without the clip margin, without the cap
+/// tolerance, with the reach taken at one band, or with a frame index that admits more than the
+/// tool stored (on the M4a resource `e2775f81…`: "Angola at 328 × 140: unit SHN at level 1 is not
+/// stored", `_handover/m4b-c3/bands-shipped-record.log`).
 #[test]
 fn coverage_matches_clamp() {
-    let views = coverage_matches_clamp_at(store(), |_| vec![rules::BAND_MAX]);
-    assert!(views > 248 * 10, "{views}");
+    let s = store();
+    let sampled: usize = s.countries.iter().map(|c| sample_heights(c).len()).sum();
+    let views = coverage_matches_clamp_at(s, sample_heights);
+    eprintln!("bands: {sampled} (country, height) pairs, {views} views");
+    assert!(views > 248 * 40, "{views}");
+}
+
+/// I1 and C1 on the shipped resource at the two bands the acceptance names (M4b commit 5): at
+/// 328 × 178 every inset but Hawaii is drawn (Hawaii meets the minimum at no corner there —
+/// decision 1, case (c) — and is the one `insets_dropped`), at 328 × 300 all 14; every drawn box is
+/// inside the pane, apart from the controls' rect, at least 36 × 28 pt, its size the golden size
+/// at the stored scale, and ≥ 12 pt from the land. Fails on a resource whose scales the frame
+/// reads differently from the tool that wrote them.
+#[test]
+fn insets_at_178_and_300() {
+    let s = store();
+    for (h, want_drawn) in [(178u32, 13usize), (300, 14)] {
+        let pane = Pane::band(h);
+        let controls = rules::controls_rect(&pane);
+        let mut drawn = 0;
+        let mut dropped = 0;
+        for (ci, c) in s.countries.iter().enumerate() {
+            if c.insets.is_empty() {
+                continue;
+            }
+            let f = s.frame(ci, &pane, s.fit(ci, &pane).unwrap()).unwrap();
+            drawn += f.insets.len();
+            dropped += f.stats.insets_dropped;
+            for ins in &f.insets {
+                let [x, y, w, bh] = ins.rect.map(f64::from);
+                let what = format!("{} {} at 328 × {h}", c.name, ins.label);
+                assert!(
+                    rules::box_fits([x, y, w, bh], &pane),
+                    "{what}: leaves the pane"
+                );
+                assert!(
+                    rules::boxes_apart([x, y, w, bh], controls),
+                    "{what}: on the controls"
+                );
+                assert!(w >= 36.0 - 1e-6 && bh >= 28.0 - 1e-6, "{what}: {w} × {bh}");
+                let stored = c.insets.iter().find(|i| i.label == ins.label).unwrap();
+                let sc = stored.scale_at(&s.header.bands, &pane);
+                assert!(sc > 0.0, "{what}: drawn at scale 0");
+                let [_, _, gw, gh] = stored.golden();
+                assert!(
+                    (w - gw * sc).abs() < 1e-3 && (bh - gh * sc).abs() < 1e-3,
+                    "{what}: {w} × {bh} is not the golden {gw} × {gh} at {sc}"
+                );
+            }
+            for (label, d) in s.inset_clearance(ci, &pane) {
+                assert!(d >= 12.0, "{} {label} at 328 × {h}: {d:.2} pt", c.name);
+            }
+            if h == 178 && c.code == *b"US" {
+                assert_eq!(f.stats.insets_dropped, 1, "Hawaii");
+                assert!(f.insets.iter().all(|i| i.label != "Hawaii"));
+            }
+        }
+        assert_eq!((drawn, drawn + dropped), (want_drawn, 14), "at 328 × {h}");
+    }
 }
 
 /// The band heights the coverage test samples for a country (M4b plan § 4): the floor, Step 0's
@@ -245,19 +318,4 @@ fn sample_heights(c: &ondar_map::format::Country) -> Vec<u32> {
     hs.sort_unstable();
     hs.dedup();
     hs
-}
-
-/// The bands' coverage (M4b commit 3; `#[ignore]` until the rebuilt resource ships at commit 5,
-/// where it replaces the golden-pane test above). Until then: `ONDAR_MAP_RESOURCE=<a local build>
-/// cargo test -p ondar-map --test resource -- --ignored`. On the shipped `e2775f81…` it fails at
-/// 328 × 140 on the first country whose shorter-band fit admits a unit the golden coverage never
-/// stored (`_handover/m4b-c3/`).
-#[test]
-#[ignore]
-fn coverage_matches_clamp_over_the_bands() {
-    let s = store();
-    let sampled: usize = s.countries.iter().map(|c| sample_heights(c).len()).sum();
-    let views = coverage_matches_clamp_at(s, sample_heights);
-    eprintln!("bands: {sampled} (country, height) pairs, {views} views");
-    assert!(views > 248 * 40, "{views}");
 }

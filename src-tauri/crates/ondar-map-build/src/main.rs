@@ -181,15 +181,27 @@ fn fit_table(inp: &Inputs) -> String {
 
 fn inset_table(inp: &Inputs) -> String {
     let mut t = String::from(
-        "code\tlabel\tcorner\tx\ty\tw\th\tgroup_parts\tgroup_area_km2\tanchor_km\tlat0\tlon0\tscale_km_per_pt\tlevel\tclearance_pt\n",
+        "code\tlabel\tcorner\tx\ty\tw\th\tgroup_parts\tgroup_area_km2\tanchor_km\tlat0\tlon0\tscale_km_per_pt\tlevel\tclearance_pt\tpct_178\tpct_300\tmin_pct\tmin_at\tfirst_band\n",
     );
     for p in &inp.plans {
         for i in &p.insets {
             let g = &p.groups[i.group];
             let [x, y, w, h] = i.row.rect;
+            let at = |h: u32| {
+                i.scale_pct
+                    .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            let (min_i, &min_pct) = i
+                .scale_pct
+                .iter()
+                .enumerate()
+                .min_by_key(|&(_, &p)| p)
+                .unwrap_or((0, &0));
             let _ = writeln!(
                 t,
-                "{}\t{}\t{:?}\t{x}\t{y}\t{w}\t{h}\t{}\t{:.0}\t{:.2}\t{:.6}\t{:.6}\t{:.4}\t{}\t{:.2}",
+                "{}\t{}\t{:?}\t{x}\t{y}\t{w}\t{h}\t{}\t{:.0}\t{:.2}\t{:.6}\t{:.6}\t{:.4}\t{}\t{:.2}\t{}\t{}\t{min_pct}\t{}\t{}",
                 p.code,
                 i.row.label,
                 i.row.corner,
@@ -200,7 +212,11 @@ fn inset_table(inp: &Inputs) -> String {
                 i.lon0,
                 i.scale,
                 ondar_map::rules::level_for(i.scale),
-                i.clearance_pt
+                i.clearance_pt,
+                at(178),
+                at(300),
+                ondar_map::rules::BAND_FLOOR + min_i as u32,
+                world::first_band(i).map_or("never".to_string(), |h| h.to_string())
             );
         }
     }
