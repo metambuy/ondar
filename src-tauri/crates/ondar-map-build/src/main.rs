@@ -332,6 +332,20 @@ fn run() -> Result<(), String> {
             built.p4.3,
             built.simplifier
         );
+        eprintln!(
+            "coverage for bands {}..={}: the bound adds {} blob(s), {} B of {} B deflated{}; {} collapsed ring(s)",
+            built.bands.0,
+            built.bands.1,
+            built.bound_added.blobs,
+            built.bound_added.bytes,
+            built.bound_added.total_bytes,
+            if built.bound_added.exact_stored {
+                " — over 5 %, the exact union stored"
+            } else {
+                ""
+            },
+            built.collapsed.len()
+        );
         let bench = if a.bench {
             Some(bench::run(&built)?)
         } else {

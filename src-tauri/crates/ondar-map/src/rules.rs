@@ -10,6 +10,15 @@ pub const LADDER: [f64; 5] = [1.5, 3.0, 6.0, 12.0, 24.0];
 /// Subdivisions are drawn for a flagged country when the view is coarser than this (S7), km/pt.
 pub const SUBDIVISIONS_ABOVE_KM_PER_PT: f64 = 8.0;
 
+/// The map band's width, points: the panel's 360 less two 16 pt margins (B1).
+pub const BAND_WIDTH_PT: f64 = 328.0;
+/// The band's padding, kept clear at the fit on every side, points.
+pub const BAND_PADDING_PT: f64 = 20.0;
+/// The shortest band the app shows (D1's floor, M4b) and the tallest (the uncapped layout),
+/// points: coverage is built for every integer height between them.
+pub const BAND_FLOOR: u32 = 140;
+pub const BAND_MAX: u32 = 300;
+
 /// The map pane, points; `padding` on every side is kept clear at the fit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pane {
@@ -26,6 +35,18 @@ impl Pane {
         height: 300.0,
         padding: 20.0,
     };
+
+    /// The map band at a layout height (M4b, B1): `BAND_WIDTH_PT` wide, `h` points tall, the
+    /// golden padding. `band(BAND_MAX)` is `GOLDEN`. The resource's coverage is built for every
+    /// integer `h` in `BAND_FLOOR..=BAND_MAX` (M4b commit 3); the shell shows a band only in that
+    /// range (D1's floor is `BAND_FLOOR`).
+    pub fn band(h: u32) -> Pane {
+        Pane {
+            width: BAND_WIDTH_PT,
+            height: f64::from(h),
+            padding: BAND_PADDING_PT,
+        }
+    }
 
     /// A pane is finite, its sides positive and its padding not negative (review finding 4: a
     /// negative side with a negative padding has a positive usable area).
@@ -227,6 +248,18 @@ mod tests {
             padding: 20.0,
         };
         assert_eq!(fit_scale(1.0, 1.0, &none), None);
+    }
+
+    /// The band at 300 is the golden pane; at the floor its usable area is 288 × 100, so a
+    /// 288 × 260 km country fits at 2.6 km/pt there against 1.0 at 300 (fails with the padding
+    /// or the width hand-typed differently from `GOLDEN`'s).
+    #[test]
+    fn the_band_at_300_is_the_golden_pane() {
+        assert_eq!(Pane::band(BAND_MAX), Pane::GOLDEN);
+        assert_eq!(Pane::band(BAND_FLOOR).usable(), (288.0, 100.0));
+        assert_eq!(fit_scale(288.0, 260.0, &Pane::band(BAND_FLOOR)), Some(2.6));
+        assert!((BAND_FLOOR..=BAND_MAX).all(|h| Pane::band(h).is_valid()));
+        assert_eq!(Pane::band(178).height, 178.0);
     }
 
     #[test]

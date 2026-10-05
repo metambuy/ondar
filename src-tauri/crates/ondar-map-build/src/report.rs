@@ -127,13 +127,16 @@ pub fn write(
 
     // coverage
     let _ = writeln!(r, "## Coverage\n");
+    let (h0, h1) = built.bands;
     let _ = writeln!(
         r,
         "D6 (decided 2026-10-01): the view stays inside the fit rectangle (the pane at the \
-         widest scale, centred on the frame bbox). A unit is stored at level k when a ring's cap, \
-         grown by the level's tolerance (bound + codec), meets some country's reach at k — its fit \
-         rectangle grown by the {CLIP_MARGIN_PT} pt clip margin at the coarsest scale that uses \
-         k — or it is in an inset at the inset's level.\n"
+         widest scale, centred on the frame bbox). **Per band (M4b commit 3):** the pane is \
+         328 × h for every integer h in {h0}..={h1}, each with its own fit and fit rectangle. A \
+         unit is stored at level k when a ring's cap, grown by the level's tolerance (bound + \
+         codec), meets some country's reach at k — the bounding rectangle, over every band whose \
+         views can use k, of that band's fit rectangle grown by the {CLIP_MARGIN_PT} pt clip \
+         margin at the coarsest scale that uses k — or it is in an inset at the inset's level.\n"
     );
     let _ = writeln!(
         r,
@@ -149,6 +152,85 @@ pub fn write(
         let _ = writeln!(r, "| {l} | {n} |");
     }
     let _ = writeln!(r);
+    let ba = &built.bound_added;
+    let _ = writeln!(
+        r,
+        "**The bound against the exact union** (the union of the bands' reaches is not a \
+         rectangle): the bounding rectangle asks for {} land blob(s) no single band's reach asks \
+         for, {} B deflated of {} B ({:.2} %). The rule: over 5 % and the exact union is stored \
+         instead — {}.\n",
+        ba.blobs,
+        ba.bytes,
+        ba.total_bytes,
+        100.0 * ba.bytes as f64 / ba.total_bytes.max(1) as f64,
+        if ba.exact_stored {
+            "**applied**, those blobs are not in this file"
+        } else {
+            "not applied, the bound's blobs are stored"
+        }
+    );
+    let _ = writeln!(
+        r,
+        "**Collapsed rings** (fewer than three distinct quanta at the level; stored empty, no \
+         frame can draw them): {}.{}\n",
+        built.collapsed.len(),
+        if built.collapsed.is_empty() {
+            String::new()
+        } else {
+            // per unit, the count at each level: `MDV 1/0/4/45/112` reads as the Maldives' rings
+            // collapsing at 1.5 / 3 / 6 / 12 / 24 km/pt
+            let mut by_unit: std::collections::BTreeMap<String, [usize; LADDER.len()]> =
+                Default::default();
+            for &(u, k, _) in &built.collapsed {
+                if let Some(slot) = by_unit
+                    .entry(String::from_utf8_lossy(&built.units[u].a3).into_owned())
+                    .or_default()
+                    .get_mut(k)
+                {
+                    *slot += 1;
+                }
+            }
+            let per_level: Vec<usize> = (0..LADDER.len())
+                .map(|k| built.collapsed.iter().filter(|c| c.1 == k).count())
+                .collect();
+            format!(
+                " By level {}: {}. By unit (counts at each level): {}",
+                LADDER
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" / "),
+                per_level
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" / "),
+                by_unit
+                    .iter()
+                    .map(|(a3, ns)| format!(
+                        "{a3} {}",
+                        ns.iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
+    let _ = writeln!(
+        r,
+        "**Subdivision candidates at the shortest band** (flagged off at the golden fit, fit at \
+         {h0} above {} km/pt; the flag is decided at the golden fit — an observation, not a rule \
+         the build applies): {}.\n",
+        ondar_map::rules::SUBDIVISIONS_ABOVE_KM_PER_PT,
+        if built.subdivision_candidates.is_empty() {
+            "none".to_string()
+        } else {
+            built.subdivision_candidates.join(", ")
+        }
+    );
 
     // P4
     let _ = writeln!(r, "## P4 — the simplifier\n");
