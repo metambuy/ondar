@@ -76,7 +76,7 @@ jobs:
 
       # --workspace is load-bearing: src-tauri/Cargo.toml has a real [package] at its
       # root, so a bare `cargo test` runs only that package's own tests — while silently
-      # skipping both crates, ondar-audio and ondar-stations.
+      # skipping every member crate, which is where nearly all of the tests live.
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace

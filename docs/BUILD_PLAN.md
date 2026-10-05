@@ -207,9 +207,11 @@ from a bundled resource. The satellite map was reversed 2026-09-24 and the rever
       (a native pinch) accumulated, never dropped; one `map_pull` reply per animation frame, every
       frame with a sequence number; `clamp_view` in Rust
 - [ ] Zoom: `− fit +` controls always (C1, a 74 × 24 pt row in the band's reserved bottom-right
-      corner) plus a native pinch caught in Rust — **a removable spike first** (Z1): it ships only
-      if magnify events reach Rust with the panel key, `frontmost` unchanged, and Q1's click,
-      scroll and drag unaffected
+      corner). The native pinch (Z1) was **a removable spike first**, to ship only if magnify events
+      reached Rust with the panel key, `frontmost` unchanged, and Q1's click, scroll and drag
+      unaffected — **FAILED 2026-10-05** (`b9531a0`, reverted `fab802a`): three instruments, zero
+      magnify events, a scroll control of 511 in the same state; ONDAR.md "M4b: the pinch spike,
+      measured". Zoom is the controls alone.
 - [ ] The band: the expanded panel's full extra height, 328 wide, a rounded platter (B1) — 328 ×
       178 on the ANMITE, 328 × 300 uncapped; the band rect a Rust constant from the layout; D1's
       floor a band of 140 pt (no band below it)

@@ -1,7 +1,9 @@
 # Ondar — project document
 
-*Last updated: 2026-10-02 (M4b begins on branch `m4b`: Step 0 measured — `_handover/m4b-step0-report.md` —
-the brief and the plan reviewed, `_handover/m4b-plan.md`; the "M4b" section lands with the build).
+*Last updated: 2026-10-05 (M4b on branch `m4b`: the pinch spike measured and reverted — "M4b: the pinch
+spike, measured" — commits 2–4 built, the commit 4 STOP decided, `_handover/m4b-c4-decisions-2026-10-05.md`;
+the full "M4b" section lands with the build). Previously 2026-10-02 (Step 0 measured — `_handover/m4b-step0-report.md` —
+the brief and the plan reviewed, `_handover/m4b-plan.md`).
 Previously 2026-09-30, later (M4's reversal: the drawn map replaces the satellite map; pan
 and zoom kept; M4 split into M4a/M4b/M4c — see "M4: the drawn map — the reversal").
 Previously 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
@@ -467,7 +469,7 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
   `I16`, the cast (rodio `stream.rs:531`) is the last step before the device callback, still
   downstream of `.amplify()`. Ondar's own code does no int cast either way. Two observations
   that still hold: the `Vol` slider is applied *after* the EQ and `set_volume` clamps to
-  `0.0..=1.0` (`engine.rs:523`), so bounding the EQ output bounds the whole chain to the
+  `0.0..=1.0` (`Session::set_volume`), so bounding the EQ output bounds the whole chain to the
   device; and clipping only ever required the boosted band to contain real energy — a
   high-passed talk stream has almost nothing at 63 Hz, so +12 dB there was near-inaudible on
   it while music at the same setting was not.
@@ -922,6 +924,30 @@ Finding 5: the clip rectangle, the pane grown by 2 pt, is built by hand in `worl
 `frame.rs`; one `index::clip_rect(pane)` should serve both, with `to_pt` returning `[f64; 2]`.
 There is no fourth review: the chat reads the fix diff, then the branch merges.
 
+### M4b: the pinch spike, measured (2026-10-05)
+
+**Finding: macOS delivers no magnify event to the non-activating panel while another app is active.**
+M4b's Z1 asked for pinch zoom caught natively in Rust, built as a removable spike (commit 1,
+`b9531a0`). Three instruments, each with zero magnify lines over Martín's pinches with TextEdit
+frontmost and the popover key: an `NSMagnificationGestureRecognizer` on the panel's content view
+(`WryWebViewParent`), the same recognizer on wry's `WKWebView` itself, and a local `NSEvent` monitor
+for `NSEventMaskMagnify`. The positive control: the monitor widened to `ScrollWheel` logged 511 scroll
+events in the identical state, so the instrument works and the events are not there to catch. Logs
+`_handover/m4b-c1/*-2026-10-05.log`, the tried tree `spike-final-tree-2026-10-05.patch`. The spike was
+reverted as `fab802a`, pushed alone; zoom is the `− fit +` row alone (Z1's fallback), commit 8 is
+dropped, nothing else in the plan changes. **Do not retry pinch blind:** a later attempt needs a
+different mechanism (the panel made key *and* active, which Step 0's Q1 ruled out for focus, or an
+event tap), measured first.
+
+**Also decided at the commit 4 STOP (2026-10-05, `_handover/m4b-c4-decisions-2026-10-05.md`):**
+subdivisions stay the 18 countries decided in M4a at every band; the 8 km/pt line was the selection
+rule at the golden pane, not a per-band switch (commit 3's report lists 57 countries whose fit at the
+140 pt floor passes it; they stay unflagged). I1 as built: the golden pane is one band among 161 and a
+box may shrink there too (the Canaries read 74 % at 300); no 100 % rule. Svalbard's drop at 225–257
+(Jan Mayen under its box) accepted and counted. Hawaii: the stacking rule beside Alaska, measured;
+if it misses the minimum anywhere in 178–300 it drops there, counted, and the ship gate's 178 rule is
+amended for Hawaii alone. Labels: Canaries, Fr. Guiana, Antilles, Andamans.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
@@ -1328,7 +1354,7 @@ on a speed defect) not fired.
 
 **Defect B — an unbounded `Connecting` — opened, not M3c's** (the gate review, 2026-09-24). Any
 live stream whose bytes the decoder cannot sync on keeps `main` in `Connecting` indefinitely:
-`build()` scans the arriving bytes, the watchdog covers `Buffering` only (`engine.rs:1063-1076`),
+`build()` scans the arriving bytes, the watchdog covers `Buffering` only (`decide_tick`'s `// Watchdog.` block),
 `read_timeout` never fires while bytes arrive, and Stop is the only exit. `FFF9` on an Icecast
 mount is one trigger (measured: 34 s on a paced fixture, unbounded live); a mislabelled or garbage
 mount is another. Sequenced **after the M3c merge, before M4**, as its own measured piece like
@@ -1481,7 +1507,7 @@ The WAV run locked to 44 100, not to the device's 48 000: **the lock is to the f
 
 **The fix.** Each session converts its own ring to the sink's format before the EQ:
 `ring → UniformSourceIterator(OutputFormat) → Equalizer → Player`. `OutputFormat` is read once
-from `MixerDeviceSink::config()`; the mixer is built from it, `stream.rs:497`. The converter is
+from `MixerDeviceSink::config()` in `Engine::ensure_player`; the mixer is built from it. The converter is
 built per ring at attach, on the decode thread, with the ring at `fill_target`. When the rates
 differ, its construction reads two frames, so it never reads an empty ring or counts a false
 underrun. It bootstraps once from the ring's format, which is right precisely because it is per
@@ -3037,10 +3063,9 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    `m3a-done`) — see "M3a: the station directory, built"; **M3b merged 2026-09-24** (`f7af9dc`,
    `m3b-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) **merged
    2026-09-24** (`b7e050a`, `defect-a-done`); **M3c (HLS, the ADTS half) merged 2026-09-26**
-   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) **built and accepted
-   2026-09-29 on branch `defect-b`** (`f95e530`…`49e6a72`); `/code-review` the same day, ten
-   findings, the bound redesigned and fixed in F1–F4 (`2784efd`…`dd469e4`), re-accepted; the last
-   scoped review and the merge to come, before M4 — see "Defect B".
+   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) **merged 2026-09-30** (`dc9200d`, `defect-b-done`): built and
+   accepted 2026-09-29 on branch `defect-b`, two `/code-review` rounds (F1–F4 the bound's redesign,
+   G1–G3 the arrival clock), re-accepted after each; see "Defect B". **M3 complete.**
    See "M3c: HLS, the ADTS half", "Defect A".
 4. **M4 — Map**, split (2026-09-30): **M4a** geodata + the `ondar-map` crate (no UI); **M4b**
    IPC + the SVG renderer with pan and zoom; **M4c** stations, gathering, hit-testing. Drawn map
