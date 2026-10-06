@@ -62,8 +62,12 @@ type Loop = {
 };
 
 function makeLoop(
-  onReply: (r: MapReply, invokeMs: number) => void,
+  onReply: (r: MapReply, invokeMs: number, parse: { ms: number; bytes: number } | null) => void,
 ): Loop {
+  // The acceptance review's A3: under `m=paint` the reply's parse cost is measured by proxy —
+  // `JSON.parse(JSON.stringify(reply))`, the same object re-parsed — once per drawn reply. It adds
+  // ~its own time to the loop, so never under `m=pan`.
+  const parseProxy = measureMode() === "map" && measureParam("m") === "paint";
   let pending = none();
   let dirty = false;
   let inFlight = false;
@@ -94,7 +98,15 @@ function makeLoop(
         // a reply is drawn only if newer than the frame on screen
         if (r !== null && r.seq > shownSeq) {
           shownSeq = r.seq;
-          onReply(r, performance.now() - sentAt);
+          const invokeMs = performance.now() - sentAt;
+          let parse: { ms: number; bytes: number } | null = null;
+          if (parseProxy) {
+            const text = JSON.stringify(r);
+            const t = performance.now();
+            JSON.parse(text);
+            parse = { ms: performance.now() - t, bytes: text.length };
+          }
+          onReply(r, invokeMs, parse);
         }
         if (dirty) schedule();
       },
@@ -125,13 +137,18 @@ export default function MapPane({ band, country }: Props) {
   const [reply, setReply] = useState<MapReply | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   // the harness's marks: the drawn reply's invoke round trip and when it arrived
-  const invokeMs = useRef<{ seq: number; ms: number; at: number } | null>(null);
+  const invokeMs = useRef<{
+    seq: number;
+    ms: number;
+    at: number;
+    parse: { ms: number; bytes: number } | null;
+  } | null>(null);
   const loop = useRef<Loop | null>(null);
   const push = useCallback((f: (i: MapInputs) => void) => loop.current?.push(f), []);
 
   useEffect(() => {
-    const l = makeLoop((r, ms) => {
-      invokeMs.current = { seq: r.seq, ms, at: performance.now() };
+    const l = makeLoop((r, ms, parse) => {
+      invokeMs.current = { seq: r.seq, ms, at: performance.now(), parse };
       setReply(r);
     });
     loop.current = l;
@@ -243,6 +260,8 @@ export default function MapPane({ band, country }: Props) {
         report("frame", {
           seq,
           invoke_ms: c.ms,
+          parse_ms: c.parse?.ms,
+          wire_proxy: c.parse?.bytes,
           commit_ms: commitAt - c.at,
           raf1_ms: t1 - commitAt,
           raf2_ms: t2 - t1,

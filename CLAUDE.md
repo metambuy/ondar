@@ -189,7 +189,11 @@ onda/
     │   │                         frame on `spawn_blocking` with the lock released, the reply as JSON;
     │   │                         `map_select` logs one line, `map select code=… lookup=country|no_map|
     │   │                         unavailable`, so a normal run shows the map following the dropdown
-    │   │                         (acceptance review A2, 2026-10-06)
+    │   │                         (acceptance review A2, 2026-10-06); `decomposition::log` (debug
+    │   │                         builds, measure mode — A3): one `measure[map] pull seq= step_ms=
+    │   │                         hop_in_ms= frame_ms= hop_out_ms= serialize_ms= bytes= rust_ms=` line
+    │   │                         per framed pull, joined on `seq` with the page's `frame` line
+    │   │                         (`parse_ms`, `wire_proxy`, under `m=paint`)
     │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
     │                             panel_set_expanded (the page reports a click on the expand control;
     │                             Rust lays out, applies or refuses), panel_layout_committed (the page
