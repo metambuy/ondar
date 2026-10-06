@@ -572,6 +572,41 @@ mod session_tests {
             "the pending zoom was cleared by the no-band reply"
         );
     }
+
+    /// Round 3, C1 (2026-10-06): RU, US and IN at fit are coarser than 8 km/pt and flagged, so the
+    /// frame the session hands the page must carry their subdivision lines, with no blob missing —
+    /// if this passes, the renderer is where they vanish.
+    #[test]
+    fn c1_the_fit_frame_carries_subdivisions() {
+        let s = store();
+        for (code, h) in [
+            ("RU", 300.0),
+            ("US", 300.0),
+            ("IN", 300.0),
+            ("RU", 178.0),
+            ("US", 178.0),
+        ] {
+            let mut ses = Session::default();
+            ses.select(Some(s), code);
+            let r = ses
+                .pull_sync(Some(s), band(h), inputs([0.0, 0.0], 0, false))
+                .unwrap();
+            let f = r.frame.expect("a frame");
+            assert_eq!(f.stats.missing_blobs, 0, "{code} at {h}: missing blobs");
+            assert!(
+                !f.subdivisions.is_empty(),
+                "{code} at {h} (scale {:.2}): no subdivision lines",
+                f.view.scale
+            );
+            let pts: usize = f.subdivisions.iter().map(|l| l.len()).sum();
+            eprintln!(
+                "{code} at {h}: level {} subdivisions {} lines, {pts} points; land {} shapes",
+                f.level,
+                f.subdivisions.len(),
+                f.land.len()
+            );
+        }
+    }
 }
 
 #[cfg(test)]

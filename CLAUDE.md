@@ -87,11 +87,14 @@ onda/
 │   │                             M3b commit 4; `reconnecting` offers no Play, as the row reads it —
 │   │                             pinned by Transport.test.tsx), About.tsx (name, version, credits),
 │   │                             MapPane.tsx (M4b commit 7: the map band — a rounded platter the sea
-│   │                             fills at the band Rust laid out, one `<path>` per shape in four
-│   │                             layers — neighbours, land, subdivisions, the land's edge — one flat
-│   │                             fill per theme (A1, 2026-10-06: commit 7's Ink inland tone through an
-│   │                             erode/blur filter cost ~90 ms a paint and was removed at the
-│   │                             acceptance review; no filter, no opacity), the insets' boxes and whole
+│   │                             fills at the band Rust laid out, one `<path>` per shape in three
+│   │                             layers — neighbours, the land with its hairline edge on the same
+│   │                             path, subdivisions above it — one flat fill per theme (A1,
+│   │                             2026-10-06: commit 7's Ink inland tone through an erode/blur filter
+│   │                             cost ~90 ms a paint and was removed at the acceptance review; no
+│   │                             filter, no opacity; no `<use>` — round 3, C1 + C2: WebKit styles a
+│   │                             `<use>` clone as the original, so commit 7's edge group painted the
+│   │                             land again over the subdivisions with no stroke), the insets' boxes and whole
 │   │                             labels, the `− fit +` row at the rect Rust reserved; the pull loop —
 │   │                             input accumulated between animation frames, one `map_pull` in
 │   │                             flight, a reply drawn only if its `seq` is newer, nothing while
@@ -476,9 +479,9 @@ survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
 scoping below. Commit them.
 
 That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 414 tests `cargo test --workspace -- --list`
-reports (409 run, 5 `#[ignore]`d — the map tool's five input-bound tests, run locally) break down as
-**386 hand-written + 28 ts-rs-generated** (audio 182, shell 51, stations 64, map 76, map-build 41):
+export_bindings_<type>` that writes the `.ts` file. So the 415 tests `cargo test --workspace -- --list`
+reports (410 run, 5 `#[ignore]`d — the map tool's five input-bound tests, run locally) break down as
+**387 hand-written + 28 ts-rs-generated** (audio 182, shell 52, stations 64, map 76, map-build 41):
 
 | | |
 |---|---|
@@ -508,7 +511,7 @@ reports (409 run, 5 `#[ignore]`d — the map tool's five input-bound tests, run 
 | `panel::tests` | 31 — in the **shell** crate; **M4b commit 6:** `band_rect_and_layout` — `[16, 404, 328, h − 420]` for 560 (140), 561, 598 (178), 720 (300), none for 559 and the collapsed 420; `BAND_X` is `tokens.css`'s `--space-3` and `BAND_WIDTH` the panel less two of them, read from the stylesheet; `BAND_FLOOR` is the map crate's; an expanded layout on the ANMITE carries `band` at (404, 178), a collapsed one none, and the band's `controls` is `[246, h − 32, 74, 24]` (fails on the floor off by one or a hand-typed origin or width); three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
 | `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
 | `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
-| `map::session_tests` | 5 — shell crate (M4b commit 6), on the shipped resource, mutation-checked (`_handover/m4b-c6/mutations.log`): `select` resets to the fit and bumps `seq`, the first pull frames at the fit, nothing pending frames nothing, a re-select frames again; `+` halves the scale about the pane's centre and `−` doubles it back to the fit (clamped), a band change (178 → 300) returns to the fit, `fit` wins over pending pan and zoom; pan deltas sum and apply once at the new scale with y down on the pane, at the fit a pan replies `None` and `seq` holds, a huge pan is clamped to the fit rectangle and frames once; inputs folded while a frame is held apply on the next pull with a higher `seq`; `unavailable`, `no_map` and `no_band` answer at the current `seq` and clear the pending inputs (fails with the zoom sign inverted, y not negated, fit not winning, the band change not resetting, every pull framing, `seq` bumped on select alone, the pending set applied twice, or select not resetting) |
+| `map::session_tests` | 6 — shell crate (M4b commit 6; **round 3 C1, 2026-10-06:** `c1_the_fit_frame_carries_subdivisions` — RU, US and IN at 300 and RU, US at 178 frame with subdivision lines (RU 200 lines / 1 541 points at level 24, US 121, IN 73) and no missing blob: the frame had them, the renderer hid them), on the shipped resource, mutation-checked (`_handover/m4b-c6/mutations.log`): `select` resets to the fit and bumps `seq`, the first pull frames at the fit, nothing pending frames nothing, a re-select frames again; `+` halves the scale about the pane's centre and `−` doubles it back to the fit (clamped), a band change (178 → 300) returns to the fit, `fit` wins over pending pan and zoom; pan deltas sum and apply once at the new scale with y down on the pane, at the fit a pan replies `None` and `seq` holds, a huge pan is clamped to the fit rectangle and frames once; inputs folded while a frame is held apply on the next pull with a higher `seq`; `unavailable`, `no_map` and `no_band` answer at the current `seq` and clear the pending inputs (fails with the zoom sign inverted, y not negated, fit not winning, the band change not resetting, every pull framing, `seq` bumped on select alone, the pending set applied twice, or select not resetting) |
 | `map::tests` | 1 — shell crate (M4a commit 7): the shipped resource loads through the shell's path rule (`resources/` + `map/world.ondarmap`; fails with `map/` dropped), a missing file and a non-resource are reasons, not panics |
 | `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
 | `export_bindings_{mapband,mapinputs,mapreply,mapstatus}` | 4 — generated, shell crate (M4b commit 6): the band rect, the pull's inputs and reply |
@@ -532,19 +535,20 @@ reports (409 run, 5 `#[ignore]`d — the map tool's five input-bound tests, run 
 | `input_tests` | 5, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~30 s): **review P6 (M4b commit 4, 2026-10-05):** `corner_table_at_161_matches_step0` — the tool's corner table at 328 × 161 with the controls disabled against Step 0's (`fixtures/step0-corners-161.tsv`) for the eight countries Step 0 framed on complete land, 11 insets × 3 corners: the full box's clearance within 0.3 pt (the drawn bound + the table's rounding) and the scale within 0.02 of Step 0's fraction, or 0 where that is under the row's minimum — all 33 agree (`_handover/m4b-c4/input-tests-release.log`); Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the gate passing for all 18, no once-edge inside the land past 80 m; fails with the inside-land filter dropped); two builds byte-identical and every blob within its bound |
 | `geom::tests` | 1 — map-build: R1's centre of a square across 180° is 180° (the rectangle–ring adapter and its test left with the adapter's one caller at M4b commit 2; `rules::tests::rect_ring_distances` holds those cases) |
 
-Counting `#[test]` attributes in source gives 386 and will not reconcile with the runner's 414
+Counting `#[test]` attributes in source gives 387 and will not reconcile with the runner's 415
 until those 28 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 **The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
-(vitest, jsdom) runs `src/**/*.test.tsx` — **25** today: 8 in `MapPane.test.tsx` (M4b commit 7: one
+(vitest, jsdom) runs `src/**/*.test.tsx` — **26** today: 9 in `MapPane.test.tsx` (M4b commit 7: one
 pull in flight with the input that arrives meanwhile summed; a reply not newer than the frame on
 screen not drawn, a newer one drawn; a `null` reply leaves the paths and an idle pane pulls nothing;
 a drag under 4 pt sends nothing, over it the delta negated; `+` / `−` / `fit` reach `zoom_steps` and
 `fit`; one `<path>` per shape with `fill-rule="evenodd"`, the label whole, the platter and the
 controls at the rects given; a theme change pulls nothing; one flat land tone per theme — no `<filter>`, no filtered element,
 no `filter` or `opacity` in the map rules, no coast token, recorded failing on `5d64217` — A1,
-2026-10-06), 12 in `StationList.test.tsx` (the
+2026-10-06; the land drawn once with its hairline and the subdivisions above it — no `<use>`, the
+land rule strokes `--map-edge`, recorded failing on `01c87e6` — round 3 C1 + C2), 12 in `StationList.test.tsx` (the
 wrong-source guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show
 re-requests, ★ on lists favourites then recents with the country reply left behind dropped, a ★
 reply landing after ★ off dropped, `recents:updated` and a favourite toggle re-request only the ★
@@ -562,7 +566,7 @@ map pane without a band, the platter with the `− fit +` row at the band's rect
 acceptance review's A2, the map follows the dropdown — a change of the country select reaches
 `map.select` with the new code and back, killed with the pane's select effect ignoring the prop)
 — 3 there.
-Every "tests" figure in this project is written as the two numbers, `414 + 25`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `415 + 26`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands

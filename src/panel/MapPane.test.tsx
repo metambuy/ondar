@@ -21,7 +21,13 @@
 // 9. one flat land tone per theme (the acceptance review's A1, 2026-10-06): the SVG carries no
 //    `<filter>` and no element is filtered, and the stylesheets carry no `filter`, no `opacity` and
 //    no coast token — Ink's inland tone through an erode/blur filter cost ~90 ms a paint at 300 and
-//    its glow over the neighbours broke the flat-neighbours spec (fails on the code before it).
+//    its glow over the neighbours broke the flat-neighbours spec (fails on the code before it);
+// 10. the land is drawn once, with its hairline, and the subdivisions above it (round 3, C1 + C2,
+//    2026-10-06): the SVG carries no `<use>` — WebKit styles a `<use>` clone as the original
+//    element, so the edge group's clones of the land paths painted the land fill again, over the
+//    subdivisions, with `stroke: none`: no interior borders, no coast, in every capture — the
+//    land rule strokes `--map-edge`, and the subdivisions group follows the land group (fails on
+//    the code before it: a `<use>` per land path and `stroke: none` on the land).
 import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -213,6 +219,30 @@ describe("MapPane", () => {
     const tokensCss = readFileSync("src/styles/tokens.css", "utf8");
     expect(tokensCss).not.toContain("--map-land-coast");
     expect(tokensCss).toContain("--map-land:");
+  });
+
+  it("10. the land is drawn once with its hairline, the subdivisions above it", async () => {
+    const { container } = await mounted();
+    const r = reply(1, 2);
+    r.frame!.subdivisions = [
+      [[1, 1], [2, 2], [3, 1]],
+      [[4, 4], [5, 5]],
+    ];
+    act(() => pulls[0].resolve(r));
+    await settle();
+    // no `<use>` anywhere in the map
+    expect(container.querySelector("svg use")).toBeNull();
+    // the groups in draw order: neighbours, land, subdivisions, then the insets
+    const groups = Array.from(container.querySelectorAll("svg > g"));
+    const landIdx = groups.findIndex((g) => g.querySelector("path#map-land-0") !== null);
+    const subIdx = groups.findIndex((g) => g.querySelectorAll("path").length === 2 && g.querySelector("path")!.getAttribute("d") === "M1 1L2 2L3 1");
+    expect(landIdx).toBeGreaterThan(0);
+    expect(subIdx).toBe(landIdx + 1);
+    // the land's rule strokes the edge token; nothing strokes `none` in the map rules
+    const panelCss = readFileSync("src/panel/panel.module.css", "utf8");
+    const landRule = panelCss.slice(panelCss.indexOf(".land path {"), panelCss.indexOf("}", panelCss.indexOf(".land path {")));
+    expect(landRule).toMatch(/stroke:\s*var\(--map-edge\)/);
+    expect(landRule).not.toMatch(/stroke:\s*none/);
   });
 
   it("8. a theme change pulls nothing", async () => {

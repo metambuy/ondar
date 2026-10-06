@@ -59,7 +59,9 @@
   /* The drawn map, Sand by day (M4b commit 7): the "Ondar map style" artifact's specification
      table (v3, 2026-09-24; ONDAR.md's style line), sRGB. DECISIONS of the design round, not
      measurements of the system. The sea fills the platter; the country is one flat fill with a
-     hairline edge drawn above the subdivisions; neighbours a paler fill with their own stroke;
+     hairline edge on the same path, the subdivisions drawn above it (round 3, C1 + C2: the
+     artifact's "edge above the subdivisions" needed a second drawing of the land, and a `<use>`
+     clone takes the original's style in WebKit); neighbours a paler fill with their own stroke;
      an inset box is sea-filled with a 0.5 pt frame and a radius of 4, its label 8 pt in the
      label colour, bottom-right (the artifact's row "Inset labels: 8 pt name"). One flat land
      tone per theme — decided at the acceptance review (A1, 2026-10-06): the artifact's two-tone

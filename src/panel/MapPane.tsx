@@ -366,10 +366,12 @@ export default function MapPane({ band, country }: Props) {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        {/* Four layers, one flat fill each (A1, 2026-10-06): neighbours, land, subdivisions, the
-            land's edge as a `<use>` of the land paths; then the insets. No filter — Ink's inland
-            tone through an erode/blur filter cost ~90 ms a paint at 300 and was removed at the
-            acceptance review. */}
+        {/* Three layers, one flat fill each (A1, 2026-10-06): neighbours, the land with its
+            hairline edge on the same path, subdivisions above it; then the insets. No filter —
+            Ink's inland tone through an erode/blur filter cost ~90 ms a paint at 300 and was
+            removed at the acceptance review. No `<use>` (round 3, C1 + C2): WebKit styles a
+            `<use>` clone as the original element, so commit 7's edge group — a `<use>` per land
+            path — painted the land fill again over the subdivisions, with `stroke: none`. */}
         {frame !== null && (
           <>
             <g className={styles.neighbours}>
@@ -385,11 +387,6 @@ export default function MapPane({ band, country }: Props) {
             <g className={styles.subdivisions}>
               {frame.subdivisions.map((l, i) => (
                 <path key={i} d={lineOf(l)} />
-              ))}
-            </g>
-            <g className={styles.landEdge}>
-              {frame.land.map((_, i) => (
-                <use key={i} href={`#map-land-${i}`} />
               ))}
             </g>
             <g className={styles.insets}>

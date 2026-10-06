@@ -196,10 +196,11 @@
   -webkit-user-select: none;
 }
 
-/* The layers, in draw order (the artifact's table): neighbours, the country's land — one flat
-   tone per theme (A1, 2026-10-06; Ink's filtered inland tone is gone) — subdivisions, the
-   country's hairline edge above them, then the insets. Every colour and width is a token; no
-   filter, no opacity. */
+/* The layers, in draw order (the artifact's table): neighbours; the country's land — one flat
+   tone per theme (A1, 2026-10-06; Ink's filtered inland tone is gone) with its hairline edge on the
+   same path (round 3, C1 + C2: a `<use>` clone takes the original's style in WebKit, so an edge
+   group of `<use>`s painted the fill again over the subdivisions and no stroke); subdivisions
+   above it; then the insets. Every colour and width is a token; no filter, no opacity. */
 .neighbours path {
   fill: var(--map-neighbour);
   stroke: var(--map-neighbour-stroke);
@@ -209,19 +210,14 @@
 
 .land path {
   fill: var(--map-land);
-  stroke: none;
+  stroke: var(--map-edge);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
 }
 
 .subdivisions path {
   fill: none;
   stroke: var(--map-sub);
-  stroke-width: var(--map-stroke);
-  stroke-linejoin: round;
-}
-
-.landEdge use {
-  fill: none;
-  stroke: var(--map-edge);
   stroke-width: var(--map-stroke);
   stroke-linejoin: round;
 }
