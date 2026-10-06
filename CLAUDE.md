@@ -96,9 +96,12 @@ onda/
 │   │                             input accumulated between animation frames, one `map_pull` in
 │   │                             flight, a reply drawn only if its `seq` is newer, nothing while
 │   │                             idle; wheel pans with the gesture, a drag pans past 4 pt, negated;
-│   │                             `?measure=map` drivers `m=paint` / `m=pan` (`cc=` the country, a
-│   │                             wheel-sized push every 8 ms from a timer; the `frame` line carries
-│   │                             `commit_ms`, reply → React commit); pinned by
+│   │                             `?measure=map` drivers `m=paint` / `m=pan` (`cc=` the country;
+│   │                             `period=` ms between the paint driver's selects, default 1 500 — a
+│   │                             country change from idle; 100 reproduces Step 0's back-to-back
+│   │                             probe and its hot core, A3; a wheel-sized push every 8 ms from a
+│   │                             timer; the `frame` line carries `commit_ms`, reply → React commit,
+│   │                             and under `m=paint` `parse_ms` / `wire_proxy`); pinned by
 │   │                             MapPane.test.tsx), panel.module.css; Panel.test.tsx (offline with no
 │   │                             countries list and a favourite stored, the select and ★ stay enabled
 │   │                             — acceptance B and C; no map pane without a band, the platter and

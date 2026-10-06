@@ -278,6 +278,9 @@ export default function MapPane({ band, country }: Props) {
     const m = measureParam("m");
     if (m === "paint") {
       const n = Number(measureParam("n") ?? "20");
+      // `period=` (ms between selects, default 1 500 — a country change from idle; Step 0's probe
+      // ran its frames back to back, so `period=100` reproduces its hot core — A3's decomposition)
+      const period = Number(measureParam("period") ?? PAINT_PERIOD_MS);
       const codes = (measureParam("cc") ?? PAINT_COUNTRIES.join(",")).split(",");
       const timers: ReturnType<typeof setTimeout>[] = [];
       for (let k = 0; k < n * codes.length; k++) {
@@ -285,7 +288,7 @@ export default function MapPane({ band, country }: Props) {
           setTimeout(() => {
             report("paint_select", { k, code: codes[k % codes.length] });
             void map.select(codes[k % codes.length]).then(() => loop.current?.wake());
-          }, PAINT_FIRST_MS + k * PAINT_PERIOD_MS),
+          }, PAINT_FIRST_MS + k * period),
         );
       }
       return () => timers.forEach(clearTimeout);
