@@ -43,11 +43,49 @@ const PANEL_LABEL: &str = "panel";
 /// Width of the popover in points — one width for both height states (ONDAR.md product shape).
 const PANEL_WIDTH: f64 = 360.0;
 
-/// The collapsed height in points (ONDAR.md product shape, ~360×420). Also decision D1's
-/// **provisional** floor: expansion is refused when the capped expanded height would not exceed
-/// this. The real floor is M4's, derived from the map's minimum legible pane; M2d must not invent
-/// one (ONDAR.md, "M2d: the expanded height is capped to the work area").
+/// The collapsed height in points (ONDAR.md product shape, ~360×420). Also decision D1's floor
+/// for `expandable`: expansion is refused when the capped expanded height would not exceed this
+/// (ONDAR.md, "M2d: the expanded height is capped to the work area"). The map's own floor is the
+/// band's (`BAND_FLOOR`, M4b commit 6): an expanded panel whose extra height is under it shows no
+/// map band, and the list keeps the space.
 const COLLAPSED_HEIGHT: f64 = 420.0;
+
+/// The map band (M4b, B1): the expanded panel's extra height, full width inside the root's
+/// `--space-3` padding, as a rect in the panel's points, top-left origin. `BAND_X` is the padding,
+/// `BAND_Y` the collapsed height less the bottom padding — the band replaces that padding and
+/// takes every point the expansion adds — and `BAND_WIDTH` the panel less both paddings. A shell
+/// test reads `--space-3` from `tokens.css`, so the three numbers are the stylesheet's, not typed
+/// twice. The page is told this rect (`PanelLayout::band`) and never measures it.
+const BAND_X: f64 = 16.0;
+const BAND_Y: f64 = COLLAPSED_HEIGHT - BAND_X;
+const BAND_WIDTH: f64 = PANEL_WIDTH - 2.0 * BAND_X;
+/// The shortest band the app shows (D1's floor for the map, M4b): the resource's coverage and the
+/// insets' scales are built for bands from here (`ondar_map::rules::BAND_FLOOR`, asserted equal).
+const BAND_FLOOR: f64 = 140.0;
+
+/// The map band's rect in the panel, points, top-left origin (M4b commit 6). Crosses the boundary
+/// inside [`PanelLayout`] as `band`, `None` when the layout has no band — the collapsed height, or
+/// an expanded height whose band would be under `BAND_FLOOR`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MapBand {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The band for a layout height: `[16, 404, 328, h − 420]` when that height is at least
+/// `BAND_FLOOR`, else `None` (the collapsed layout, or an expanded one too short for a map).
+pub fn band_rect(layout_height: f64) -> Option<MapBand> {
+    let height = layout_height - COLLAPSED_HEIGHT;
+    (height >= BAND_FLOOR).then_some(MapBand {
+        x: BAND_X,
+        y: BAND_Y,
+        width: BAND_WIDTH,
+        height,
+    })
+}
 
 /// The expanded height in points **before** the D1 cap (ONDAR.md product shape, ~360×720). The
 /// height the panel actually gets is `min(this, what fits under the icon)` — 598 pt measured on
@@ -312,6 +350,9 @@ pub struct PanelLayout {
     pub width: f64,
     pub height: f64,
     pub expandable: bool,
+    /// The map band's rect for this height (M4b commit 6; `band_rect`): the platter's size and
+    /// place, which the page is told and never measures. `None` below the band's floor.
+    pub band: Option<MapBand>,
 }
 
 /// How a [`PanelLayout`] reaches the page — see its `transition` field.
@@ -444,6 +485,7 @@ impl Default for PanelState {
                     width: PANEL_WIDTH,
                     height: COLLAPSED_HEIGHT,
                     expandable: true,
+                    band: None,
                 },
                 chosen: PanelHeight::Collapsed,
                 round_trip: RoundTrip::default(),
@@ -507,6 +549,7 @@ impl PanelState {
             width: layout.size.0,
             height: layout.size.1,
             expandable: layout.expandable,
+            band: band_rect(layout.size.1),
         };
         inner.last
     }
@@ -2255,6 +2298,63 @@ mod tests {
             cocoa_frame((226.0, 30.0), (360.0, 720.0), 640.0),
             (226.0, -110.0, 360.0, 720.0)
         );
+    }
+
+    /// The map band (M4b commit 6): `[16, 404, 328, h − 420]` for an expanded height of at least
+    /// 560 — 559 → none, 560 → 140, 561 → 141, the ANMITE's 598 → 178, the uncapped 720 → 300 —
+    /// and none for the collapsed 420. `BAND_X` is `tokens.css`'s `--space-3` and `BAND_WIDTH` the
+    /// panel less two of them, read from the stylesheet; `BAND_FLOOR` is the map crate's. Fails on
+    /// the floor off by one, or a hand-typed origin or width.
+    #[test]
+    fn band_rect_and_layout() {
+        assert_eq!(band_rect(559.0), None);
+        assert_eq!(
+            band_rect(560.0),
+            Some(MapBand {
+                x: 16.0,
+                y: 404.0,
+                width: 328.0,
+                height: 140.0
+            })
+        );
+        assert_eq!(band_rect(561.0).map(|b| b.height), Some(141.0));
+        assert_eq!(band_rect(598.0).map(|b| b.height), Some(178.0));
+        assert_eq!(band_rect(720.0).map(|b| b.height), Some(300.0));
+        assert_eq!(band_rect(COLLAPSED_HEIGHT), None);
+        assert_eq!(BAND_FLOOR, f64::from(ondar_map::rules::BAND_FLOOR));
+        assert_eq!(BAND_WIDTH, ondar_map::rules::BAND_WIDTH_PT);
+        const TOKENS: &str = include_str!("../../src/styles/tokens.css");
+        let space3 = TOKENS
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("--space-3:"))
+            .and_then(|l| {
+                l.trim_start_matches("--space-3:")
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim()
+                    .strip_suffix("px")
+            })
+            .and_then(|v| v.parse::<f64>().ok())
+            .expect("tokens.css declares --space-3 in px");
+        assert_eq!(BAND_X, space3);
+        assert_eq!(BAND_WIDTH, PANEL_WIDTH - 2.0 * space3);
+        assert_eq!(BAND_Y, COLLAPSED_HEIGHT - space3);
+        // the layout carries it: an expanded layout on the ANMITE's display, none when collapsed
+        let displays = menubar_on_anmite();
+        let tray = anmite_tray();
+        let expanded = layout(tray, PanelHeight::Expanded, &displays, Some(0));
+        assert_eq!(expanded.size.1, 598.0);
+        let st = PanelState::default();
+        let rect = Rect {
+            position: Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)),
+            size: Size::Logical(LogicalSize::new(0.0, 0.0)),
+        };
+        let pl = st.request(PanelView::Transport, &expanded, LayoutKind::Resize, rect);
+        assert_eq!(pl.band.map(|b| (b.y, b.height)), Some((404.0, 178.0)));
+        let collapsed = layout(tray, PanelHeight::Collapsed, &displays, Some(0));
+        let pl = st.request(PanelView::Transport, &collapsed, LayoutKind::Resize, rect);
+        assert_eq!(pl.band, None);
     }
 
     /// The radius the effect view is rounded to and the radius the page clips itself to are the

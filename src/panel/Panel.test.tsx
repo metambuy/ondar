@@ -38,6 +38,7 @@ const layout: PanelLayout = {
   width: 360,
   height: 420,
   expandable: true,
+      band: null,
 };
 
 const offline = { code: "stations", message: "radio-browser unreachable after 3 attempt(s) in 3.01s" };

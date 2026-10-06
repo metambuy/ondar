@@ -16,7 +16,8 @@ use crate::laea::Laea;
 use crate::rules::{self, LADDER, Pane};
 
 /// A view: its centre in the country's frame LAEA, km, and its scale, km/pt.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct View {
     pub centre: [f64; 2],
     pub scale: f64,
@@ -39,12 +40,14 @@ pub enum Lookup {
 }
 
 /// Rings in pane points (exterior first, then holes; fill rule even-odd).
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Shape {
     pub rings: Vec<Vec<[f32; 2]>>,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Inset {
     pub label: String,
     /// x, y, w, h, points.
@@ -52,7 +55,8 @@ pub struct Inset {
     pub land: Vec<Shape>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct FrameStats {
     pub vertices: usize,
     pub rings_considered: usize,
@@ -70,7 +74,8 @@ pub struct FrameStats {
     pub insets_dropped: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Frame {
     pub view: View,
     pub level: f64,
