@@ -116,3 +116,49 @@
     --map-controls-stroke: rgb(255 255 255 / 0.14);
   }
 }
+
+/* Round 3, C4 (2026-10-06): the palette variants for Martín's pick — debug-only, selected by the
+   measurement harness (`?measure=…&palette=<name>` → `data-palette` on the root, `src/measure.ts`);
+   inert without the attribute, which only the harness sets. The chat's sea / land / neighbours per
+   variant; the edge, subdivision, neighbour-stroke and inset-frame colours follow each by the
+   artifact's relationships (`_handover/m4b-palette/variants.md`). The chosen set becomes the tokens
+   above and these blocks go. */
+:root[data-palette="ink-lifted"] {
+  --map-sea: #1C2735;
+  --map-land: #7A6C52;
+  --map-neighbour: #2F3742;
+  --map-neighbour-stroke: #3D4651;
+  --map-edge: #B5A281;
+  --map-sub: #8C7F66;
+  --map-inset-stroke: #38424E;
+}
+
+:root[data-palette="ink-lifted-more"] {
+  --map-sea: #263345;
+  --map-land: #8A7B5E;
+  --map-neighbour: #3A4350;
+  --map-neighbour-stroke: #48525E;
+  --map-edge: #C2AF8E;
+  --map-sub: #9A8D73;
+  --map-inset-stroke: #424D5A;
+}
+
+:root[data-palette="sand-deeper"] {
+  --map-sea: #BFD2D8;
+  --map-land: #DCC79A;
+  --map-neighbour: #E6DECD;
+  --map-neighbour-stroke: #CDBFA4;
+  --map-edge: #857047;
+  --map-sub: #A48F66;
+  --map-inset-stroke: #ADA08A;
+}
+
+:root[data-palette="sand-deeper-more"] {
+  --map-sea: #ADC6CE;
+  --map-land: #D2BA86;
+  --map-neighbour: #DDD3BE;
+  --map-neighbour-stroke: #C3B393;
+  --map-edge: #7A663B;
+  --map-sub: #988357;
+  --map-inset-stroke: #A3957D;
+}

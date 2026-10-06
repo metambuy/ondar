@@ -11,6 +11,12 @@ const params: URLSearchParams | null = (() => {
   return p.has("measure") ? p : null;
 })();
 
+// Round 3, C4 (2026-10-06): a debug-only palette knob — `?measure=…&palette=<name>` puts the name on
+// the root as `data-palette`, and `tokens.css` overrides the map tokens per name. Harness only: with
+// no `measure` query the attribute is never set, and a release build has no harness.
+const palette = params?.get("palette");
+if (palette) document.documentElement.dataset.palette = palette;
+
 /** The mode (`fit`, `perf`), or `null` when the harness is inactive. */
 export function measureMode(): string | null {
   return params?.get("measure") ?? null;
