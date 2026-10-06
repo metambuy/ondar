@@ -90,7 +90,8 @@ elements, full light/dark support driven by the system appearance.
 
 The map is **drawn from Natural Earth 10m shapes** (public domain), designed twice: **Sand** by
 day (flat fill, sea `#D3E0E3`, land `#E6D5B1`, neighbours `#EFE9DC`, hairline edge `#8F7A55`),
-**Ink** by night (sea `#121A25`, two-tone land `#524A3E`/`#6B5E47`, neighbours `#262C34`). The
+**Ink** by night (sea `#121A25`, one flat land tone `#6B5E47` — two-tone until the M4b acceptance
+review, A1, 2026-10-06 — neighbours `#262C34`, flat and opaque in both themes). The
 sea is drawn, not vibrancy. The country is fitted to the pane on an equal-area projection centred
 on its mainland; outlying territory (Azores, Madeira; Alaska, Hawaii) sits in insets with the
 territory's name; countries coarser than 8 km/pt show their subdivisions. Stations gather by
@@ -947,6 +948,24 @@ box may shrink there too (the Canaries read 74 % at 300); no 100 % rule. Svalbar
 (Jan Mayen under its box) accepted and counted. Hawaii: the stacking rule beside Alaska, measured;
 if it misses the minimum anywhere in 178–300 it drops there, counted, and the ship gate's 178 rule is
 amended for Hawaii alone. Labels: Canaries, Fr. Guiana, Antilles, Andamans.
+
+
+### M4b: the acceptance review's decisions (2026-10-06)
+
+**A1 — Ink is one flat land tone (Martín).** Commit 7 drew the style artifact's two-tone night land:
+the coast colour as the land fill, and the inland tone laid over it by an SVG filter (`feMorphology`
+erode 7 + `feGaussianBlur` 5 of land ∪ neighbours), displayed under the dark appearance only. The
+acceptance measured that filter at ~85–90 ms a paint at the 300 pt band and ~50–60 at 178, nearly
+independent of the vertex count (Portugal's 973 vertices paid 89 ms), and during a pan it was paid
+every frame — the page animated at 90 / 58 ms a frame. Martín's photo of the running app also showed
+the filter's blurred copy of the neighbours as a glow around the selected country, which the style
+table's flat-neighbours row never allowed. Decided: the filter and the inland tone are removed; Ink's
+land is one opaque fill, `#6B5E47` (the artifact's coast colour), with the hairline edge; Sand is
+unchanged; neighbours in both themes are the table's flat, opaque quiet tone (Sand `#EFE9DC`, Ink
+`#262C34`) — no opacity, no blur, in CSS or SVG. `MapPane.test.tsx` test 9 pins it on the DOM and on
+the stylesheets' source. Without the filter the loop drew one frame per animation frame at both bands
+(56 cycles/s, none dropped); the first-paint figures that remain over the bar are the reply's
+round trip, decomposed under A3.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

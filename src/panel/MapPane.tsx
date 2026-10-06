@@ -126,8 +126,6 @@ export default function MapPane({ band, country }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   // the harness's marks: the drawn reply's invoke round trip and when it arrived
   const invokeMs = useRef<{ seq: number; ms: number; at: number } | null>(null);
-  // the harness's `inland=0`: the Ink inland layer left out, to measure its filter's cost alone
-  const inland = measureParam("inland") !== "0";
   const loop = useRef<Loop | null>(null);
   const push = useCallback((f: (i: MapInputs) => void) => loop.current?.push(f), []);
 
@@ -345,15 +343,10 @@ export default function MapPane({ band, country }: Props) {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        <defs>
-          {/* Ink's inland tone: the land ∪ neighbours eroded 7 pt and blurred 5, laid over the
-              coast fill (the artifact's "Country, coast" row). Displayed under the dark
-              appearance only (CSS); under Sand the coast and the land are one colour. */}
-          <filter id="map-inland" x="-10%" y="-10%" width="120%" height="120%">
-            <feMorphology operator="erode" radius="7" />
-            <feGaussianBlur stdDeviation="5" />
-          </filter>
-        </defs>
+        {/* Four layers, one flat fill each (A1, 2026-10-06): neighbours, land, subdivisions, the
+            land's edge as a `<use>` of the land paths; then the insets. No filter — Ink's inland
+            tone through an erode/blur filter cost ~90 ms a paint at 300 and was removed at the
+            acceptance review. */}
         {frame !== null && (
           <>
             <g className={styles.neighbours}>
@@ -361,21 +354,11 @@ export default function MapPane({ band, country }: Props) {
                 <path key={i} d={pathOf(s)} fillRule="evenodd" />
               ))}
             </g>
-            <g className={styles.landCoast}>
+            <g className={styles.land}>
               {frame.land.map((s, i) => (
                 <path key={i} id={`map-land-${i}`} d={pathOf(s)} fillRule="evenodd" />
               ))}
             </g>
-            {inland && (
-              <g className={styles.inland} filter="url(#map-inland)">
-                {frame.land.map((_, i) => (
-                  <use key={i} href={`#map-land-${i}`} />
-                ))}
-                {frame.neighbours.map((s, i) => (
-                  <path key={`n${i}`} d={pathOf(s)} fillRule="evenodd" />
-                ))}
-              </g>
-            )}
             <g className={styles.subdivisions}>
               {frame.subdivisions.map((l, i) => (
                 <path key={i} d={lineOf(l)} />

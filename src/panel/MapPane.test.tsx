@@ -17,7 +17,12 @@
 //    the band's size and the controls at the rect Rust gave (fails if the renderer computes any
 //    of it);
 // 8. a theme change pulls nothing: recolouring is CSS (fails if the pane requests a frame on
-//    `prefers-color-scheme`).
+//    `prefers-color-scheme`);
+// 9. one flat land tone per theme (the acceptance review's A1, 2026-10-06): the SVG carries no
+//    `<filter>` and no element is filtered, and the stylesheets carry no `filter`, no `opacity` and
+//    no coast token — Ink's inland tone through an erode/blur filter cost ~90 ms a paint at 300 and
+//    its glow over the neighbours broke the flat-neighbours spec (fails on the code before it).
+import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Frame, MapBand, MapInputs, MapReply } from "../api";
@@ -191,6 +196,23 @@ describe("MapPane", () => {
     expect(root.getPropertyValue("--map-controls-y")).toBe(px(band.controls[1]));
     expect(container.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 328 178");
     expect(pathOf({ rings: [[[1, 2], [3, 4]], [[5, 6]]] })).toBe("M1 2L3 4ZM5 6Z");
+  });
+
+  it("9. one flat land tone per theme: no filter, no opacity, no coast token", async () => {
+    const { container } = await mounted();
+    act(() => pulls[0].resolve(reply(1, 2)));
+    await settle();
+    expect(container.querySelector("filter")).toBeNull();
+    expect(container.querySelector("[filter]")).toBeNull();
+    // the stylesheets as text (paths from the repo root, vitest's cwd under `pnpm test`): the
+    // one-flat-tone rule is pinned on the source
+    const panelCss = readFileSync("src/panel/panel.module.css", "utf8");
+    const mapRules = panelCss.slice(panelCss.indexOf(".platter"));
+    expect(mapRules).not.toMatch(/\bfilter\s*:/);
+    expect(mapRules).not.toMatch(/\bopacity\s*:/);
+    const tokensCss = readFileSync("src/styles/tokens.css", "utf8");
+    expect(tokensCss).not.toContain("--map-land-coast");
+    expect(tokensCss).toContain("--map-land:");
   });
 
   it("8. a theme change pulls nothing", async () => {

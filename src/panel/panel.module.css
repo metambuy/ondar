@@ -196,9 +196,10 @@
   -webkit-user-select: none;
 }
 
-/* The layers, in draw order (the artifact's table): neighbours, the country's coast tone, Ink's
-   inland tone (hidden under Sand, where coast and land are one colour), subdivisions, the
-   country's hairline edge above them, then the insets. Every colour and width is a token. */
+/* The layers, in draw order (the artifact's table): neighbours, the country's land — one flat
+   tone per theme (A1, 2026-10-06; Ink's filtered inland tone is gone) — subdivisions, the
+   country's hairline edge above them, then the insets. Every colour and width is a token; no
+   filter, no opacity. */
 .neighbours path {
   fill: var(--map-neighbour);
   stroke: var(--map-neighbour-stroke);
@@ -206,22 +207,9 @@
   stroke-linejoin: round;
 }
 
-.landCoast path {
-  fill: var(--map-land-coast);
-  stroke: none;
-}
-
-.inland use,
-.inland path {
+.land path {
   fill: var(--map-land);
-  stroke: var(--map-land);
-  stroke-width: var(--map-stroke);
-}
-
-@media (prefers-color-scheme: light) {
-  .inland {
-    display: none;
-  }
+  stroke: none;
 }
 
 .subdivisions path {
@@ -246,7 +234,7 @@
 }
 
 .insetLand path {
-  fill: var(--map-land-coast);
+  fill: var(--map-land);
   stroke: var(--map-edge);
   stroke-width: var(--map-stroke);
   stroke-linejoin: round;

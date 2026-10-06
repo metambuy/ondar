@@ -61,11 +61,12 @@
      measurements of the system. The sea fills the platter; the country is one flat fill with a
      hairline edge drawn above the subdivisions; neighbours a paler fill with their own stroke;
      an inset box is sea-filled with a 0.5 pt frame and a radius of 4, its label 8 pt in the
-     label colour, bottom-right (the artifact's row "Inset labels: 8 pt name"). Under Sand the
-     coast tone equals the land tone (one fill); Ink's two tones are below. */
+     label colour, bottom-right (the artifact's row "Inset labels: 8 pt name"). One flat land
+     tone per theme — decided at the acceptance review (A1, 2026-10-06): the artifact's two-tone
+     Ink land through an erode/blur filter cost ~90 ms a paint at 300 and its glow over the
+     neighbours broke the flat-neighbours row. Neighbours flat and opaque in both themes. */
   --map-sea: #D3E0E3;
   --map-land: #E6D5B1;
-  --map-land-coast: #E6D5B1;
   --map-neighbour: #EFE9DC;
   --map-neighbour-stroke: #D8CEBA;
   --map-edge: #8F7A55;
@@ -92,13 +93,11 @@
     --color-separator: rgb(255 255 255 / 0.098);
     --color-accent: rgb(0 122 255);
 
-    /* Ink by night (the same artifact): the land is two-tone — the coast base `--map-land-coast`
-       (warm, #6B5E47) with the inland tone `--map-land` laid over it by an erode-7 + blur-5 of
-       land ∪ neighbours (`MapPane.tsx`'s filter, displayed under Ink only), so land borders stay
-       cool; neighbours dark; the inset frame and label dim. */
+    /* Ink by night (the same artifact): one flat land tone, the artifact's coast colour (A1,
+       2026-10-06 — the inland tone #524A3E and its filter are gone); neighbours dark, flat and
+       opaque; the inset frame and label dim. */
     --map-sea: #121A25;
-    --map-land: #524A3E;
-    --map-land-coast: #6B5E47;
+    --map-land: #6B5E47;
     --map-neighbour: #262C34;
     --map-neighbour-stroke: #333A43;
     --map-edge: #A89574;
