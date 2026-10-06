@@ -66,14 +66,17 @@
      label colour, bottom-right (the artifact's row "Inset labels: 8 pt name"). One flat land
      tone per theme — decided at the acceptance review (A1, 2026-10-06): the artifact's two-tone
      Ink land through an erode/blur filter cost ~90 ms a paint at 300 and its glow over the
-     neighbours broke the flat-neighbours row. Neighbours flat and opaque in both themes. */
-  --map-sea: #D3E0E3;
-  --map-land: #E6D5B1;
-  --map-neighbour: #EFE9DC;
-  --map-neighbour-stroke: #D8CEBA;
-  --map-edge: #8F7A55;
-  --map-sub: #B09C76;
-  --map-inset-stroke: #B7AC98;
+     neighbours broke the flat-neighbours row. Neighbours flat and opaque in both themes. The sets
+     are Martín's pick at round 3 (C4, 2026-10-06) from three per theme: Sand "deeper more" and Ink
+     "lifted more" — the sea, land and neighbours the chat's, the edge, subdivision and stroke
+     colours following by the artifact's relationships (`_handover/m4b-palette/variants.md`). */
+  --map-sea: #ADC6CE;
+  --map-land: #D2BA86;
+  --map-neighbour: #DDD3BE;
+  --map-neighbour-stroke: #C3B393;
+  --map-edge: #7A663B;
+  --map-sub: #988357;
+  --map-inset-stroke: #A3957D;
   --map-label: #6E6454;
   /* The `− fit +` buttons on the band (round 3, C3): a light translucent plate by day, dark by night
      (below); the text in the panel's ink, the border a hairline of the opposite tone. */
@@ -100,65 +103,20 @@
     --color-separator: rgb(255 255 255 / 0.098);
     --color-accent: rgb(0 122 255);
 
-    /* Ink by night (the same artifact): one flat land tone, the artifact's coast colour (A1,
-       2026-10-06 — the inland tone #524A3E and its filter are gone); neighbours dark, flat and
-       opaque; the inset frame and label dim. */
-    --map-sea: #121A25;
-    --map-land: #6B5E47;
-    --map-neighbour: #262C34;
-    --map-neighbour-stroke: #333A43;
-    --map-edge: #A89574;
-    --map-sub: #7E7159;
-    --map-inset-stroke: #2E3743;
+    /* Ink by night (the same artifact): one flat land tone (A1, 2026-10-06 — the inland tone and
+       its filter are gone), "lifted more" at round 3 (C4: the artifact's #121A25 / #6B5E47 /
+       #262C34 read too dark on screen); neighbours dark, flat and opaque; the inset frame and
+       label dim. */
+    --map-sea: #263345;
+    --map-land: #8A7B5E;
+    --map-neighbour: #3A4350;
+    --map-neighbour-stroke: #48525E;
+    --map-edge: #C2AF8E;
+    --map-sub: #9A8D73;
+    --map-inset-stroke: #424D5A;
     --map-label: #8C8574;
     --map-controls-bg: rgb(0 0 0 / 0.45);
     --map-controls-fg: #E8E2D6;
     --map-controls-stroke: rgb(255 255 255 / 0.14);
   }
-}
-
-/* Round 3, C4 (2026-10-06): the palette variants for Martín's pick — debug-only, selected by the
-   measurement harness (`?measure=…&palette=<name>` → `data-palette` on the root, `src/measure.ts`);
-   inert without the attribute, which only the harness sets. The chat's sea / land / neighbours per
-   variant; the edge, subdivision, neighbour-stroke and inset-frame colours follow each by the
-   artifact's relationships (`_handover/m4b-palette/variants.md`). The chosen set becomes the tokens
-   above and these blocks go. */
-:root[data-palette="ink-lifted"] {
-  --map-sea: #1C2735;
-  --map-land: #7A6C52;
-  --map-neighbour: #2F3742;
-  --map-neighbour-stroke: #3D4651;
-  --map-edge: #B5A281;
-  --map-sub: #8C7F66;
-  --map-inset-stroke: #38424E;
-}
-
-:root[data-palette="ink-lifted-more"] {
-  --map-sea: #263345;
-  --map-land: #8A7B5E;
-  --map-neighbour: #3A4350;
-  --map-neighbour-stroke: #48525E;
-  --map-edge: #C2AF8E;
-  --map-sub: #9A8D73;
-  --map-inset-stroke: #424D5A;
-}
-
-:root[data-palette="sand-deeper"] {
-  --map-sea: #BFD2D8;
-  --map-land: #DCC79A;
-  --map-neighbour: #E6DECD;
-  --map-neighbour-stroke: #CDBFA4;
-  --map-edge: #857047;
-  --map-sub: #A48F66;
-  --map-inset-stroke: #ADA08A;
-}
-
-:root[data-palette="sand-deeper-more"] {
-  --map-sea: #ADC6CE;
-  --map-land: #D2BA86;
-  --map-neighbour: #DDD3BE;
-  --map-neighbour-stroke: #C3B393;
-  --map-edge: #7A663B;
-  --map-sub: #988357;
-  --map-inset-stroke: #A3957D;
 }

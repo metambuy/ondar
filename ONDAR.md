@@ -89,9 +89,13 @@ or a matching icon set, SF Pro type, 8pt spacing rhythm, subtle depth, no drop s
 elements, full light/dark support driven by the system appearance.
 
 The map is **drawn from Natural Earth 10m shapes** (public domain), designed twice: **Sand** by
-day (flat fill, sea `#D3E0E3`, land `#E6D5B1`, neighbours `#EFE9DC`, hairline edge `#8F7A55`),
-**Ink** by night (sea `#121A25`, one flat land tone `#6B5E47` — two-tone until the M4b acceptance
-review, A1, 2026-10-06 — neighbours `#262C34`, flat and opaque in both themes). The
+day (flat fill, sea `#ADC6CE`, land `#D2BA86`, neighbours `#DDD3BE`, hairline edge `#7A663B`),
+**Ink** by night (sea `#263345`, one flat land tone `#8A7B5E` — two-tone until the M4b acceptance
+review, A1, 2026-10-06 — neighbours `#3A4350`, flat and opaque in both themes). Those are Martín's
+pick at the review's round 3 (C4, 2026-10-06: the artifact's Sand `#D3E0E3`/`#E6D5B1`/`#EFE9DC` read
+too light on screen and its Ink `#121A25`/`#6B5E47`/`#262C34` too dark; "deeper more" and "lifted more"
+of three steps each, the edge, subdivision and stroke colours following by the artifact's relationships).
+The
 sea is drawn, not vibrancy. The country is fitted to the pane on an equal-area projection centred
 on its mainland; outlying territory (Azores, Madeira; Alaska, Hawaii) sits in insets with the
 territory's name; countries coarser than 8 km/pt show their subdivisions. Stations gather by
@@ -1006,6 +1010,21 @@ retry at ε/2, ε/4, ε/8 (M4a's stated rule, not taken then: the ring is 24 183
 falls to VW because its RDP result is not simple): a retry that lands simple cuts the vertex count and
 with it every term — frame, serialise, parse, build and the DOM update — in proportion; a resource rebuild,
 measured only by making it.
+
+**Round 3 (the chat and Martín, 2026-10-06): the captures read.** **C1 + C2 — a defect:** every capture of
+RU, US and IN was a plain fill, no interior borders, no coast. The frame carried them
+(`map::session_tests::c1_the_fit_frame_carries_subdivisions`: RU 200 lines at both bands, no blob
+missing); the renderer hid them — commit 7 drew the coast as an edge group of `<use>` clones of the land
+paths, and WebKit styles a `<use>` clone as the original element, so each clone painted the land again,
+over the subdivisions drawn between, with the land's `stroke: none`. Decided: the land is drawn once with
+its hairline on the same path, the subdivisions above it, no `<use>` (`397e515`; the artifact's "edge above
+the subdivisions" would need the land painted twice — 1 410 more nodes for RU, whose commit is the bar's
+critical path — and on one path a subdivision line overlaps the coast by half a hairline where it meets
+it). **C3 (Martín):** the `− fit +` buttons follow the theme — a translucent black plate in Ink, white in
+Sand (`648bdf5`). **C4 (Martín):** "the dark is a bit too dark, the light a bit too light" — three sets per
+theme captured through a debug-only knob (`eb628dd`; `_handover/m4b-palette/`), the pick above; the knob
+and its blocks went with the pick. **C6:** RU at 300 passes the 100 ms bar at 98 ms p90, a 2 % margin — a
+pass recorded as fragile; `raw` and RU's ring retry go to the **top** of M4c's brief, not later.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
