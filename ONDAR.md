@@ -967,6 +967,31 @@ the stylesheets' source. Without the filter the loop drew one frame per animatio
 (56 cycles/s, none dropped); the first-paint figures that remain over the bar are the reply's
 round trip, decomposed under A3.
 
+**A2 — the map follows the dropdown.** The acceptance photo (the US drawn under a Portugal dropdown) was
+the paint driver — `m=paint` selects RU, US, PT, AQ through `map.select` every 1.5 s, past the country
+control, with the panel left on screen. Not a defect; pinned anyway (`Panel.test.tsx`: a change of the
+select reaches `map.select` with the new code and back, killed by the pane ignoring the prop), and
+`map_select` logs `map select code=… lookup=…` so a normal run shows each change.
+
+**A3 — RU's first paint, decomposed (`_handover/m4b-a3-decomp/README.md`).** Step 0 read RU's reply at
+9 ms; the acceptance read 21 for the same 51 797 vertices. Step 0's probe re-run today reads 9 again; the
+app's pull, instrumented, reads the frame at 11 ms where `frame_bench` reads 3.9 in the same dev-opt3
+profile and the probe 4.8 — on the blocking pool and, tried as a synchronous command, on the calling
+thread alike (unchanged; dropped). The frame computed twice in one pull reads 11.8 then 8.6 with dips
+to 4.0; the paint driver's interval between country changes decides it: **100 ms apart (Step 0's
+back-to-back probe) the frame is 6.4 ms and the round trip ~13; 1 500 ms apart (a country change from
+idle, the user's case) 11.4 and ~21.** The idle core scales every stage alike — frame, serialise,
+delivery, parse — so the gap is the core's state, not the thread, the code, the profile, the payload or
+the transport. Consequence: no code path removes it; only less work per frame (`raw`, or RU's ring RDP
+retry) reduces it. And the page's half, found at the re-run: Step 0's probe re-selected one country back
+to back, a no-op DOM update (`commit` 2); a real change of country sets all of RU's 1 410 path `d`
+attributes and WebKit re-parses and re-lays them out — `commit` 26 ms at 300, 20 at 178, the first
+animation frame 20 ms after (the A/B on one binary: RU after RU 7 ms, RU after AQ 26). So the bar's 16 ms
+was measured without the two costs a person's country change pays, and RU from idle after another country
+is **48 ms at 300 and 41 at 178** against 20 / 16.7; US 31 / 31; PT and AQ inside. Neither lever was built;
+the call on the bar, and on building them, is the chat's with the figures. The decomposition's instrument
+stays in the harness (`decomposition::log`, `parse_ms` under `decomp=1`, `period=`).
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
