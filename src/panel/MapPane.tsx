@@ -64,10 +64,11 @@ type Loop = {
 function makeLoop(
   onReply: (r: MapReply, invokeMs: number, parse: { ms: number; bytes: number } | null) => void,
 ): Loop {
-  // The acceptance review's A3: under `m=paint` the reply's parse cost is measured by proxy —
-  // `JSON.parse(JSON.stringify(reply))`, the same object re-parsed — once per drawn reply. It adds
-  // ~its own time to the loop, so never under `m=pan`.
-  const parseProxy = measureMode() === "map" && measureParam("m") === "paint";
+  // The acceptance review's A3: under `m=paint&decomp=1` the reply's parse cost is measured by
+  // proxy — `JSON.parse(JSON.stringify(reply))`, the same object re-parsed — once per drawn reply.
+  // The copy sits in the heap through React's render and inflates `commit_ms` (26 ms for RU where
+  // the clean figure is 7), so the decomposition and the first-paint rows are separate runs.
+  const parseProxy = measureMode() === "map" && measureParam("m") === "paint" && measureParam("decomp") === "1";
   let pending = none();
   let dirty = false;
   let inFlight = false;

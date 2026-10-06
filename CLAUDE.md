@@ -101,7 +101,9 @@ onda/
 │   │                             country change from idle; 100 reproduces Step 0's back-to-back
 │   │                             probe and its hot core, A3; a wheel-sized push every 8 ms from a
 │   │                             timer; the `frame` line carries `commit_ms`, reply → React commit,
-│   │                             and under `m=paint` `parse_ms` / `wire_proxy`); pinned by
+│   │                             and under `m=paint&decomp=1` `parse_ms` / `wire_proxy` — the proxy's
+│   │                             copy inflates `commit_ms`, so the decomposition is its own run);
+│   │                             pinned by
 │   │                             MapPane.test.tsx), panel.module.css; Panel.test.tsx (offline with no
 │   │                             countries list and a favourite stored, the select and ★ stay enabled
 │   │                             — acceptance B and C; no map pane without a band, the platter and
