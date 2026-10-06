@@ -124,14 +124,16 @@ function makeLoop(
 export default function MapPane({ band, country }: Props) {
   const [reply, setReply] = useState<MapReply | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  // the harness's mark: the drawn reply's invoke round trip
-  const invokeMs = useRef<{ seq: number; ms: number } | null>(null);
+  // the harness's marks: the drawn reply's invoke round trip and when it arrived
+  const invokeMs = useRef<{ seq: number; ms: number; at: number } | null>(null);
+  // the harness's `inland=0`: the Ink inland layer left out, to measure its filter's cost alone
+  const inland = measureParam("inland") !== "0";
   const loop = useRef<Loop | null>(null);
   const push = useCallback((f: (i: MapInputs) => void) => loop.current?.push(f), []);
 
   useEffect(() => {
     const l = makeLoop((r, ms) => {
-      invokeMs.current = { seq: r.seq, ms };
+      invokeMs.current = { seq: r.seq, ms, at: performance.now() };
       setReply(r);
     });
     loop.current = l;
@@ -243,6 +245,7 @@ export default function MapPane({ band, country }: Props) {
         report("frame", {
           seq,
           invoke_ms: c.ms,
+          commit_ms: commitAt - c.at,
           raf1_ms: t1 - commitAt,
           raf2_ms: t2 - t1,
           vertices,
@@ -271,20 +274,29 @@ export default function MapPane({ band, country }: Props) {
       return () => timers.forEach(clearTimeout);
     }
     if (m === "pan") {
-      const t = setTimeout(() => {
+      // `cc=` selects the country first (the heavy case is RU); `steps=` zooms (default one `+`);
+      // then input arrives as a trackpad's would — a wheel-sized push every 8 ms from a timer,
+      // between animation frames — while `sampleFrames` reads the rAF cadence and the frames drawn.
+      const cc = measureParam("cc");
+      let feed: ReturnType<typeof setInterval> | undefined;
+      const go = () => {
         zoom(Number(measureParam("steps") ?? "1"));
         setTimeout(() => {
-          // frames drawn during the sample: distinct sequence numbers seen per animation frame
           const seen = new Set<number>();
           const t0 = performance.now();
-          sampleFrames("pan", PAN_DURATION_MS, () => {
+          // 0.6 pt every 8 ms = 75 pt/s: 225 pt over the 3 s, inside D6's 328 pt of room for RU at
+          // one `+`, so the view moves for the whole window (at 2 pt it reached the edge at 1.8 s)
+          feed = setInterval(() => {
             push((i) => {
-              i.pan_pt[0] += 2;
-              i.pan_pt[1] += 1;
+              i.pan_pt[0] += 0.6;
+              i.pan_pt[1] += 0.3;
             });
+          }, 8);
+          sampleFrames("pan", PAN_DURATION_MS, () => {
             seen.add(loop.current?.shownSeq() ?? -1);
           });
           setTimeout(() => {
+            clearInterval(feed);
             const elapsed = performance.now() - t0;
             report("pan_cycles", {
               frames_drawn: seen.size,
@@ -293,8 +305,21 @@ export default function MapPane({ band, country }: Props) {
             });
           }, PAN_DURATION_MS + 200);
         }, 500);
+      };
+      const t = setTimeout(() => {
+        if (cc !== null) {
+          void map.select(cc).then(() => {
+            loop.current?.wake();
+            setTimeout(go, 1_000);
+          });
+        } else {
+          go();
+        }
       }, PAINT_FIRST_MS);
-      return () => clearTimeout(t);
+      return () => {
+        clearTimeout(t);
+        clearInterval(feed);
+      };
     }
     return undefined;
   }, [push, zoom]);
@@ -341,14 +366,16 @@ export default function MapPane({ band, country }: Props) {
                 <path key={i} id={`map-land-${i}`} d={pathOf(s)} fillRule="evenodd" />
               ))}
             </g>
-            <g className={styles.inland} filter="url(#map-inland)">
-              {frame.land.map((_, i) => (
-                <use key={i} href={`#map-land-${i}`} />
-              ))}
-              {frame.neighbours.map((s, i) => (
-                <path key={`n${i}`} d={pathOf(s)} fillRule="evenodd" />
-              ))}
-            </g>
+            {inland && (
+              <g className={styles.inland} filter="url(#map-inland)">
+                {frame.land.map((_, i) => (
+                  <use key={i} href={`#map-land-${i}`} />
+                ))}
+                {frame.neighbours.map((s, i) => (
+                  <path key={`n${i}`} d={pathOf(s)} fillRule="evenodd" />
+                ))}
+              </g>
+            )}
             <g className={styles.subdivisions}>
               {frame.subdivisions.map((l, i) => (
                 <path key={i} d={lineOf(l)} />

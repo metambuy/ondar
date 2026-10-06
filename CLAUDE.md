@@ -92,7 +92,10 @@ onda/
 │   │                             input accumulated between animation frames, one `map_pull` in
 │   │                             flight, a reply drawn only if its `seq` is newer, nothing while
 │   │                             idle; wheel pans with the gesture, a drag pans past 4 pt, negated;
-│   │                             `?measure=map` drivers `m=paint` / `m=pan`; pinned by
+│   │                             `?measure=map` drivers `m=paint` / `m=pan` (`cc=` the country, a
+│   │                             wheel-sized push every 8 ms from a timer; `inland=0` leaves the
+│   │                             Ink filter's layer out, to cost it; the `frame` line carries
+│   │                             `commit_ms`, reply → React commit); pinned by
 │   │                             MapPane.test.tsx), panel.module.css; Panel.test.tsx (offline with no
 │   │                             countries list and a favourite stored, the select and ★ stay enabled
 │   │                             — acceptance B and C; no map pane without a band, the platter and
@@ -165,9 +168,13 @@ onda/
     │   │                         bare-`cargo test` tripwire (see Commands)
     │   ├── measure.rs            dev-only measurement harness (M3b 1a), `#[cfg(debug_assertions)]`
     │   │                         whole: `ONDAR_MEASURE` → `panel.html?measure=…`, `_KEEP_OPEN`,
-    │   │                         `_SEQ=show|shows:<n>` through the production show/hide paths, and
-    │   │                         the `measure_report` command → `measure[<mode>] …` log lines.
-    │   │                         `strings` on a release binary finds no `measure[`
+    │   │                         `_SEQ=show|shows:<n>` through the production show/hide paths,
+    │   │                         `_EXPAND=1` (the production expand one second after the show —
+    │   │                         M4b commit 7, the map band mounts with no hand on the control),
+    │   │                         `_EXPANDED_HEIGHT=<pt>` (`panel::expanded_nominal`: the layout
+    │   │                         laid out as a display that caps there would — 598 is the ANMITE's,
+    │   │                         M4b acceptance), and the `measure_report` command → `measure[<mode>]
+    │   │                         …` log lines. `strings` on a release binary finds no `measure[`
     │   ├── commands/audio.rs     8 thin commands; validate args, send, return
     │   ├── commands/stations.rs  7 thin async commands (list_countries, list_stations, search_stations,
     │   │                         favourites, recents): forward to the stations service's handle and

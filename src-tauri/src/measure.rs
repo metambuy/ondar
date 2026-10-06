@@ -18,6 +18,9 @@
 //! - `ONDAR_MEASURE_EXPAND=1` — with a sequence, the first show is followed one second later by
 //!   `panel::set_expanded(true)`, the production resize path, so the map band mounts with no hand
 //!   on the control (M4b commit 7: the `map` mode's drivers run in the expanded panel).
+//! - `ONDAR_MEASURE_EXPANDED_HEIGHT=<pt>` — the expanded layout's nominal height (`panel.rs`,
+//!   `expanded_nominal`): `598` lays the panel out as the ANMITE caps it, on any display (the M4b
+//!   acceptance's 178 pt band without moving the menu bar). Debug builds only.
 //! - `measure_report`, the page's one command: a log line `measure[<mode>] <kind> <fields>
 //!   t_page_ms=… t_ms=…` stamped with this process's clock, so the page's marks and the panel's
 //!   own log lines share a timeline (`performance.now()` is a different clock, used only for the

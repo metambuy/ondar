@@ -102,6 +102,22 @@ pub fn band_rect(layout_height: f64) -> Option<MapBand> {
 /// display, not a constant, and the page is told the height rather than computing it.
 const EXPANDED_HEIGHT_NOMINAL: f64 = 720.0;
 
+/// The nominal expanded height — or, in a debug build launched with
+/// `ONDAR_MEASURE_EXPANDED_HEIGHT=<pt>`, that value: the measurement harness's synthetic cap
+/// (M4b's acceptance measures the ANMITE's 598 on a display that would give 720; the band's work
+/// depends on the height alone). Read per layout; a release build has no such knob.
+fn expanded_nominal() -> f64 {
+    #[cfg(debug_assertions)]
+    if let Some(h) = std::env::var("ONDAR_MEASURE_EXPANDED_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|h| h.is_finite() && *h > 0.0)
+    {
+        return h;
+    }
+    EXPANDED_HEIGHT_NOMINAL
+}
+
 /// Corner radius of the popover, in **points**: Control Center's, measured on macOS 26.6.2
 /// (25G83) on 2026-09-17 — 7.6 pt by a calibrated threshold fit and 8.3 pt by a differential
 /// match, the spread being backdrop-contrast dependent (M2c Step 0, R9). Re-measure if the OS
@@ -1443,10 +1459,10 @@ fn layout(
             let icon_bottom = (tray.y + tray.height) / d.scale;
             let usable =
                 (d.work_area.y + d.work_area.height - EDGE_MARGIN) - (icon_bottom + TRAY_GAP);
-            let h = EXPANDED_HEIGHT_NOMINAL.min(usable);
+            let h = expanded_nominal().min(usable);
             (h, h > COLLAPSED_HEIGHT)
         }
-        None => (EXPANDED_HEIGHT_NOMINAL, true),
+        None => (expanded_nominal(), true),
     };
     let (state, height) = match want {
         PanelHeight::Expanded if expandable => (PanelHeight::Expanded, expanded_height),
@@ -1464,7 +1480,7 @@ fn layout(
             accepted,
             resolution,
         },
-        capped: state == PanelHeight::Expanded && height < EXPANDED_HEIGHT_NOMINAL,
+        capped: state == PanelHeight::Expanded && height < expanded_nominal(),
         expandable,
     }
 }
