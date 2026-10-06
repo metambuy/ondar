@@ -992,6 +992,21 @@ is **48 ms at 300 and 41 at 178** against 20 / 16.7; US 31 / 31; PT and AQ insid
 the call on the bar, and on building them, is the chat's with the figures. The decomposition's instrument
 stays in the harness (`decomposition::log`, `parse_ms` under `decomp=1`, `period=`).
 
+**Round 2 (the chat, 2026-10-06): the bar re-derived, and the levers parked for M4c.** The 20 / 16.7 ms
+bars came from Step 0's hot, no-op instrument and measured a quantity no country change has — the chat's
+error. The bar is now **a country change, from idle (1.5 s cadence), to the painted frame, ≤ 100 ms p90**, at
+178 and 300, for RU, US, PT, AQ (the response limit for "instantaneous": Card, Moran & Newell 1983;
+Nielsen 1993), the warm figures reported beside it (`_handover/m4b-acceptance.md`). **Levers (2) and (3)
+are not built in M4b; they are the first levers if M4c's station layer pushes a country change past the
+bar:** (2) `raw` — Step 0's binary transport (an `f32` ring stream, 0.55× the JSON's bytes; the probe's
+encoder and the page's decoder are in `_handover/m4b-step0/probe.patch`): hot, the reply fell 9 → 6 ms at
+RU; from idle the decomposition's estimate is ~6–7 ms off RU's 22 ms reply and the page's parse (3) traded
+for its own build (4–5), **the 26 ms commit untouched** — ~44 ms at 300 for 48; (3) RU's mainland ring RDP
+retry at ε/2, ε/4, ε/8 (M4a's stated rule, not taken then: the ring is 24 183 of RU's 51 797 vertices and
+falls to VW because its RDP result is not simple): a retry that lands simple cuts the vertex count and
+with it every term — frame, serialise, parse, build and the DOM update — in proportion; a resource rebuild,
+measured only by making it.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
