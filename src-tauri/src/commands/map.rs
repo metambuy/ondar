@@ -10,11 +10,13 @@ use crate::map::{self, MapInputs, MapReply, MapSessionState, MapState, Step};
 use crate::panel::PanelState;
 
 /// The page's selected country changed (or the map pane mounted): the session returns to the
-/// fit and the next pull frames.
+/// fit and the next pull frames. One log line per call — `map select code=… lookup=…` — so a
+/// normal run (no measure mode) shows the map following the dropdown (acceptance review A2).
 #[tauri::command]
 pub fn map_select(state: State<'_, MapState>, session: State<'_, MapSessionState>, code: String) {
     let store = state.0.get().and_then(|s| s.as_ref());
-    session.0.lock().unwrap().select(store, &code);
+    let lookup = session.0.lock().unwrap().select(store, &code);
+    log::info!("map select code={code} lookup={lookup}");
 }
 
 /// One pull per animation frame while the page has input pending (or a band / country change):

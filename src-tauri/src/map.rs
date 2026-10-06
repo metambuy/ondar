@@ -124,7 +124,9 @@ impl Session {
 
     /// A country was selected (or re-selected): the view returns to the fit, the pending inputs
     /// are dropped, and the next pull frames. `store` is `None` while the resource is unavailable.
-    pub fn select(&mut self, store: Option<&Store>, code: &str) {
+    /// Returns what the lookup found, as the command's log line names it (`country`, `no_map`,
+    /// `unavailable`) — the one line a normal run leaves per dropdown change (acceptance review A2).
+    pub fn select(&mut self, store: Option<&Store>, code: &str) -> &'static str {
         self.selected = match store.map(|s| s.lookup(code)) {
             None => Selected::None,
             Some(Lookup::NoMap) => Selected::NoMap,
@@ -134,6 +136,11 @@ impl Session {
         self.pending = MapInputs::default();
         self.framed = None;
         self.seq = self.seq.wrapping_add(1);
+        match self.selected {
+            Selected::None => "unavailable",
+            Selected::NoMap => "no_map",
+            Selected::Country(_) => "country",
+        }
     }
 
     /// Fold `inputs` into the pending set (sums; `fit` sticks).
@@ -523,7 +530,7 @@ mod session_tests {
     fn the_three_states_without_a_frame() {
         let s = store();
         let mut ses = Session::default();
-        ses.select(None, "PT");
+        assert_eq!(ses.select(None, "PT"), "unavailable");
         let r = ses
             .pull_sync(None, band(178.0), inputs([5.0, 5.0], 1, false))
             .unwrap();
@@ -537,12 +544,12 @@ mod session_tests {
                 .seq,
             1
         );
-        ses.select(Some(s), "XX");
+        assert_eq!(ses.select(Some(s), "XX"), "no_map");
         let r = ses
             .pull_sync(Some(s), band(178.0), MapInputs::default())
             .unwrap();
         assert_eq!((r.status, r.seq), (MapStatus::NoMap, 2));
-        ses.select(Some(s), "PT");
+        assert_eq!(ses.select(Some(s), "PT"), "country");
         let r = ses
             .pull_sync(Some(s), None, inputs([5.0, 5.0], 1, false))
             .unwrap();
