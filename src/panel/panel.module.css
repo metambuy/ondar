@@ -173,3 +173,119 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* The map band (M4b commit 7, B1): a rounded platter the drawn sea fills, its size the band Rust
+   laid out (`--map-band-*`, set by `MapPane.tsx` from `PanelLayout.band`), the last child of the
+   panel so it sits at the band's rect (the body above it is flexible). */
+.platter {
+  position: relative;
+  flex: none;
+  width: var(--map-band-width);
+  height: var(--map-band-height);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  background: var(--map-sea);
+}
+
+.map {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The layers, in draw order (the artifact's table): neighbours, the country's coast tone, Ink's
+   inland tone (hidden under Sand, where coast and land are one colour), subdivisions, the
+   country's hairline edge above them, then the insets. Every colour and width is a token. */
+.neighbours path {
+  fill: var(--map-neighbour);
+  stroke: var(--map-neighbour-stroke);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.landCoast path {
+  fill: var(--map-land-coast);
+  stroke: none;
+}
+
+.inland use,
+.inland path {
+  fill: var(--map-land);
+  stroke: var(--map-land);
+  stroke-width: var(--map-stroke);
+}
+
+@media (prefers-color-scheme: light) {
+  .inland {
+    display: none;
+  }
+}
+
+.subdivisions path {
+  fill: none;
+  stroke: var(--map-sub);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.landEdge use {
+  fill: none;
+  stroke: var(--map-edge);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.insetBox {
+  fill: var(--map-sea);
+  stroke: var(--map-inset-stroke);
+  stroke-width: var(--map-stroke);
+  rx: var(--map-inset-radius);
+}
+
+.insetLand path {
+  fill: var(--map-land-coast);
+  stroke: var(--map-edge);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.insetLabel {
+  font: var(--text-map-label);
+  fill: var(--map-label);
+}
+
+/* "No map for this country" / "Map unavailable": one line on the platter. */
+.mapMessage {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: var(--text-subheadline);
+  color: var(--color-label-secondary);
+  pointer-events: none;
+}
+
+/* C1: the `− fit +` row at the rect Rust reserved (`--map-controls-*` from the layout). Native
+   buttons, so they look like the system's; the row's box is the reserved one. */
+.controls {
+  position: absolute;
+  left: var(--map-controls-x);
+  top: var(--map-controls-y);
+  width: var(--map-controls-w);
+  height: var(--map-controls-h);
+  display: flex;
+  gap: var(--space-1);
+  align-items: stretch;
+}
+
+.controls > button {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font: var(--text-callout);
+}

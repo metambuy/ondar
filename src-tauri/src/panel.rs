@@ -73,6 +73,10 @@ pub struct MapBand {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    /// The `− fit +` row's rect inside the band, `[x, y, w, h]` from the band's top-left
+    /// (`ondar_map::rules::controls_rect`, C1 / review P5): the page places its buttons there and
+    /// types no number of its own (M4b commit 7).
+    pub controls: [f64; 4],
 }
 
 /// The band for a layout height: `[16, 404, 328, h − 420]` when that height is at least
@@ -84,6 +88,11 @@ pub fn band_rect(layout_height: f64) -> Option<MapBand> {
         y: BAND_Y,
         width: BAND_WIDTH,
         height,
+        controls: ondar_map::rules::controls_rect(&ondar_map::rules::Pane {
+            width: BAND_WIDTH,
+            height,
+            padding: ondar_map::rules::BAND_PADDING_PT,
+        }),
     })
 }
 
@@ -2314,8 +2323,18 @@ mod tests {
                 x: 16.0,
                 y: 404.0,
                 width: 328.0,
-                height: 140.0
+                height: 140.0,
+                controls: [246.0, 108.0, 74.0, 24.0],
             })
+        );
+        // the controls' row inside the band: 8 pt from its bottom and right (C1, review P5)
+        assert_eq!(
+            band_rect(598.0).map(|b| b.controls),
+            Some([246.0, 146.0, 74.0, 24.0])
+        );
+        assert_eq!(
+            band_rect(720.0).map(|b| b.controls),
+            Some([246.0, 268.0, 74.0, 24.0])
         );
         assert_eq!(band_rect(561.0).map(|b| b.height), Some(141.0));
         assert_eq!(band_rect(598.0).map(|b| b.height), Some(178.0));

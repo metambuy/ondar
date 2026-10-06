@@ -9,6 +9,7 @@ import type { PanelLayout, PanelView, Station } from "../api";
 import { measureMode, measureParam, report, reportBlocks } from "../measure";
 import About from "./About";
 import CountryControl from "./CountryControl";
+import MapPane from "./MapPane";
 import NowPlaying from "./NowPlaying";
 import styles from "./panel.module.css";
 import type { ListSource } from "./source";
@@ -249,10 +250,11 @@ export default function Panel() {
         </div>
       )}
 
-      {showExpandedPane && (
-        <section aria-label="Expanded pane" className={styles.section}>
-          <p className={styles.muted}>Expanded pane. The map (M4) and the equalizer (M5) go here.</p>
-        </section>
+      {/* The map band (M4b): mounted only while the layout has a band and the transport pane is
+          up, at the rect Rust laid out; it shows the selected country (★ keeps the last one).
+          Mounting is what returns it to the fit after a collapse (Rust's `map_select`). */}
+      {showExpandedPane && view === "transport" && layout?.band != null && (
+        <MapPane band={layout.band} country={country} />
       )}
     </main>
   );

@@ -5,4 +5,10 @@
  * inside [`PanelLayout`] as `band`, `None` when the layout has no band — the collapsed height, or
  * an expanded height whose band would be under `BAND_FLOOR`.
  */
-export type MapBand = { x: number, y: number, width: number, height: number, };
+export type MapBand = { x: number, y: number, width: number, height: number, 
+/**
+ * The `− fit +` row's rect inside the band, `[x, y, w, h]` from the band's top-left
+ * (`ondar_map::rules::controls_rect`, C1 / review P5): the page places its buttons there and
+ * types no number of its own (M4b commit 7).
+ */
+controls: [number, number, number, number], };

@@ -55,6 +55,28 @@
      report R9). The same number is `PANEL_CORNER_RADIUS` in `src-tauri/src/panel.rs`, and a
      shell test reads this file and fails if the two disagree. */
   --radius-panel: 8px;
+
+  /* The drawn map, Sand by day (M4b commit 7): the "Ondar map style" artifact's specification
+     table (v3, 2026-09-24; ONDAR.md's style line), sRGB. DECISIONS of the design round, not
+     measurements of the system. The sea fills the platter; the country is one flat fill with a
+     hairline edge drawn above the subdivisions; neighbours a paler fill with their own stroke;
+     an inset box is sea-filled with a 0.5 pt frame and a radius of 4, its label 8 pt in the
+     label colour, bottom-right (the artifact's row "Inset labels: 8 pt name"). Under Sand the
+     coast tone equals the land tone (one fill); Ink's two tones are below. */
+  --map-sea: #D3E0E3;
+  --map-land: #E6D5B1;
+  --map-land-coast: #E6D5B1;
+  --map-neighbour: #EFE9DC;
+  --map-neighbour-stroke: #D8CEBA;
+  --map-edge: #8F7A55;
+  --map-sub: #B09C76;
+  --map-inset-stroke: #B7AC98;
+  --map-label: #6E6454;
+  /* 0.5 pt hairlines (edge, neighbour stroke, subdivisions, inset frame) and the inset box's
+     radius: the artifact's. */
+  --map-stroke: 0.5px;
+  --map-inset-radius: 4px;
+  --text-map-label: 400 8px/10px var(--font-system);
 }
 
 /* Dark appearance (NSAppearanceNameDarkAqua), measured in the same run. Defined in the same
@@ -69,5 +91,19 @@
     --color-label-quaternary: rgb(255 255 255 / 0.098);
     --color-separator: rgb(255 255 255 / 0.098);
     --color-accent: rgb(0 122 255);
+
+    /* Ink by night (the same artifact): the land is two-tone — the coast base `--map-land-coast`
+       (warm, #6B5E47) with the inland tone `--map-land` laid over it by an erode-7 + blur-5 of
+       land ∪ neighbours (`MapPane.tsx`'s filter, displayed under Ink only), so land borders stay
+       cool; neighbours dark; the inset frame and label dim. */
+    --map-sea: #121A25;
+    --map-land: #524A3E;
+    --map-land-coast: #6B5E47;
+    --map-neighbour: #262C34;
+    --map-neighbour-stroke: #333A43;
+    --map-edge: #A89574;
+    --map-sub: #7E7159;
+    --map-inset-stroke: #2E3743;
+    --map-label: #8C8574;
   }
 }

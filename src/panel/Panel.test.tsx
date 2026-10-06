@@ -5,6 +5,10 @@
 // select is disabled while the countries are missing (the code before this test), if the ★
 // toggle is (finding C moved the stores behind it), or if the favourite never reaches the list.
 //
+// Also (M4b commit 7): with no band in the layout no map pane is mounted, and with a band the
+// platter is mounted at the band's size with the `− fit +` row at the rect Rust gave (fails if
+// the pane mounts on a collapsed layout, or if the page sizes the platter itself).
+//
 // `../api` is mocked whole: nothing reaches Tauri.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +34,7 @@ const orbital: Station = {
   last_check_ok: true,
 };
 
+// Mutable: the band test sets an expanded layout with a band before rendering.
 const layout: PanelLayout = {
   transition: "show",
   generation: 0,
@@ -38,8 +43,9 @@ const layout: PanelLayout = {
   width: 360,
   height: 420,
   expandable: true,
-      band: null,
+  band: null,
 };
+const collapsed = { ...layout };
 
 const offline = { code: "stations", message: "radio-browser unreachable after 3 attempt(s) in 3.01s" };
 
@@ -63,6 +69,8 @@ vi.mock("../api", () => {
     },
     app: { info: () => Promise.resolve({ name: "Ondar", version: "0" }) },
     measure: { report: () => Promise.resolve() },
+    map: { select: () => Promise.resolve(), pull: () => Promise.resolve(null) },
+    onPanelLayout: listener,
     stations: {
       listCountries: () => Promise.reject(offline),
       listStations: () => Promise.reject(offline),
@@ -71,7 +79,6 @@ vi.mock("../api", () => {
       addFavourite: () => Promise.resolve(),
       removeFavourite: () => Promise.resolve(true),
     },
-    onPanelLayout: listener,
     onState: listener,
     onStreamInfo: listener,
     onMetadata: listener,
@@ -81,7 +88,10 @@ vi.mock("../api", () => {
   };
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  Object.assign(layout, collapsed);
+});
 
 // Every mocked promise settles on a microtask; one flush lets the effects' replies land.
 const settle = () => act(async () => {});
@@ -101,5 +111,27 @@ describe("Panel offline", () => {
     expect(star.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("★ ORBITAL")).toBeTruthy();
     expect(screen.getByText("1 favourites · 0 recents")).toBeTruthy();
+  });
+
+  it("mounts no map pane without a band, and the platter with the controls at the band's rect with one", async () => {
+    render(<Panel />);
+    await settle();
+    expect(document.querySelector("[data-measure='map_band']")).toBeNull();
+    cleanup();
+    Object.assign(layout, {
+      state: "expanded",
+      height: 598,
+      band: { x: 16, y: 404, width: 328, height: 178, controls: [246, 146, 74, 24] },
+    });
+    render(<Panel />);
+    await settle();
+    const platter = document.querySelector("[data-measure='map_band']");
+    expect(platter).not.toBeNull();
+    expect(screen.getByRole("group", { name: "Zoom" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Zoom in" })).toBeTruthy();
+    const root = document.documentElement.style;
+    const px = (v: number) => `${v}px`;
+    expect(root.getPropertyValue("--map-band-height")).toBe(px(178));
+    expect(root.getPropertyValue("--map-controls-x")).toBe(px(246));
   });
 });
