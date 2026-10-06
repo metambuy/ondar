@@ -114,7 +114,9 @@ onda/
 │   ├── styles/tokens.css         THE only file with colour/size literals, light + dark together
 │   │                             (the map's Sand and Ink palettes from the "Ondar map style" artifact
 │   │                             v3 — `--map-sea`, `--map-land` (one flat tone per theme since A1,
-│   │                             2026-10-06), neighbours, edge,
+│   │                             2026-10-06), neighbours, edge, the `− fit +` buttons' plate and text
+│   │                             (`--map-controls-*`, dark translucent in Ink, light in Sand — round 3
+│   │                             C3),
 │   │                             subdivisions, inset frame and label, the 0.5 pt hairline, the 8 pt
 │   │                             label font — since M4b commit 7)
 │   ├── measure.ts                the page half of the dev-only measurement harness (M3b 1a): inert
@@ -540,7 +542,7 @@ until those 28 are accounted for. `cargo test --workspace -- --list | grep -c ':
 authority — the expression is part of the number, since `--list` also prints a summary line.
 
 **The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
-(vitest, jsdom) runs `src/**/*.test.tsx` — **26** today: 9 in `MapPane.test.tsx` (M4b commit 7: one
+(vitest, jsdom) runs `src/**/*.test.tsx` — **27** today: 10 in `MapPane.test.tsx` (M4b commit 7: one
 pull in flight with the input that arrives meanwhile summed; a reply not newer than the frame on
 screen not drawn, a newer one drawn; a `null` reply leaves the paths and an idle pane pulls nothing;
 a drag under 4 pt sends nothing, over it the delta negated; `+` / `−` / `fit` reach `zoom_steps` and
@@ -548,7 +550,9 @@ a drag under 4 pt sends nothing, over it the delta negated; `+` / `−` / `fit` 
 controls at the rects given; a theme change pulls nothing; one flat land tone per theme — no `<filter>`, no filtered element,
 no `filter` or `opacity` in the map rules, no coast token, recorded failing on `5d64217` — A1,
 2026-10-06; the land drawn once with its hairline and the subdivisions above it — no `<use>`, the
-land rule strokes `--map-edge`, recorded failing on `01c87e6` — round 3 C1 + C2), 12 in `StationList.test.tsx` (the
+land rule strokes `--map-edge`, recorded failing on `01c87e6` — round 3 C1 + C2; the controls follow the
+theme — the buttons' rule takes `--map-controls-bg` / `-fg` and the three tokens exist under both the
+light root and the dark block, recorded failing on `397e515` — C3), 12 in `StationList.test.tsx` (the
 wrong-source guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show
 re-requests, ★ on lists favourites then recents with the country reply left behind dropped, a ★
 reply landing after ★ off dropped, `recents:updated` and a favourite toggle re-request only the ★
@@ -566,7 +570,7 @@ map pane without a band, the platter with the `− fit +` row at the band's rect
 acceptance review's A2, the map follows the dropdown — a change of the country select reaches
 `map.select` with the new code and back, killed with the pane's select effect ignoring the prop)
 — 3 there.
-Every "tests" figure in this project is written as the two numbers, `415 + 26`, never their sum:
+Every "tests" figure in this project is written as the two numbers, `415 + 27`, never their sum:
 the two runners count different things and neither can see the other's.
 
 ## Commands

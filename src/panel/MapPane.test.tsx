@@ -27,7 +27,11 @@
 //    element, so the edge group's clones of the land paths painted the land fill again, over the
 //    subdivisions, with `stroke: none`: no interior borders, no coast, in every capture — the
 //    land rule strokes `--map-edge`, and the subdivisions group follows the land group (fails on
-//    the code before it: a `<use>` per land path and `stroke: none` on the land).
+//    the code before it: a `<use>` per land path and `stroke: none` on the land);
+// 11. the controls follow the theme (round 3, C3, Martín): the `− fit +` buttons take their background,
+//    text and border from `--map-controls-*` tokens defined under both the light root and the dark
+//    block — dark translucent in Ink, light in Sand (fails on the code before it: the native button
+//    look, no such tokens).
 import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -243,6 +247,20 @@ describe("MapPane", () => {
     const landRule = panelCss.slice(panelCss.indexOf(".land path {"), panelCss.indexOf("}", panelCss.indexOf(".land path {")));
     expect(landRule).toMatch(/stroke:\s*var\(--map-edge\)/);
     expect(landRule).not.toMatch(/stroke:\s*none/);
+  });
+
+  it("11. the controls follow the theme", async () => {
+    const panelCss = readFileSync("src/panel/panel.module.css", "utf8");
+    const start = panelCss.indexOf(".controls > button {");
+    const rule = panelCss.slice(start, panelCss.indexOf("}", start));
+    expect(rule).toMatch(/background:\s*var\(--map-controls-bg\)/);
+    expect(rule).toMatch(/color:\s*var\(--map-controls-fg\)/);
+    const tokens = readFileSync("src/styles/tokens.css", "utf8");
+    const dark = tokens.indexOf("prefers-color-scheme: dark");
+    for (const t of ["--map-controls-bg:", "--map-controls-fg:", "--map-controls-stroke:"]) {
+      expect(tokens.slice(0, dark)).toContain(t);
+      expect(tokens.slice(dark)).toContain(t);
+    }
   });
 
   it("8. a theme change pulls nothing", async () => {

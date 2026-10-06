@@ -75,6 +75,11 @@
   --map-sub: #B09C76;
   --map-inset-stroke: #B7AC98;
   --map-label: #6E6454;
+  /* The `− fit +` buttons on the band (round 3, C3): a light translucent plate by day, dark by night
+     (below); the text in the panel's ink, the border a hairline of the opposite tone. */
+  --map-controls-bg: rgb(255 255 255 / 0.72);
+  --map-controls-fg: #3B3630;
+  --map-controls-stroke: rgb(0 0 0 / 0.12);
   /* 0.5 pt hairlines (edge, neighbour stroke, subdivisions, inset frame) and the inset box's
      radius: the artifact's. */
   --map-stroke: 0.5px;
@@ -106,5 +111,8 @@
     --map-sub: #7E7159;
     --map-inset-stroke: #2E3743;
     --map-label: #8C8574;
+    --map-controls-bg: rgb(0 0 0 / 0.45);
+    --map-controls-fg: #E8E2D6;
+    --map-controls-stroke: rgb(255 255 255 / 0.14);
   }
 }
