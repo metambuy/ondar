@@ -1026,6 +1026,39 @@ theme captured through a debug-only knob (`eb628dd`; `_handover/m4b-palette/`), 
 and its blocks went with the pick. **C6:** RU at 300 passes the 100 ms bar at 98 ms p90, a 2 % margin — a
 pass recorded as fragile; `raw` and RU's ring retry go to the **top** of M4c's brief, not later.
 
+### M4b: built and measured (2026-10-06)
+
+**What shipped** (branch `m4b`, `f7a3fd8..06a96a8`, each commit pushed alone, CI green): the band — the
+expanded panel's extra height, `[16, 404, 328, h − 420]` from 560 up, 178 on the ANMITE and 300 uncapped,
+carried on every `PanelLayout` with the `− fit +` row's rect inside it; coverage for every band 140..=300 and
+I1's per-band inset scales in the resource (format v2, 2 852 927 B, `e003f07e…`, +5.2 % over M4a's; Hawaii
+dropped below 274, Svalbard 225–257, both decided); the view session in Rust (`map::Session`: select,
+pull, fit → zoom steps → pan, `clamp_view`), `map_select` / `map_pull` with replies that carry `seq`; the
+renderer — a rounded platter the sea fills, one `<path>` per shape in three layers (neighbours; the land
+with its hairline on the same path; subdivisions above it) and the insets with whole labels, Sand and Ink
+by CSS alone, the pull loop (input accumulated between animation frames, one pull in flight, a reply drawn
+only if newer), wheel and drag pan, the `− fit +` row themed. Zoom is the controls alone: the native pinch
+never reached the panel (the spike, above). The palette is Martín's pick at round 3.
+
+**Measured** (`_handover/m4b-acceptance.md`; S1's instrument, the built-in display, the 178 band by the
+harness's height knob, Ink): the band exact at both heights; `band_sweep` 0 missing blobs at every fit and
+over 711 850 D6 views, 0 insets dropped at 300 and Hawaii alone at 178, every box ≥ 12 pt from the source
+land and ≥ 11.7 from the drawn; the heavy case (RU at one `+`) at one frame per animation frame — 56
+cycles/s, none dropped, no transform fallback; and the bar, re-derived at round 2 — **a country change from
+idle (1.5 s cadence) to the painted frame ≤ 100 ms p90** — on the final build: **RU 99 / 82 ms at 300 / 178,
+US 76 / 65, PT 34 / 31, AQ 33 / 44**, all eight under, RU at 300 by 1 ms (fragile — C6). `Ondar.app` 10 744 KiB
+(M4a 10 576); the release binary's `strings` carries no harness. Tests **415 + 27**.
+
+**What the acceptance taught, in order.** The Ink two-tone land's SVG filter cost ~90 ms a paint and went
+(A1). The bar's provenance was Step 0's hot, no-op instrument: a country change from idle pays an idle core
+(every stage ~2×) and a real DOM update (26 ms for RU's 1 410 paths) that the probe's back-to-back
+re-select of one country never paid (A3) — the bar was re-derived from the response limit, not fitted. A
+`<use>` clone takes the original's style in WebKit, which hid the subdivisions and the coast until round 3
+(C1 + C2). The controls follow the theme (C3); the palette is lifted by night and deepened by day (C4).
+
+**Carried to M4c:** `raw` and RU's ring RDP retry at the top of the brief (C6); the station layer itself.
+Next: `/code-review` on Fable, `f7a3fd8..HEAD`, merge criterion no crash and no behaviour finding.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
