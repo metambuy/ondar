@@ -199,7 +199,8 @@ from a bundled resource. The satellite map was reversed 2026-09-24 and the rever
       branch `m4a`, ONDAR.md "M4a: built and measured")
 
 **4b — IPC and the SVG renderer, with pan and zoom** (Step 0 2026-10-02,
-`_handover/m4b-step0-report.md`; brief `m4b-brief.md`; plan `m4b-plan.md`, reviewed P1–P6)
+`_handover/m4b-step0-report.md`; brief `m4b-brief.md`; plan `m4b-plan.md`, reviewed P1–P6) —
+**done, merged 2026-10-07** (`29f1582`, tagged `m4b-done`)
 
 - [x] Transport `json` with `ts-rs` types (Step 0 rule C: RU at fit 14 ms invoke → commit at the
       real pane; `path` / `raw` save ≤ 4 ms for a hand-written codec) — built (commits 6–7); the
@@ -228,14 +229,24 @@ from a bundled resource. The satellite map was reversed 2026-09-24 and the rever
 - [x] D7 kept: insets at the fit view only; `fit` is the return route
 - [x] The list stays the navigation; the map is never the only route to a station
 
-**4c — Stations**
+**4c — Stations** (brief `m4c-brief.md`; plan `m4c-plan.md`; Step 0 2026-10-07,
+`_handover/m4c-step0-report.md`, decisions S1–S4 in ONDAR.md "M4c: Step 0 and its decisions")
 
+- [ ] The bar's levers first, every deciding row 60 runs: the neighbours one rung coarser (own land
+      and insets capped at level 4) and RU's ring RDP retry in one rebuild; one path per layer
+      dropped; `raw` only if the final row with dots reads RU at 300 above 90 ms p90
 - [ ] Dots gathered by 10 km ground distance, radius `min(6, 2.5 + 0.6·ln n)` pt, no numbers
-- [ ] `map_hit` (a click on a dot plays), the playing dot marked
+- [ ] The station work off the bar's path: `map_select` frames the land at once, the dots follow
+      (`map:changed`); select → dots painted ≤ 150 ms p90
+- [ ] `map_hit`: a click on a dot **filters the list** to its stations, never plays; a chip clears
+      the filter; **Esc clears the filter if one is set, otherwise hides the panel**; the playing
+      dot marked
+- [ ] Hover shows the count and the region label (radio-browser's `state`, carried by `Station`,
+      cache v3) — only if hover reaches the key panel (the positive control first)
 - [ ] Coordinates from radio-browser's `geo` only
-- [ ] **Step 0's R6, for its brief:** a station more than 25 km outside every part of its
-      country is not drawn (PT's two Brazilian stations and the Zürich one are the cases), and
-      a country with 0 geo stations shows a "no coordinates" state (MT)
+- [ ] **Step 0's R6, for its brief:** a dot more than 25 km outside every part of its country is
+      not drawn (PT's two Brazilian stations and the Zürich one are the cases), and a country
+      with 0 geo stations shows a "no coordinates" state (MT)
 
 **Exit:** PT shows the mainland with the Azores and Madeira insets; RU fits at ~28 km/pt with
 its 86 subdivisions and zooms to 1.5 km/pt; the map never requests the network; the installed

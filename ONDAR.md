@@ -1,6 +1,8 @@
 # Ondar — project document
 
-*Last updated: 2026-10-07 (the CLAUDE.md rewrite on branch `claude-md`: area rules in
+*Last updated: 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
+and the chat's decisions S1–S4 — see "M4c: Step 0 and its decisions"; round 2's ring figure
+corrected). Previously 2026-10-07 (the CLAUDE.md rewrite on branch `claude-md`: area rules in
 `.claude/rules/`, the test table moved into each test's doc comment, no current test count
 stored anywhere — see "Bare `cargo test` skips the engine", the 2026-10-07 paragraph).
 Previously 2026-10-05 (M4b on branch `m4b`: the pinch spike measured and reverted — "M4b: the pinch
@@ -1009,8 +1011,10 @@ bar:** (2) `raw` — Step 0's binary transport (an `f32` ring stream, 0.55× the
 encoder and the page's decoder are in `_handover/m4b-step0/probe.patch`): hot, the reply fell 9 → 6 ms at
 RU; from idle the decomposition's estimate is ~6–7 ms off RU's 22 ms reply and the page's parse (3) traded
 for its own build (4–5), **the 26 ms commit untouched** — ~44 ms at 300 for 48; (3) RU's mainland ring RDP
-retry at ε/2, ε/4, ε/8 (M4a's stated rule, not taken then: the ring is 24 183 of RU's 51 797 vertices and
-falls to VW because its RDP result is not simple): a retry that lands simple cuts the vertex count and
+retry at ε/2, ε/4, ε/8 (M4a's stated rule, not taken then: the ring falls to VW because its RDP result is
+not simple; *corrected 2026-10-07:* "24 183 of RU's 51 797" compared the ring's input vertices with the
+frame's — in the frame it is at most its stored 11 114 of 51 797, ~21 %, and the neighbours hold 37 486, 72 %,
+M4c Step 0 (a); `_handover/m4b-a3-decomp/README.md` § 3 stands as the dated record): a retry that lands simple cuts the vertex count and
 with it every term — frame, serialise, parse, build and the DOM update — in proportion; a resource rebuild,
 measured only by making it.
 
@@ -1060,7 +1064,70 @@ re-select of one country never paid (A3) — the bar was re-derived from the res
 (C1 + C2). The controls follow the theme (C3); the palette is lifted by night and deepened by day (C4).
 
 **Carried to M4c:** `raw` and RU's ring RDP retry at the top of the brief (C6); the station layer itself.
-Next: `/code-review` on Fable, `f7a3fd8..HEAD`, merge criterion no crash and no behaviour finding.
+**Reviewed and merged (2026-10-07):** an OCR run (`glm-5.2`, the exact range `f7a3fd8..c4b5df0`, complete)
+gave 14 findings, triaged against the code as 0 crash and 0 behaviour (`_handover/m4b-ocr-triage-2026-10-07.md`),
+so the merge criterion held with no fix round; **merged `29f1582`, tagged `m4b-done`**. The latent ones (the
+`format.rs` table minimums, the band-floor subtraction, `--allow-*` with `--out`, `MAY_DROP_AT_178` by label,
+`no_band` without an arm) go to M4c's housekeeping commit.
+
+### M4c: Step 0 and its decisions (2026-10-07)
+
+**The brief and the plan** (`_handover/m4c-brief.md`, `_handover/m4c-plan.md`, reviewed with five
+amendments): the bar's levers first, then the station layer. Martín's decisions for the layer: a dot
+click **filters the list** to the dot's stations, never plays, with a chip that clears it (decision 3);
+hover shows the count and the region label from radio-browser's `state`, which `Station` and the cache
+(v3) carry (decision 7). Settled at the plan: **Esc clears the dot filter if one is set, otherwise
+hides the panel** — the page decides, `panel_escape` is unchanged.
+
+**Step 0 measured** (`_handover/m4c-step0-report.md`, Opus 5.5; logs, patches and scripts in
+`_handover/m4c-step0/`). RU's frame at the 300 band's fit is 51 797 vertices, of which the **neighbours
+hold 37 486 (72 %)**, the own land 12 770, the subdivisions 1 541 (`frame_bench --band`, whose layer sum
+equals `stats.vertices`). On the bar row (20 runs, RU at 300, median / p90 ms):
+
+| lever | row against its own control | invoke + commit median | bytes |
+|---|---|---|---|
+| (c) the rung: neighbours one ladder level coarser, a new 48 km/pt top | 80 / 94 → 80 / 83 | 48 → 42 | +158 819 |
+| (b) RDP retried at ε/2, ε/4, ε/8 before VW | 79 / 82 → 81 / 94 | 50 → 49 | −142 130 |
+| (e) one `<path>` per layer | 79 / 82 → 80 / 84 | 50 → 44, the first frame +6 | 0 |
+| `raw` | not built | — | — |
+
+(c)'s worst border gap is 0.66 pt (US–CA at 178) against 0.50 on the shipped file; Martín judged the
+captures of both fine. (b) leaves RU's own mainland ring at VW's 11 114 at 24 km/pt (no retry down to
+ε/8 lands simple there) and lands it at levels 1–3. **The same work's 20-run p90 moved ~12 ms between two
+builds** (79 / 82 against 80 / 94), as large as any lever. (g): the station work done inside `map_select`
+(the cached list's read, the gathering, a per-station locate) added ~11 ms to RU's row (83 / 95 → 94 /
+102) and read up to 28 ms p90 alone (US); a per-dot locate brings it to 2–7.5 ms p90. (f) hover was not
+measured: synthetic pointer input never reached the window server, and Martín's hand run logged no
+pointer line at all, not even `pointermove` — the panel had resigned key 1 s after showing.
+
+**The chat's decisions** (`_handover/m4c-step0-decisions-2026-10-07.md`):
+
+- **S1 — the instrument: 60 runs.** Every bar row that decides something is 60 runs per country and
+  band. The bar (≤ 100 ms p90; RU, US, PT, AQ at 178 and 300) and the margin (RU at 300 ≤ 90 ms p90)
+  stand, read on 60 runs. A lever is kept iff, on one binary, its invoke + commit median falls and
+  its 60-run p90 does not rise.
+- **S2 — the levers.** **(c) is built, with the own land and the insets capped at level 4** (the old
+  top): a neighbours-only change, `golden-insets.tsv` and `golden-fit.tsv` byte-identical, Alaska at
+  level 4; level 5 stored only for units some frame draws as a neighbour; `band_sweep` still 0 missing
+  blobs at every fit and over D6's views. **(b) ships in the same rebuild, for bytes** (its −142 130 B
+  nearly offsets (c)'s +158 819; M4a's stated rule, never taken); RU's own mainland ring stays VW at
+  24 km/pt; its look is judged in the acceptance captures. **(e) is dropped** (the commit's 7 ms moved
+  to the first frame, not removed). **`raw` is parked**, built only if the final row with dots reads RU
+  at 300 above 90 ms p90 on 60 runs. The report's P4 sentence names the level it reads. STOP if the
+  rebuild changes `golden-fit.tsv` or a `band_sweep` figure, or exceeds 4.55 MB.
+- **S3 — the station work leaves the bar's path.** `map_select` frames at once, with no station work in
+  front of the first pull; the read, the gathering and the locate run in a spawned task that re-checks
+  the selection and `select_gen` under the session lock, installs the dots, bumps `dots_gen` and emits
+  `map:changed`. The land paints first and the dots follow on the next pull: progressive rendering,
+  stated as such — the bar is the land's frame. The locate is **per dot**, the country's rings decoded
+  once per select, at the finest stored level ≤ 2 for its own units (PT reads level 0); R6 is judged per
+  dot (a dot whose centroid is more than 25 km outside every part is not drawn and its stations count in
+  `dots_outside`). **A second row: select → dots painted ≤ 150 ms p90** (60 runs; RU, US, BR, PT at 300
+  and 178; the lists cached). The land's bar is unchanged.
+- **S4 — hover: inconclusive, not a no.** A probe that logs nothing while the panel is not key measures
+  nothing. A positive control first (the panel key, no other app activated, the pointer over the disc
+  by hand), then the TextEdit case; **hover exists iff an `enter` line carries `key=true`**. Decision 7's
+  hover waits on it; it blocks the page commit only, not the levers.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -3200,7 +3267,9 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
 4. **M4 — Map**, split (2026-09-30): **M4a** geodata + the `ondar-map` crate (no UI); **M4b**
    IPC + the SVG renderer with pan and zoom; **M4c** stations, gathering, hit-testing. Drawn map
    decided 2026-09-24 (`m4-design/DIRECTION.md`); Step 0 measured 2026-09-30. Record the
-   installed bundle size at M4a.
+   installed bundle size at M4a. **M4a merged 2026-10-02** (`f7a3fd8`, `m4a-done`); **M4b merged
+   2026-10-07** (`29f1582`, `m4b-done`); **M4c begun 2026-10-07** on branch `m4c` — see "M4c: Step 0
+   and its decisions".
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
