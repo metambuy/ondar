@@ -1,6 +1,9 @@
 # Ondar — project document
 
-*Last updated: 2026-10-05 (M4b on branch `m4b`: the pinch spike measured and reverted — "M4b: the pinch
+*Last updated: 2026-10-07 (the CLAUDE.md rewrite on branch `claude-md`: area rules in
+`.claude/rules/`, the test table moved into each test's doc comment, no current test count
+stored anywhere — see "Bare `cargo test` skips the engine", the 2026-10-07 paragraph).
+Previously 2026-10-05 (M4b on branch `m4b`: the pinch spike measured and reverted — "M4b: the pinch
 spike, measured" — commits 2–4 built, the commit 4 STOP decided, `_handover/m4b-c4-decisions-2026-10-05.md`;
 the full "M4b" section lands with the build). Previously 2026-10-02 (Step 0 measured — `_handover/m4b-step0-report.md` —
 the brief and the plan reviewed, `_handover/m4b-plan.md`).
@@ -921,7 +924,7 @@ Réunion overlap, and both were dropped. Now French Guiana is drawn and three of
 3, `fd529f2`: `clamp_view` snaps a view whose scale is at least the fit's × (1 − 1e-6) to the
 fit, centre and all. The frame decides the insets and the remote groups' land on `view == fit`,
 and a US view at the fit × (1 − 1e-12) had lost Alaska and Hawaii. The snap moves a point at the
-golden pane's corner by 0.0002 pt. Finding 6 is CLAUDE.md's `world.rs` line, fixed in the docs
+golden pane's corner by 0.0002 pt. Finding 6 is the old CLAUDE.md's `world.rs` line (the layout tree, retired 2026-10-07), fixed in the docs
 commit. **Two items carry to M4b's brief.** Finding 4: the inset-box rule, inside the pane and
 apart, is written twice, in `world.rs` and in `frame.rs`; one `rules::box_fits` and
 `boxes_apart` should serve both. They agree at the golden pane today, where every box is drawn.
@@ -1212,7 +1215,7 @@ behaviour findings, so no merge until the fixes and one last scoped review.
     healthy slow stream with an overstated record got a terminal format error (finding 2);
   - HLS's `retry_timeout` is ≥ 55 s, so its count never moved inside 20 s and an HLS stall could
     only read as a format failure (finding 3).
-- **F1, the redesign** (`build.rs`; CLAUDE.md invariant 11). `ClockedReader`, the bottom of the
+- **F1, the redesign** (`build.rs`; `.claude/rules/audio.md` 10). `ClockedReader`, the bottom of the
   decoder's chain under `IcyReader` on both source kinds, stamps the first byte, the longest gap and
   the last byte; `begin_build` stamps each build's start and publishes it with a build seq and
   `PROBING` in one word. The engine keeps no build state; it swaps from the exact word it read to a
@@ -1276,7 +1279,7 @@ so the merge rule fixed before it blocked the merge. The chat triaged it
   shape. **Finding 3:** `no_bytes` had zero margin at exactly 10 kbit/s (104 857 ms, integer
   division, against 104 857.6 ms). **Finding 4:** the message's gap was recomputed after the
   cancel, and a reconnect during the prefetch could print "stalled (0.1 s…)". **Finding 6:** four
-  `audio/aac*`-only lines F4 left, and CLAUDE.md's `adts.rs` line without F3's "only before the
+  `audio/aac*`-only lines F4 left, and the old CLAUDE.md's `adts.rs` line without F3's "only before the
   first alignment" — fixed in G3.
 - **G1a** (`ed907f0`): `no_bytes` = max(60 s, ⌈1.1 × prefetch ÷ 1 250 B/s⌉): 60 / 70.4 /
   115.344 s at the floor, 80 000 B and the ceiling.
@@ -1401,7 +1404,7 @@ argument or type; the vitest count stays 15.
   `Accept-Encoding`) — inflated by the response header, never requested, so no Icecast request
   changes; **F4** stream-download's idle timeout (5 s) is shorter than a normal HLS wait, so the
   HLS `Settings` set `retry_timeout` **above** `read_timeout` (stall bound + segment timeout +
-  5 s; 55 s at TD 10) — CLAUDE.md invariant 4 now says which path it guards.
+  5 s; 55 s at TD 10) — `.claude/rules/audio.md` 3 says which path it guards.
 - **F7** on `b7e050a` an HLS URL was one request and `Error { UnsupportedFormat, "could not
   identify the audio format (application/vnd.apple.mpegurl)" }`: confirmed on four live
   stations, four fixture shapes and the app. TS was already "one terminal error, zero clicks"
@@ -1486,7 +1489,7 @@ CI run plus this docs commit:
 | 1–3 | **three panics reachable from a remote playlist on the decode thread** — a `CODECS` value with a multi-byte char at byte 5 or 8 (`c[..5]`: "byte index 5 is not a char boundary"), an `EXTINF` of `1e30` (`Duration::from_secs_f64`: "cannot convert float seconds to Duration"), a `MEDIA-SEQUENCE` or `TARGETDURATION` at u64::MAX ("attempt to add with overflow"; "overflow when multiplying duration by scalar"). **The release profile is `panic = "abort"`**, so each was a whole-app abort from one playlist; in dev the thread died and the session sat in `Connecting` (defect B's shape) | A `cce9ffa`: byte-wise prefix compares, `try_from_secs_f64` into the parser's deferred `Malformed`, `checked_add` with u64::MAX refused, saturating `+ 1`, the timeouts on the planner's bounded TD, the bitrate cast capped; a hostile-playlist table test with every row's panic recorded first; **and a sweep** of every arithmetic op, cast, index/slice, `Duration` constructor and `unwrap`/`expect`/`unreachable!` in `hls/` outside tests, each listed in the commit message as fixed or safe-and-why (22 sites: 8 fixed, 12 safe by a checked bound or a `find`-derived index, 2 left for E) |
 | 4 | the first segment's HTTP failure took the playlist policy (terminal for 401/403/404/410) where every later segment's is retry-then-gap: a just-evicted start segment ended the session with `Error { http }` | B `28f7098`, reshaped by the triage: 404/410 = eviction → the next pending start segment, then a retriable error (the backoff reopens on a fresher window) — `Network` in B, `Http` carrying the server's `Retry-After` since review 2, finding 5; **401/403 stay terminal** — access denial does not change with a retry. T18–T20 |
 | 5 | a gzip-encoded first segment was never sniffed (one flag served the early and the post-inflate sniff) — a gzipped TS segment read the generic message | C `938944c`: two states; T21 |
-| 6, 8 | a second `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `hls::open` outside CLAUDE.md's exhaustive list; two "for the type" arms guarding a `remove(0)` on a list they made empty | E `adf8af7`: `stream::bounded_storage()` shared by both opens; a typed `Network` error for an empty start and an iterator for the start candidates — `hls/mod.rs` has no `expect`, and no index on a value that is not already clamped (`&body[tags..]` stays: `id3_end` clamps to the body's length — corrected by review 2, 2026-09-25, finding 3, which also removed the last `unreachable!` and added a source scan for panic shapes in `hls/`) |
+| 6, 8 | a second `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `hls::open` outside the exhaustive list (now `.claude/rules/rust.md`); two "for the type" arms guarding a `remove(0)` on a list they made empty | E `adf8af7`: `stream::bounded_storage()` shared by both opens; a typed `Network` error for an empty start and an iterator for the start candidates — `hls/mod.rs` has no `expect`, and no index on a value that is not already clamped (`&body[tags..]` stays: `id3_end` clamps to the body's length — corrected by review 2, 2026-09-25, finding 3, which also removed the last `unreachable!` and added a source scan for panic shapes in `hls/`) |
 | 7 | every playlist-fetch failure logged `kind=master`, media reloads included (X6's log) | D `005cc62`: the kind the caller asked for on a failure, the parsed kind on success; `logged_kind` pure + tested |
 | 9 | T12's comment described a failure shape the parser cannot produce | this commit |
 
@@ -2038,7 +2041,7 @@ stated below). Tests 148 → **162** (audio 65, shell 40, stations 57).
   bounded to 200 chars (`73020d3`).
 - Cleanups: `CacheSource::StaleAfterFailure` removed from the IPC contract (`bacca7f`);
   `scripts/icy-server.py` removed for `stall-server.py --mode icy200` (`e016a5d`); the `expect`
-  census in CLAUDE.md corrected to three sites (`44099b0`); `.claude/settings.local.json`
+  census in CLAUDE.md corrected to three sites (`44099b0`; four with the startup build, `.claude/rules/rust.md`); `.claude/settings.local.json`
   ignored (`6bab153`). Recorded for M3b, not fixed: the 750 cap is applied before storage, so the
   offline search sees only the top 750 of each list.
 - **Acceptance re-run on the touched paths** (`m3a-acceptance.md`, "Re-run after the review
@@ -3032,7 +3035,7 @@ So an "Onda" in this repo is one of exactly three things:
 | Where | Why it survived |
 |---|---|
 | A reproduced literal | It is a quotation of something recorded before 2026-09-13. |
-| `~/Developer/Onda` | The working directory is deliberately **not** renamed: it would break the working directory and the folder grant Martín's Claude session uses, and buys only tidiness. This is why CLAUDE.md's layout diagram still has an `onda/` root. |
+| `~/Developer/Onda` | The working directory is deliberately **not** renamed: it would break the working directory and the folder grant Martín's Claude session uses, and buys only tidiness. This is why CLAUDE.md's layout still roots at `~/Developer/Onda`. |
 | A miss | Report it. |
 
 **Follow-ups Martín owns.** The GitHub repository **was renamed** `metambuy/onda` →
@@ -3053,7 +3056,11 @@ commit. Every earlier commit in a multi-commit push is never built. The workflow
 other on `main` — and says nothing about batching.
 
 So the standing rule in `CLAUDE.md`, "small commits, each building and passing checks on its
-own", is an **authoring** rule that CI does not enforce. The consequence, stated plainly:
+own", is an **authoring** rule that CI does not enforce. (Its one exception — a document line
+that describes the behaviour a commit changes ships in that commit — dates from M2d's `7e19a1a`,
+2026-09-21: the plan review asked for ONDAR.md's D1 formula line in the commit that changed the
+formula, and `/code-review` then flagged that commit for breaking the rule as it was written;
+separating them guarantees one pushed state in which the document and the code disagree.) The consequence, stated plainly:
 
 > **A commit that has to stand on its own has to be pushed on its own.**
 
@@ -3079,7 +3086,8 @@ For that layout cargo's default scope is the root package alone, not all members
 "defaults to every member" behaviour belongs to *virtual* manifests (a `[workspace]` with no
 `[package]`). So from `src-tauri`:
 
-*Counts as of 2026-09-10 and deliberately frozen; current figures are in CLAUDE.md's test table.*
+*Counts as of 2026-09-10 and deliberately frozen; no current figure is stored anywhere (decided
+2026-10-07, below).*
 
 | Invocation | What actually runs |
 |---|---|
@@ -3107,6 +3115,17 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
 `#[test]` in source against a reported 53. The other 6 are generated — ts-rs's `#[ts(export)]` expands to an
 `export_bindings_<type>` test per exported type, which is the mechanism that writes
 `src/bindings/`. `cargo test -p ondar-audio -- --list` is the authority.
+
+**Decided 2026-10-07 (the CLAUDE.md rewrite): no current test count is stored in any file.** The
+2026-09-28 rule — current counts live only in CLAUDE.md's test table, every other count dated and
+frozen — is replaced: the table is gone, and the commands are the authority,
+`cargo test --workspace -- --list | grep -c ': test$'` (from `src-tauri/`; the expression is part
+of the number, since `--list` also prints a summary line) and `pnpm test`'s total, reported as two
+numbers, never their sum. A milestone's recorded figure ("415 + 27 at acceptance") is dated and
+stays as written. What each test pins and what change makes it fail now lives in that test's doc
+comment; which commit it failed on lives in the commit message, not the comment. Area rules moved
+to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or edited (verified
+2026-10-07 with an `InstructionsLoaded` hook: `_handover/claude-md-verify/`).
 
 ### Loose ends
 
@@ -3369,7 +3388,13 @@ A third, from running the pass itself: two of the five mutations silently failed
 **A measurement that contradicts a recorded justification reopens the decision, not just the
 comment.** Never re-word the justification to fit the number; re-derive it, and if the number
 turns out to be right for a different reason, say so. A recorded reason a constant *cannot* be
-measured is a valid answer; a fabricated measurement is not. Applied since M1 but, until this
+measured is a valid answer; a fabricated measurement is not. The same applies to a block
+someone dictates for a document: on 2026-09-14 a dictated replacement for CLAUDE.md's unwrap
+rule was wrong in four places (the decode thread spawns per `play`, `.lock().unwrap()` carries
+no message, `NonZeroUsize::new(CONST)` is outside the rule rather than an exemption, the site
+count was 20 not 19), each caught by reading the source before applying; a later item was
+declined outright because the comment it asked for would have been false. Declining to write a
+justification you cannot stand behind is the cheapest defect-finding mechanism this project has. Applied since M1 but, until this
 entry, written down only in the Claude Project's instructions field. Two instances, both
 2026-09-11: `043e289` — the floor-versus-knee analysis contradicted 32 KB's recorded
 justification (freshness parity with 16 KB, margin over `fill_target`), and re-deriving it

@@ -66,7 +66,7 @@ afterEach(() => {
 
 describe("Transport", () => {
   // `/code-review` finding 3. While a session is `reconnecting` Rust owns the recovery — the
-  // backoff, CLAUDE.md invariant 5 — and a Play here would be a new `play` call: a new session,
+  // backoff, `.claude/rules/audio.md` 4 — and a Play here would be a new `play` call: a new session,
   // a reset backoff, and a second vote on that session's first `Playing`. The list's row already
   // treats `reconnecting` as audible (StationList.test.tsx, test 10); this pins the transport
   // to the same reading, one test per surface, so the two cannot drift apart again. Fails if

@@ -520,7 +520,7 @@ impl Default for PanelState {
 }
 
 impl PanelState {
-    /// The layout last emitted. `Mutex::lock().unwrap()`: poison propagation only (CLAUDE.md's
+    /// The layout last emitted. `Mutex::lock().unwrap()`: poison propagation only (`.claude/rules/rust.md`'s
     /// exemption), here and below.
     pub fn layout(&self) -> PanelLayout {
         self.inner.lock().unwrap().last

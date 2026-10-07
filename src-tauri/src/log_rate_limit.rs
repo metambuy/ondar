@@ -116,7 +116,7 @@ mod tests {
     /// empty; since this crate gained tests it reports the shell's own count (9 at M2a), which
     /// reads like a successful run. The shell's test names are the only thing a bare run
     /// prints, so one of them says what happened: the name is the signal. Renaming it makes
-    /// the trap silent again — do not. See CLAUDE.md.
+    /// the trap silent again — do not. See CLAUDE.md, "Traps".
     #[test]
     fn bare_cargo_test_runs_only_the_shell_crate_see_claude_md() {
         let now = Instant::now();

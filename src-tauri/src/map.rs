@@ -30,7 +30,7 @@ use crate::panel::MapBand;
 pub struct MapState(pub Arc<OnceLock<Option<Store>>>);
 
 /// The view session, in Tauri state beside the store. `Mutex::lock().unwrap()`: poison
-/// propagation only (CLAUDE.md's exemption).
+/// propagation only (`.claude/rules/rust.md`'s exemption).
 #[derive(Default)]
 pub struct MapSessionState(pub Mutex<Session>);
 

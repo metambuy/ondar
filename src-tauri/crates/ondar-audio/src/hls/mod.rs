@@ -34,7 +34,7 @@
 //! again itself. **The stream never yields an error into `stream-download`**: a fatal condition
 //! ends the source (the channel closes, the cause is logged as `hls task ended reason=`), the
 //! decoder sees EOF, and `run_session`'s "stream ended" path — the session's own backoff —
-//! reopens. That is why the HLS `Settings` may set `retry_timeout` above `read_timeout`: CLAUDE.md
+//! reopens. That is why the HLS `Settings` may set `retry_timeout` above `read_timeout`: `.claude/rules/audio.md` 3
 //! invariant 4 guards the `HttpStream` body, whose spin needs a source that yields `Err` again
 //! and again, and this one never does.
 

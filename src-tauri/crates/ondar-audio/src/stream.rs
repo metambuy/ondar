@@ -212,7 +212,7 @@ pub struct OpenedStream {
 
 /// The bounded in-memory storage every reader is built on — the Icecast open's and the HLS
 /// open's (review 2026-09-25, finding 6: two copies of this construction, and two `.expect`
-/// sites where CLAUDE.md records one). The `expect` is the documented site: `BUFFER_BYTES` is a
+/// sites `.claude/rules/rust.md` records). The `expect` is the documented site: `BUFFER_BYTES` is a
 /// non-zero `const`, so it cannot fire.
 pub(crate) fn bounded_storage() -> BoundedStorageProvider<MemoryStorageProvider> {
     BoundedStorageProvider::new(

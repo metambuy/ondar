@@ -21,7 +21,7 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/**"] },
   },
   // The renderer's tests render components into jsdom with `../api` mocked; nothing reaches
-  // Tauri. Reported as their own count beside the Rust one (CLAUDE.md), never added to it.
+  // Tauri. Reported as their own count beside the Rust one (CLAUDE.md, "Test counts"), never added to it.
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.tsx"],

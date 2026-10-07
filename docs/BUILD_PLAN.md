@@ -303,7 +303,7 @@ Every milestone closes with the same ritual:
 1. From `src-tauri`: `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
    cargo test --workspace`. Plain `cargo test` (no `-p`/`--workspace`) only runs the root
    `ondar` package's tests — `ondar-audio`'s tests (the ones that matter) need `--workspace` or
-   `-p ondar-audio`; see CLAUDE.md.
+   `-p ondar-audio`; see CLAUDE.md, "Traps".
 2. From the repo root: `pnpm typecheck && pnpm lint`
 3. A manual smoke pass against that milestone's exit criteria, with the app actually running
 4. Update `ONDAR.md` / `docs/` with anything learned that contradicts this plan
