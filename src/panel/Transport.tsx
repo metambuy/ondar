@@ -32,11 +32,11 @@ export default function Transport({ station, isFavourite, onToggleFavourite }: P
     };
   }, []);
 
-  // A command's rejection is argument validation only (CLAUDE.md, IPC contract); playback
+  // A command's rejection is argument validation only (`.claude/rules/ipc.md`); playback
   // outcomes arrive as `playback:state` events.
   //
   // `reconnecting` reads as the list's row reads it — audible, Rust's to recover (the backoff,
-  // CLAUDE.md invariant 5): Pause offered but disabled, Stop offered, no Play. A Play here would
+  // `.claude/rules/audio.md` 4): Pause offered but disabled, Stop offered, no Play. A Play here would
   // be a new `play` call — a new session, a reset backoff and a second vote on its first
   // `Playing` (`/code-review` finding 3, 2026-09-23; Transport.test.tsx).
   const report = (what: string) => (e: unknown) => setLastError(`${what}: ${describeError(e)}`);

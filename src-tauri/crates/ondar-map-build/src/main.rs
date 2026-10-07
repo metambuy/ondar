@@ -563,7 +563,8 @@ mod input_tests {
 
     /// Step 0 reproduced: the 239 codes' fits equal Q1-merged's within 0.05 % or the fixture's
     /// rounding (half a unit in its 4th decimal), except the three listed differences: MY's
-    /// override (2.326, the peninsula), AQ pole-centred, MM's subdivisions on at 8.008.
+    /// override (2.326, the peninsula), AQ pole-centred, MM's subdivisions on at 8.008. Fails
+    /// with AQ's pole centre removed.
     #[test]
     #[ignore]
     fn step0_reproduced() {
@@ -615,8 +616,8 @@ mod input_tests {
     }
 
     /// D2's census for the 18: no edge found three times; the gate (once-edges inside the land
-    /// within 375 m of admin 0) passes for all 18; the farthest is under 80 m (79 m, US,
-    /// measured 2026-10-01).
+    /// within 375 m of admin 0) passes for all 18; the farthest is under 80 m (79 m, US). Fails
+    /// with the inside-land filter dropped.
     #[test]
     #[ignore]
     fn the_edge_gate_for_the_18() {
@@ -640,7 +641,7 @@ mod input_tests {
     /// 11 and 48 missing blobs there): the full box's clearance within 0.3 pt (the drawn bound,
     /// 0.25 + 0.035, and the table's 0.01 rounding: Step 0 measured simplified rings, the tool
     /// the input), and the largest scale within 0.02 of Step 0's bisected fraction — or 0 where
-    /// that fraction is under the row's minimum, which Step 0 did not apply.
+    /// that fraction is under the row's minimum, which Step 0 did not apply. All 33 agree.
     #[test]
     #[ignore]
     fn corner_table_at_161_matches_step0() {

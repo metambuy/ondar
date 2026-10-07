@@ -1,19 +1,7 @@
-// The transport row's reading of playback state (`/code-review` finding 3, 2026-09-23 — vitest
-// under jsdom, `pnpm test`). While a session is `reconnecting` Rust owns the recovery — the
-// backoff, CLAUDE.md invariant 5 — and a Play here would be a new `play` call: a new session, a
-// reset backoff, and a second vote on that session's first `Playing`. The list's row already
-// treats `reconnecting` as audible (StationList.test.tsx, its last test); this pins the
-// transport to the same reading, one test per surface, so the two cannot drift apart again.
-// Fails if `reconnecting` falls through to the Play branch (the code before this test), or if
-// Stop — the one thing a person may want during a reconnect — is not offered.
-//
-// The second test (`/code-review` finding 8): a rejected `play` — argument validation, the
-// only thing a command's rejection means — renders as `code: message` through `describeError`,
-// as the country control and the list render theirs. Fails on the raw `JSON.stringify` text
-// (the code before it).
-//
-// `../api` is mocked whole: nothing reaches Tauri; the state arrives through `onState` as the
-// `playback:state` event would.
+// The transport row's reading of playback state, and of a rejected `play` — vitest under jsdom,
+// `pnpm test`. `../api` is mocked whole: nothing reaches Tauri; the state arrives through
+// `onState` as the `playback:state` event would. Each test's comment states what it pins and
+// what it would have to see to fail.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PlaybackState, Station } from "../api";
@@ -77,6 +65,13 @@ afterEach(() => {
 });
 
 describe("Transport", () => {
+  // `/code-review` finding 3. While a session is `reconnecting` Rust owns the recovery — the
+  // backoff, `.claude/rules/audio.md` 4 — and a Play here would be a new `play` call: a new session,
+  // a reset backoff, and a second vote on that session's first `Playing`. The list's row already
+  // treats `reconnecting` as audible (StationList.test.tsx, test 10); this pins the transport
+  // to the same reading, one test per surface, so the two cannot drift apart again. Fails if
+  // `reconnecting` falls through to the Play branch (the code before this test), or if Stop —
+  // the one thing a person may want during a reconnect — is not offered.
   it("offers no Play while reconnecting — Pause disabled and Stop enabled, as during connecting", async () => {
     render(<Transport station={fip} isFavourite={false} onToggleFavourite={() => {}} />);
     await act(async () => {});
@@ -91,6 +86,10 @@ describe("Transport", () => {
     expect(button("Stop").disabled).toBe(false);
   });
 
+  // `/code-review` finding 8: a rejected `play` — argument validation, the only thing a
+  // command's rejection means — renders as `code: message` through `describeError`, as the
+  // country control and the list render theirs. Fails on the raw `JSON.stringify` text (the
+  // code before it).
   it("renders a rejected play as `code: message`, as the country control and the list do", async () => {
     mock.rejectPlay({ code: "invalid_argument", message: "url is empty" });
     render(<Transport station={fip} isFavourite={false} onToggleFavourite={() => {}} />);

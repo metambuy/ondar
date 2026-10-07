@@ -34,7 +34,7 @@
 //! again itself. **The stream never yields an error into `stream-download`**: a fatal condition
 //! ends the source (the channel closes, the cause is logged as `hls task ended reason=`), the
 //! decoder sees EOF, and `run_session`'s "stream ended" path — the session's own backoff —
-//! reopens. That is why the HLS `Settings` may set `retry_timeout` above `read_timeout`: CLAUDE.md
+//! reopens. That is why the HLS `Settings` may set `retry_timeout` above `read_timeout`: `.claude/rules/audio.md` 3
 //! invariant 4 guards the `HttpStream` body, whose spin needs a source that yields `Err` again
 //! and again, and this one never does.
 
@@ -1020,12 +1020,13 @@ fn after_failure(
 mod tests {
     use super::*;
 
-    /// Review 2 (2026-09-25), finding 3: no panic shape in the non-test code of `hls/` — no
-    /// `unreachable!`, `panic!`, `todo!`, `unimplemented!`, `.unwrap()` or `.expect(`. Every
-    /// value there comes from the network or is derived from it, and the release profile is
-    /// `panic = "abort"`. Fails on `b07e04e` at `refused_container`'s `Container::Adts =>
-    /// unreachable!`, and on `fe120a2` also at the task's `unreachable!("matched above")`. A
-    /// source scan: a new site fails the build's tests, not a reviewer's memory.
+    /// Review 2, finding 3: no panic shape in the non-test code of `hls/` — no `unreachable!`,
+    /// `panic!`, `todo!`, `unimplemented!`, `.unwrap()` or `.expect(`. Every value there comes
+    /// from the network or is derived from it, and the release profile is `panic = "abort"`.
+    /// Fails on any such site above `#[cfg(test)]`: before the refusal became a `Refusal` that
+    /// cannot hold ADTS it found `refused_container`'s `Container::Adts => unreachable!`, and
+    /// then the task's `unreachable!("matched above")` too. A source scan: a new site fails the
+    /// build's tests, not a reviewer's memory.
     #[test]
     fn hls_code_outside_tests_has_no_panic_shape() {
         const SHAPES: [&str; 6] = [
@@ -1056,11 +1057,11 @@ mod tests {
         }
     }
 
-    /// Review 2 (2026-09-25), findings 2 and 4: the task's retry rule. A transient failure is
-    /// retried within one **bounded** TD — at `TARGETDURATION:3600` the window closes at 30 s.
-    /// On `fe120a2` the rule was inline, `elapsed + 1 s <= self.target_duration` on the raw
-    /// TD, which answers Retry at 29.001 s (and at 3 599 s); this test fails the same way if
-    /// the bound is dropped. A 410 is never retried; a 404 twice, whatever the TD.
+    /// Review 2, findings 2 and 4: the task's retry rule. A transient failure is retried within
+    /// one **bounded** TD — at `TARGETDURATION:3600` the window closes at 30 s: Retry at 29 s,
+    /// Skip at 29.001 s. Fails with the bound dropped, as the inline rule was — `elapsed + 1 s
+    /// <= self.target_duration` on the raw TD answers Retry at 29.001 s (and at 3 599 s). A 410
+    /// is never retried; a 404 twice, whatever the TD.
     #[test]
     fn after_failure_bounds_every_retry() {
         let td = Duration::from_secs(3600);
@@ -1097,6 +1098,7 @@ mod tests {
         );
     }
 
+    /// The four HLS content types match case-insensitively and without `; charset`.
     #[test]
     fn hls_content_types_match_case_insensitively_without_parameters() {
         for ct in [
@@ -1141,10 +1143,10 @@ mod tests {
         );
     }
 
-    /// Review 2026-09-25, finding 7: the `kind=` a playlist request logs is what the body
-    /// turned out to be, and on a failure what the caller asked for. On `938944c` every
-    /// failure logged `kind=master`, media reloads included (X6's log, 13:11:09 and 13:11:49).
-    /// Fails on that rule: `logged_kind(Kind::Media, None)` would read `Master`.
+    /// Review fix D, finding 7: the `kind=` a playlist request logs is what the body turned out
+    /// to be, and on a failure what the caller asked for. Fails on the rule before it, which
+    /// logged `kind=master` for every failure, media reloads included (X6's log showed it):
+    /// `logged_kind(Kind::Media, None)` would read `Master`.
     #[test]
     fn a_failed_playlist_request_logs_the_kind_it_asked_for() {
         let base = Url::parse("http://h/p.m3u8").unwrap();
@@ -1164,9 +1166,10 @@ mod tests {
         assert_eq!(logged_kind(Kind::Media, Some(&master)), Kind::Master);
     }
 
-    /// Review 2026-09-25, finding 3: a `TARGETDURATION` at u64::MAX reached `Duration * 2`
-    /// ("overflow when multiplying duration by scalar" on `102c114`). The timeouts are computed
-    /// on the same bounded TD the planner uses, so the largest is 60 s + 90 s + 5 s.
+    /// Review finding 3: a `TARGETDURATION` at u64::MAX gives 60 s / 155 s, not a panic. Fails
+    /// with `Duration * 2` on the raw value, as it was ("overflow when multiplying duration by
+    /// scalar"). The timeouts are computed on the same bounded TD the planner uses, so the
+    /// largest is 60 s + 90 s + 5 s.
     #[test]
     fn timeouts_on_an_absurd_target_duration_are_bounded() {
         let td = Duration::from_secs(u64::MAX);

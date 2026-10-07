@@ -212,7 +212,7 @@ pub struct OpenedStream {
 
 /// The bounded in-memory storage every reader is built on — the Icecast open's and the HLS
 /// open's (review 2026-09-25, finding 6: two copies of this construction, and two `.expect`
-/// sites where CLAUDE.md records one). The `expect` is the documented site: `BUFFER_BYTES` is a
+/// sites `.claude/rules/rust.md` records). The `expect` is the documented site: `BUFFER_BYTES` is a
 /// non-zero `const`, so it cannot fire.
 pub(crate) fn bounded_storage() -> BoundedStorageProvider<MemoryStorageProvider> {
     BoundedStorageProvider::new(
@@ -650,7 +650,7 @@ mod tests {
     /// bound, `open` returns `Network` promptly. **Fails if** DNS sits outside the bound (the
     /// call would hang and the outer 5 s guard would elapse) or if a stalled connect were
     /// classified as anything but `Network`. Measured first against the production 10 s:
-    /// `open` returned at 10.01 s (2026-09-21).
+    /// `open` returned at 10.01 s.
     #[test]
     fn dns_resolution_is_inside_connect_timeout() {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -686,6 +686,9 @@ mod tests {
         );
     }
 
+    /// An `ICY 200 OK` answer is `Http` and terminal; mutation-checked against the old rule
+    /// (the top-level `Display` read alone, which says "error sending request" and classifies
+    /// as `Network`).
     #[test]
     fn icy_status_line_is_http_not_network() {
         let url = serve_once(
@@ -699,6 +702,7 @@ mod tests {
         );
     }
 
+    /// A 500 is `Http` and retriable.
     #[test]
     fn a_5xx_status_is_http() {
         let url = serve_once(
@@ -711,6 +715,7 @@ mod tests {
         );
     }
 
+    /// A 404 is `Http` and terminal.
     #[test]
     fn a_4xx_status_is_http_and_terminal() {
         let url =
@@ -739,6 +744,7 @@ mod tests {
         assert_eq!(e.retry_after, Some(Duration::from_secs(7)));
     }
 
+    /// A 403 is `Http` and terminal.
     #[test]
     fn a_403_is_http_and_terminal() {
         let url =
@@ -838,12 +844,13 @@ mod tests {
         );
     }
 
-    /// Review 2 (2026-09-25), the widened bound sweep: an error response's body is read only
-    /// when its declared `Content-Length` is within [`ERROR_BODY_MAX`]. stream-download's
-    /// `decode_error` is `response.text()` — the whole body, unbounded — so a 404 whose chunked
-    /// body never ends kept `open` reading (and allocating) for as long as the server sent.
-    /// Fails on `fe120a2`: no answer inside the 5 s guard while the server streams on. The
-    /// answer is the same code and terminality as with a body, without an excerpt.
+    /// Review 2, the widened bound sweep: an error response's body is read only when its
+    /// declared `Content-Length` is within [`ERROR_BODY_MAX`]. stream-download's `decode_error`
+    /// is `response.text()` — the whole body, unbounded — so a 404 whose chunked body never
+    /// ends kept `open` reading (and allocating) for as long as the server sent. Fails with the
+    /// body read unbounded: no answer inside the 5 s guard while the server streams on (14.3 GB
+    /// sent in the record). The answer is the same code and terminality as with a body,
+    /// without an excerpt.
     #[test]
     fn an_error_response_with_an_endless_body_is_not_read() {
         use std::sync::atomic::Ordering;
@@ -894,6 +901,7 @@ mod tests {
         assert!(!e.message.contains("xxxx"), "no excerpt: {}", e.message);
     }
 
+    /// A refused connect is `Network`.
     #[test]
     fn a_refused_connection_is_network() {
         // Bind to learn a free port, then drop the listener so the connect is refused.
@@ -928,7 +936,7 @@ mod tests {
         assert_eq!(prefetch_for(Some(0)), PREFETCH_FLOOR_BYTES);
     }
 
-    /// `/code-review` finding 2 (2026-09-23): the knee is capped at half the buffer, so an
+    /// `/code-review` finding 2: the knee is capped at half the buffer, so an
     /// inflated record cannot ask for more than the writer holds. Fails if the `min` is dropped
     /// (the code before this test: 10 000 kbit/s asked for 2 500 000 B against a 262 144 B
     /// buffer, and startup waited for the whole buffer), if the cap is the buffer itself, or at

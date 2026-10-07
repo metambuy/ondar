@@ -219,7 +219,8 @@ pub(crate) mod tests {
     }
 
     /// A delta of exactly `i16::MIN` on one axis is escaped, not read as half an escape pair;
-    /// a delta one past `i16::MAX` is escaped; both decode exactly.
+    /// a delta one past `i16::MAX` is escaped; both decode exactly. Fails if only out-of-range
+    /// deltas are escaped.
     #[test]
     fn the_escape_pair() {
         let ring = [
@@ -243,7 +244,7 @@ pub(crate) mod tests {
     }
 
     /// Every truncation of an encoded ring is `None`, never a panic; so are trailing bytes and
-    /// a vertex count larger than the bytes hold.
+    /// a vertex count larger than the bytes hold. Fails with the remaining-bytes check dropped.
     #[test]
     fn truncated_bytes_are_none() {
         let ring: Vec<[i32; 2]> = (0..50).map(|i| [i * 1000, -i * 70_000]).collect();
@@ -264,6 +265,8 @@ pub(crate) mod tests {
         assert!(decode_ring(&b, ring.len(), 1.5, &mut out).is_some());
     }
 
+    /// `quantise` refuses a coordinate past `i32` and NaN; ±0.075 km at 1.5 km/pt is one quantum
+    /// each way.
     #[test]
     fn quantise_out_of_range_is_none() {
         assert_eq!(quantise([1e12, 0.0], 1.5), None);
@@ -271,6 +274,8 @@ pub(crate) mod tests {
         assert_eq!(quantise([0.075, -0.075], 1.5), Some([1, -1]));
     }
 
+    /// `Cursor::count` is bounded by what remains (fails unbounded); a `str8` that is not UTF-8
+    /// is `None`.
     #[test]
     fn cursor_counts_are_bounded_by_what_remains() {
         let mut c = Cursor::new(&[0xFF, 0xFF, 0xFF, 0xFF, 1, 2]);

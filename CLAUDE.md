@@ -1,1170 +1,147 @@
-# CLAUDE.md — Ondar
+# CLAUDE.md: Ondar
 
-> Repository root. Claude Code reads this at session start.
-> This file describes **the repo as it is**. Decisions, versions and milestone numbering live
-> in `ONDAR.md`; per-milestone exit criteria and open questions live in `docs/BUILD_PLAN.md`.
-> If this file and the code disagree, the code is right — fix this file in the same commit.
-> **`_handover/OPEN.md` is the pending ledger** — what is outstanding, who owns it, what state
-> it is in. Update it when an item's state changes. (`_handover/` is gitignored.)
+> Claude Code reads this at session start. It holds only what every session needs.
+> - Decisions, measurements, versions, milestone history: `ONDAR.md` (authoritative).
+> - Exit criteria and open questions per milestone: `docs/BUILD_PLAN.md`.
+> - Area rules: `.claude/rules/*.md`, loaded when you read or edit a matching file.
+> - What a test pins and what makes it fail: that test's doc comment. Which commit it failed on: git.
+> - Pending work: `_handover/OPEN.md` (gitignored). Update it when an item's state changes.
+>
+> If this file and the code disagree, the code is right: fix this file in the same commit.
 
 ## What this repo is
 
-**Ondar** — a macOS menu bar internet radio player. Tauri v2 shell, Rust core, thin
-React/TypeScript view layer. Rust audio pipeline with a real 10-band equalizer, station data
-from radio-browser.info, a drawn map built from Natural Earth and bundled (M4).
+**Ondar**, a macOS menu bar internet radio player. Tauri v2 shell, Rust core, thin
+React/TypeScript view. Rust audio pipeline with a 10-band equalizer, stations from
+radio-browser.info, a drawn map built from Natural Earth and bundled. macOS only (Apple Silicon
+first, universal binary at release); add no Windows or Linux code paths.
 
-Target platform is **macOS only** (Apple Silicon first, universal binary at release). Do not
-add Windows/Linux code paths.
+The working directory is `~/Developer/Onda` on purpose: renaming it breaks Claude's working
+directory and folder grant. It is not a missed rename (ONDAR.md, "Renamed from Onda to Ondar").
 
 ## The one rule
 
 **The webview is a renderer, not an application.**
 
-TypeScript may: render, animate, handle input, hold ephemeral view state.
-TypeScript may **not**: make network requests, decode or play audio, persist data, hold domain
-state that outlives a render.
+TypeScript may render, animate, handle input and hold ephemeral view state. It may **not** make
+network requests, decode or play audio, persist data, or hold domain state that outlives a render.
+Every action is an `invoke()` of a Tauri command; every state change is a Tauri event from Rust.
+If a feature seems to need `fetch`, `<audio>`, `localStorage` or a polling `setInterval` in TS, the
+design is wrong: move it to Rust. `src/api.ts` is the **only** file that imports `@tauri-apps/api`.
 
-Every action → `invoke()` a Tauri command. Every state change → a Tauri event from Rust.
-If a feature seems to need `fetch`, `<audio>`, `localStorage`, or a `setInterval` polling loop
-in TS, the design is wrong; move it to Rust and emit an event.
-
-`src/api.ts` is the **only** file that imports from `@tauri-apps/api`. Keep it that way.
-
-## Milestones (ONDAR.md numbering — the tags follow this, not any other list)
+## Milestones
 
 | | | |
 |---|---|---|
-| M1 | Scaffold + audio engine | **done**, tagged `m1-done` |
-| M2 | Tray + NSPanel popover | **done** — M2a merged 2026-09-15 (`b553737`, tagged `m2a-done`); M2b (coordinates: multi-monitor, mixed scale, notch) merged 2026-09-16 (`3b4614c`, tagged `m2b-done`); M2c (Esc, tray menu, rounded corners, single-instance, tokens, retire the M1 bench window) merged 2026-09-18 (`032fc8a`, tagged `m2c-done`); M2d (collapsed/expanded resize, D1–D4 in ONDAR.md) merged 2026-09-21 (`2a9bae9`, tagged `m2d-done`) |
-| M3 | Station API + SQLite cache + country/station UI | **done** — **M3b built** on branch `m3b` from 2026-09-23 (plan `_handover/m3b-plan.md`; Step 0 folded into the commits: 1a `fbb0a79` harness · 1b `de87005` country control + station list + the TS runner · 1c `b4bbfbc` Now Playing · 2 `d1129a3` the list measured at 50/327/750, no virtualisation · 4 `bb2452d` favourites/recents, presets retired · 5 `33400f5` the click endpoint · 6 `155d14d` prefetch from bitrate · 7 docs `e23e48d`; **acceptance run 2026-09-23** — 10 items, 7 as built; B `f829b1e` and C `298c342` fixed and re-run PASS; **A, the output keeping the first session's sample rate, is M1's defect and is deferred to its own measured work after the merge, before M4**; **`/code-review` 2026-09-23**: eight findings fixed, one commit each, `3631085`…`f8f8c59` plus the closing docs commit — ONDAR.md, "M3b: the collapsed view…", its acceptance and "Code review, 2026-09-23" paragraphs; **merged 2026-09-24** (`f7af9dc`, tagged `m3b-done`)); Step 0 live-data census done 2026-09-21 (`_handover/m3-step0-report.md`; one API server, silent 1000-row default, 20.7 % geo, HLS 3.8 %, Shoutcast v1 0/148); M3a (crate, cache, commands) on branch `m3a`, **acceptance run 2026-09-22** (10 items; two fixes `3ab7ec2` retry policy by cause, `4d83918` failed-refresh event; the re-request on show/reconnect carried to M3b); **`/code-review` 2026-09-22**: ten findings fixed in ten commits `f3de220`…`73020d3` plus three cleanups, acceptance 5/6/8 re-run 2026-09-23 (ONDAR.md, "Code review, 2026-09-22"); **merged 2026-09-23** (`92cfe3f`, tagged `m3a-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) fixed on branch `a-sample-rate` (`ebb414f`), acceptance A1–A4 PASS 2026-09-24 (ONDAR.md, "Defect A"); merged 2026-09-24 (`b7e050a`, tagged `defect-a-done`); **M3c (HLS, the ADTS half) built on branch `m3c` 2026-09-24** — plan `_handover/m3c-plan.md` (reviewed, Step 0 gate passed), commits `7b19720` lint · `659950d` fixtures · `ce6a247` playlist · `c37963b` segment · `a3ec612` fetch layer, each pushed alone and CI green; **acceptance X1–X5, X7 PASS** (`_handover/m3c-acceptance.md`: Antena 1 18 min at 1.0000, 0 underruns; HE-AAC and `FFF9` stations play; TS/video refused in < 1 s, 3 / 2 requests, no vote; Wi-Fi off 20 s recovers in 20.7 s with one click — X6, 2026-09-25); tests **217 + 15** at acceptance; two scoped `/code-review` rounds 2026-09-25 (ONDAR.md "Code review, 2026-09-25" and "Code review 2, 2026-09-25": `cce9ffa`…`fe120a2`, then `0f045b3`, `50036ee`, `b07e04e`, `d61d524`, `a746fe6` + docs), **233 + 15** after them; round 3 (`fe120a2..9a6a059`, ONDAR.md "Code review 3") fixed its one behaviour finding in `4a6e3a7`, **234 + 15**; **merged 2026-09-26** (`8b5b1fb`, tagged `m3c-done`); then **defect B** (unbounded `Connecting`) before M4 — **built on branch `defect-b` 2026-09-28/29**: C0 `f95e530` error head · C1 `5740b96` terminal only before audio · C2 `00ddac2` the build bound · C2b `a83fe78` clippy over the workspace · C3 `5bc9483` `adts.rs` · C4 `a8585c6` the front end wired · C4b `49e6a72` the bound counts elapsed time; **acceptance X1–X4 PASS 2026-09-29** (`_handover/b-acceptance.md`: FFF9 mounts at 1.0000 over 11 min each, 0 underruns; main left an AAC+ mount stuck on 1 of 3 runs, the branch never), X1/X1b re-run after C4b at 20.205 / 20.178 s (X1 5 ms over the re-run's 20.2 s rule, open); ONDAR.md "Defect B"; **`/code-review` 2026-09-29**: ten findings, all accepted (`_handover/b-review-triage-2026-09-29.md`); the chat's round-7 design error behind findings 1–3 (a hung reconnect uncounted, the prefetch inside the bound, HLS never `Network`) fixed by redesigning the bound on a byte clock and a build stamp: F1 `2784efd` (checked by the chat on five points) · F2 `128dc08` cancelled build emits nothing · F3 `f3008cd` no pass-through after alignment · F4 `dd469e4` `audio/x-aac`, one header parser, one MIME parser — each test-first, recorded failing on `da36489`, pushed alone, CI green; **re-acceptance X1, X1b, X3, X5 PASS 2026-09-29** (X1 20.100 s after the first byte, X5's slow stream plays at 27.3 / 44.0 s, both confirmed on screen); **280 + 15**; **`/code-review` 2 2026-09-30** (`b-review2-findings.md`): the gaps were per-read fill times, not network arrival (a 32 KiB read is 8.2 s at 32 kbit/s, so every unsyncable build below ~52 kbit/s read `Starved`), a stale-emit race, no margin at exactly 10 kbit/s; fixed as G1a `ed907f0` the no-bytes margin · G1b `34547bf` arrival stamped by `on_progress` per open · G2 `afe6c2e` session events generation-gated · G3 docs — each test-first, recorded failing on `688c9fd` (`_handover/b-g/`), pushed alone, CI green; **re-acceptance X1, X1b, X6 PASS 2026-09-30** (X1 20.024 s, X1b 20.091 s `Starved` on a 5.01 s gap, X6 — a steady 32 kbit/s unsyncable body — terminal `unsupported_format` at 20.102 s where `688c9fd` backed off on an 8.20 s "gap"; X1 and X6 confirmed on screen); ONDAR.md "Code review 2 and G1–G3"; **285 + 15**; the Fable verification of `688c9fd..HEAD` (`_handover/b-verify-findings.md`: findings 1–3 fixed, no crash, no behaviour finding) **CLEAN 2026-09-30**; **merged 2026-09-30** (`dc9200d`, tagged `defect-b-done`); the carried items (review 2's 5 and 7, the verification's "other") on branch `post-defect-b` |
-| M4 | Map — the drawn map (reversal applied 2026-09-30) | **split M4a/M4b/M4c** (ONDAR.md, "M4: the drawn map — the reversal"); **M4a** (geodata + the `ondar-map` crate, no UI) **built on branch `m4a`** 2026-10-01 — plan `_handover/m4a-plan.md`; commits 1–7 `8d2e9c1`…`40a36f0` (the hybrid `65f7927`, D6 `47218f2`, D2's gate `4580af0`, the resource `3dda925`, frame `52e1880`, the loader `40a36f0`), each pushed alone and CI green; P3 resource check passed; **acceptance PASS** (`_handover/m4a-acceptance.md`: RU fit 4.28 ms, sweep p90 1.57 ms, load 17 ms, `Ondar.app` 10 576 KiB from 7 908); ONDAR.md "M4a: decisions during the build" and "M4a: built and measured"; **`/code-review` 2026-10-01** (Fable): nine findings, all accepted (`_handover/m4a-review-triage-2026-10-01.md`), fixed test-first, each recorded failing on `dddb4da`, pushed alone, CI green: `9108154` · `56c3515` + `458ee1e` (the resource rebuilt, 2 712 599 B, `e2775f81…`) · `20aaa09` · `8998b8f` · `ff9a75a` · `0eb9ca0` · `11b56e3` · `d411223` + docs (ONDAR.md "M4a: code review, 2026-10-01"); **369 + 15**; **`/code-review` 2 2026-10-01** (Fable, `dddb4da..8324e68`): six findings and a second pass's check, all accepted, fixed test first, each recorded failing on `8324e68` (`_handover/m4a-review2/`), pushed alone, CI green: `a227449` · `26b28f4` (the resource rebuilt byte-identical but for the header's commit, not re-committed) · `4022466` · `4fb01f3` · `945ce4c` · `f44e424` · `f526d34` + docs (ONDAR.md "Code review 2, 2026-10-01"); **374 + 15**; next **`/code-review` 3 2026-10-01** (Fable, `8324e68..b3cf735`; `_handover/m4a-review3-findings.md`, triage `m4a-review3-triage-2026-10-02.md`): six findings, no crash; 1–3 fixed test first, each recorded failing on `b3cf735` (`_handover/m4a-review3/`), pushed alone, CI green: `6e8ff4b` an invalid view projects nothing · `cc38823` an inset dropped only for a box already drawn · `fd529f2` `clamp_view` snaps within 1e-6 of the fit; 6 in the docs commit; 4 and 5 carried to M4b (ONDAR.md "Code review 3, 2026-10-02"); **377 + 15**; no fourth review — the chat reads the fix diff, then the merge; **M4b in progress on branch `m4b` from 2026-10-02** — Step 0 run (`_handover/m4b-step0-report.md`: no instrument miss; pinch never reaches the webview, the band is 328 × 161 / 283 under the old chrome, 671 blobs missing at 161), the brief (`m4b-brief.md`: Z1 controls + a native-pinch spike, B1 the platter 328 × 178 / 300, C1 the reserved controls corner, I1 insets shrink to fit, coverage for every band 140..300) and the plan (`m4b-plan.md`, reviewed P1–P6); commit 0 the docs; **commit 1, the pinch spike, FAILED its gate 2026-10-05** (three instruments, zero magnify events; a positive control logged 511 scroll events in the same state) and was reverted (`fab802a`) — zoom is the `− fit +` row alone, commit 8 dropped; **commit 2 (2026-10-05)** the one box rule and clip rect (review 3's findings 4 and 5), `controls_rect` defined, the Svalbard cause measured (Jan Mayen, 0.6 km), the tool's rebuild byte-identical past the header; **381 + 15**; **commit 3 (2026-10-05)** coverage for every band 140..=300 (`Pane::band`, the bounding reach — it adds 0 blobs over the exact union on NE v5.1.2), 286 collapsed rings stored empty, the band-sampled coverage test (passes on the local build, 2 850 482 B from 2 712 599, +5.1 %; fails on the shipped file at Angola/SHN at 140), the subdivision-flag observation (57 countries pass 8 km/pt at 140 while flagged off) for the chat; **386 + 15**; **commit 4 (2026-10-05)** I1 + C1 in the tool: the per-band inset scales with the controls' rect placed first, the corner table (all 33 Step 0 figures at 161 reproduced — P6), the label gate (P3: the artifact says 8 pt), `insets.tsv` corners for EC/ES/IN/YE from the table; **STOP (P6)**: Hawaii has no corner at 178 at any scale, Svalbard drops from 225 to 257, the Canaries read 74 % at 300, four labels are wider than their boxes — `_handover/m4b-c4-stop.md`; **`75cceee` went red at clippy** (run 37302633000: a `type_complexity` lint and an index the map crate's no-panic scan refuses) because the gate chain that pushed it checked only the dev loop's error count and the test-list count, not clippy's and the test run's exit codes — fixed, behaviour unchanged, in the commit after it, every gate checked by exit status; **393 + 15**; the docs commit of 2026-10-05 (`5b9e76e`: the drift fixes, Z1 FAILED, ONDAR.md's M4b pinch note and the STOP's decisions); **commit 4b (2026-10-05)** the stacking rule (tool and frame share `rules::abuts` / `inset_box_beside`), measured: Hawaii meets the minimum at no corner from 140 to 273 with or without it, so decision 1's case (c) — dropped there, counted, first drawn at 274 (88 %), whole from 290, the gate's 178 rule amended for Hawaii alone (`MAY_DROP_AT_178`); the four labels (Canaries, Fr. Guiana, Antilles, Andamans) fit at every band; no other inset's scale changed at any band, so no STOP; **396 + 15**; **commit 5 (2026-10-05)** the one rebuild — format v2 (`Bands`, `size_km`, the per-band `scale_pct`), the frame's `Store::inset_boxes` reading the stored scales with the stacking rule and the controls' rect, the band coverage test active, `insets_at_178_and_300`, `band_sweep`; `world.ondarmap` 2 852 927 B (`e003f07e…`, +140 328 B over M4a's 2 712 599, +5.2 %, under the 4.55 MB budget), golden fit table unchanged, the inset table re-generated; the sweep: `missing_blobs` 0 at every band's fit, 167 insets dropped (Hawaii 140–273, Svalbard 225–257, both accepted), 0 under the minimum, 0 on the controls, five drawn boxes read under 12 pt on the drawn land (the quantised rings against the tool's unsimplified model — see the STOP report); STOP for the chat's resource check (**passed 2026-10-05**: the clearance spec is ≥ 12 pt from the source land and ≥ 11.7 pt from the drawn land); **399 + 15**; **commit 6 (2026-10-06)** the band rect on the layout (`band_rect`, `PanelLayout.band`), the view session (`map::Session`, pure, tested on the shipped resource), `map_select` / `map_pull` (replies with `seq`, the frame on `spawn_blocking`), ts-rs on the frame types and the shell's map types; **414 + 15**; **commit 7 (2026-10-06)** the renderer — `MapPane.tsx`: the platter at the band, Sand and Ink from the artifact's palette (`tokens.css`), the four layers plus Ink's inland tone, the insets with whole labels, the `− fit +` row at `MapBand.controls` (the rect now on the band), wheel and drag pan, the pull loop with `seq`, the `?measure=map` drivers; **414 + 23**; **the § 9 acceptance run 2026-10-06** (`_handover/m4b-acceptance.md`: the band exact, `band_sweep` 0 / 0 / ≥ 12, one frame per animation frame without the Ink filter; first paint over the bar on RU — the filter ~90 ms a paint, the reply's round trip 21 ms); **the acceptance review's A1 (2026-10-06)**: the Ink inland filter removed, one flat land tone per theme (`#6B5E47` under Ink), neighbours flat and opaque (ONDAR.md "M4b: the acceptance review's decisions"); **414 + 24**; **A2**: the map follows the dropdown — the acceptance photo (US drawn, PT selected) was the `m=paint` driver's `map.select`, not the control; `map_select` logs its lookup, the Panel test pins the wiring; **414 + 25**; **A3**: the first paint decomposed — the bar's 16 ms came from Step 0's hot, no-op instrument; re-derived at round 2 as a country change from idle to the painted frame ≤ 100 ms p90 (`_handover/m4b-a3-decomp/README.md`); **round 3 (2026-10-06)**: `397e515` C1 + C2 (the land drawn once with its hairline, no `<use>` — WebKit styles a clone as the original, which hid the subdivisions and the coast), `648bdf5` C3 (the controls themed), `eb628dd` + `06a96a8` C4 (Martín's palette: Ink "lifted more", Sand "deeper more"); **the bar re-run on `06a96a8`: RU 99 / 82 ms p90 at 300 / 178, US 76 / 65, PT 34 / 31, AQ 33 / 44 — PASS, RU at 300 by 1 ms (C6: `raw` and RU's ring retry at the top of M4c's brief)**; **415 + 27**; **M4b built and measured 2026-10-06** (ONDAR.md "M4b: built and measured"); next `/code-review` `f7a3fd8..HEAD` |
+| M1 | Scaffold + audio engine | done, `m1-done` |
+| M2 | Tray + NSPanel popover | done, `m2a-done` … `m2d-done` |
+| M3 | Stations, cache, country/station UI | done, `m3a-done`, `m3b-done`, `defect-a-done`, `m3c-done`, `defect-b-done` |
+| M4 | The drawn map | M4a `m4a-done`, M4b `m4b-done` (2026-10-07); **M4c (stations on the map) next** |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
 | M6 | Signing, notarisation, DMG | |
 
-One milestone per session. Do not start the next milestone's work early. Do not leave a
-milestone with failing checks.
+One milestone per session. Do not start the next milestone's work early, and never leave one with
+failing checks. History: ONDAR.md's milestone sections and `git log --first-parent main`.
 
-## Layout (actual)
+## Layout
 
 ```
-onda/
-├── CLAUDE.md                     this file
-├── ONDAR.md                      project document — decisions, verified versions, findings
-├── README.md                     prerequisites, first run, M1 exit criteria, stall testing
-├── docs/
-│   ├── BUILD_PLAN.md             exit criteria + open questions per milestone
-│   └── PROJECT_INSTRUCTIONS.md   stub; the real text now lives in the Claude Project's
-│                                 instructions field, not this repo
-├── scripts/stall-server.py       local Icecast-alike for stall/reconnect testing
-├── scripts/check-tokens.sh       fails `pnpm lint` on a style literal outside tokens.css
-├── scripts/fetch-natural-earth.sh  fetches the map tool's 12 Natural Earth inputs (v5.1.2) into
-│                                 `ondar-map-build/input/` and checks them against its `pins.tsv`
-├── vite.config.ts, tsconfig.json vite builds one entry, panel.html — the explicit input map is
-│                                 what makes the bundle ship it
-├── panel.html                    the popover page: transparent root (load-bearing) + the entry
-├── package.json                  pnpm; pnpm-workspace.yaml carries `allowBuilds: esbuild`
-├── src/                          React renderer for the popover (renderer only)
-│   ├── panel.tsx, vite-env.d.ts  entry (mounts panel/Panel.tsx); Vite's client types for CSS modules
-│   ├── test-env.d.ts             `node:fs`'s `readFileSync` declared for the type checker (no
-│   │                             `@types/node`): MapPane.test.tsx's test 9 reads the stylesheets
-│   ├── panel/                    Panel.tsx (root: mirrors the layout from Rust — pane, height state,
-│   │                             height in points, expandable — sets the root height from it, owns the
-│   │                             selected country and the show counter the lists re-request on, hosts
-│   │                             the expand control (disabled when refused, D4) and the placeholder for
-│   │                             the expanded pane, reports Esc),
-│   │                             NowPlaying.tsx (name, the reserved ICY title line, `flag · codec ·
-│   │                             bitrate` + the state as text; mirrors `playback:*`; M3b 1c),
-│   │                             CountryControl.tsx (the ★ toggle for favourites and recents, then the
-│   │                             native country select; its provenance line, an error on a line of its
-│   │                             own; never disabled; M3b 1b, fixes B/C), StationList.tsx (the rows
-│   │                             of the selected source — a country's ranked list, or with ★ on the
-│   │                             favourites then the recents not among them (source.ts) — one line
-│   │                             each, scrolling in the collapsed pane; click → play; the wrong-source guard and the re-request rules,
-│   │                             pinned by StationList.test.tsx — vitest, jsdom), source.ts (the
-│   │                             ListSource type and its key), provenance.ts (the
-│   │                             `cached N h ago · refreshing…` text), Transport.tsx (play/pause,
-│   │                             stop, the ★ favourite toggle, volume — no EQ; the presets retired at
-│   │                             M3b commit 4; `reconnecting` offers no Play, as the row reads it —
-│   │                             pinned by Transport.test.tsx), About.tsx (name, version, credits),
-│   │                             MapPane.tsx (M4b commit 7: the map band — a rounded platter the sea
-│   │                             fills at the band Rust laid out, one `<path>` per shape in three
-│   │                             layers — neighbours, the land with its hairline edge on the same
-│   │                             path, subdivisions above it — one flat fill per theme (A1,
-│   │                             2026-10-06: commit 7's Ink inland tone through an erode/blur filter
-│   │                             cost ~90 ms a paint and was removed at the acceptance review; no
-│   │                             filter, no opacity; no `<use>` — round 3, C1 + C2: WebKit styles a
-│   │                             `<use>` clone as the original, so commit 7's edge group painted the
-│   │                             land again over the subdivisions with no stroke), the insets' boxes and whole
-│   │                             labels, the `− fit +` row at the rect Rust reserved; the pull loop —
-│   │                             input accumulated between animation frames, one `map_pull` in
-│   │                             flight, a reply drawn only if its `seq` is newer, nothing while
-│   │                             idle; wheel pans with the gesture, a drag pans past 4 pt, negated;
-│   │                             `?measure=map` drivers `m=paint` / `m=pan` (`cc=` the country;
-│   │                             `period=` ms between the paint driver's selects, default 1 500 — a
-│   │                             country change from idle; 100 reproduces Step 0's back-to-back
-│   │                             probe and its hot core, A3; a wheel-sized push every 8 ms from a
-│   │                             timer; the `frame` line carries `commit_ms`, reply → React commit,
-│   │                             and under `m=paint&decomp=1` `parse_ms` / `wire_proxy` — the proxy's
-│   │                             copy inflates `commit_ms`, so the decomposition is its own run);
-│   │                             pinned by
-│   │                             MapPane.test.tsx), panel.module.css; Panel.test.tsx (offline with no
-│   │                             countries list and a favourite stored, the select and ★ stay enabled
-│   │                             — acceptance B and C; no map pane without a band, the platter and
-│   │                             controls with one)
-│   ├── styles/tokens.css         THE only file with colour/size literals, light + dark together
-│   │                             (the map's Sand and Ink palettes — the "Ondar map style" artifact
-│   │                             v3's relationships at Martín's round-3 pick, Sand "deeper more" and
-│   │                             Ink "lifted more", 2026-10-06 — `--map-sea`, `--map-land` (one flat
-│   │                             tone per theme since A1), neighbours, edge, the `− fit +` buttons' plate and text
-│   │                             (`--map-controls-*`, dark translucent in Ink, light in Sand — round 3
-│   │                             C3),
-│   │                             subdivisions, inset frame and label, the 0.5 pt hairline, the 8 pt
-│   │                             label font — since M4b commit 7)
-│   ├── measure.ts                the page half of the dev-only measurement harness (M3b 1a): inert
-│   │                             unless the page was loaded as `panel.html?measure=…` (round 3 C4's
-│   │                             `palette=` knob and its variant blocks went with Martín's pick,
-│   │                             2026-10-06)
-│   ├── api.ts                    THE Rust boundary: invoke wrappers + event listeners (M4b commit 6: the
-│   │                             `map` object — `select(code)`, `pull(inputs)` → `MapReply | null`)
-│   └── bindings/                 GENERATED by ts-rs — do not edit by hand
+~/Developer/Onda/
+├── CLAUDE.md · ONDAR.md · README.md · docs/BUILD_PLAN.md
+├── .claude/rules/          area rules: audio, ipc, macos-panel, map, rust, stations, typescript
+├── scripts/                stall-server.py, check-tokens.sh, fetch-natural-earth.sh, fixture-slice.py
+├── panel.html              the one page; its transparent root is load-bearing
+├── src/                    renderer only
+│   ├── api.ts              THE Rust boundary
+│   ├── bindings/           GENERATED by ts-rs; never edit by hand
+│   ├── panel/              components; vitest tests beside them (*.test.tsx)
+│   ├── styles/tokens.css   THE only file with colour or size literals (light + dark together)
+│   └── measure.ts          dev-only harness, inert unless loaded as `panel.html?measure=…`
 └── src-tauri/
-    ├── Cargo.toml                workspace: ".", "crates/ondar-audio", "crates/ondar-stations",
-    │                             "crates/ondar-map", "crates/ondar-map-build"
-    ├── tauri.conf.json
-    ├── tauri.dev.conf.json       dev-only overlay: identifier `<id>.dev`; a shell test pins the
-    │                             derivation, so renaming the real id without it fails the build
-    ├── Info.plist                merged at `tauri build`: LSUIElement (dev cannot test it)
-    ├── capabilities/default.json scoped to `panel`, the only window; `core:default` only
-    ├── resources/map/            `world.ondarmap` (format v2, built from NE v5.1.2 by the tool at M4b
-    │                             commit 5 — coverage for every band 140..=300, I1's per-band inset
-    │                             scales with the stacking rule, C1's corners — deflated per blob,
-    │                             2 852 927 B, SHA-256 `e003f07e…`; M4a's was 2 712 599 B,
-    │                             `e2775f81…` — committed, D3; rebuilt only for a rule change) and
-    │                             its build report. `tauri.conf.json`'s
-    │                             `bundle.resources` maps it to `map/world.ondarmap`: beside the dev
-    │                             binary (`target/debug/map/`) and in the bundle's Resources, so
-    │                             `resource_dir()/map/world.ondarmap` serves both
-    ├── icons/                    ondar-icon-master.svg is the source; the PNGs/icns derive
-    │                             from it. tray/ holds the 4 template glyphs (22/44 ×
-    │                             idle/playing) — pure black on alpha, icon_as_template(true).
-    │                             Only the 44 px pair renders; see ONDAR.md, tray glyphs
-    ├── src/                      Tauri shell only. No domain logic.
-    │   ├── main.rs               calls ondar_lib::run()
-    │   ├── lib.rs                AppState, `events` module, tracing init, event forwarder
-    │   │                         (also drives the tray's idle/playing glyph); single-instance
-    │   │                         callback and `RunEvent::Reopen` → the panel's show path
-    │   ├── panel.rs              the NSPanel popover: build, toggle, resign-key dismissal; the pure
-    │   │                         geometry (display resolution, anchor + clamp, the D1 cap and floor,
-    │   │                         the Cocoa frame conversion) and the D3 round trip's pure bookkeeping
-    │   │                         (`RoundTrip`), both unit-tested; route S `apply_frame`; show, resize,
-    │   │                         commit and fallback paths; the tray-screen placement log; **the map
-    │   │                         band (M4b commit 6):** `band_rect(h)` = `[16, 404, 328, h − 420]` for
-    │   │                         a height whose band is at least `BAND_FLOOR` 140 (the constants are
-    │   │                         `tokens.css`'s `--space-3` and the panel width, a test reads the
-    │   │                         stylesheet), carried on every `PanelLayout` as `band: Option<MapBand>`
-    │   │                         with the controls' rect inside it (`rules::controls_rect`, commit 7)
-    │   │                         — the page is told the platter's and the row's rects and never
-    │   │                         measures either
-    │   ├── tray.rs               template tray icon, click logging, idle/playing swap
-    │   ├── error.rs              OndarError → `{ code, message }`
-    │   ├── map.rs                the map resource (M4a commit 7): `MapState` (a `OnceLock` set once),
-    │   │                         loaded on its own thread from `resource_dir()/map/world.ondarmap`,
-    │   │                         one line — `map resource loaded path=… bytes=… units=… countries=…
-    │   │                         ms=…` or `map resource unavailable reason=…` (the app runs without
-    │   │                         it); **the view session (M4b commit 6):** `Session`, pure — `select`
-    │   │                         (the country by `Store::lookup`, the view back to the fit, `seq`
-    │   │                         bumped), `pull` (the page's `MapInputs` folded into the pending set,
-    │   │                         then fit → zoom steps about the pane's centre → pan at the new
-    │   │                         scale, `clamp_view`; a band change returns to the fit; a frame is
-    │   │                         due only when the (country, band, view) differs from the last
-    │   │                         framed, and `seq` grows only then) → `Step::Frame` or a `MapReply`
-    │   │                         with `no_map` / `unavailable` / `no_band` at the current `seq`, or
-    │   │                         nothing; `MapSessionState` holds it under a mutex
-    │   ├── log_rate_limit.rs     tracing filter bounding the `stream_download::source` ERROR
-    │   │                         flood; holds 3 of the shell's tests, including the
-    │   │                         bare-`cargo test` tripwire (see Commands)
-    │   ├── measure.rs            dev-only measurement harness (M3b 1a), `#[cfg(debug_assertions)]`
-    │   │                         whole: `ONDAR_MEASURE` → `panel.html?measure=…`, `_KEEP_OPEN`,
-    │   │                         `_SEQ=show|shows:<n>` through the production show/hide paths,
-    │   │                         `_EXPAND=1` (the production expand one second after the show —
-    │   │                         M4b commit 7, the map band mounts with no hand on the control),
-    │   │                         `_EXPANDED_HEIGHT=<pt>` (`panel::expanded_nominal`: the layout
-    │   │                         laid out as a display that caps there would — 598 is the ANMITE's,
-    │   │                         M4b acceptance), and the `measure_report` command → `measure[<mode>]
-    │   │                         …` log lines. `strings` on a release binary finds no `measure[`
-    │   ├── commands/audio.rs     8 thin commands; validate args, send, return
-    │   ├── commands/stations.rs  7 thin async commands (list_countries, list_stations, search_stations,
-    │   │                         favourites, recents): forward to the stations service's handle and
-    │   │                         map the error; none blocks main (M3a; `record_played` left with M3b
-    │   │                         commit 5 — Rust records a play itself)
-    │   ├── commands/map.rs       `map_select(code)` and `map_pull(inputs)` (M4b commit 6): the band from
-    │   │                         the layout Rust last emitted, the step under the session's lock, the
-    │   │                         frame on `spawn_blocking` with the lock released, the reply as JSON;
-    │   │                         `map_select` logs one line, `map select code=… lookup=country|no_map|
-    │   │                         unavailable`, so a normal run shows the map following the dropdown
-    │   │                         (acceptance review A2, 2026-10-06); `decomposition::log` (debug
-    │   │                         builds, measure mode — A3): one `measure[map] pull seq= step_ms=
-    │   │                         hop_in_ms= frame_ms= hop_out_ms= serialize_ms= bytes= rust_ms=` line
-    │   │                         per framed pull, joined on `seq` with the page's `frame` line
-    │   │                         (`parse_ms`, `wire_proxy`, under `m=paint`)
-    │   └── commands/panel.rs     panel_escape (the page reports Esc, Rust hides, reason=esc),
-    │                             panel_set_expanded (the page reports a click on the expand control;
-    │                             Rust lays out, applies or refuses), panel_layout_committed (the page
-    │                             reports its DOM commit for a layout generation; Rust completes the
-    │                             show or resize then — D3), panel_view_back (the page's Back left
-    │                             About; recorded so later layouts carry the pane on screen) and
-    │                             get_panel_layout (the layout last emitted, for the page to mirror
-    │                             on mount)
-    └── crates/ondar-audio/       the engine. No Tauri dependency — unit-testable standalone.
-        ├── fixtures/hls/         the M3 Step 0 census's P4 playlists byte for byte + segment heads
-        │                         only (ID3 + 16 ADTS frames; 4 TS packets, named `.mpegts`);
-        │                         PROVENANCE.md has the table
-        ├── engine.rs             engine thread, session lifecycle, `decide_tick` state logic
-        ├── build.rs              the decoder build's clock (defect B review fixes F1): `BuildClock`
-        │                         (a seq + phase word, the start/first-byte stamps, the open's
-        │                         `Arrivals`, the bounds, the figures a bound was decided on),
-        │                         `ClockedReader` (the first byte, under `IcyReader` on both kinds)
-        │                         and `Arrivals` + `on_progress` (network arrival per open, from
-        │                         stream-download's download task; review 2, G1)
-        ├── stream.rs             stream-download open, ICY headers, timeout invariant
-        ├── icy.rs                in-band ICY title stripping
-        ├── adts.rs               the ADTS front end (defect B): `AdtsReader`, realign to three
-        │                         chained headers starting below 16 KiB (else, only before its
-        │                         first alignment, pass through; never refuse), then `hls::segment::normalise_adts` per read over a carry
-        ├── ring.rs               rtrb ring → rodio Source (never blocks the audio callback)
-        ├── eq.rs                 10-band biquad peaking EQ + soft-clip, as a rodio Source adapter
-        ├── hls/                  HLS, the ADTS half (M3c)
-        │   ├── mod.rs            `open` (the playlist again on its final URL → variant → media →
-        │                         the first segment sniffed; every refusal terminal), the fetch
-        │                         task on the engine's runtime (the planner's steps → requests;
-        │                         `hls request kind= host= status= bytes= ms=` per request, R4;
-        │                         `hls refresh`, `hls gap`, `hls task ended reason=`), `HlsSource`
-        │                         (the `SourceStream` under stream-download: never yields `Err`),
-        │                         and the HLS `Settings` (`retry_timeout_for` above `read_timeout`)
-        │   └── playlist.rs       pure: the m3u8 parser (9 tags; quote-aware attribute lists; the
-        │                         `EXTINF` duration up to the first comma; relative URIs joined
-        │                         against the fetched-from URL; a plain M3U refused as NotHls —
-        │                         R2; MAP / KEY≠NONE / BYTERANGE refused), `choose_variant` (D1:
-        │                         audio-only LC before HE then highest bandwidth, then no-CODECS,
-        │                         then muxed lowest; video-only never) and the refresh `Planner`
-        │                         (D5: start 3 from the end; identity = sequence > last emitted;
-        │                         waits last `EXTINF` / TD÷2 clamped [1 s, 30 s]; stall at 3 × TD
-        │                         on the clamped TD; sequence backwards = Restarted; ENDLIST)
-        │   └── segment.rs        pure: `parse_header(&[u8; 7])`, the one ADTS header parser (the
-        │                         walk's and the front end's; F4), the ID3 skip (every leading tag,
-        │                         footer flag honoured — hygiene, the decoder's scan skips tags
-        │                         itself), the ADTS walk
-        │                         (`FFF9` → `FFF1`, the CRC dropped and `frame_length` fixed, a
-        │                         partial tail dropped, a sync loss reported), `FormatGuard`
-        │                         (sri/channels vs the session's first → `FormatChanged`), the
-        │                         container sniff (ADTS / TS at 0 and 188 / `ftyp` / unknown) and
-        │                         `gunzip` (by the response's Content-Encoding, never requested)
-        ├── reconnect.rs          Backoff: 1/2/4/8/16 s, 5 attempts, reset after 30 s stable
-        ├── types.rs              IPC types (ts-rs `#[ts(export)]`)
-        └── examples/
-            ├── stall_bench.rs
-            └── eq_headroom_sweep.rs  cross-checks the shipped soft-clip against the swept curve
-    └── crates/ondar-stations/    the station directory (M3a). No Tauri dependency.
-        ├── model.rs              boundary types: Country, Station, Codec, CacheSource, ListedCountries,
-        │                         ListedStations (ts-rs; i64/u64 fields exported as `number`)
-        ├── normalise.rs          radio-browser JSON → the types, with the census's rules and their counts
-        ├── filter.rs             rank: drop broken / empty-url, dedupe folded name+url, sort votes then
-        │                         known-bitrate-first then clicktrend, cap 750
-        ├── srv.rs                SRV lookup (hickory-resolver), measured fallbacks de1 + all.api
-        ├── client.rs             Transport/HostSource/Timing traits (fakes in tests); same-host retries
-        │                         under a 200 s budget; stall + per-request totals; explicit limit and
-        │                         the three-rule truncation guard (rule 3 from 2 000 stations up); an
-        │                         empty countries answer refused
-        ├── cache.rs              rusqlite (bundled), user_version migrations, TTL 24 h / 7 d, expired
-        │                         lists kept with their age, local search (ASCII case folding,
-        │                         LIKE metacharacters escaped)
-        ├── store.rs              favourites; recents (20, replay moves to the top)
-        ├── service.rs            the DB thread + a 2-worker fetch runtime: never awaits the network on
-        │                         the DB thread; coalesces fetches per country; stale-while-revalidate;
-        │                         emits StationsUpdated/CountriesUpdated (with a RefreshOutcome:
-        │                         landed | failed — every fetch ends with one event, and `landed`
-        │                         means the write succeeded, not just the fetch) through a sink
-        ├── fixtures/             census slices + PROVENANCE.md (the data's stated freedoms)
-        └── (scripts/fixture-slice.py regenerates the PT slice)
-    └── crates/ondar-map/         the drawn map's pure core (M4a). No Tauri dependency, no network
-        │                         dependency.
-        ├── laea.rs               the spherical LAEA, hand-written (Snyder PP 1395; `proj4rs` 0.2's
-        │                         is wrong in y), on the WGS84 authalic radius 6 371.0072 km; the
-        │                         inverse's latitude by atan2; `haversine_km`; `lon_interval` (the
-        │                         shortest longitude span, antimeridian-aware — R1)
-        ├── rules.rs              the rules shared with the build tool: `Pane` (+ `GOLDEN` 328 ×
-        │                         300 × 20; `is_valid`: finite, sides > 0, padding ≥ 0 — `fit_scale`
-        │                         answers `None` otherwise, so no frame function sees a bad pane;
-        │                         `project`/`unproject` check `is_valid` themselves, and the
-        │                         view's: `View::is_valid`, a finite centre and scale > 0),
-        │                         `fit_scale`, `initial_scale` (S1 floor 1.5), `LADDER` 1.5/3/6/12/24
-        │                         km/pt, `level_for` (the coarsest level ≤ the scale), S6's
-        │                         `rect_ring_distance` (+ `seg_dist`, `segments_cross`), the one copy
-        │                         the tool's clearance check and the frame's `inset_clearance` share,
-        │                         the one box rule `box_fits` / `boxes_apart` (M4b commit 2, review 3
-        │                         finding 4: the tool refuses what the frame drops, nothing else) and
-        │                         `controls_rect` (C1, review P5: the `− fit +` row, 74 × 24 pt, 8 pt
-        │                         from the pane's bottom and right — defined here, placed first in the
-        │                         inset rule at M4b commit 4), the band: `BAND_WIDTH_PT` 328,
-        │                         `BAND_PADDING_PT` 20, `BAND_FLOOR` 140, `BAND_MAX` 300 and
-        │                         `Pane::band(h)` (`band(300)` is `GOLDEN`; M4b commit 3), and I1's
-        │                         box (commit 4): `inset_box_at(golden rect, corner, pane, s)` — the
-        │                         size scaled, the strip and pads not, the row's gaps to its corner
-        │                         kept — `inset_rect_at_corner` (a row moved to another corner with
-        │                         its gaps), `inset_min_scale` (`INSET_MIN_LAND_PT` 28 × 12: box ≥
-        │                         36 × 28), `label_width_pt` at `INSET_LABEL_FONT_PT` 8 (the style
-        │                         artifact's row, read 2026-10-05; 0.6 em a character, 0.3 a space)
-        │                         and `label_inner_width`; the stacking rule (commit 4b, the commit 4
-        │                         STOP's decision 1): `abuts` (B beside A along the row, or stacked
-        │                         along the column, at the same corner, with the golden gap) and
-        │                         `inset_box_beside` (B keeps that gap to A's near edge as A shrinks —
-        │                         Hawaii beside Alaska, Madeira under the Azores)
-        ├── codec.rs              a ring as `i16` deltas of 0.05 pt quanta at its level from an `i32`
-        │                         first vertex, escape pair `(i16::MIN, i16::MIN)` + `i32`; lossless
-        │                         to 0.0354 pt; `Cursor`, the one bounded reader (every read an
-        │                         `Option`, counts bounded by what remains)
-        ├── clip.rs               Sutherland–Hodgman (rings) and Liang–Barsky (lines) against a
-        │                         rectangle, hand-written: no polygon-boolean crate at runtime
-        ├── index.rs              the ring index and the clamp's reach, shared by the tool and the
-        │                         frame: `fit_rect`, `reach` (the fit rectangle + the 2 pt clip
-        │                         margin at the level's coarsest scale — D6), `ground_cap` (a
-        │                         rectangle of a projection as a ground cap; off the disc = the whole
-        │                         sphere), `cap_meets`, `tolerance_km` (bound + codec), and
-        │                         `clip_rect` (the pane + 2 pt per side — the one clip rectangle the
-        │                         frame clips to and the tool measures its clearance on; review 3
-        │                         finding 5, M4b commit 2)
-        ├── format.rs             `world.ondarmap` v2 (M4b commit 5; v1 was M4a's, refused as
-        │                         `Version(1)`): the model (`Unit`, `Part` + `Role`, `Cap`, `Country`,
-        │                         `Inset` — with `size_km` and the per-band `scale_pct` table, one byte
-        │                         per height of the header's `Bands` {width, padding, h_min, h_max},
-        │                         each ≤ 100 — `BlobMeta`), the writer (the tool's) and
-        │                         `Store::load` (the app's) — one code path. Per blob: a ring table,
-        │                         raw or deflated (D1), CRC32 of the raw bytes; the loader never
-        │                         panics (bounded cursor, per-blob and total raw caps, the ring table
-        │                         must tile the blob, a blob's ring count must match its owner's,
-        │                         the file's ladder must be `LADDER`, every unit a country names
-        │                         must exist, the bands valid and every scale table its span)
-        ├── frame.rs              framing (M4a commit 6): `Store::lookup` (R7: uppercase; `XX`, unknown →
-        │                         `NoMap`), `fit` (bbox centre, S1 floor), `clamp_view` (D6: scale into
-        │                         [1.5, widest], the view inside the fit rectangle; a scale within
-        │                         `FIT_SNAP`, 1e-6, of the widest is the fit — review 3), `frame` (level =
-        │                         coarsest ≤ scale; clip = view + 2 pt; rings by the index; the main
-        │                         unit by translation, others inverse-then-forward; land, neighbours,
-        │                         S4 parent copies omitted, own `Dropped` islets drawn as land,
-        │                         own inset groups drawn as land away from the fit (in their box
-        │                         at it), subdivisions above 8 km/pt, insets at the fit view only, each
-        │                         box at the band's stored scale (`Inset::scale_at`, the pane's height
-        │                         floored and clamped into the bands) anchored by its corner with the
-        │                         golden gaps or beside the box it abuts (`Store::inset_boxes`: the
-        │                         one placement — `rules::inset_box_at` / `inset_box_beside`, the
-        │                         controls' rect placed first, in table order; the tool's rule), drawn
-        │                         only when the scale is above 0 and the box is inside the pane and
-        │                         apart from the controls and the boxes drawn before it, else counted
-        │                         in `insets_dropped`; the inset's level from the group re-fitted to the
-        │                         band's box (`inset_scale` on `size_km`); 0.01 pt; `missing_blobs` per
-        │                         unit), `project`/`unproject`, `inset_clearance`
-        ├── examples/frame_bench.rs  § 7's timings: load, PT/US/RU at fit, a city at the floor and mid
-        │                         zoom (10 + 100 runs, median / p90, reversed), `bytes_out`, the sweep
-        ├── examples/band_sweep.rs  M4b's acceptance sweep: every band 140..=300 × 248 countries through
-        │                         the frame — `missing_blobs` at fit (and over D6's views with
-        │                         `--views`), `insets_dropped`, clearances, boxes against the controls
-        │                         and the 36 × 28 minimum; `_handover/m4b-c5/band-sweep-*.log`
-        ├── tests/resource.rs     tests on the shipped resource (pins and bands, spec, loader fuzz, the
-        │                         band-sampled coverage, the insets at 178 and 300);
-        │                         `ONDAR_MAP_RESOURCE=<path>` runs them on another file — a local
-        │                         build before it ships
-        ├── tests/frame.rs        § 5's frame tests on the shipped resource
-        └── fixtures/             `laea-reference.tsv` (Step 0's Q5: pyproj + d3-geo at 37 points),
-                                  `step0-fit.tsv` (Q1-merged's 239 fits), `golden-fit.tsv` and
-                                  `golden-insets.tsv` (the resource's frames, from `--tables`)
-                                  + PROVENANCE.md
-    └── crates/ondar-map-build/   the build-time tool (M4a): Natural Earth → the map resource. A
-        │                         workspace member (D4) so the gates cover it; never in the app.
-        │                         `cargo run -p ondar-map-build --release -- [--tables DIR]
-        │                         [--out FILE] [--report FILE] [--encoding deflate|raw]
-        │                         [--simplifier hybrid|vw] [--bench]`; ~20 s on the M4 Pro
-        ├── pins.tsv              the 12 inputs (admin 0, map units, admin 1: .shp/.shx/.dbf/.prj),
-        │                         bytes + SHA-256, shared with the fetch script; a mismatch is refused
-        ├── overrides.tsv         S2: MY's frame is the peninsula's group (hand-checked, D5)
-        ├── insets.tsv            S6: the 14 insets — anchor, corner (top-left, top-right or bottom-left
-        │                         since M4b commit 4, C1: the bottom-right is the controls'; EC, ES, IN
-        │                         and YE set from the tool's corner table 2026-10-05), box on the
-        │                         golden pane, label (Canaries, Fr. Guiana, Antilles, Andamans since
-        │                         commit 4b — the four that did not fit their boxes at 8 pt)
-        ├── fixtures/             `step0-corners-161.tsv`, Step 0's corner table at 328 × 161 (review
-        │                         P6's comparison, `input_tests::corner_table_at_161_matches_step0`)
-        ├── aliases.tsv           R7/S4: the nine codes drawn from their NE map unit
-        ├── input/                the NE files (gitignored; never in CI)
-        ├── pins.rs               the 12 NE input pins: size and SHA-256 checked against `pins.tsv`
-        │                         before a file is read; a mismatch is refused
-        ├── tables.rs             the hand-checked inputs parsed strictly (`overrides.tsv`, `insets.tsv`,
-        │                         `aliases.tsv`); a malformed row names its line
-        ├── ne.rs                 the shapefile + dBASE reader (`ISO_A2_EH` is the code field)
-        ├── seam.rs               R9: Antarctica's polar run stripped; RU's and FJ's halves on the
-        │                         seam shifted east, unioned, and the ≤ 154 m notches where the
-        │                         halves' coasts meet 180° apart closed; `seam_edges` (must be 0)
-        ├── world.rs              the frame rules over all of NE: 267 units, 248 countries; grouping
-        │                         (< 300 km on the ground), the frame group (largest part or the
-        │                         override), R1 centre (AQ at the pole), the fit at the golden pane,
-        │                         in-frame groups, S6 insets matched by nearest part (≤ 100 km),
-        │                         each box inside the golden pane, apart from the others and from
-        │                         the controls' rect at full size (`rules::box_fits` / `boxes_apart`,
-        │                         the frame's rule; a bottom-right row refused — C1), its clearance
-        │                         from the land the frame draws (frame + dropped groups, clipped to
-        │                         `index::clip_rect`, the frame's) recorded; **I1 (M4b commit 4):**
-        │                         `inset_tables` — at every band 140..=300 the land at that band's fit
-        │                         view, the controls' rect placed first, each row in table order at
-        │                         the largest whole-percent scale that is inside the pane, apart from
-        │                         every box placed and ≥ 12 pt from the land (a bisection: a smaller
-        │                         box at the same corner is a subset), 0 = dropped there
-        │                         (`InsetPlan::scale_pct`); the corner table (`CornerChoice`: each row
-        │                         alone at TL / TR / BL with its own gaps — the minimum over the bands
-        │                         and where, 161 / 178 / 300, the full box's clearance at 161);
-        │                         the stacking rule in the placement (`abut_of`: the first earlier row
-        │                         at the same corner that `rules::abuts` matches; followed only while
-        │                         that box is placed; `InsetPlan::rects` the placed boxes per band),
-        │                         `ship_gate` (an inset dropped at 178 or 300 — except
-        │                         `MAY_DROP_AT_178`, Hawaii, decision 1 case (c): it meets the minimum
-        │                         at no corner from 140 to 273 and first appears at 274, `first_band`;
-        │                         a label wider than its inner width at 178 or 300 — review P3), the
-        │                         subdivision flag (fit > 8), S4 part matching
-        ├── borders.rs            D2: the admin-1 edge census (twice = an interior border, once =
-        │                         the outline, along the seam = neither), lines chained between
-        │                         junctions, and the gate (decided 2026-10-01): every once-edge
-        │                         whose midpoint is inside the country's admin-0 land within 375 m
-        │                         (0.25 pt at 1.5 km/pt) of the admin-0 rings, none found 3+ times
-        ├── simplify.rs           R3 per ring: VW-preserve's ε bisected (14–16 evaluations) until the
-        │                         O(n) span bound is within the tolerance; the exact measure (grid)
-        │                         is the stored figure. The stored ring is the **hybrid** (P4, decided
-        │                         2026-10-01): RDP at the tolerance if `is_simple` (grid-bucketed: no
-        │                         crossing, fold-back or repeat; a ring also ≥ 3 distinct vertices and
-        │                         non-zero area) and within the bound, else that ring's VW; no repair
-        ├── store.rs              the resource's contents: storage LAEA per unit (a country's main
-        │                         unit in its frame's), roles, the S4 omit-in, ring caps (R10),
-        │                         coverage from `index::reach` **per band** (M4b commit 3: for every
-        │                         integer height 140..=300 at width 328 — `fit_at`, `reach_at`,
-        │                         `bands_using`; `reach` is the bounding rectangle over the bands
-        │                         whose views can use the level, `top_level` the floor band's; the
-        │                         blobs the bound adds over the exact union are counted in deflated
-        │                         bytes and dropped over 5 %, `store_exact_only` — 0 on the real
-        │                         data; D6: the view inside the fit rectangle, + the clip margin and
-        │                         the cap tolerance), every needed (unit, level) simplified ring by
-        │                         ring on all cores (a ring whose quanta leave fewer than three
-        │                         distinct vertices is stored empty and counted, `collapsed`: 286 on
-        │                         NE v5.1.2, mostly the Maldives at 12 and 24 km/pt), subdivisions
-        │                         (D2 borders, or polygons where the gate fails), P2 per vertex, P4
-        ├── report.rs             the build report (bytes/vertices/bounds per layer and level,
-        │                         coverage — the band range, the bound against the exact union,
-        │                         the collapsed rings by level and unit, the countries whose fit at
-        │                         140 passes 8 km/pt while flagged off (an observation) — "Insets per
-        │                         band" (I1/C1: the scale table at 140 / 161 / 178 / 200 / 250 / 300
-        │                         with the minimum and where, the corner table, the ship gate's
-        │                         findings), P4, P2, R9, D2, D1, insets, S4, pins, SHA-256)
-        ├── bench.rs              D1: `Store::load` from a file, raw against deflated per blob
-        ├── geom.rs               projection, bounds, caps; `geo::Coord` adapters to `ondar_map::rules`'
-        │                         segment distance and crossing test (the simplifier's and the border
-        │                         census's; the rectangle–ring adapter left with its one caller at M4b
-        │                         commit 2)
-        └── main.rs               `load` (pins → NE → world → plans), the tables (`fit`, `insets`,
-                                  `inset-bands`, `inset-corners`, `inset-labels`, `s4`, `borders`
-                                  .tsv — written first, so the STOP reads them when the gate refuses),
-                                  the ship gate (`--allow-dropped-insets`, `--allow-wide-labels`
-                                  build regardless, for the tables only), the build, and the
-                                  `#[ignore]`d input tests
+    ├── src/                Tauri shell only, no domain logic: lib.rs (events), panel.rs, tray.rs,
+    │                       map.rs (view session), commands/, measure.rs (debug builds only)
+    ├── resources/map/      world.ondarmap, committed; rebuilt only for a rule change
+    ├── Info.plist · tauri.conf.json · tauri.dev.conf.json · capabilities/
+    └── crates/
+        ├── ondar-audio/     the engine; no Tauri dependency
+        ├── ondar-stations/  radio-browser client, SQLite cache, favourites; no Tauri dependency
+        ├── ondar-map/       map core: projection, format, frame; no Tauri, no network
+        └── ondar-map-build/ build-time tool, Natural Earth → the resource; never in the app
 ```
-
-That root `onda/` is **not** a missed rename. The project is Ondar, but the working directory
-on disk is still `~/Developer/Onda` — renaming it would break the working directory and the
-folder grant Martín's Claude session uses, for tidiness alone. It is the one place the old name
-survives on purpose. See ONDAR.md, "Renamed from Onda to Ondar".
-
-`src/bindings/*.ts` is generated by **ts-rs**, not tauri-specta. `.cargo/config.toml` sets
-`TS_RS_EXPORT_DIR = src/bindings` (relative to the repo root), so **`cargo test` in the
-`ondar-audio` package is what regenerates the bindings** — see the note on workspace test
-scoping below. Commit them.
-
-That regeneration *is* a test run: `#[ts(export)]` expands to a `#[test] fn
-export_bindings_<type>` that writes the `.ts` file. So the 415 tests `cargo test --workspace -- --list`
-reports (410 run, 5 `#[ignore]`d — the map tool's five input-bound tests, run locally) break down as
-**387 hand-written + 28 ts-rs-generated** (audio 182, shell 52, stations 64, map 76, map-build 41):
-
-| | |
-|---|---|
-| `engine::tick_tests` | 31 — review 2 (2026-09-30), finding 4: the bound's message carries the gap and reconnect count the engine decided on, not the clock read again after the cancel (fails with `decided_inputs` returning the clock's own inputs, the code on `688c9fd`). Ten pin the build bound's rule (defect B review fixes F1, on durations, each mutation-checked, `_handover/b-f1-mutations.log`): `no_bytes` at its bound and not 1 ms before (fails on `>`); nothing but `no_bytes` before the first byte (fails with the format bound run from the build's start — `da36489`'s clock); `NoBytes` never the format; `format` at its bound from the first byte and not 1 ms before (fails on `>` and on the bound read from the build's start); a gap of `starved` → `Starved`, 1 ms below → `Format`; a completed reconnect → `Starved`; a stall that resumed before the bound → `Starved` (fails with the gap clause dropped); fires while `user_paused` (fails with the arm after the pause arm); nothing without a build; `build_bound_cause`'s three outcomes, the format's page text unchanged and terminal only before audio |
-| `build::tests` | 7 — review 2 (2026-09-30), G1a: the no-bytes bound covers the prefetch at exactly 10 kbit/s with a 10 % margin, rounded up, at the floor, 80 000 B and the ceiling (on `688c9fd` "131072 B: 104.857s < 1.1 × 104.8576 s"; fails with the factor at 1.0: 104.858 s). G1b: `ClockedReader` stamps the first byte only — nothing on a 0-byte read or an `Err`, and a later read does not move it (fails if every read re-stamps); `Arrivals` on the download's clock — 0 bytes stamps nothing, the first gap is `elapsed`, a recorded gap is kept after arrivals resume, the open gap counts (fails reading the open gap only, or not at all); `begin_build` installs the open's arrivals **unreset** and resets the rest, and a new open's arrivals hold nothing of the last (fails with the arrivals reset: the 2 s prefetch gap is lost — G1a's session test survives that mutation, its gaps being tiny either way; or with one slot per session); a swap from a stale word fails and the decode thread's failed swap reads the cause **with the decided gap and reconnect count** (finding 4; fails on a swap that compares the phase alone). F1: the seq and the phase pack apart; the production bounds (`no_bytes` 60 / 70.4 / 115.344 s at the floor, a 320 kbit/s record and the ceiling; fails without the 60 s floor) |
-| `engine::started_tests` | 8 — **review 2, G2 (2026-09-30):** `g2_a_stale_session_emits_nothing` — session 1's `StreamInfo` and ICY title after session 2 began, and session 2's after its own cancel with no successor, never reach the channel; session 2's while live do (recorded failing on `688c9fd` through a shim of the ungated emit: `["info:A", "title:A"]`, `_handover/b-g/g2-688c9fd-record.log`; fails with the generation check removed from `emit_from`; F2's session test passes with its `cancelled()` check removed — the gate alone covers it, `_handover/b-g/g2-mutations.log`). The click rule's pure part on `Shared::write_state` (M3b 5): once per session whatever the route back to `Playing` (fails on a per-`Playing` or previous-state rule); a second `play` for the same station starts again; a reconnect before ever playing starts on its first `Playing`; paused while buffering starts on resume, `Started` after `State(Playing)`; a repeated `Playing` is a no-op; **a stale session's `Playing` cannot take the new session's `Started`** (`/code-review` finding 1, 2026-09-23 — the write and its liveness are decided under one lock; fails on a flag read before the lock, which was the code: mutation-checked, the gate disabled sends `Started { u2 }` for a station that has not opened); a cancelled session's late write is dropped before any successor (fails if only `begin_session` moves the generation) |
-| `engine::session_tests` | 43 — **post-defect-b (2026-09-30), review 2's finding 5:** T-B1a and F1 (a) assert the decode thread's `build bound: …` line is logged but is not a `warn` (`decode_warn_lines`; the capture now keeps the level) — the bound's one warning is the engine's `fail_build` line (on `dc9200d` both were `warn`, `_handover/post-defect-b/finding5-dc9200d-record.log`). **Defect B review 2, G1 (2026-09-30), starvation on network arrival:** `g1_a_steady_32_kbit_unsyncable_is_a_format_cause` — F-nosync as `audio/mpeg` at 4 000 B/s in the paced server's small writes, a 4 KiB prefetch, the production 5 s `starved`, a 15 s format bound → terminal `Error { UnsupportedFormat, "…first 15 s…(audio/mpeg)" }`, no `Reconnecting`, one connection, decided on a gap under 1 s; `g1_b_icy_16000_below_26_kbit_is_a_format_cause` — the same behind `icy-metaint: 16000` at 2 500 B/s (a 16 000 B read is 6.4 s; at 26 kbit/s it would be 4.9 s and prove nothing). Both recorded failing on `688c9fd` (`_handover/b-g/g1b-688c9fd-record.log`): `Reconnecting { 1 }`, "the connection stalled (8.1 s without data)" and "(6.4 s…)" — a 32 KiB and a 16 000 B read's fill time. Mutations (`_handover/b-g/g1b-mutations.log`): `on_progress` off on the HTTP open, or each decoder read stamping the arrival instead, fails both; off on the HLS open fails T12's new arrival check. T-B1c also asserts the bound was decided on a gap ≥ `retry_timeout` (with the gap dropped from the rule: "decided on a 0ns gap"; F1 (a) fails too). **Defect B review fixes F4 (2026-09-29):** `f4_an_x_aac_fff9_mount_plays` — T-B2b's `FFF9` body served as `audio/x-aac` → `Playing` at 24 000/1, `aligned at 0 B`, one `Started` (on `da36489`: `Error { UnsupportedFormat, "…first 2 s…(audio/x-aac)" }`, no front end). **Defect B review fixes F2 (2026-09-29), a cancelled build emits nothing:** `f2_a_cancelled_build_emits_no_stream_info` — A builds on 8 KiB of F-falsesync served as `audio/mpeg` (4 KiB prefetch, then held), B is played (A cancelled, B's session begun), and after A's decode thread exits no `StreamInfo` follows (on `da36489`: A's 24 000/1 `StreamInfo` after B's play — S3's empty `Ok` after the cancel; reshaped before the fix from `audio/aac`, where the front end held the bytes and the cancel gave `UnrecognizedFormat`; mutation: the check after the emit). **Defect B review fixes F1 (2026-09-29), the byte clock**, each recorded failing on `da36489` through an uncommitted shim of the harness (`format` → `build_bound_ticks`, its one knob; `_handover/b-f1-da36489-record.log`): (a) `f1_a_hung_reconnect_is_a_network_cause` — 40 KiB of F-nosync then held, every later connection accepted and never answered, format 15 s → `Reconnecting { 1 }`, no `Reconnect` event, ≥ 2 connections, "the connection stalled" (on `da36489`: `Error { UnsupportedFormat, "…first 15 s…(audio/mpeg)" }`; ~16 s); (b) `f1_an_overstated_bitrate_on_a_slow_stream_plays` — an 8 kHz mono WAV paced at its 16 000 B/s, a 64 000 B prefetch (4 s), format 2 s → `Playing`, `StreamInfo` 8 000/1, one `Started` (on `da36489`: `Error { UnsupportedFormat, "…first 2 s…(audio/wav)" }`); (c) `f1_an_hls_stall_before_the_first_byte_is_a_network_cause` — the first segment below the prefetch, later segments held 15 s, `no_bytes` 3 s → `Reconnecting { 1 }`, "no audio arrived within 3 s of connecting" (on `da36489`: `Error { UnsupportedFormat, "…first 2 s…(audio/aac)" }`); (e) `f1_each_build_carries_its_own_clock` (replaces C4b's reset test) — a real `Engine` ticked by hand: build N aged past the bound, `BUILT`, build N+1 begun with no tick between → `PROBING` before and after its first byte (on `da36489`: `left: 3`, `BOUND`); a bound decided from N's word leaves N+1 probing and its token uncancelled. T-B1a–d, T-B1a′ and P1's row pass on `da36489` and after, unchanged. **Defect B C4b (2026-09-29), the bound counts elapsed time:** `c4b_the_build_bound_counts_elapsed_time_not_ticks` — every supervised tick slowed by 50 ms (`start_session_supervised_slow`; `ONDAR_TEST_TICK_DELAY_MS` does the same to every supervised test), a 2 s format bound: since F1 the time from the first-byte stamp to the bounding tick is in [2 s, 2.5 s) with fewer than 20 ticks (on `a8585c6` 2.908 s after 20 ticks). All the supervised tests pass at `ONDAR_TEST_TICK_DELAY_MS=200`. **Defect B C4 (2026-09-28), the ADTS front end wired:** T-B2a — station 02's `FFF9` frames repeated, as `audio/aac` with `icy-metaint: 1024` and a `StreamTitle` → `Playing`, `StreamInfo` 24 000/1, one `Started`, the title, and the decode thread's one log line `adts front end: aligned at 0 B` (a test logger keyed by the decode thread's name); T-B2b — the same body from 100 B into its first frame with `FF FB 90 C4` planted → `Playing`, `aligned at` the partial's length; both `Connecting` on `d1b127b`. Mutated: the front end off (the bound's `Error` in both), the front end **before** `IcyReader` (review P4: T-B2a reads `[Buffering, Reconnecting { 1 }]`, no `Playing`), aligning only at offset 0 (T-B2b). `the_front_end_applies_to_http_aac_only` — `audio/aac`, `audio/aacp` and since F4 `audio/x-aac`, any case, with parameters, never HLS or another type, not `audio/x-aiff` (fails on an exact `audio/aac` match, on a filter that ignores the source kind, on `audio/x-aac` dropped and on a loose `audio/x-a` prefix; on `da36489` at `audio/x-aac`). T15 also asserts the HLS session logs no `adts front end` line (review P3; fails when the kind is ignored, its segments being `audio/aac`). **Defect B C2, the build bound**, on `start_session_supervised` (an `Engine` ticking the session, a 2 s format bound since F1) and `paced_server` (128 KiB/s; `sent` and `connections` on the server's clock), each waiting for `Error`/`Reconnecting` **or 1 MiB sent** (`states_until_sent`): T-B1a F-falsesync as `audio/aac` → `Error { UnsupportedFormat }` "no decodable audio in the first 2 s…", < 512 KiB sent, one connection, no `StreamInfo`; T-B1b F-nosync as `audio/mpeg` → the same below Symphonia's 1 MiB search; T-B1d F-nosync with `FF FB 90 C4` at 4 096 (the MP3 resync) → the same; all three read `Connecting` at 1 MiB on `d1b127b`. T-B1c a silent server (96 KiB, then held; every connection re-sent from 0), bound 15 s = 3 × `retry_timeout` (review P2; ~16 s to run) → `Reconnecting { 1 }` by the network cause, ≥ 1 `Reconnect`, ≥ 2 connections (on `d1b127b`: `Error { UnsupportedFormat }` at 1 081 344 B after 50 s). Mutation-checked: the bound off; the phase checked on `Err` only (T-B1a reads `Buffering`, `Reconnecting { 1 }` — S3's empty `Ok`); the cause inverted; the cause always format (T-B1c); the phase checked after the `UnrecognizedFormat` arm (T-B1b, T-B1c); the engine's bound check behind the ring's early return (all six). **Defect B C1, B2 by "has produced audio":** T-B1a′ — 1.5 s of WAV plays and ends, every reconnect answers F-nosync (seeded `0x00–0x3F`) → `Reconnecting { 1, 2 }`, one `Started`, no `Error`, since C2 at the bound (< 512 KiB of F-nosync; on `d1b127b`: `Error { UnsupportedFormat }` after the reconnect's 1 MiB search); review P1's row — a false ADTS header in 8 KiB then EOF builds a decoder that yields nothing (`StreamInfo`, S3's empty `Ok`), then F-falsesync on the reconnect → terminal `Error { UnsupportedFormat }` at the bound after `Reconnecting { 1 }` only (on `d1b127b` the reconnect's build never ends; fails on a flag set at `build()`'s `Ok`: `Reconnecting { 2 }`). The harness itself, **round-3 review (2026-09-25), finding 3:** `grace` returns while a state is held, so a second grace (`await_started` entered with `Started` already recorded) cannot overwrite it — events queued by hand, no session; on `8b5b1fb` the held `Buffering` was lost (`[Playing, Reconnecting]`). **round-3 review (2026-09-25), finding 2, T27:** seq 4 answers 503, 503, then 404 for good → five requests (two transient retries, the 404 and its two retries) then seq 5; the 404 retries have their own counter (on `9a6a059`: `[3, 4, 4, 4, 5]`, the shared counter already at 2). **every read of a request log or engine state follows the event that makes it true** (2026-09-25, after `4a388f5`'s red run): T12 waits for its third start segment (reproduced with `ONDAR_TEST_LATE_REQUEST_DELAY_MS=300`/`1000`: the log held 97880 and 97881 only); a test stopped at `Playing` awaits its `Started`; the 503 and 429 tests stop on the first `Error`-or-`Reconnecting` and assert the gap between requests on the server's clock (≥ 1 s, ≥ the 429's 3 s `Retry-After` — mutation with the header ignored: 1.019 s); T15 asserts its 13 s window's negatives and awaits its first refresh. **review 2 (2026-09-25), finding 5, T26:** `hls::open` called directly with every start segment 410 and `Retry-After: 7` answers `(Http, terminal: false, Some(7 s))` — on `b07e04e` `(Network, false, None)`, which put `network: … 410 …` on the page after five attempts. **review 2 (2026-09-25), findings 2 + 4, T23–T25** (a static window under `TARGETDURATION:10`, seq 4 fetched by the task): a **410** is one request, then seq 5; a **404** twice then 200 is three requests and no gap (fails if a 404 is skipped at once); a 404 that stays is three requests, then the gap and seq 5. T23 and T25 failed on `0f045b3` with ten requests for seq 4 (`[3, 4 ×10, 5]`, the whole-TD retry). **every test reads the session's states off the event stream, in order** (`states_until` stops at the first state its predicate accepts and the test reads `seen.last()`; `states_while_waiting_for` for a request count; defect A's pair waits for each station's `Started`) — never a sample of the current state, which on a slow CI runner missed T18's short `Playing` (`0f045b3`'s red run). `ONDAR_TEST_POLL_DELAY_MS` (a late-waking consumer) and `ONDAR_TEST_SERVER_DELAY_MS` (a slow open chain) stand in for that runner: T18 fails at 1 000 and T19 at 300 on the sampling helpers, and all 19 pass at 1 000, 2 000 and 300 (review 2, 2026-09-25; T19 keyed to playlist requests, finding 6). **review 2 (2026-09-25, finding 1), T22:** a gzip-encoded media playlist of a few KB that inflates past `PLAYLIST_MAX_BYTES` (a 2 MiB comment line) is refused terminally as an over-cap body is, after the two requests of R1 (on `fe120a2` it played: `[Buffering, Playing]` — the inflate had no bound). **review fix C (2026-09-25, finding 5), T21:** a **gzip-encoded** MPEG-TS first segment is refused with the MPEG-TS message (fails on `28f7098` with the generic "HLS segment format not recognised": one flag served both the early sniff and the post-inflate one, and a gzipped body got neither). **Fix B (finding 4), T18–T20:** a 404 on the **first** segment is an eviction — the next pending segment is tried and plays (fails on `cce9ffa`: `Error { Http, "…answered HTTP 404 Not Found" }`, terminal, the playlist policy applied to a segment); every start segment 410 → not terminal, `Reconnecting { 1 }`, then it plays on the reopen (fails on `cce9ffa` the same way); a 403 on the first segment stays terminal after one chain of 3 requests (access denial does not change with a retry — unchanged from `cce9ffa`). **M3c commit 4, T12–T17** against a path-routed server serving the census fixtures, segments synthesised from the heads (R3), the same block run on `b7e050a` where all six fail as F7 predicts (one request, the generic message, no `Playing`): T12 Antena 1's shape — a master with a relative variant, the media playlist as the **gzip bytes it was served**, ADTS segments — reaches `Playing`, `StreamInfo` 48 000/2, one `Started`, the master requested **twice** (R1) then the media playlist then segment 97880 (three from the end; fails without gunzip: "not a playlist"); T13 MPEG-TS segments (09) → terminal `unsupported_format` "HLS with MPEG-TS segments is not supported yet", **3** requests (2 playlist + 1 segment head), no `Reconnecting`, no vote (fails non-terminal: `Reconnecting { 1 }`); T14 a video-only master (03) → "no audio variant (video only: avc1.42c020)" after **2** requests, none for a media playlist (mutation not run: the fixture's variant URIs are the real host's); T15 a TD-6 live playlist plays 13 s with `reconnect_count` 0 and no `Reconnecting` (F4; the ICY 5 s `retry_timeout` reads **2**); T16 a window that stops advancing → the stall bound → `Reconnecting { 1 }` → the playlist requested again (twice) → `Playing`, **one `Started`** (fails without the bound: no reopen in 20 s); T17 a 48 000 segment then a 22 050 one → two `StreamInfo`, `Reconnecting { 1 }`, one `Started` — **the guard-off mutation still passes**: Symphonia's ADTS reader ends the stream on a header whose rate differs, so the reopen happens either way; the guard is the first line (T10 pins it), the decoder the second, and T17 pins the outcome. Also **defect A** (2026-09-24): two stations on one `Player` and one bare 48 kHz mixer, read by the output tone over the source tone (the pulled-to-output ratio, as heard): a 44.1 kHz station after a 22.05 kHz one plays at 1.00, and a mono station after a stereo one plays at 1.00 on both channels with L = R. Both failed on `f7af9dc`, at 0.500 and at 2.000 with \|L−R\| 0.0654, because the mixer's one converter kept the first station's format. Also: a WAV played twice across a reconnect is one session: one `Started`, with the id (fails if per-`Playing`; found the harness needed a mixer drain thread, since `Player::clear()` waits for a queued source); the retry policy at the level `stream::open`'s tests could not reach: `run_session` against counting servers on 127.0.0.1, a device-less `rodio::mixer` under the `Player`. `ICY 200 OK` and 404 → `Error { Http }` with **one** request and no `Reconnecting`; 503 → a second request through the backoff. Mutation-checked 2026-09-22: with the terminal branch disabled the first two fail at `Reconnecting { attempt: 2 }`. Review finding 4: a 429 with `Retry-After: 3` → `Reconnecting { 1 }` and no second request inside 2 s (fails if every 4xx is terminal, or if the header is ignored); a 404 on the reconnect after a 1.5 s WAV stream ended → `Reconnecting { 2 }`, no `Error` (fails if a reconnect's 4xx is terminal) |
-| `stream::tests` | 16 — **post-defect-b (2026-09-30), review 2's finding 7:** `mime_essence` borrows the essence as served and `starts_with_ignore_ascii_case` folds the case: `Audio/AAC; charset=x` → `Audio/AAC`, matched by `audio/aac`; a prefix that would cut inside a multi-byte character (`audio/aa\u{e9}` against a 9-byte prefix) is no match and no panic; the two callers' behaviour is pinned already by `the_front_end_applies_to_http_aac_only` and `hls_content_types_match_case_insensitively_without_parameters`. **Defect B C0 (2026-09-28):** a 404 with a declared-length body says its head once, then the excerpt after the URL (on `d1b127b`: `"404"` twice — `FetchError`'s Display is `Failed to fetch: {source}` and `decode_error` is `{source}: {body}`, so stripping the former never matched). **review 2's bound sweep (2026-09-25):** an error response's body is read for its excerpt only when its declared `Content-Length` is ≤ `ERROR_BODY_MAX` (64 KiB); a 404 whose chunked body never ends answers at once, `Http` and terminal, with no excerpt (on `fe120a2`: no answer inside 5 s while the server sent 14.3 GB — stream-download's `decode_error` is `text()`). the prefetch is the larger of the floor and the knee (M3b 6; fails if the `max` is dropped — 64 kbit/s would get 16 000 — or the knee's arithmetic is off), **capped at half the buffer** (`/code-review` finding 2, 2026-09-23: 10 000 kbit/s and FLAC's 1411 give the ceiling, 524/525 kbit/s straddle it; fails if the upper bound is dropped, which was the code), the env override replaces the whole value; a 404's body text reaches the message, bounded to 200 chars (finding 10); `parse_url` refuses a non-http scheme as `invalid_url` before any request (finding 5); real sockets on 127.0.0.1, asserting `(code, terminal)`, plus one on the shared `NON_HTTP_WORDING` table (a 503's "status" wording is not terminal, hyper's version wording is — finding 8): an `ICY 200 OK` answer is `Http` and terminal (mutation-checked against the old rule), a 500 is `Http` and retriable, a 404 and a 403 are `Http` and terminal, a 429 is `Http`, retriable and carries its `Retry-After` (finding 4), a refused connect is `Network`, and DNS resolution is inside `connect_timeout` (a stalled resolver, 200 ms bound, 5 s guard — M3a G4a/G4b) |
-| `eq::tests` | 17 |
-| `icy::tests` | 3 |
-| `ring::tests` | 3 |
-| `reconnect::tests` | 1 |
-| `adts::tests` | 11 — **review fixes F4 (2026-09-29), (11):** six chained `FFF9` frames with the reserved index 13 are not an alignment and pass unchanged (passes on `da36489`, where the check sat in `candidate`; pins it through the move to `Header::rate_known` — fails with `candidate` calling `parse_header` alone). **Review fixes F3 (2026-09-29), (10):** station 02's `FFF9` frames, 20 KiB of junk, 02's frames again → every frame `FFF1`, no junk, the head bounded (limit + 3 frames + one read), in every chunking (on `da36489`: 28 660 B out where 8 180 were due — the junk and the second run raw, passed through; mutation: the slide off). **Defect B C3 (2026-09-28)**, T-B3; the module is new, so each row is mutation-checked: (1) station 10's `FFF1` head byte-identical after its ID3 in chunks of 1–64 and four seeded random series, and an ID3 tag holding three chained headers skipped whole (fails with the skip off); (2) 02's `FFF9` head = `normalise` in every chunking (fails with the walk off); (3) a read boundary 1–6 B into the first and the 9th header; (4) a start 100 B into 02's first frame with `FF FB 90 C4` planted → the first whole header; (5) CRC frames → 7-byte headers; (6) frames, 100 junk bytes, frames → the junk dropped (fails if a sync loss passes through); (7) the limit is a start offset: frames at 16 KiB − 1 align, at 16 KiB pass through and stay through, in every chunking (fails a byte either way, on a limit by head length, and on a non-terminal pass-through); (8) the § 2.3 hostile table in 1/7/4 096/random chunks — every unaligned row unchanged (fails on a chain of one header, on EOF dropping an unaligned head, with the realign off), a random 1 MiB never longer, an inner `Interrupted` propagated with the state kept, a zero-length read; (9) no panic shape and no index outside the tests (fails on an added `.unwrap()` or `x[0]`) |
-| `hls::tests` | 6 — **review 2 (2026-09-25), finding 3:** a source scan of `hls/`'s non-test code for `unreachable!`, `panic!`, `todo!`, `unimplemented!`, `.unwrap()` and `.expect(` finds none (on `b07e04e` it found `refused_container`'s `Container::Adts => unreachable!` at `mod.rs:529`; on `fe120a2` that and the task's at `:862`) — the refusal is now a `Refusal` that cannot hold ADTS. **review 2 (2026-09-25), findings 2 + 4:** `after_failure`, the task's pure retry rule: a transient failure retried within the **bounded** TD (at `TARGETDURATION:3600` Retry at 29 s, Skip at 29.001 s; fails if the bound is dropped, as the inline rule on the raw TD was), a 410 never, a 404 twice whatever the TD. **review fix D (2026-09-25, finding 7):** the `kind=` a playlist request logs is what the body turned out to be, and on a failure what the caller asked for (`logged_kind`; on `938944c` every failure logged `kind=master`, media reloads included — X6's log at 13:11:09/49); the four HLS content types match case-insensitively without `; charset`; `retry_timeout_for` is 55 s at TD 10 / 30 s at TD 5 (both above `read_timeout`), `segment_timeout` max(2 × TD, 10 s); **a `TARGETDURATION` at u64::MAX gives 60 s / 155 s, not a panic** (review 2026-09-25, finding 3: `Duration * 2` on the raw value overflowed) |
-| `hls::playlist::tests` | 20 — **M3c commit 2** (+ the review's hostile-playlist table, 2026-09-25: every row panicked on `102c114` — `CODECS="mp4aé"` "byte index 5 is not a char boundary", `mp4a.40é` the same at byte 8, `#EXTINF:1e30,` "cannot convert float seconds to Duration", `MEDIA-SEQUENCE:u64::MAX` "attempt to add with overflow" at the segment add and again at the planner's `+ 1` — and now reads `NoAudio` / audio-not-HE / `Malformed` / a clamped wait), T1–T6 of the plan on the census fixtures; the module does not exist on `b7e050a`, so each is mutation-checked (the failing output is in `_handover/m3c-plan.md`, "Commit 2 landed"). T1: masters parse, 10's relative `chunklist.m3u8` joins against the base it is given (a redirected base moves it; fails with the join skipped), 04's `CODECS="avc1…,mp4a.40.2"` is one attribute and the CRLF fixture parses (fails on a comma split that ignores quotes). T2: 03 → `NoAudio("avc1.42c020")` (fails with the video-only filter dropped), 04 → the lowest muxed 1 061 313, LC 96 k over HE 128 k, 256 k over 48 k among LC, no-CODECS before muxed, an empty master. T3: 01 (TD 10, 244198, 10), 02 (a discontinuity; titles with quoted commas → 10.0 — fails on `split(',').last()`), 07, 10 after gunzip (TD 5, 97863, 20), 06 and 09 given directly with absolute-path and query URIs. T4: `EXT-X-MAP` → fMP4, `KEY METHOD=AES-128`/`SAMPLE-AES` → encrypted (fails with the check removed), `BYTERANGE`, `METHOD=NONE` accepted; **a plain M3U (`#EXTINF:-1,Name` + an Icecast URL) → `NotHls`, its own test** (R2; fails with the EXT-X presence check dropped — as `Malformed`, since a `-1` duration is deferred behind the HLS decision); no `#EXTM3U` → `NotPlaylist`; bad numbers → `Malformed`. T5: 01 → 244205–244207, 10 → 97880–97882, 07 → 1–3 (fails starting at the last: `[244207]`). T6: 01's real refresh emits exactly 244208–244210 then TD÷2; **10's refresh, whose window starts at 97866 before `next_seq` 97883, emits only 97883–97885** (gate amendment 6; a "seen" identity re-emits 244201–244204 on 01); waits clamped to [1 s, 30 s] and the stall bound on the clamped TD (TD 0 → a stall at 3 s, not at once); a window past `next_seq` → `Fetch { skipped: 4 }`; unchanged 15 s at TD 5 → `Stall` (fails without the bound: `Wait(2.5s)`); a failed reload waits TD÷2 until the bound and a good one resets it; `MEDIA-SEQUENCE` lower than the last accepted → `Restarted`; `ENDLIST` → `EndList`; and the quote-aware attribute splitter alone |
-| `hls::segment::tests` | 10 — **review fixes F4 (2026-09-29, D2):** a frame with the reserved index 13 is walked, not lost — one frame, no sync loss, format `sri13/2`; `parse_header` returns it with `rate_known` false (fails with the rate check inside `parse_header`, which would make it an HLS sync loss). **Review 2 (2026-09-25, finding 1):** `gunzip` takes the caller's cap and reads at most cap + 1 bytes: 64 KiB of zeros (96 B compressed) inflates at a cap of 64 KiB and is `TooLarge` one byte below it (on `fe120a2` there was no cap; 16 MiB of zeros is 16 328 B compressed, 1028:1, so a 4 MB segment was a ~4 GB `Vec`). **M3c commit 3**, T7–T11 on the fixture heads, mutation-checked (the record in `m3c-plan.md`, "Commit 3 landed"). T7: the five ADTS heads sniff ADTS after their tags and Unknown on the tag itself (fails with the sniff before the skip), the four TS heads sniff TS with no leading ID3, a synthetic `ftyp` is fMP4, HTML/empty/one byte are Unknown, `0x47` at 0 alone (one packet, or a second that does not sync) is not TS, `FFF9` sniffs as ADTS and MP3's `FFFB` does not. T8: 01's two tags end at 153 with `FF F1` there and the second tag at 73 (fails skipping once), 07/08 1 122, 10 73, 02 759 then `FFF9`; a synthetic footer tag is 10 + size + 10 (fails ignoring the flag); no tag → 0, a truncated header → 0, an overrunning size clamps. T9: 02's sixteen `FFF9` headers come out `FFF1` with every other byte identical and format 24 000/1 (fails skipping the rewrite); 01/07/08/10 unchanged, 16 frames, 48 000/2 and 08's core 22 050/2; a synthetic CRC frame → 7-byte header, `protection_absent` set, `frame_length` − 2, payload intact; ID bit + CRC together; a third frame cut short is dropped and counted (fails emitting it), a sub-header tail too; garbage after a frame is a sync loss at its offset; a `frame_length` below the header is a sync loss, not a zero-length loop. T10: `sri 3` then `sri 7` → `FormatChanged 48000/2 → 22050/2`, a channel change likewise, the same format twice is fine, the first format is kept after a refusal, a reserved index prints `sri13`. T11: the decoder built as `run_session` builds it on the normalised heads — 01/07/10 → 48 000/2, **08 → 22 050/2 (the HE-AAC core; 44 100 would mean a Symphonia bump decodes SBR, F2)**, 02 → 24 000/1, and 01 with its tags left in still builds (the skip is hygiene); **the raw `FFF9` head does not build** — `UnrecognizedFormat` at 4 849 B, `IoError("end of stream")` from 16 KB of the same data (measured 2026-09-24; the shape is length-dependent and not asserted, only "does not build"). Plus `gunzip` on the gzip fixture, refusing plain text |
-| `types::export_bindings_*` | 6 — generated, one per `#[ts(export)]` type |
-| `normalise::tests` | 6 — **stations** crate, from here to `service`: the countries fixture parses 250 → 240 with DE's merged count; the PT-60 slice's edge rows pinned by an independent Python pass; codec mapping; the geo rule |
-| `filter::tests` | 5 — bitrate 0 sorts last among equal votes (fails on `Option`'s natural order); dedupe keeps the higher votes; broken/empty-url dropped; the cap cuts after sorting; the PT-60 slice ranks to 44 |
-| `srv::tests` | 2 — priority/weight order; no records → the measured fallbacks only |
-| `client::tests` | 15 — a click is one `transport.get` on `/json/url/<uuid>` with `TOTAL_CLICK`, never retried (fails if `fetch_with_retries` is reused), and a failed click's error is its own shape, `Unanswered`, its message naming the cause and no attempt count or elapsed (`/code-review` finding 7, 2026-09-23 — fails on the old "after 1 attempt(s) in 0.00s"); `limit=` always sent; an empty countries answer refused (`EmptyCountries`); the three truncation rules with the F6 boundary pair (1171/1172) and rule 3's floor (expected 3, rows 1 accepted; the 1999/2000 pair — finding 6); three same-host attempts with one re-resolve; the wall-clock budget stops a slow sequence at two attempts; 404 not retried, 503/429 retried; list vs small totals; the guard through the client; the countries fixture; `Rádio &` encoded and ranked |
-| `cache::tests` | 8 — schema v2's `stations_uuid` index: a v1 database migrates to 2, a second `migrate` is a no-op, `station_by_uuid` finds a row under any country (M3b 5, F3); `LIKE` metacharacters in a search query match literally (`Radio_1`, `%`; finding 9); migrations versioned and idempotent; fresh at TTL−1 s, expired at TTL and TTL+1 s; a nine-day-old list kept with its age; atomic replace; countries round trip; local search |
-| `store::tests` | 4 — replay to top without duplicate; the recents cap; a favourite survives its list's replacement; idempotent add |
-| `service::tests` | 17 — `started(uuid)` records the recent from the cached snapshot, emits `RecentsUpdated` once and clicks once (M3b 5); a failed click is one log line (recent kept, no retry, nothing on the sink); `"manual"` neither records nor clicks and an uncached uuid clicks without a recent; a held click does not delay `list_favourites`; a measurement run (`clicks_suppressed`) records and does not vote (F1); an empty `200 []` countries answer is an error for every waiter and a `failed` refresh, never `Closed` (finding 3); a corrupt database is moved aside and the service starts on a fresh one, an unopenable path degrades the handle instead of aborting (finding 2); a failed refresh ends with exactly one `Failed` event (fails if the failure arm emits nothing); a refused cache write (`PRAGMA query_only`) ends as `Failed`, not `Landed`, and a waiter gets the cache error (fails if the outcome is assumed from the fetch — `/code-review` finding 1); a held fetch does not delay `list_favourites`; three callers one fetch; an expired list served before the refresh completes; `stations:updated` fires once; a missing list errors after three attempts and an expired one is kept; offline search fallback; countries |
-| `model::export_bindings_*` | 7 — generated, stations crate (`RefreshOutcome` since 2026-09-22) |
-| `log_rate_limit::tests` | 3 — in the **shell** crate, not `ondar-audio` |
-| `panel::tests` | 31 — in the **shell** crate; **M4b commit 6:** `band_rect_and_layout` — `[16, 404, 328, h − 420]` for 560 (140), 561, 598 (178), 720 (300), none for 559 and the collapsed 420; `BAND_X` is `tokens.css`'s `--space-3` and `BAND_WIDTH` the panel less two of them, read from the stylesheet; `BAND_FLOOR` is the map crate's; an expanded layout on the ANMITE carries `band` at (404, 178), a collapsed one none, and the band's `controls` is `[246, h − 32, 74, 24]` (fails on the floor off by one or a hand-typed origin or width); three pin the About decision (About shows collapsed, the choice survives it, a resize from About is refused); one reads `tokens.css` and pins the radius; two pin the top-left → Cocoa frame conversion against measured frames; five pin the round trip's bookkeeping (stale commit, supersede, hide cancels, fallback once, show-pending window); five pin D1's cap (598 measured on the ANMITE, idle where 720 fits, clamp idle under the cap) and its floor (refusing and expanding sides, synthetic display). (16 until M2d retired the mixed-scale test whose quantity no longer exists — see the 1x test's comment) |
-| `panel::export_bindings_*` | 4 — generated, in the **shell** crate: `panelview`, `panelheight`, `paneltransition`, `panellayout` |
-| `tests::dev_identifier_is_the_real_identifier_plus_dev` | 1 — shell crate, `lib.rs`; pins `tauri.dev.conf.json` |
-| `map::session_tests` | 6 — shell crate (M4b commit 6; **round 3 C1, 2026-10-06:** `c1_the_fit_frame_carries_subdivisions` — RU, US and IN at 300 and RU, US at 178 frame with subdivision lines (RU 200 lines / 1 541 points at level 24, US 121, IN 73) and no missing blob: the frame had them, the renderer hid them), on the shipped resource, mutation-checked (`_handover/m4b-c6/mutations.log`): `select` resets to the fit and bumps `seq`, the first pull frames at the fit, nothing pending frames nothing, a re-select frames again; `+` halves the scale about the pane's centre and `−` doubles it back to the fit (clamped), a band change (178 → 300) returns to the fit, `fit` wins over pending pan and zoom; pan deltas sum and apply once at the new scale with y down on the pane, at the fit a pan replies `None` and `seq` holds, a huge pan is clamped to the fit rectangle and frames once; inputs folded while a frame is held apply on the next pull with a higher `seq`; `unavailable`, `no_map` and `no_band` answer at the current `seq` and clear the pending inputs (fails with the zoom sign inverted, y not negated, fit not winning, the band change not resetting, every pull framing, `seq` bumped on select alone, the pending set applied twice, or select not resetting) |
-| `map::tests` | 1 — shell crate (M4a commit 7): the shipped resource loads through the shell's path rule (`resources/` + `map/world.ondarmap`; fails with `map/` dropped), a missing file and a non-resource are reasons, not panics |
-| `export_bindings_{stationsupdated,countriesupdated}` | 2 — generated, shell crate: the `stations:updated` and `countries:updated` payloads |
-| `export_bindings_{mapband,mapinputs,mapreply,mapstatus}` | 4 — generated, shell crate (M4b commit 6): the band rect, the pull's inputs and reply |
-| `frame::export_bindings_*` | 5 — generated, map crate (M4b commit 6): `View`, `Shape`, `Inset`, `FrameStats`, `Frame` — the pull's payload, `f32` pairs as `[number, number]` |
-| `laea::tests` | 4 — **map** crate (M4a, 2026-10-01; each mutation-checked, `_handover/m4a-mutations.log`): the 37 Q5 points forward against pyproj and d3-geo and back by the inverse within 1e-6 km, Snyder's example (R = 3) to 1e-7 (fails on the mean radius 6 371.0088, `k' = √(1/d)`, a sign in y or in the inverse, degrees for radians); `lon_interval` across 180° (fails with the wrap-around gap dropped); `wrap_lon`; the antipode and outside the disc are `None` |
-| `codec::tests` | 5 — map crate (M4a commit 2, mutation-checked): seeded random rings at every level, small steps and steps past `i16`, back within 0.0354 pt (fails on a delta's sign); a delta of exactly `i16::MIN` is escaped (fails if only out-of-range deltas are); every truncation, a trailing byte and a vertex count past the bytes are `None` (fails with the remaining-bytes check dropped); `quantise` refuses past `i32` and NaN; `Cursor::count` bounded by what remains (fails unbounded) |
-| `clip::tests` | 7 — map crate: Sutherland–Hodgman on a square, a ring with a hole (each ring alone, the hole stays a hole), a triangle across a corner (the corner a vertex), no intersection (a bbox that meets but a triangle that does not) → empty, a ring containing the window → the window, a ring inside unchanged (fails on an inverted inside test or a wrong crossing point); Liang–Barsky: a line leaving and re-entering is two pieces cut at the boundary (fails on t0/t1 swapped) |
-| `format::tests` | 10 — map crate: **M4b commit 5 (2026-10-05), format v2:** `the_scale_table_is_checked` — a scale table of the wrong length or with an entry over 100 is refused by the writer and, planted in the bytes, by the loader as `Malformed("countries")`; `Bands::index` clamps 139 → 140's entry and 360 → 300's; a bands header out of order or wider than 1 024 heights is invalid; `version_and_magic` reads v1 as `Version(1)`. **review (2026-10-01), findings 3 and 6:** a ladder that is increasing and positive but not `LADDER` (`[1.5…12]`, `[2…32]`, `[1.5…48]`) is `Malformed("ladder")` (on `dddb4da` it loaded; killed with the check off, by length only, by the first level only); a country naming unit 2 or 9 999 of 2 is `Malformed("countries")`, unit 1 loads (on `dddb4da`: "unit 2 loaded"; killed with the check off, on `<=`, on the main unit only). The writer's output loads back to the same tables and quanta, raw and deflated; **the loader never panics**: every truncation of the first 4 KiB and 1 000 seeded lengths → `Err`, 10 000 seeded 1–8-byte mutations → `Ok` or `Err` with every ring of an `Ok` decoded (on a synthetic resource; the shipped one joins at commit 5); a flipped raw byte → `Corrupt { blob, "crc" }` (fails with the CRC skipped); version 2 → `Version(2)`, bad magic → `Magic`; a blob whose ring count differs from its owner's → `Corrupt { "owner" }`; the ring table must tile the blob and give each ring its minimum length (each fails with its check dropped — the fuzz cannot reach these behind the CRC; mutation log); **no panic shape** in the crate's non-test code — the `adts.rs` scan over every module, and since review finding 4 `.clamp(` (`f64::clamp` panics on min > max; fails on an added `.unwrap()`, `bytes[a..b]` or `.clamp(`: on `dddb4da` "frame.rs:112") |
-| `rules::tests` | 11 — map crate: **M4b commit 4b (2026-10-05), the stacking rule, mutation-checked (`_handover/m4b-c4b/mutations.log`):** `the_stacking_rule` — Hawaii is `Beside { gap: 6 }` Alaska at the bottom-left, Madeira `Stacked { gap: 8 }` under the Azores at the top-left; A does not abut B, a right corner needs B left of A, diagonal boxes do not abut; with Alaska at 83 % at 328 × 178 Hawaii at 100 % sits at x 83.72, Madeira under a half-size Azores box at its bottom + 8; at 100 % on the golden pane the stacked box is the row's rect (fails with the gap dropped, A's far edge taken, the y-overlap check dropped). **M4b commit 4 (2026-10-05), mutation-checked (`_handover/m4b-c4/mutations.log`):** `the_inset_box_at_a_band_and_a_scale` — Alaska's `[8, 236, 84, 56]` at 328 × 178 is `[8, 114, 84, 56]` and at 0.5 `[8, 142, 42, 28]` (the gaps kept, the size halved); a row moved to another corner keeps its own gaps (Guadeloupe's TR box at BL is `[8, 248, 60, 44]`); Hawaii's 60 × 32 needs 0.875, the Azores' 92 × 52 0.538, an 80 × 60 box 0.467, and a box at its minimum holds exactly 28 × 12 of land (fails with the gaps scaled, a strip or pad scaled, the rect not moved); `label_widths_at_the_artifacts_size` — 8 pt, "Azores" 28.8, "Guadeloupe & Martinique" 105.6, the inner width the box less two pads (fails with a space counted as a character). **M4b commit 3 (2026-10-05):** `the_band_at_300_is_the_golden_pane` — `Pane::band(300) == GOLDEN`, the floor's usable area 288 × 100 so a 288 × 260 km country fits at 2.6 there against 1.0 at 300, every band valid (fails with the width or padding hand-typed apart from `GOLDEN`'s). **M4b commit 2 (2026-10-05), review 3's finding 4 carried, mutation-checked (`_handover/m4b-c2/mutations.log`):** `the_one_box_rule` — a box on the pane's edge fits and 0.01 pt past any edge does not (fails on a strict compare and with the 2 pt clip margin allowed past the edge), boxes touching along an edge or at a corner are apart and boxes sharing 0.01 pt are not (fails on `<` for `<=`); `the_controls_rect_is_bottom_right` — at 328 × 178 and × 300 the row is `[246, 146, 74, 24]` / `[246, 268, 74, 24]`, inside the pane, 8 pt from the bottom and right edges (fails with either margin dropped). **Review finding 7 (2026-10-01):** S6's one `rect_ring_distance` on open and closed rings — apart 3, diagonal 5, overlapping 0, a ring around the rectangle 0, a ring along a side 0, a touching segment counts as a crossing (the tool's semantics; the resource rebuilt on it is byte-identical past the header's commit). 288 × 260 km fills the golden pane at 1 km/pt, the ANMITE's 328 × 178 binds on h / 138 (fails on padding once, or `min` for `max`); the S1 floor; `level_for` 28.01 → 24, 12.0 → 12, 11.99 → 6 (fails on `<` for `≤`); the inset box's area (the Azores' 92 × 52 → 84 × 36 above the 8 pt label strip; fails with the strip dropped) |
-| `pins::tests` | 2 — **map-build** crate (M4a commit 3, each mutation-checked): the table holds 12 pins; a temp file with one flipped byte, or one more byte, is refused before it is read (fails with the check skipped; the size check alone is an equivalent mutant — the SHA covers it) |
-| `tables::tests` | 2 — map-build: the shipped `overrides.tsv` (1), `insets.tsv` (14), `aliases.tsv` (9) parse; a malformed row names its line |
-| `world::tests` | 10 — map-build: **M4b commit 4b (2026-10-05), mutation-checked (`_handover/m4b-c4b/mutations.log`):** `a_box_follows_the_box_it_abuts` — on the 600 × 104 km bar a top-left 80 × 60 box A and, 8 pt to its right with a 2 pt top gap, a 60 × 44 box B: at 178 A is 73 % and B whole at x 74.4 (A's right edge + 8, not its own 96); at 300 both whole, B at 96; at 140 A is dropped (first drawn at 147, where 47 % clears) and B anchors by itself at 96 at 70 % (fails with the rule off, a dropped A still followed by its golden rect); `hawaii_alone_may_drop_at_178` — a row labelled Hawaii dropped at 178 passes the gate, any other label is named, Hawaii dropped at 300 is named (fails with the allowance widened to every label or to 300). **M4b commit 4 (2026-10-05), I1 + C1, mutation-checked (`_handover/m4b-c4/mutations.log`):** `the_controls_corner_is_refused` — a bottom-right row, and a bottom-left row 250 pt wide that crosses the controls' x 246 at the golden pane, are refused; 230 wide is not (fails with either check dropped); `insets_shrink_per_band` — a 600 × 104 km bar (width-bound at every band, 288 × 49.9 pt centred) with a top-left 80 × 60 box: 100 % at 300, 73 at 178 (74 reads 11.64 pt), 59 at 161, 0 at 140 (0.417 under the 0.467 minimum); TR and BL mirror it with their own rects; the ship gate passes it and names a 600 × 200 bar "dropped at 328 × 178" (fails with the land taken at 300 for every band, the minimum ignored, no search past the minimum, the rect not moved, the gate reading 200); `the_controls_rect_is_placed_first` — with no land a 250 pt bottom-left box is 95 % at every band with the controls and 100 without; `a_wide_label_is_flagged` — "Guadeloupe & Martinique" (105.6 pt) in an 80 × 60 box is named at 178 (inner 50.4 at 73 %) and 300 (72.0), "Azores" is not (fails with the inner width taken from the golden box). Since I1 the M4a refusal of a box under 12 pt at the golden pane is gone: `the_s6_threshold`'s box over the land is 0 % at every band and the gate names it, `s6_clearance_counts_the_dropped_groups` reads its clearance under 12 instead of an `Err`. **Review 2 (2026-10-01), finding 2:** S6's clearance counts a dropped islet in the padding band ~4 pt from a box (refused; on `8324e68` it built at 14.0 pt) and not one past the frame's 2 pt clip margin (killed with the land unclipped or by `Frame` groups only). Also two parts 299 km apart are one group, 301 km two (fails at 298 or 301); the override's anchor picks its group, the largest part's group must then be an inset, an anchor in no part is refused (fails with the override ignored); S6 — a remote 999 km² group is dropped, 1 001 km² is refused unlisted and an inset listed, a box over the land and an anchor 150 km off are refused (fails at 998 or 1 002 km², with the clearance or the anchor bound off) |
-| `seam::tests` | 3 — map-build: an Antarctica-shaped ring loses its polar run (10 vertices), stays closed with no seam edge (fails with the strip off); two halves cut at 180° union into one part (fails with the shift off); halves meeting 180° 0.001° apart leave a 111 m notch, closed (fails with the notch kept) |
-| `borders::tests` | 7 — map-build (D2): three squares in a row → 2 interior edges, 8 outline, 2 lines (fails if once-edges are kept); a chain through degree-2 vertices is one line and a degree-4 junction cuts four (fails if chains are not cut); an enclave is one closed line; an edge found three times is counted; a seam edge found twice is not a border (fails if only once-found seam edges are dropped); the 1 m on-ring prefilter (fails with the tolerance ×10); **the gate's rule** (M4a commit 4d): 375 m inside the land passes, 375.001 m fails, a 3+ edge fails (fails at the plan's 1 m, on `<` for `≤`, or with the 3+ check dropped) |
-| `simplify::tests` | 4 — map-build (M4a commits 4 and 4b, mutation-checked): **the hybrid** — a thin band where RDP at 1.2 straightens one side through the other's vertex, so RDP's ring is not simple and the hybrid returns VW's (fails if RDP is kept without the simplicity check), a well-behaved ring keeps RDP's; **`is_simple`** — a bow tie, a spike, a zero-area ring, a repeated vertex, an open fold-back and an open zero-length segment are not simple, a square, a zigzag and a 3 000-vertex ring are, the same ring with two far vertices swapped is not (fails with crossings, fold-backs or repeats unchecked; the area check and the hybrid's bound check are equivalent mutants, the log says why). And Step 0's instrument check on seeded rings — the span bound never below brute force, the grid equal to it (fails if the span bound skips a removed vertex or the grid stops at ring 0); tuning keeps the span bound within t and above 0.8 t, fewer vertices at a larger t, an open line's ends (fails if the bisection or its expansion accepts above t, or with no halvings) |
-| `frame::tests` | 3 — map crate. **M4b commit 5 (2026-10-05):** `the_frame_places_boxes_by_the_stored_scales` — on a synthetic resource (the shipped one never draws Hawaii while Alaska is under 100 %) inset A at 50 % is `[8, 8, 40, 30]`, inset B beside it in the golden table follows A's right edge to x 56, with A's table all 0 B is at its own 96 and A the one dropped, a 250 pt bottom-left box on the controls' rect is `None` (killed with the stacking rule left out of the frame and with the controls not placed, `_handover/m4b-c5/mutations.log`). **Review 2 (2026-10-01), finding 5:** a missing subdivisions blob is counted only when a line meets the view, or lies past it within the tolerance (on `8324e68` a line out of view counted: 3 for 2; killed with the count unconditional, never, by the index in the unindexed frame, and without the tolerance). Review finding 9 (2026-10-01): on the synthetic resource a neighbour unit of three parts in view with no blob, and a two-part inset whose level has no blob, add one `missing_blobs` each and no considered ring, indexed and unindexed (on `dddb4da`: `(5, 5)` for `(2, 2)`; killed per part for land, per part for the inset, dropped, and with the ring caps ignored — `index_is_exact`) |
-| `index::tests` | 4 — map crate: **M4b commit 2 (2026-10-05), review 3's finding 5 carried:** `clip_rect` at the golden pane is `[-2, -2, 330, 302]`, the literal the tool and the frame each built by hand before, and `[-2, -2, 330, 180]` at 328 × 178 (fails with the margin on one side only). (M4a commit 4c, mutation-checked): the fit rectangle is the pane at the widest scale (the floor for a country finer than it) and the reach adds the 2 pt clip margin at the level's coarsest scale (fails without the margin, with the rectangle at the fit, or with the scale uncapped); caps meet within the tolerance and not 1e-6 km past it (fails with the tolerance ignored); a rectangle off the LAEA disc is the whole sphere (fails if the off-disc samples are skipped) |
-| `resource` (`ondar-map/tests/resource.rs`) | 5 — map crate, integration tests on the shipped `world.ondarmap` (format v2 since M4b commit 5), or the file `ONDAR_MAP_RESOURCE` names (M4a commit 5; ~35 s in a debug build). **M4b commit 5 (2026-10-05):** `coverage_matches_clamp` is the band-sampled form (written at commit 3, `#[ignore]`d until the rebuild): each country at {140, 161, 178, 300}, every height where its top level changes with both sides, each interval's midpoint — 1 761 (country, height) pairs, 36 530 views, ~5 s in debug — and every inset's units at the golden box's level and at each sampled band's box's level (on M4a's `e2775f81…`: "Angola at 328 × 140: unit SHN at level 1 is not stored", `_handover/m4b-c3/bands-shipped-record.log`); `insets_at_178_and_300` — at 178 every inset but Hawaii is drawn (the one `insets_dropped`, decision 1 case (c)), at 300 all 14; every drawn box inside the pane, apart from the controls' rect, ≥ 36 × 28, the golden size at the stored scale, ≥ 12 pt from the land; `pins_match` reads the header's `Bands::BUILT`. The enumeration: the header's pins equal `pins.tsv`, v5.1.2, the authalic radius, the ladder, 267 units / 248 countries; every blob within 0.25 / 0.5 pt; the loader on the real file (every truncation of the first 4 KiB, 200 seeded lengths → `Err`; 400 seeded mutations → no panic, every ring of an `Ok` decoded); **`coverage_matches_clamp`** — for every country and level, the views at the level's finest and coarsest scale in each corner of D6's fit rectangle (computed from D6's wording, not `index::fit_rect`) and at its centre, each with the 2 pt clip margin: every ring whose cap meets the clip rectangle by the frame index's own test (`index::ground_cap`, `cap_meets`, the level's tolerance) has its blob, subdivisions above 8 km/pt, insets at their level. Mutation-checked by rebuilding the resource with the tool mutated (`_handover/m4a-mutate-resource.sh`): fails without the clip margin or with a level's coarsest scale taken as its own ("Australia: unit NFK at level 3 is not stored"); the cap tolerance and the inset rule are invisible on the real data (killed by `store::tests` on a synthetic world), the fit rectangle at the fit for a country finer than the floor is equivalent on it (every unit is stored at level 0) |
-| `frame` (`ondar-map/tests/frame.rs`) | 22 — map crate. **M4b commit 5 (2026-10-05), the stored scales read by the frame (`_handover/m4b-c5/mutations.log`):** `insets_scale_per_band` — the US at 328 × 178 draws Alaska at 83 % (69.72 × 46.48) and not Hawaii (`insets_dropped` 1), Hawaii appears at 274 at 88 % and is whole at 300; no drawn box of any country meets the controls' rect at any band 140..=300; a pane of 139 reads 140's entry and 360 reads 300's (fails with the table read at the wrong height); `insets_anchor_by_corner` now pins the golden size × the stored scale, the golden gaps for a box by itself and the stacking rule's gap for one that abuts (Hawaii beside Alaska by 6, Madeira under the Azores by 8), `drawn + dropped` 14 at 178 / 400 × 360 / 300; `an_inset_that_does_not_fit_the_pane_is_not_drawn` pins drawn ⇔ `Store::inset_boxes` is `Some`, with every `Some` inside the pane, apart from the controls and the boxes before it, at a scale above 0; `an_off_pane_box_does_not_drop_an_inset` moves France's Fr. Guiana box off the pane over a Réunion moved onto it — Antilles and Réunion drawn, one dropped; `svalbard_clearance_at_178_is_jan_mayen` measures the full-size golden box (Jan Mayen at 1.97 pt, the rest 49.42) and the drawn 78 % box's clearance ≥ 12; `antarctica` reads AQ's level-4 blob (the floor band's fit), 7 789 vertices against level 3's 4 127 — the hybrid's VW fallback at 24 km/pt, as RU's mainland. **M4b commit 2 (2026-10-05):** `the_frame_clips_to_the_margin` — at the golden fit the neighbours of RU, FR, DE and NO reach exactly −2 and 330 in x and −2 and 302 in y, `index::clip_rect`'s four edges, and no vertex lies outside it; DE and NO at 328 × 178 reach −2, 330, −2, 180 (killed with the margin dropped from the frame — `[0, 0], [328, 300]` — and with it applied in km at the view's scale; before this test no frame test pinned the margin, `_handover/m4b-c2/mutations.log`). **The Svalbard cause measured on the shipped resource** (`svalbard_clearance_at_178_is_jan_mayen`; `_handover/m4b-c2/svalbard-record.log`): at NO's fit at 328 × 178 the land ring nearest the Svalbard box is 11 vertices at 1.97 pt (as `inset_clearance` reports) whose vertex mean unprojects to 70.996° N 8.512° W, 0.6 km from Jan Mayen, and with that ring excluded the box clears the rest by 49.42 pt (M4a's recorded figure, made before `ff9a75a` drew an own `Dropped` group as land); fails if the nearest ring is the mainland or Bear Island, and with own `Dropped` groups not drawn (Svalbard then clears: 49.42 ≥ 12) — Step 0's inference is now a measurement, and commit 4's corner choice for Svalbard rests on it. **Review 3 (2026-10-02), each recorded failing on `b3cf735` (`_handover/m4a-review3/`) and mutation-checked:** finding 1 — `a_bad_view_is_none`: a scale of 0, negative, NaN or ∞, or a centre not finite, gives `None` from `project` and `unproject` (on `b3cf735` `Some([-inf, inf])`; killed with each clause of `View::is_valid` dropped and with `unproject` unguarded); finding 2 — `an_inset_that_does_not_fit_the_pane_is_not_drawn` now checks overlap against the drawn boxes and pins the rule as an iff in table order, and at 328 × 60 French Guiana is drawn beside Guadeloupe & Martinique and Hawaii (on `b3cf735` it and Réunion were both dropped); `an_off_pane_box_does_not_drop_an_inset` moves Alaska's box over Hawaii's and off the pane — Hawaii drawn, one dropped (on `b3cf735` none drawn; killed with every box pushed, none pushed, the inside check dropped); finding 3 — `a_view_a_hair_below_the_fit_is_the_fit`: for US, PT and FR a view at fit × (1 − 1e-12), panned 1 km, is the fit and frames as it, at × 0.99 it is not and draws no inset (on `b3cf735` the US view was not the fit and its frame lost Alaska and Hawaii; killed with the snap removed, at 0, at 0.02, keeping the view's centre). **Review 2 (2026-10-01), each recorded failing on `8324e68` (`_handover/m4a-review2/`) and mutation-checked:** finding 1 — for every country with insets, at the fit nudged in and at the floor on each inset, every in-pane vertex of an own `Inset` part is land, and at the fit none is (IN, YE, US, PF among those seen; on `8324e68` "IN IND: an own inset vertex at (269.76, 237.81) is not land"; killed never drawn, drawn at the fit, drawn as neighbours); finding 4 — at 328 × 60 only Guadeloupe & Martinique and Hawaii are drawn, at 328 × 178 all 14, every drawn box inside the pane and apart, `drawn + insets_dropped` = the country's insets, `inset_clearance` for the drawn only (on `8324e68` "Galápagos at 328×60: [240, -8, 80, 60] leaves the pane"; killed without either check, the count, or the clearance over every inset); finding 6 — `a_bad_pane_is_none_not_a_panic` adds `project` and `unproject` (on `8324e68` `Some([-54.09, 191.74])`). Then on the shipped resource (M4a commit 6; mutation-checked, the resource rebuilt from a mutated tool where the rule lives there): the golden table for all 248 to its printed precision; Step 0 reproduced (237 codes; MY, AQ, MM); the antimeridian — FJ 1.9495 and RU 28.0107, and at the floor over Chukotka (67° N, 180°) and Taveuni the point lies in one land ring with land strictly on both sides of 180° and no edge within 0.01° of it (the plan's 179.9999° is below the quantum; fails with RU/FJ unstitched); Antarctica pole-centred, no vertex past −89.99°, simplified, Peter I in the frame (fails with the pole centre removed); the 14 insets ≥ 12 pt, inside their boxes, apart, and none at a zoomed view (fails with insets at every view); RE's frame omits France's copy of the island (fails with the S4 omit-in ignored); R7's lookup; subdivisions above 8 km/pt only; D6's clamp (fails on the plan's reading or either zoom limit); the index exact against `frame_unindexed` for PT/US/RU at fit, floor and mid (fails with the index's tolerance dropped). Equivalent mutants: `XX` (no such country), the subdivision flag (no blob for an unflagged country). **Review (2026-10-01), four more, each recorded failing on `dddb4da` (`_handover/m4a-fixes/`) and mutation-checked:** finding 1 — the ACT and Distrito Federal at every subdivision level and Zelenograd at level 6 are closed loops that hold them ("AU ACT at 8.5 km/pt (level 6): no closed loop holds it"; killed by the tool mutated back to `quantise_ring`; Moscow is not an enclave in NE v5.1.2); finding 4 — seven bad panes give `None` from `clamp` (now `clamp_view`), `fit_scale`, `fit`, `frame` and an empty `inset_clearance` (on `dddb4da`: "min > max, or either was NaN"); finding 2 — at 328 × 178, 400 × 360 and the golden pane the 14 boxes are inside the pane, their size and corner gaps the golden pane's, their land inside, `inset_clearance` measured from the drawn box ("Galápagos at 328×178: [240, 232, 80, 60] leaves the pane"); finding 5 — every in-pane vertex of an own `Dropped` ring at the golden fit is drawn, 20 parts in 6 countries ("Antarctica ATA: an own islet's vertex at (39.83, 19.15) is not drawn") |
-| `store::tests` | 7 — map-build: **M4b commit 3 (2026-10-05), mutation-checked (`_handover/m4b-c3/mutations.log`):** `coverage_covers_the_shortest_band` — a 400 km square fits the golden pane at 1.538 (its 260 pt usable height binds; level-0 reach to 255.4 km) and the 140 pt floor at 4.0 (level 1; reach 662 km), so a 1 km `-99` neighbour 400 km east is stored at levels 0 and 1 and the country itself at level 1, which only bands up to 173 pt use (fails with the reach at the golden pane alone, or the top level from the golden fit); `a_collapsed_ring_is_stored_empty` — a 0.02 km islet (one quantum) and a 0.16 × 0.01 km reef (two distinct quanta) beside a 400 km square are stored as empty rings at every level, counted, round-trip through the file as `(0, 0)` table entries and draw nothing (fails with the drop skipped or the threshold at two); `the_bound_adds_a_corner_neighbour_no_band_reaches` — a 600 × 300 km country whose level-0 reach is 498 km wide at the floor and 316.7 tall at 300: a neighbour between the widest band's ground disc (~549 km) and the bound's (~597) is the one blob the bound adds, stored under 5 %; `store_exact_only` flips at 5 % (fails with the exact set computed from the bound). The inset test's country is 150 km since commit 3, so no band lifts its top level. **Review 2 (2026-10-01), second pass:** a unit that is the main unit of two countries is refused (on `8324e68` it built). Also coverage on a synthetic world where only the rule under test can store the blob — an inset whose level only the inset rule needs, a `-99` unit just past the disc around the reach by half the level's tolerance (fails with the inset rule dropped or the tolerance ignored; doubling the tolerance passes); k' is 1 at the centre and √2 at 90° (fails inverted); a ring is stored open without repeated quanta (fails if they are kept) |
-| `input_tests` | 5, `#[ignore]` — map-build, need the NE inputs (`cargo test -p ondar-map-build --release -- --ignored`, ~30 s): **review P6 (M4b commit 4, 2026-10-05):** `corner_table_at_161_matches_step0` — the tool's corner table at 328 × 161 with the controls disabled against Step 0's (`fixtures/step0-corners-161.tsv`) for the eight countries Step 0 framed on complete land, 11 insets × 3 corners: the full box's clearance within 0.3 pt (the drawn bound + the table's rounding) and the scale within 0.02 of Step 0's fraction, or 0 where that is under the row's minimum — all 33 agree (`_handover/m4b-c4/input-tests-release.log`); Step 0 reproduced (237 codes within 0.05 % or the fixture's rounding, MY's override at 2.326, AQ at the pole, MM's subdivisions at 8.008; fails with AQ's pole centre removed); the stitched units are {ATA, FJI, RUS} with no seam edge; D2's census (no edge thrice, the gate passing for all 18, no once-edge inside the land past 80 m; fails with the inside-land filter dropped); two builds byte-identical and every blob within its bound |
-| `geom::tests` | 1 — map-build: R1's centre of a square across 180° is 180° (the rectangle–ring adapter and its test left with the adapter's one caller at M4b commit 2; `rules::tests::rect_ring_distances` holds those cases) |
-
-Counting `#[test]` attributes in source gives 387 and will not reconcile with the runner's 415
-until those 28 are accounted for. `cargo test --workspace -- --list | grep -c ': test$'` is the
-authority — the expression is part of the number, since `--list` also prints a summary line.
-
-**The TypeScript tests are a second count, kept apart** (M3b 1b, decided 2026-09-23): `pnpm test`
-(vitest, jsdom) runs `src/**/*.test.tsx` — **27** today: 10 in `MapPane.test.tsx` (M4b commit 7: one
-pull in flight with the input that arrives meanwhile summed; a reply not newer than the frame on
-screen not drawn, a newer one drawn; a `null` reply leaves the paths and an idle pane pulls nothing;
-a drag under 4 pt sends nothing, over it the delta negated; `+` / `−` / `fit` reach `zoom_steps` and
-`fit`; one `<path>` per shape with `fill-rule="evenodd"`, the label whole, the platter and the
-controls at the rects given; a theme change pulls nothing; one flat land tone per theme — no `<filter>`, no filtered element,
-no `filter` or `opacity` in the map rules, no coast token, recorded failing on `5d64217` — A1,
-2026-10-06; the land drawn once with its hairline and the subdivisions above it — no `<use>`, the
-land rule strokes `--map-edge`, recorded failing on `01c87e6` — round 3 C1 + C2; the controls follow the
-theme — the buttons' rule takes `--map-controls-bg` / `-fg` and the three tokens exist under both the
-light root and the dark block, recorded failing on `397e515` — C3), 12 in `StationList.test.tsx` (the
-wrong-source guard, `landed` re-requests, `failed` clears `refreshing` without a request, a show
-re-requests, ★ on lists favourites then recents with the country reply left behind dropped, a ★
-reply landing after ★ off dropped, `recents:updated` and a favourite toggle re-request only the ★
-list, a click on the playing row does nothing and on the paused row resumes — M3b 5, F2; and
-does nothing while `reconnecting`, the row's reading pinned beside the transport's —
-`/code-review` finding 3, 2026-09-23; the previous source's error does not outlive a source
-change while the last answer stays across a show — finding 4; a reply is not serialised outside
-`?measure=perf`, a `JSON.stringify` spy — finding 5), 2 in `Transport.test.tsx` (`reconnecting` offers no
-Play — Pause disabled, Stop enabled, as `connecting` does; a Play there would be a new session,
-a reset backoff and a second vote — finding 3; fails on the code before it; a rejected `play`
-renders as `code: message` through `describeError`, as the other two surfaces do — finding 8) and 1
-in `Panel.test.tsx` (offline with no countries list and a favourite stored, the select and the ★
-toggle are enabled and ★ lists the favourite — acceptance findings B and C; and, M4b commit 7, no
-map pane without a band, the platter with the `− fit +` row at the band's rect with one; and, the
-acceptance review's A2, the map follows the dropdown — a change of the country select reaches
-`map.select` with the new code and back, killed with the pane's select effect ignoring the prop)
-— 3 there.
-Every "tests" figure in this project is written as the two numbers, `415 + 27`, never their sum:
-the two runners count different things and neither can see the other's.
 
 ## Commands
 
 ```bash
-pnpm install                 # frontend deps (pnpm only — do not use npm)
-pnpm tauri:dev               # the dev loop: `tauri dev` with src-tauri/tauri.dev.conf.json merged,
-                              # which gives the dev instance the identifier `<id>.dev` — its own
-                              # single-instance socket (and, from M3, its own data dir), so it runs
-                              # beside a bundled build. Bare `pnpm tauri dev` still works but shares
-                              # the real identifier and hands off to a running bundle (M2c, case f).
-                              # `pnpm tauri build` never merges the overlay: bundles keep the real id.
-pnpm tauri build             # release bundle (macOS host only)
-pnpm typecheck               # tsc --noEmit
-pnpm test                    # vitest under jsdom, `src/**/*.test.tsx` (M3b 1b): the renderer's own
-                              # tests (StationList + Transport + Panel; the count is under the test table).
-                              # Its count is reported BESIDE the Rust count, never summed with it, and CI
-                              # runs it as its own step
-pnpm lint                    # eslint, then scripts/check-tokens.sh (no style literal outside tokens.css)
-pnpm gen:bindings            # alias for `cargo test --workspace` (ts-rs writes src/bindings/ from
-                              # all three crates: the engine's IPC types, the shell's panel types
-                              # and StationsUpdated, the stations crate's model)
+pnpm install          # pnpm only, never npm
+pnpm tauri:dev        # the dev loop (identifier `<id>.dev`); bare `pnpm tauri dev` hands off to a
+                      # running bundle and exits, a vacuous pass
+pnpm tauri build      # release bundle (macOS host)
+pnpm typecheck        # tsc --noEmit
+pnpm test             # vitest + jsdom, src/**/*.test.tsx
+pnpm lint             # eslint, then scripts/check-tokens.sh
+pnpm gen:bindings     # = cd src-tauri && cargo test --workspace; commit src/bindings/*.ts
 
 cd src-tauri
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-                              # --workspace, as for cargo test: without it the member crates'
-                              # libraries are linted only as the root's dependencies, and their
-                              # tests and examples never (defect B C2b, 2026-09-28: a constant
-                              # assertion, four unused functions and a complex type had failed
-                              # it unseen, and C1's harness dead code with them)
-cargo test --workspace       # every test in ondar_audio, ondar_stations, ondar_map, ondar_map_build and the shell's ondar_lib
-                              # (counts: the test table above); the remaining targets have 0. Plain
-                              # `cargo test` with no `-p`/`--workspace` only runs the root
-                              # `ondar` package (its own tests) and silently skips both crates; this
-                              # workspace has a real [package] at the root, so cargo doesn't
-                              # default to "all members" the way a virtual workspace would.
-                              # Use `--workspace` or `-p ondar-audio` explicitly. A bare run
-                              # prints only the shell's own test names, and one of them —
-                              # bare_cargo_test_runs_only_the_shell_crate_see_claude_md — says
-                              # so. That name is the signal; it is a real test, and renaming it
-                              # makes the trap silent again.
-cargo run -p ondar-audio --example stall_bench    # against scripts/stall-server.py
+cargo test --workspace
+cargo test -p ondar-map-build --release -- --ignored   # needs the NE inputs; local only
 ```
 
-Before declaring any task done: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace`, `pnpm typecheck`, `pnpm test`, `pnpm lint`, and `pnpm tauri:dev` (not
-the bare form, which hands off to a running bundle and exits — a vacuous pass) launching without
-a console error.
+**Traps.** Bare `cargo test` runs only the root package (a real `[package]` sits at the root) and
+silently skips every crate; the test `bare_cargo_test_runs_only_the_shell_crate_see_claude_md` is
+the signal, so do not rename it. `clippy` without `--workspace` never lints the crates' tests and
+examples. `ts-rs` writes the bindings during `cargo test`, so that run regenerates them.
 
-## The IPC contract
+**Gates before any task is done**, each judged by its **exit status**, never by counting output
+lines: `cargo fmt`, the clippy line, `cargo test --workspace`, `pnpm typecheck`, `pnpm test`,
+`pnpm lint`, and `pnpm tauri:dev` launching with no console error.
 
-Commands (`src-tauri/src/commands/audio.rs`, wrapped in `src/api.ts`):
-`play(url, stationId, bitrateKbps)`, `pause()`, `resume()`, `stop()`, `set_volume(volume)`,
-`set_eq_gain(band, gainDb)`, `get_eq()`, `get_playback_state()`. Plus two **panel** commands
-(`commands/panel.rs`): `panel_escape()` (`panel.escape()`) — the page reports an Escape `keydown`
-and Rust hides the popover through `panel::hide` with `reason=esc`; and `panel_set_expanded(expanded)`
-(`panel.setExpanded()`) — the page reports a click on the expand control and Rust lays the panel
-out for the new height against a fresh tray rect, applies it, or refuses it (D1's floor, or
-`reason=view` on the About pane, which has no control and always shows at the collapsed height;
-the user's choice survives it and Back restores it — decided 2026-09-21), logging which. A third, `panel_layout_committed(generation)` (`panel.layoutCommitted()`), is the
-**round trip** (D3): every `panel:layout` carries a generation; the page reports it from an
-effect after the render that used it, and Rust completes the visible change then — orders a
-pending show in, or changes the visible panel's frame — if that generation is still pending. A
-stale, superseded or cancelled generation is a logged no-op; a hide cancels; and a fallback
-timer (`LAYOUT_FALLBACK`, 250 ms, kept at n = 74 on 2026-09-23 — provenance in its doc comment) completes without
-the report so a dead page cannot wedge the popover — `trigger=fallback` on a healthy page is a
-defect. A fourth, `panel_view_back()` (`panel.viewBack()`): the page's Back button left the About
-pane — the one page-local transition — and reports it, so the pane a later layout event carries
-is the one on screen (`/code-review` C1). And one panel getter, `get_panel_layout()`
-(`panel.getLayout()`), the counterpart of the `panel:layout` event as `get_playback_state` is of
-`playback:state`. All five are outside the three groups below — they never touch the engine.
+## Test counts
 
-**Map** commands (`commands/map.rs`, wrapped in `src/api.ts`'s `map` object, M4b commit 6):
-`map_select(code)` — the page's selected country; the session looks it up (R7), returns the view to
-the fit, drops the pending inputs and bumps `seq`. `map_pull(inputs)` — `async`; the page's
-`MapInputs` (`pan_pt` in points, `zoom_steps`, `fit`) are folded into the session's pending set
-under its lock and applied: `fit` wins, `+`/`−` halve/double the scale about the pane's centre, a
-pan moves the centre at the new scale; `clamp_view` (D6). If the (country, band, view) differs from
-the last framed one, the frame is computed on `spawn_blocking` with the lock released and the
-reply is `MapReply { seq, status: "frame", band, view, frame }`; an unchanged view — a pan at the
-fit — answers `null`. The band is the one Rust last laid out (`PanelLayout.band`), never the page's.
-`status` `"no_map"` (R7), `"unavailable"` (the resource did not load) and `"no_band"` are replies at
-the current `seq`, not errors; the `Result` is Tauri's requirement for an async command that
-borrows state and is always `Ok`. **Replies, not events** (decision D): the frame is ~600 KB and the
-`invoke` reply path was the one Step 0 measured; every reply carries `seq`, and the page draws one
-only if it is newer than the frame on screen, so a reply delayed behind a later one cannot overwrite
-it. One pull in flight at a time, once per animation frame while anything is pending — the page's
-rule (commit 7). No pinch: commit 8 was dropped with the spike, so no input is born in Rust and
-there is no `map:changed` event.
+No current count is stored in any file. The commands are the authority:
+`cargo test --workspace -- --list | grep -c ': test$'` (in `src-tauri/`) and `pnpm test`'s total.
+Report them as two numbers, `R + T`, never their sum. `ts-rs`'s `export_bindings_*` count as Rust
+tests. A milestone's recorded figure ("415 + 27 at acceptance") is dated and stays as written.
 
-**Stations** commands (`commands/stations.rs`, wrapped in `src/api.ts`'s `stations` object, M3a):
-`list_countries()`, `list_stations(countryCode)`, `search_stations(query)`, `list_favourites()`,
-`add_favourite(station)`, `remove_favourite(uuid)`, `list_recents()`. (`record_played` is gone
-since M3b commit 5: a play is recorded by Rust, on the session's first `Playing`, with the click.)
-All `async`: each sends a message to the `ondar-stations` service's DB thread and awaits a
-`oneshot` reply — a fetch in flight never delays a cache read or a store call. A list comes back
-as `ListedCountries` / `ListedStations` with its provenance: `source` (`fresh` | `cached`),
-`fetched_at`, `age_secs`, `refreshing`. An **expired** list is served at
-once as `cached` with `refreshing: true` while Rust refreshes it in the background
-(stale-while-revalidate); only a **missing** list makes the caller wait, and that wait is bounded
-by the client's 200 s retry budget. Errors: `{ code: "stations", message }` (network exhausted
-with nothing cached, a truncated list, a cache failure, or the directory **unavailable** because
-its database could not be opened even after being moved aside as `ondar.sqlite.corrupt-<ts>` and
-recreated — the app launches regardless, review finding 2), or `invalid_argument` for a bad country
-code. The page never fetches, filters or ranks.
+## Testing
 
-Events (names defined once, in `src-tauri/src/lib.rs::events`):
-`playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`,
-`stations:updated` (a `StationsUpdated { country_code, outcome }`: a background refresh of that
-country's list ended — `outcome` `"landed"`: re-request it; `"failed"`: the expired list stays,
-clear `refreshing` and do **not** re-request, since a re-request starts another refresh),
-`countries:updated` (a `CountriesUpdated { outcome }`, same rule for the countries list),
-`recents:updated` (no payload: a play was recorded, so a page showing the recents re-requests
-`list_recents`; M3b commit 4), and
-`panel:layout` (a `PanelLayout`: `transition` `"show"` | `"resize"` — on a show the hidden frame is
-already at the size, on a resize it changes after the page's commit — `generation`, `view`
-`"about"` | `"transport"`, `state` `"collapsed"` | `"expanded"`, `width`/`height` in points,
-`expandable`, and since M4b commit 6 `band` — the map band's rect `{x, y, width, height, controls}`
-in the panel's points (`controls` the `− fit +` row's rect inside the band, commit 7), `null` when
-the layout has no band (collapsed, or an expanded height under the
-560 that gives the band's 140 pt floor); emitted on every effective show — the view from the show
-reason — and on every resize. The page mirrors it and decides none of it: it is told its **target** height and never
-computes that; its root is the larger of the target and the window's own height only while a
-resize is in flight, so nothing is unpainted inside a still-tall window. Superseded M2c's
-`panel:view`).
+- **State what an assertion would have to see to fail, and check that it would** (a mutation). A
+  tolerance is a claim about sensitivity; assert on the quantity of interest, not through a
+  transform.
+- **A bug fix is test first**: record the failure on the unfixed code, then fix.
+- **Never read shared state** (a request log, the engine's state) before awaiting the event that
+  makes it true. A timeout is a hang guard, never the claim.
+- **Prefer a justification the code executes** to one written beside it.
+- **Every test's doc comment says what it pins and what change makes it fail.** Where it failed and
+  on which commit belongs in the commit message.
 
-"Every command is a message to the engine" is **not** true here. The eight audio commands fall into
-three groups, and which group a command is in determines what its return value means:
-
-| Group | Commands | Mechanism |
-|---|---|---|
-| Channel message, returns `Result` | `play`, `set_volume` | Validate args, send an `AudioCommand`, return. The `Result` reports **argument validation only** — never a playback outcome, which arrives later as an event. |
-| Channel message, returns `()` | `pause`, `resume`, `stop` | Nothing to validate, so no `Result` at all. |
-| Direct engine access, never touches the channel | `set_eq_gain`, `get_eq`, `get_playback_state` | Reach into `AudioEngine` through a shared handle. `set_eq_gain` validates and returns `Result`; the two getters return data synchronously with no `Result`. |
-
-The third group is the one that surprises. `set_eq_gain` *looks* like a setter that should be
-sequenced with playback, but it calls `state.engine.eq().set(..)` — a `Relaxed` atomic store
-into `EqGains`, picked up by the EQ adapter on the audio thread at its next frame-boundary
-check (every 64 frames). It never reaches the engine thread or the command channel. `get_eq`
-and `get_playback_state` likewise read `AudioEngine::eq()` / `AudioEngine::state()` directly
-(an atomic-array snapshot and a `Mutex` lock respectively).
-
-Practical consequence: EQ changes are **not** ordered against `play`/`stop`. A `set_eq_gain`
-issued just before a `play` applies to the new session immediately, because gains live on the
-engine handle and outlive any one session — they are not part of the command stream.
-
-Types crossing the boundary derive `Serialize, Deserialize, TS` with `#[ts(export)]`: the
-engine's in `crates/ondar-audio/src/types.rs`, the shell's beside the module that owns them
-(`panel.rs`'s `PanelView`, `PanelHeight`, `PanelTransition` and `PanelLayout`). Adding one means adding it there, running
-`cargo test --workspace` (plain `cargo test` skips the engine — see above; `pnpm gen:bindings`
-is the alias), and committing the generated `.ts`. No boundary type is typed by hand on the TS
-side.
-
-## Rust conventions
-
-- **No `unwrap()` / `expect()` / `panic!` on *fallible runtime operations* in code reachable
-  from a command or the audio thread.** Two exemptions, each with the reason it cannot fire:
-  `Mutex::lock().unwrap()` (poison propagation only — a poisoned mutex means another thread
-  already panicked, and the audio callback takes no locks), and `expect()` on thread spawn and
-  tokio runtime construction, where failure means the OS refused a thread and the app cannot
-  run at all. Spawns are not all at startup: the decode thread is spawned per session, from
-  `play`. The per-sample DSP path (`ring.rs`, `eq.rs`) has none of any kind outside
-  `#[cfg(test)]` and must stay that way. Nothing enforces this — `clippy.toml` sets only
-  `msrv`.
-
-  **Three sites reachable from a command or the audio thread sit outside both exemptions, by
-  decision (2026-09-14; the third added at M3a and counted by the 2026-09-22 review; a fourth,
-  `lib.rs`'s `.build(generate_context!()).expect(..)`, runs once at startup before either
-  exists — rescanned 2026-09-28):**
-  - `stream.rs::build_client`'s `.build().expect(..)`, called once from `Engine::new`. It
-    fails only if the native-tls connector (Security.framework) cannot initialise or the
-    user-agent is not a valid header value.
-  - `NonZeroUsize::new(BUFFER_BYTES).expect(..)` in `stream.rs`'s `bounded_storage()`, reached
-    from `play` on every open — the Icecast open's and, since M3c, the HLS open's, both through
-    that one function (the review of 2026-09-25, finding 6, found a second copy in `hls/mod.rs`
-    and removed it). `BUFFER_BYTES` is a non-zero `const`, so it cannot fire.
-  - `client.rs::ReqwestTransport::new`'s `.build().expect(..)` in `ondar-stations`, called once
-    from `StationsService::start` at setup — the same reqwest builder with the same two ways
-    to fail as the first site.
-
-  The documented resolution is to *describe* them here rather than change them. Converting
-  them to real error handling is an open option nobody has taken.
-- One shell error type, `OndarError` (`thiserror`), serialised as `{ code, message }` with a
-  stable `code` discriminant so the UI branches on it without parsing strings. Engine-side
-  failure reasons are `types::ErrorCode` (`network`, `http`, `unsupported_format`, `decode`,
-  `device`, `invalid_url` — also a non-http scheme such as `mms://`, refused before any request)
-  carried inside `PlaybackState::Error`.
-- Logging: `log::` inside `ondar-audio`; the shell installs `tracing_subscriber::fmt` (its
-  `tracing-log` feature bridges `log` call sites), so one `RUST_LOG` drives both — including
-  `stream-download`'s internal `tracing` output. Never `println!`. Audio-thread logging is
-  rate-limited.
-- The engine runs on its **own thread**, driven by a `std::sync::mpsc` command channel and a
-  100 ms tick (`TICK_INTERVAL`). Tokio exists only for `stream-download`'s HTTP. Decode runs
-  on a further per-session thread. Commands never block on audio.
-- No allocation, locking, or logging inside the per-sample DSP path.
-- Buffering supervision lives on the **engine thread**, not the decode loop — a stalled read
-  blocks `decoder.next()` indefinitely, so a decode-cadence supervisor cannot see a stall.
-- State-machine changes go through `decide_tick`, the pure function at the bottom of
-  `engine.rs`, so they stay unit-testable without an audio device (`engine::tick_tests`). Add to
-  them; do not route new transitions around it.
-- Commands are thin: validate → send → map the error. Domain logic lives in `ondar-audio`.
-- Never add a dependency without saying what it does and why std or an existing crate is not
-  enough.
-
-## Testing conventions
-
-- **State what an assertion would have to see to fail, and check that it would.** A tolerance
-  is a claim about sensitivity, not a round number. When a test measures the thing it cares
-  about *through* a transform, its real sensitivity is the transform's slope at that point, not
-  the tolerance written. Assert on the quantity of interest, inverting the transform if
-  necessary. (`eq.rs`: `implied_pre_shaper` + `PRE_SHAPER_TOLERANCE`.)
-- **A test never reads shared state (request log, engine state) without first awaiting the event
-  that makes it true.** A wait's timeout is a hang guard (`GUARD`, 20 s in the session tests),
-  never the claim; a timing window stays only where a slow runner cannot break it — a negative
-  claim nothing can make true later (no request after a terminal `Error`), or a gap measured on
-  the server's clock, which slowness only lengthens. (2026-09-25: `0f045b3` and `4a388f5` went
-  red on CI on T18's sampled state and T12's sampled request log; `ONDAR_TEST_POLL_DELAY_MS`,
-  `ONDAR_TEST_SERVER_DELAY_MS` and `ONDAR_TEST_LATE_REQUEST_DELAY_MS` reproduce a slow runner.)
-- **Prefer a justification the code executes to one written beside it.** A comment saying a
-  tolerance was derived from a pre-shaper allowance can drift out of agreement with the number;
-  a helper that performs the conversion cannot. Same reasoning as the test named
-  `bare_cargo_test_runs_only_the_shell_crate_see_claude_md` — an explanation that is
-  load-bearing cannot rot silently.
-
-See ONDAR.md, "Principle: an assertion must be able to fail on the quantity it pins". The
-weekly drift audit does not cover this class.
-
-## TypeScript conventions
-
-- Strict mode. No `any`. Import IPC types from `src/bindings/`.
-- Function components + hooks. Local state by default; a single small store only for state
-  genuinely shared across panes (popover expansion, selected country) — introduce it at M2,
-  not before.
-- Rust is the source of truth for player state; the UI mirrors events and never maintains an
-  optimistic parallel model.
-- CSS modules, no framework. Colours and spacing from CSS custom properties; both light and
-  dark values defined together.
-- Every interactive element keyboard reachable and labelled.
-
-## Audio pipeline invariants
-
-```
-HTTP (stream-download, bounded; on_progress → Arrivals) → ClockedReader → IcyReader → [AdtsReader: HTTP audio/aac*, audio/x-aac*]
-  → rodio::Decoder (Symphonia)                                           [decode thread]
-  → rtrb ring (RING_SECONDS = 2) → UniformSourceIterator (to the output's format)
-  → Equalizer (10 × biquad peaking) → Player → MixerDeviceSink
-```
-
-1. One `AudioEngine`, owned by Tauri state, created once at startup.
-2. Switching stations tears down the session but keeps the device and `Player` alive.
-3. **Ondar owns all reconnects.** `stream-download`'s internal reconnect fires only on a hang
-   and, on a live Icecast mount, splices a plain GET's byte 0 onto the writer's position — an
-   audible jump with no state change. Real recovery is our own `Backoff` + a fresh
-   `stream::open()`. See ONDAR.md, "Reconnect ownership and stream timeouts".
-4. **`read_timeout` must stay strictly greater than `retry_timeout`** (20 s / 5 s) **on the
-   `HttpStream` path**. Inverted, the download loop spins forever. `stream.rs` clamps and warns.
-   Both are env-overridable (`ONDAR_READ_TIMEOUT_SECS`, `ONDAR_RETRY_TIMEOUT_SECS`,
-   `ONDAR_PREFETCH_BYTES`). **The HLS source deliberately sets `retry_timeout` above
-   `read_timeout`** (`hls::retry_timeout_for`: the stall bound + one segment timeout + 5 s — 55 s
-   at TD 10), because the spin needs a source that yields `Err` again and again, and `HlsSource`
-   never yields one: a fatal condition ends it (the channel closes, `hls task ended reason=` is
-   logged) and the decoder's EOF takes `run_session`'s "stream ended" path. With the ICY 5 s a
-   normal wait between segments would count as an internal reconnect (M3c finding F4; T15 pins
-   zero over 13 s at TD 6, and the mutation reads 2).
-5. Backoff is 1/2/4/8/16 s, 5 attempts, counter reset after 30 s of stable playback; then
-   `PlaybackState::Error` with the last attempt's code. **The policy is by cause** (2026-09-22,
-   M3a acceptance item 8, narrowed the same day by review finding 4): a **terminal** open error
-   — a non-HTTP answer such as `ICY 200 OK`, or a 401/403/404/410 — fails the session on the
-   first attempt with `code: http` and no `Reconnecting`, **but only while the session has never
-   opened**; on a reconnect every answer keeps the backoff (a mount that was playing can be 404
-   while its source restarts). Network errors, 5xx, 408/429, a decoder failure and a stream that
-   ended keep the backoff, each delay stretched to the server's `Retry-After` (delta-seconds,
-   capped at 30 s). `StreamError::terminal` and `retry_after` carry the decision from the
-   classifier to `retry_or_fail`; `run_session`'s `opened_once` confines it to the first open.
-   **An unrecognised format** (`DecoderError::UnrecognizedFormat`) is terminal likewise only while
-   the session **has never produced audio** — no decoded sample pushed to a ring yet
-   (`produced_audio`, defect B C1, B2; not "has opened", which is set before the build, and not
-   "has built a decoder", since `build()` returns an empty `Ok` after a false header when the
-   read ends — Step 0 S3, review P1). After audio, it keeps the backoff: a mount that played had
-   a valid format, so garbage on a reconnect is a source restarting.
-6. ICY metadata absence is normal, not an error.
-7. EQ: 10 ISO-266 octave bands, Q = 1.414, ±12 dB. Gains are atomics read at frame boundaries
-   every 64 frames; changed bands get new coefficients while **filter state is preserved** —
-   that is what avoids the click. There is no makeup gain, and no gain ramp or interpolation
-   — but the adapter bounds its own output with a soft-clip stage, identity bit-for-bit below
-   `SOFT_CLIP_THRESHOLD` = 0.95 and asymptotic to `SOFT_CLIP_CEILING` = 1.0, applied inside
-   `Equalizer` as the last operation on every sample so it cannot be bypassed. See ONDAR.md,
-   "EQ output is bounded by a soft-clip stage".
-8. Call the radio-browser click endpoint exactly once, when playback actually starts — built at
-   M3b commit 5: `Shared::write_state` in the engine sends `EngineEvent::Started { station_id }`
-   on the **first `Playing` of the session a `play` began** (`begin_session` resets the flag;
-   an underrun's refill, a resume and a reconnect of a session that already played find it
-   set; a session that reconnected before ever playing, or was paused while buffering, fires
-   on its first `Playing`). **The write, its liveness and the flag are decided under one lock**
-   (`/code-review` finding 1, 2026-09-23): every `begin_session` and every session end move a
-   generation, a `SessionCtx` carries the one it was born with, and a write from a stale
-   decode thread is dropped there — a flag checked before the lock left a window for the engine
-   thread's `cancel` + `begin_session`, in which the stale `Playing` took the new session's
-   `Started` (a vote and a recent for a station that had not opened, and nothing on its real
-   first `Playing`). **Every session event is gated the same way** (review 2, G2, 2026-09-30):
-   `StreamInfo`, the ICY title callback (`title_sink`) and the internal `Reconnect` go through
-   `SessionCtx::emit` → `Shared::emit_from`, which drops a stale generation and sends under the
-   session lock; there is no ungated `emit`, so a new event must choose. An event from the
-   audio path (M5's spectrum) must **not** take that lock — the audio callback never blocks.
-   The shell's forwarder hands the id to the stations service, whose DB
-   thread records the recent from the cached snapshot (`station_by_uuid`, schema v2's index)
-   and spawns **one** `GET /json/url/{uuid}` (`Client::click`, `TOTAL_CLICK` 10 s, never
-   retried — a retry could be a second vote) whose outcome is one log line and nothing else.
-   The page's row does nothing on the station already playing (a paused one resumes), so a
-   double click is not two votes; a replay is stop, then the row. With the measurement harness
-   active the click is suppressed (`suppressed=measurement`) and the recent still recorded.
-9. **Prefetch from bitrate** (M3b commit 6): `play` carries the station record's
-   `bitrate_kbps` (or none) and the engine sizes the stream's prefetch as the knee,
-   `RING_SECONDS × bitrate / 8`, bounded below by `PREFETCH_FLOOR_BYTES` (one decoder read) and
-   above by `PREFETCH_CEILING_BYTES` (half of `BUFFER_BYTES`, 131 072 — a prefetch at or over
-   the buffer is met only when the buffer is full, and the record's `bitrate` is user-entered:
-   1411, 1536 and a `128000` typo exist; `/code-review` finding 2, 2026-09-23) —
-   `stream::prefetch_for`, pure and tested (the floor wins up to 131 kbit/s; 320 kbit/s is
-   80 000 B; the ceiling from 525 kbit/s; no bitrate is the floor). `ONDAR_PREFETCH_BYTES`
-   still overrides the whole value.
-   Logged per play: `play station_id=… bitrate_kbps=… prefetch_bytes=…`.
-10. **One output format per process; every session converts to it before the EQ** (defect A,
-   2026-09-24). `ensure_player` reads the sink's rate and channels from
-   `MixerDeviceSink::config()` into `OutputFormat`. At attach, `output_chain` builds, per ring,
-   `ring → UniformSourceIterator(to that format) → Equalizer`. So the EQ always runs at the sink's
-   rate. rodio's mixer still wraps the `Player` queue in its own converter, which reads its
-   input's format only at a span end. `RingSource`'s span is `None`, so that converter kept the
-   **first** station's rate and channels for the whole process. Now every chain reports the
-   sink's format, so that converter is an identity. Do not give `RingSource` a finite span to
-   "fix" this: every boundary would rebuild the converter and discard its interpolation state.
-   See ONDAR.md, "Defect A".
-11. **The decoder's build is bounded in time, from its first byte** (defect B C2; redesigned by
-   the review fixes' F1, 2026-09-29, `build.rs`; its gaps moved to network arrival by review 2's
-   G1, 2026-09-30). `ClockedReader`, the bottom of the decoder's chain under `IcyReader` on both
-   source kinds, stamps into the session's `BuildClock` the decoder's first byte (the prefetch
-   met: `stream::open` returns **before** it, stream-download publishes the range only then); a
-   0-byte read or an `Err` stamps nothing. **The gaps are network arrival, not reads:** a read
-   returns only once its whole block has arrived (stream-download 0.24.4 `lib.rs:556–577`;
-   Symphonia asks for up to 32 KiB, `IcyReader` up to `metaint`), so a per-read gap was a
-   block's fill time — 8.2 s at 32 kbit/s. Each open has its own `Arrivals`, stamped by
-   `Settings::on_progress` on its download task after every chunk written (`FnMut`: the gap
-   state lives in the closure's `ArrivalWriter`, the one writer), the first gap measured from
-   the download's start; `stream::open` and `hls::open` both attach it. The decode thread's
-   `begin_build` resets the build's stamps, installs the open's `Arrivals` **unreset** (the
-   prefetch's arrivals may already be there), and publishes them with a new build seq and
-   `PROBING` in one word (Release); `Engine::tick` reads the word (Acquire) **before** the
-   ring's early return, then the first-byte stamp (Acquire) and the arrivals (their own lock,
-   never nested with `download`; `last_ms` Acquire publishes `max_gap_ms`), and hands
-   `decide_tick` durations — the engine keeps no build state, so no build reads another's clock
-   and nothing depends on a tick or the backoff's sleep between builds. `decide_tick`'s first
-   arm, before the pause arm: **no first byte by `no_bytes`** = max(60 s, ⌈1.1 × prefetch ÷ 1 250 B/s⌉,
-   the prefetch at 10 kbit/s with a 10 % margin — review 2, finding 3) → `NoBytes`, `Network`, backoff, always; **`format`** = max(20 s,
-   3 × `retry_timeout`) **after the first byte** → `Starved` (`Network`, backoff) if an internal
-   reconnect completed or the longest gap, the open one included, reached `starved` =
-   `retry_timeout`; else `Format` (`UnsupportedFormat`, terminal only while the session has never
-   produced audio). The engine bounds with one compare-and-swap from the exact word it read to a
-   `BOUND_*` phase that **is** the cause, holding `download`'s lock from the swap through the
-   token's cancel (no other lock, nothing blocking), so a stale decision can neither bound nor
-   cancel the next build; the gap and reconnect count it decided on are stored before the swap,
-   and the page's message prints them. The decode thread's swap `PROBING → BUILT` when `build()`
-   returns; if it fails, it drops whatever `build()` returned (`Ok` or `Err`: Step 0, S3) and
-   reads the cause, and those figures, from the swap it lost. The fire is at most one tick after the bound (the `Buffering` watchdog
-   still counts ticks and drifts ~3 % with a ~103 ms tick, carried). stream-download's
-   internal reconnect stays live during the build — the one bounded exception to invariant 3.
-   There is no byte budget. Why the first design was wrong (a hung reconnect is never counted;
-   the prefetch wait counted against the bound; HLS's `retry_timeout` ≥ 55 s): ONDAR.md,
-   "Defect B".
-12. **An HTTP `audio/aac*` or `audio/x-aac*` stream passes the ADTS front end** (defect B C4;
-   `audio/x-aac` since the review fixes' F4; `adts::AdtsReader`, the type's essence by
-   `stream::mime_essence`, shared with the HLS dispatch),
-   placed **after** `IcyReader` (a metadata block can hold `FF F9`; inside the frames it would
-   read as a sync loss) and before the decoder. It realigns to three chained headers starting
-   below 16 KiB and normalises every frame with `hls::segment::normalise_adts` (`FFF9` → `FFF1`,
-   CRC dropped), or — only before its first alignment — passes through; it never refuses. After
-   an alignment it never passes through: a realign after a sync loss drops each 16 KiB window
-   with no chain and scans on (review fixes F3, finding 4). Chosen by `OpenedStream::kind`, never
-   by the content type alone: an HLS session reports its first segment's type (`audio/aac` by
-   default) and its segments are normalised already (review P3). One `adts front end: aligned
-   at N B` line per open at `info`, the first `realigned` at `info` and later ones at `debug`;
-   `passing through` is a `warn`.
-
-## macOS specifics (as built through M2d)
-
-- Activation policy `Accessory` (set in `panel::setup`, **before** `PanelBuilder::build()`) +
-  `LSUIElement` in `src-tauri/Info.plist` — no Dock icon, no menu bar menus. Only a bundled
-  build can show it: `lsappinfo info -only ApplicationType` → `"UIElement"`.
-- The popover is an `OndarPanel` (`tauri_panel!`) built with `PanelBuilder`, `tauri-nspanel`
-  pinned by `rev` (c9ec213) in `Cargo.toml`, recorded in ONDAR.md. The plugin must be registered
-  (`tauri_nspanel::init()`).
-- **Never call `Panel::to_window()`** — it converts the panel back to a `TaoWindow` and empties the
-  plugin store (the cause of the spike's dead tray click). Reach the Tauri window with
-  `get_webview_window(label)`.
-- Non-activating is the style mask: `NonactivatingPanel` ORed onto tao's mask. `no_activate(true)`
-  only keeps window *creation* from activating the app.
-- Showing is: lay out, `apply_frame` (one synchronous `setFrame:display:` with origin **and**
-  size, while still hidden — M2d route S, D2), then emit `panel:layout` with `transition=show`
-  (the order is load-bearing for that field), **wait for the page's commit**
-  (or the 250 ms fallback), then `show()`, then `make_key_window()`; `show()` alone never makes
-  the panel key. Measured on the dev loop 2026-09-18: the hidden-page commit arrives 2–8 ms
-  after the request. A resize is the same round trip with `apply_frame` at the end instead of
-  `show()`. `invalidateShadow()` follows every frame change as insurance (P2,
-  unfalsified). After every show and resize the log carries `panel placed
-  inside_tray_screen_visible=… gap_below_icon=…` — the **tray-screen** form by rule (R3): the
-  own-screen form passed both of Step 0's forced failures. Gap 6 = clamp idle, 0 = clamp fired.
-- Dismissal: hide on `WindowEvent::Focused(false)` (tao's `windowDidResignKey:`). **Not**
-  `Panel::set_event_handler`, which replaces tao's delegate and silences its window events.
-  `hides_on_deactivate` is not set — it keeps the panel off screen.
-- Position from Tauri's own `TrayIconEvent::Click { rect }` (physical at the *status item
-  display's* scale), converted to points, centred under the icon and clamped into that display's
-  work area (`panel.rs`, `layout` → `place`: `resolve_display`, `centred_below`, `clamp_into`, unit-tested against
-  measured fixtures). `tauri-plugin-positioner` is **not needed**.
-- Vibrancy is Tauri's own `set_effects` (`Effect::Popover`, `EffectState::Active`) plus
-  `PanelBuilder::transparent(true)` *and* `with_window(|w| w.transparent(true))`, with
-  `macos-private-api` enabled (`Cargo.toml` feature + `"macOSPrivateApi": true`).
-  `window-vibrancy` is **not** a direct dependency. Measured by view tree at M2a and **checked by
-  eye 2026-09-16** over a bright, busy backdrop (ONDAR.md, "The spike measured a reverted
-  `TaoWindow`", for why the view tree alone was not enough).
-- Tray icon: template image, 44 px glyphs via `include_image!`. `tray-icon`'s `set_icon` resets
-  template mode, so the swap uses `set_icon_with_as_template` (one main-thread task), and only
-  on an idle/playing flip.
-- Tray menu (M2c): About + Quit. **`show_menu_on_left_click(false)` is required** — with
-  `tray-icon`'s default the left click opens the menu, whose tracking loop swallows `mouseUp:`,
-  and the toggle (keyed off `Up`) is dead: measured 7 clicks → 7 `Down`, 0 `Up`, 0 toggles. The
-  same loop swallows the right `mouseUp:`, so **right-click logic keys off `Down`**; on
-  `Click{Right, Down}` the popover hides first (`reason=menu`), measured to land before the menu.
-  About is a pane inside the popover (the standard About panel opens behind the frontmost app in
-  an `Accessory` app); Quit is `PredefinedMenuItem::quit` = `terminate:`, which ends the process
-  without shutting the engine down — measured clean with audio playing.
-- Single instance (M2c): `tauri-plugin-single-instance` 2.4.4, registered **first**. Its macOS
-  mechanism is a Unix socket, `/tmp/<identifier with `.` and `-` → `_`>_si.sock`: a second
-  process connects, writes cwd + argv and exits during plugin setup; the first gets the callback
-  on a tokio worker and hops to main. It covers `open -n`, the inner binary and **a copy of the
-  bundle at another path** (LaunchServices does not dedupe by identifier across paths —
-  measured). It cannot see `open Ondar.app` or a Finder double-click against the running app:
-  those start no process and arrive as `RunEvent::Reopen`, which `lib.rs` handles by running
-  `.build()` then `.run(|handle, event| …)`. Both feed `panel::show_at` (`reason=second_instance`
-  / `reopen`); a popover that is already up stays up (logged no-op).
-- One hide path, one show path (`panel::hide` / `panel::show_at`, M2c): every caller logs a
-  `reason=` and an `effective=`, so the measured double-hide on every close (toggle, then
-  resign-key 2–4 ms later) reads as one effective hide and one no-op. Both hop to the main
-  thread themselves — `PanelHandle` is `Send` but its methods are bare `msg_send!`.
-- Occlusion: decode `NSWindowOcclusionState::Visible`, never read the raw number, and never read it
-  synchronously after show — it lagged up to 35 ms when measured. The log reads it 100 ms after.
-- The setup-time self-resign seen at M2a (the popover resigned key by itself while the M1 bench
-  window was created visible) is **gone with `main`**: M2c Step 0, P7, 3 launches × 5 samples,
-  15/15 key. The mechanism was never identified — the condition was removed, not explained. If a
-  second window ever returns, re-check.
-- **Coordinates are global logical points, top-left origin** (`panel.rs`, M2b): there is no common
-  physical space on a mixed-scale layout, because Tauri gives each monitor's values in that
-  monitor's own scale. Convert at the boundary, never divide by the panel window's scale — that is
-  the scale of whatever display the panel is sitting on. `TRAY_GAP`/`EDGE_MARGIN` are points, since
-  a visual spacing has to be. See ONDAR.md, "M2b: coordinates are logical points".
-- M2d: expanding resizes **and** repositions against the tray anchor in the same frame — no jump.
-
-## Map invariants (M4; M4a built 2026-10-01 — the renderer and the stations are M4b/M4c)
-
-See ONDAR.md, "M4: the drawn map — the reversal", "M4a: decisions during the build" and "M4a:
-built and measured", and `_handover/m4a-plan.md`.
-
-- **The drawn bound:** land is simplified to ≤ 0.25 pt and quantised to ≤ 0.035 pt more
-  (≤ 0.2854 pt on screen), subdivisions ≤ 0.5 + 0.035 pt; a neighbour in another country's
-  projection ≤ 0.376 pt (P2). The simplifier is the per-ring hybrid (RDP if simple and within the
-  bound, else VW).
-- **Coverage is built for every band** from 140 to 300 pt tall at 328 wide (`Pane::band`, M4b
-  commit 3; the shipped resource carries it since commit 5's rebuild, its header's `Bands`). A frame
-  at a pane that admits a unit with no blob skips it and counts it in `FrameStats::missing_blobs`;
-  it never fails.
-
-- **The map resource is built at build time** from Natural Earth 10m v5.1.2, whose inputs are
-  pinned by SHA-256 (a mismatch is refused), and shipped as one bundled resource. It is
-  **never** fetched from the network at runtime; the Natural Earth inputs never enter CI.
-- **Rust owns the map; the webview draws exactly the paths Rust sends.** Projection (spherical
-  LAEA on the authalic radius, 6 371.0072 km), framing, insets, level choice, clipping, station
-  gathering and hit-testing are Rust's. No Leaflet, no tiles.
-- **Never frame or clamp in lon/lat bounds.** The centre is the midpoint of the mainland's
-  antimeridian-aware bbox (Antarctica pole-centred); the fit, the pan limit and every bbox are
-  in projected kilometres, so Russia and Fiji hold.
-- **The frame is the crate's, the pane is Rust's.** The crate takes the pane as an argument;
-  the page is told its size and never computes a frame.
-- **The ladder and the clamp:** scales 1.5/3/6/12/24 km/pt, a view uses the coarsest level at or
-  below its scale; zoom is clamped to [1.5 km/pt, fit] and **the view stays inside the fit
-  rectangle** (D6 as decided 2026-10-01: the pane at the widest scale, centred on the frame bbox;
-  at that scale the view is the rectangle and cannot pan). Coverage and the frame's index both go
-  through `ondar_map::index` (`reach`, `ground_cap`, `cap_meets`), so the index never asks for a
-  blob the tool did not store.
-  Subdivisions are shown above 8 km/pt, by a build-time flag per country.
-- **No panic from bytes.** The loader reads through one bounded cursor; a corrupt or truncated
-  resource is an error, and the app runs without a map.
-- **Insets shrink per band (I1) around the controls' corner (C1; M4b commit 4, the tool's half):**
-  the bottom-right corner is the `− fit +` row's at every band (`rules::controls_rect`, placed first
-  in the inset rule; a bottom-right row is refused); each inset box, in table order, takes the
-  largest whole-percent scale at which it is inside the pane, apart from every box placed and
-  ≥ 12 pt from the land — the size scaled, the 8 pt label strip and 4 pt pads not — down to a land
-  area of 28 × 12 pt (box ≥ 36 × 28), else dropped at that band. A box whose golden rect abuts
-  another's row or column at the same corner keeps the golden gap to that box's near edge as it
-  shrinks (the stacking rule, commit 4b: Hawaii beside Alaska, Madeira under the Azores), and anchors
-  by itself where that box is dropped. Hawaii alone may be dropped at 178 (decision 1, case (c): it
-  first appears at 274). The scales are the tool's, stored per band (format v2, commit 5) and read
-  by the frame (`Store::inset_boxes`, the one placement); the frame never searches. A label is never clipped: the tool
-  refuses to build a resource whose label is wider than its box at 178 or 300 (`ship_gate`).
-- **The page draws three layers and nothing else (M4b, as accepted 2026-10-06):** neighbours; the
-  land, one flat tone per theme with its hairline edge on the same path; subdivisions above it; then
-  the insets with whole labels. No filter, no opacity, no `<use>` (WebKit styles a `<use>` clone as
-  the original element — the acceptance review's C1 + C2), one `<path>` per shape, every colour and
-  width a token. The bar: a country change from idle to the painted frame ≤ 100 ms p90 at 178 and
-  300 for RU, US, PT, AQ — RU at 300 passes by 1 ms, so a slowdown of a third fails it; the levers
-  are `raw` and RU's ring RDP retry (ONDAR.md round 2 and 3).
-- Station coordinates are radio-browser's `geo` only (M2, 2026-09-30); the list stays the
-  navigation.
-
-## Known risks — check these before trusting this file
-
-1. **`tauri-nspanel` API drift.** It is a git dependency with no releases. Verify against the
-   pinned rev before writing code, and record what you find in ONDAR.md's "Verified versions".
-   Its method names are not a guide to what they do: `to_window()` is destructive, `no_activate`
-   does not make a panel non-activating, and `show()` does not make it key.
-2. **HLS and redirect chains.** `stream-download` handles plain HTTP/Icecast; **M3c adds the
-   ADTS half of HLS** (`crates/ondar-audio/src/hls/`): a playlist answer — by content type, never
-   by the record's `hls` flag — is fetched again on its final URL (two requests per open, R1),
-   the audio-only variant chosen, the media playlist refreshed on `MEDIA-SEQUENCE`, the ADTS
-   segments normalised (ID3 skipped, `FFF9` → `FFF1`) and concatenated into one stream for the
-   same decoder. **MPEG-TS, fMP4 (`EXT-X-MAP`), encrypted (`EXT-X-KEY` ≠ NONE) and byte-range
-   playlists, video-only masters and plain M3U files are refused terminally** as
-   `unsupported_format` with a message the page renders, after one chain of requests and no
-   backoff. On `b7e050a` every HLS URL was one request and the generic "could not identify the
-   audio format" (F7). Also: Shoutcast v1 servers (`ICY 200 OK` status line) are rejected by
-   hyper and surface as `http`. An **Icecast** `audio/aac*` or `audio/x-aac*` mount sending
-   `FFF9` or starting mid-frame is no longer stuck in `Connecting` (defect B, invariant 12); any
-   build that finds no decoder is bounded: 20 s after its first byte, or 60–115 s with none
-   (invariant 11).
-3. **Sparse station coordinates.** 20.7 % of radio-browser stations have lat/lng (measured
-   2026-09-21 over 25 236 stations in eight countries, 7–38 % by country; the inherited "~30 %"
-   is retired). The country dropdown is the primary navigation; the map must never be the only
-   route to a station.
-4. **Stream reliability.** Dead and mislabelled streams are common. Honest error states and
-   reconnect behaviour are a feature, not polish — do not paper over them with spinners.
-5. **Build host.** Building, signing and notarising all require macOS.
+The principles behind these: ONDAR.md, "Principle: …" sections.
 
 ## Working style
 
-- **Plan first.** Anything beyond a one-file fix: propose the plan and wait.
-- **Small commits**, conventional style (`feat(audio):`, `fix(map):`, `docs:`), each building
-  and passing checks on its own. Docs commits stay separate from code commits — **except where a
-  document line describes the behaviour the commit changes**: that hunk ships with the code and
-  the commit message says so, because separating them guarantees one pushed state in which the
-  document and the code disagree (2026-09-21, from M2d `7e19a1a`: the plan review asked for
-  ONDAR.md's D1 formula line in the commit that changed the formula, and `/code-review` V3 then
-  flagged the same commit for breaking this rule as it was written). CLAUDE.md's own same-commit
-  rule above is the special case of this one.
-- **CI gates every *push*, verifying that push's head commit — not every commit.** The rule
-  above is yours to keep, not something CI enforces: a multi-commit push leaves every commit
-  but the last unverified. **So a commit that has to stand on its own has to be pushed on its
-  own.** See ONDAR.md, "CI verifies the head of each push, not every commit". **Code waits for
-  CI with a single `gh run watch --exit-status`, never a polling loop; one push per green**
-  (decided 2026-09-25): after each push, in the background, `sleep 15; gh run watch "$(gh run
-  list --branch <b> --commit <sha> --limit 1 --json databaseId -q '.[0].databaseId')"
-  --exit-status`, with the sha captured at push time; green → the next commit; red or no run →
-  stop and report the run URL. `gh auth status` first in a session.
-- When a decision is made or reversed, it goes into **ONDAR.md**, not just the chat.
-- **Current test counts live only in this file's test table** (with the breakdown above it and
-  the TypeScript count below it). Everywhere else — README, `ci.yml` comments, ONDAR.md prose,
-  BUILD_PLAN, the rest of this file — a count is either absent or dated and frozen, with
-  "current: see CLAUDE.md" beside it. A milestone's record ("**217 + 15** at acceptance") is a
-  dated figure and stays. (Decided 2026-09-28: the drift audit of that day found present-tense
-  counts of 3, 38 and 53 standing for 40, 40 and 235, some stale since 2026-09-10.)
-- If a documented approach turns out to be wrong, stop and say so before improvising.
-- **The author of a block is frequently wrong about the code — verify before applying, and say
-  so rather than improvising.** On 2026-09-14 a dictated replacement for this file's unwrap
-  rule was wrong in four places: the decode thread spawns on every `play` rather than at
-  startup, `.lock().unwrap()` carries no message, `NonZeroUsize::new(CONST)` is outside the
-  rule rather than an exemption to it, and the non-test site count was 20, not 19. All four
-  were caught by checking the source before applying. A later item was stopped outright: it
-  rested on measured values being "exact to five decimals", case 1 was not, and the comment it
-  asked for would have been false. Declining to write a justification you cannot stand behind
-  is the cheapest defect-finding mechanism this project has.
-- **A plan goes to `_handover/<task>-plan.md` before it is reviewed.** Plan mode blocks writes to
-  every file but its own plan file, so present the plan in the terminal as usual, and on approval
-  write it to that file **first** and stop — the planning chat reviews the file, not the paste.
-  Same mechanism as the report rule below, and the same failure at the other end of the task: on
-  2026-09-15 the M2a plan existed only in the terminal, and the paste into the planning chat
-  truncated mid-sentence inside its first pushback item — the one questioning whether a recorded
-  spike conclusion still stood. A plan that lives only in a terminal is one paste away from being
-  reviewed in part. The same applies to `/code-review` findings, which hit this failure on
-  2026-09-15.
-- **End a task by writing the report to `_handover/last-report-<YYYY-MM-DD>.md` as well as to
-  the terminal** — same content: what changed, the commits, the checks, the measured figures,
-  and anything you disagreed with. The planning chat reads that file instead of a hand-copied
-  paste: on 2026-09-14 four pastes truncated in transit (a mangled word, a table cut mid-row,
-  a figure clipped from 0.99962 to 0.99), each a chance to misread a number in a project where
-  numbers are the point. If the file already exists for the day, append a new dated section
-  rather than overwrite it.
-- Verify crate claims against docs.rs or the source before writing code against them.
+- **Plan first** for anything beyond a one-file fix. On approval, write the plan to
+  `_handover/<task>-plan.md` **first** and stop: the chat reviews the file, never a paste.
+- **End every task with the report in `_handover/last-report-<YYYY-MM-DD>.md`** as well as the
+  terminal (append a dated section if the file exists). `/code-review` findings go to a file too.
+- **Small conventional commits** (`feat(audio):`, `fix(map):`, `docs:`), each green on its own.
+  Docs commits stay separate, **except** a document line that describes the behaviour a commit
+  changes: it ships in that commit, and the message says so.
+- **CI verifies only the head of a push**, so a commit that must stand alone is pushed alone. Wait
+  with one `gh run watch --exit-status` on the run for the sha captured at push time; green → the
+  next commit; red or no run → stop and report the run URL. `gh auth status` first in a session.
+- **Decisions go to ONDAR.md**, not only the chat.
+- **Verify before applying.** A block you are handed, a documented approach, a crate's API
+  (docs.rs or the source): check it against the code first, and if it is wrong, stop and say so.
+  Decline to write a justification you cannot stand behind.
 - Martín prefers concise, factual answers with sources. Skip the preamble.
+
+## Known risks
+
+1. **`tauri-nspanel`** is a git dependency pinned by `rev`, with no releases; its method names
+   mislead (`.claude/rules/macos-panel.md`). Verify against the pinned rev before coding.
+2. **Sparse coordinates** (20.7 % of stations, measured 2026-09-21): the country list is the
+   navigation; the map is never the only route to a station.
+3. **Streams are unreliable.** Honest error states and reconnects are a feature; never hide them
+   behind spinners.
+4. **Build host.** Building, signing and notarising require macOS.

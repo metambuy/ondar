@@ -462,6 +462,8 @@ pub(crate) mod tests {
         );
     }
 
+    /// Atomic replace: a second `put_stations` replaces the country's rows and its `fetched_at`;
+    /// another country's list is untouched.
     #[test]
     fn put_replaces_the_list_atomically_and_updates_the_fetch_time() {
         let (clock, _) = fake_clock(T0);
@@ -484,6 +486,8 @@ pub(crate) mod tests {
         assert_eq!(cache.stations("ES").unwrap().unwrap().items.len(), 1);
     }
 
+    /// Countries round trip: the list with its `station_count` per code (`None` for an unknown
+    /// code), absent before a put, fresh after it, expired at `TTL_COUNTRIES`.
     #[test]
     fn countries_round_trip_with_their_ttl_and_station_count() {
         let (clock, now) = fake_clock(T0);
@@ -551,6 +555,7 @@ pub(crate) mod tests {
         assert_eq!(ids("radio"), ["a", "b"], "ASCII case folded, by votes");
     }
 
+    /// Local search: a case-insensitive substring match over every cached list, by votes.
     #[test]
     fn local_search_is_a_case_insensitive_substring_over_every_cached_list() {
         let (clock, _) = fake_clock(T0);

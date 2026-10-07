@@ -773,6 +773,8 @@ mod tests {
         assert_eq!(choose_variant(&m).unwrap().bandwidth, Some(64_000));
     }
 
+    /// T2: a variant with no CODECS is tried before the muxed ones and a video-only one never;
+    /// an empty master is `NoAudio`.
     #[test]
     fn t2_no_codecs_is_tried_before_muxed_and_never_a_video_only_one() {
         let m = MasterPlaylist {
@@ -913,12 +915,15 @@ mod tests {
         );
     }
 
+    /// T4 (R2): a plain M3U — `#EXTINF:-1,Name` and an Icecast URL — is `NotHls`, its own test.
+    /// Fails with the EXT-X presence check dropped: as `Malformed`, since a `-1` duration is
+    /// deferred behind the HLS decision.
     #[test]
     fn t4_a_plain_m3u_is_not_hls_and_its_url_is_not_followed() {
         // R2: `audio/x-mpegurl` is also served for an ordinary M3U that lists an Icecast URL.
         // It starts with #EXTM3U, has no EXT-X-* tag, and must be refused, not read as a media
-        // playlist with one segment. Mutation "drop the EXT-X presence check" → parses as
-        // `Media` with `segments.len() == 1` (an Icecast mount fetched as a segment).
+        // playlist. Mutation "drop the EXT-X presence check" (run): the first body reads
+        // `Malformed("EXTINF:-1,Some Radio")`, the deferred error, not `NotHls`.
         let base = url("http://h/listen.m3u");
         let plain = "#EXTM3U\n#EXTINF:-1,Some Radio\nhttp://icecast.example/stream\n";
         assert_eq!(parse(plain, &base), Err(PlaylistError::NotHls));
@@ -930,6 +935,7 @@ mod tests {
         );
     }
 
+    /// T4: no `#EXTM3U` → `NotPlaylist`; bad numbers → `Malformed`.
     #[test]
     fn t4_a_body_without_extm3u_is_not_a_playlist_and_bad_numbers_are_malformed() {
         let base = url("http://h/p.m3u8");
@@ -1010,6 +1016,8 @@ mod tests {
         }
     }
 
+    /// T6: 01's real refresh emits exactly 244208–244210, then TD ÷ 2. Fails with a "seen"
+    /// identity (gate amendment 6): 244201–244204 are re-emitted on 01.
     #[test]
     fn t6_a_reload_emits_exactly_the_new_segments_and_waits_the_last_duration() {
         // 01's real refresh, 20 s after the first: sequence 244198 → 244201, three new
@@ -1176,6 +1184,7 @@ mod tests {
         );
     }
 
+    /// The quote-aware attribute splitter alone.
     #[test]
     fn attribute_lists_split_quote_aware() {
         let a = attribute_list(
@@ -1199,10 +1208,13 @@ mod tests {
 
     // ---- Review 2026-09-25, findings 1–3 + the sweep: no code path from network bytes may panic
 
-    /// A table of hostile playlists. Every row **panicked on `102c114`** (the panic text is in
-    /// the commit message) and now yields the typed refusal or the safe value beside it. With
-    /// the release profile's `panic = "abort"` each row was a whole-app abort from one remote
-    /// playlist.
+    /// A table of hostile playlists. Every row **panicked** before the fix — `CODECS="mp4aé"`
+    /// "byte index 5 is not a char boundary", `mp4a.40é` the same at byte 8, `#EXTINF:1e30`
+    /// "cannot convert float seconds to Duration", `MEDIA-SEQUENCE:u64::MAX` "attempt to add
+    /// with overflow" at the segment add and again at the planner's `+ 1` — and now yields the
+    /// typed refusal or the safe value beside it: `NoAudio` / audio-not-HE / `Malformed` / a
+    /// clamped wait. With the release profile's `panic = "abort"` each row was a whole-app
+    /// abort from one remote playlist.
     #[test]
     fn hostile_playlists_do_not_panic() {
         let base = url("http://h/p.m3u8");

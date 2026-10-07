@@ -88,6 +88,8 @@ mod tests {
         }
     }
 
+    /// Priority / weight order: lower priority first, then higher weight, then name, the
+    /// trailing dot stripped from the target.
     #[test]
     fn lower_priority_first_then_higher_weight() {
         let hosts = order(vec![

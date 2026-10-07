@@ -712,6 +712,9 @@ mod tests {
         ));
     }
 
+    /// Three same-host attempts with one re-resolve: a transport that always fails is
+    /// `Exhausted { attempts: 3 }` — three requests to the one host, the hosts resolved at first
+    /// use and once more before attempt 2, the sleeps exactly `BACKOFF`.
     #[test]
     fn three_attempts_same_host_then_exhausted() {
         let transport = FakeTransport::new(vec![Err("connect refused".into())]);
@@ -779,6 +782,8 @@ mod tests {
         assert_eq!(transport.calls(), 2);
     }
 
+    /// A 404 is not retried (`Http { 404 }` after one request); a 503 and a 429 are, and the
+    /// third answer's body is returned.
     #[test]
     fn four_xx_does_not_retry_but_five_xx_and_429_do() {
         let transport = FakeTransport::new(vec![status(404)]);
@@ -798,6 +803,8 @@ mod tests {
         assert_eq!(transport.calls(), 3);
     }
 
+    /// List vs small totals: a station list is requested under `TOTAL_LIST`, the countries
+    /// list under `TOTAL_SMALL`.
     #[test]
     fn list_requests_carry_the_long_total_and_small_ones_the_short() {
         let transport = FakeTransport::new(vec![ok(&rows(3))]);
@@ -838,6 +845,8 @@ mod tests {
         assert_eq!(transport.calls(), 1, "not retried: the answer was a 200");
     }
 
+    /// The countries fixture through the client: 240 countries from one GET of
+    /// `/json/countries?hidebroken=true` on the resolved host.
     #[test]
     fn parses_the_countries_fixture_through_the_client() {
         let transport = FakeTransport::new(vec![ok(COUNTRIES)]);
@@ -877,9 +886,9 @@ mod tests {
 
     /// M3b commit 5 (F6 test 7): a click is one request through `transport.get`, never
     /// `fetch_with_retries`. Fails if the retry loop is reused (three calls for the error
-    /// script) or the path is wrong. `/code-review` finding 7 (2026-09-23): a failed click's
-    /// error is its own shape and its message names the cause and nothing a click never had —
-    /// fails if it reads "after 1 attempt(s) in 0.00s" again (the code before it).
+    /// script) or the path is wrong. `/code-review` finding 7: a failed click's error is its own
+    /// shape and its message names the cause and nothing a click never had — fails if it reads
+    /// "after 1 attempt(s) in 0.00s" again (the code before it).
     #[test]
     fn click_is_one_request_never_retried() {
         let transport = FakeTransport::new(vec![Err("connection reset".into())]);

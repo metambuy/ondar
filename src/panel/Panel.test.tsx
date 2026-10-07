@@ -1,20 +1,6 @@
-// The popover as a whole, offline (M3b acceptance item 9, finding B — vitest under jsdom,
-// `pnpm test`). With `list_countries` failing and a favourite in the store, the country control
-// stays enabled and the favourites are one choice away: the stores need no network, so the one
-// thing a person can still use offline must not sit behind the countries list. Fails if the
-// select is disabled while the countries are missing (the code before this test), if the ★
-// toggle is (finding C moved the stores behind it), or if the favourite never reaches the list.
-//
-// Also (M4b commit 7): with no band in the layout no map pane is mounted, and with a band the
-// platter is mounted at the band's size with the `− fit +` row at the rect Rust gave (fails if
-// the pane mounts on a collapsed layout, or if the page sizes the platter itself).
-//
-// Also (the acceptance review's A2, 2026-10-06): the map follows the dropdown — a change of the
-// country select reaches `map_select` with the new code, and back (fails if the pane's country is
-// not the control's, or if a change does not re-select). The acceptance photo of US drawn under a
-// PT dropdown was the `m=paint` driver, which selects RU, US, PT, AQ through `map.select` directly.
-//
-// `../api` is mocked whole: nothing reaches Tauri.
+// The popover as a whole: offline, with and without a map band, and the map following the
+// dropdown — vitest under jsdom, `pnpm test`. `../api` is mocked whole: nothing reaches Tauri.
+// Each test's comment states what it pins and what it would have to see to fail.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListedCountries, PanelLayout, Station } from "../api";
@@ -117,6 +103,12 @@ afterEach(() => {
 const settle = () => act(async () => {});
 
 describe("Panel offline", () => {
+  // Offline (M3b acceptance item 9, finding B). With `list_countries` failing and a favourite in
+  // the store, the country control stays enabled and the favourites are one choice away: the
+  // stores need no network, so the one thing a person can still use offline must not sit behind
+  // the countries list. Fails if the select is disabled while the countries are missing (the
+  // code before this test), if the ★ toggle is (finding C moved the stores behind it), or if
+  // the favourite never reaches the list.
   it("keeps the country control enabled and the favourites reachable with no countries list", async () => {
     render(<Panel />);
     await settle();
@@ -133,6 +125,9 @@ describe("Panel offline", () => {
     expect(screen.getByText("1 favourites · 0 recents")).toBeTruthy();
   });
 
+  // M4b commit 7: with no band in the layout no map pane is mounted, and with a band the platter
+  // is mounted at the band's size with the `− fit +` row at the rect Rust gave. Fails if the
+  // pane mounts on a collapsed layout, or if the page sizes the platter itself.
   it("mounts no map pane without a band, and the platter with the controls at the band's rect with one", async () => {
     render(<Panel />);
     await settle();
@@ -155,6 +150,11 @@ describe("Panel offline", () => {
     expect(root.getPropertyValue("--map-controls-x")).toBe(px(246));
   });
 
+  // The acceptance review's A2: the map follows the dropdown — a change of the country select
+  // reaches `map_select` with the new code, and back. The acceptance photo of US drawn under a
+  // PT dropdown was the `m=paint` driver, which selects RU, US, PT, AQ through `map.select`
+  // directly. Fails if the pane's country is not the control's, or if a change does not
+  // re-select (killed with the pane's select effect ignoring the prop).
   it("the map follows the dropdown: a country change re-selects, and back (A2)", async () => {
     countriesReply = {
       items: [

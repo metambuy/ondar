@@ -91,7 +91,8 @@ fn golden_fit_table() {
 
 /// Step 0's fits on the resource: 237 codes within 0.05 % or the fixture's rounding, and the
 /// three listed differences — MY's override (2.326), AQ pole-centred, MM's subdivisions at 8.008.
-/// Fails if the centre or the grouping diverges from the verified prototype.
+/// Fails if the centre or the grouping diverges from the verified prototype, or with AQ's pole
+/// centre removed.
 #[test]
 fn step0_reproduced() {
     let s = store();
@@ -243,7 +244,8 @@ fn antarctica() {
 }
 
 /// Each of the 14 insets clears its country's land by ≥ 12 pt at the golden pane, its land fits
-/// its box, and no two boxes overlap. Fails with a box moved onto the land.
+/// its box, and no two boxes overlap; none is drawn at a zoomed view. Fails with a box moved onto
+/// the land, or with insets at every view.
 #[test]
 fn insets_clear_12pt() {
     let s = store();
@@ -683,9 +685,10 @@ fn index_is_exact() {
 
 /// A pane that is not a pane — a negative or zero side, a negative padding, a non-finite field —
 /// frames nothing and never panics (review finding 4): `fit_scale`, `fit`, `clamp_view`, `frame`,
-/// `inset_clearance`, `project` and `unproject` (review 2, finding 6) answer `None` / empty. The finding's pane, −10 × 300 with −20 padding, has a
-/// positive usable area (30 × 340), so on `dddb4da` `fit_scale` accepted it and `clamp` panicked
-/// in `f64::clamp` (min > max); the release profile aborts on a panic.
+/// `inset_clearance`, `project` and `unproject` (review 2, finding 6) answer `None` / empty. The
+/// finding's pane, −10 × 300 with −20 padding, has a positive usable area (30 × 340), so a
+/// `fit_scale` that checks the usable area alone accepts it and the clamp panics in `f64::clamp`
+/// ("min > max, or either was NaN"); the release profile aborts on a panic.
 #[test]
 fn a_bad_pane_is_none_not_a_panic() {
     let s = store();
@@ -721,7 +724,8 @@ fn a_bad_pane_is_none_not_a_panic() {
 
 /// A view that is not a view projects nothing (review 3, finding 1): a scale of 0, negative, NaN
 /// or ∞, or a centre not finite, gives `None` from `project` and `unproject`, as a bad pane does.
-/// On `b3cf735` a scale of 0 gave `Some([inf, -inf])`.
+/// Fails with each clause of `View::is_valid` dropped, and with `unproject` unguarded: a scale of
+/// 0 then gives `Some([inf, -inf])`.
 #[test]
 fn a_bad_view_is_none() {
     let s = store();
@@ -746,8 +750,9 @@ fn a_bad_view_is_none() {
 
 /// A view a hair finer than the fit is the fit (review 3, finding 3): `clamp_view` snaps a scale
 /// at or above `top × (1 − 1e-6)` to the fit, so the frame there is the fit's — insets drawn,
-/// the remote groups not drawn as land. On `b3cf735` a view at `top × (1 − 1e-12)` lost the US's
-/// two insets. At `top × 0.99` the view is not the fit and draws no inset.
+/// the remote groups not drawn as land. At `top × 0.99` the view is not the fit and draws no
+/// inset. Fails with the snap removed, at 0, at 0.02, or keeping the view's centre: a view at
+/// `top × (1 − 1e-12)` is then not the fit and the US frame loses Alaska and Hawaii.
 #[test]
 fn a_view_a_hair_below_the_fit_is_the_fit() {
     let s = store();
@@ -775,8 +780,9 @@ fn a_view_a_hair_below_the_fit_is_the_fit() {
 /// A box that leaves the pane blocks nothing (review 3, finding 2), on the rebuilt resource:
 /// France's Fr. Guiana box moved to y −10 (off the pane at every band) and Réunion's moved to the
 /// top-left on top of it, inside the pane — at the golden pane Réunion and the Antilles are drawn,
-/// Fr. Guiana is the one dropped. On `b3cf735` a box not drawn still took part in the overlap
-/// test and dropped the box over it.
+/// Fr. Guiana is the one dropped. Fails if a box not drawn still takes part in the overlap test
+/// (it drops the box over it, so none is drawn), with every box pushed, none pushed, or the
+/// inside check dropped.
 #[test]
 fn an_off_pane_box_does_not_drop_an_inset() {
     use ondar_map::format::Corner;
@@ -813,8 +819,9 @@ fn an_off_pane_box_does_not_drop_an_inset() {
 /// area, not an inset) that falls inside the pane is a vertex of a land ring — as it already was
 /// when another country's frame drew the same part as a neighbour. 20 parts in 6 countries: the
 /// South Orkneys (AQ), Lord Howe (AU), Trindade and Fernando de Noronha (BR), San Andrés (CO),
-/// the Bonin Islands (JP), PF. On `dddb4da` the frame skipped an own
-/// unit's `Dropped` parts, so zoomed and panned onto one the pane showed empty sea.
+/// the Bonin Islands (JP), PF. Fails with an own unit's `Dropped` parts skipped by the frame —
+/// zoomed and panned onto one the pane shows empty sea — reading "Antarctica ATA: an own islet's
+/// vertex at (39.83, 19.15) is not drawn".
 #[test]
 fn own_islets_in_the_padding_are_drawn() {
     let s = store();
@@ -939,8 +946,9 @@ fn is_land_vertex(f: &Frame, [px, py]: [f64; 2]) -> bool {
 /// inset's centre (clamped into the fit rectangle), every in-pane vertex of an own `Inset` part
 /// is a vertex of a land ring; at the fit, none is. The finding's four must be among those seen:
 /// India's Andaman & Nicobar, Yemen's Socotra, the Aleutians (Alaska's group), the Marquesas.
-/// On `8324e68` the frame skipped an own unit's `Inset` parts at every view, so zoomed onto the
-/// Andamans the pane showed empty sea while Myanmar's frame drew them as a neighbour.
+/// Fails with own `Inset` parts never drawn — zoomed onto the Andamans the pane shows empty sea
+/// while Myanmar's frame draws them as a neighbour ("IN IND: an own inset vertex at (269.76,
+/// 237.81) is not land") — drawn at the fit too, or drawn as neighbours.
 #[test]
 fn own_insets_are_land_when_the_view_is_not_the_fit() {
     let s = store();
@@ -1075,10 +1083,11 @@ fn an_inset_that_does_not_fit_the_pane_is_not_drawn() {
 /// Svalbard's clearance read 61.1 pt at the golden pane and 1.97 at 328 × 178 (Step 0, M4b). The
 /// cause, measured on the resource rather than inferred: at NO's fit at 178 the land ring nearest
 /// Svalbard's full-size golden box at the top-left is Jan Mayen (71.0° N, 8.5° W) — an own
-/// `Dropped` group, drawn as land since `ff9a75a`, which the shorter pane's coarser fit brings on
-/// screen — and with that one ring excluded the box clears the rest of the land by ≥ 40 pt. Since
-/// I1 (commit 5) the drawn box is the 78 % one, which clears Jan Mayen by ≥ 12. Fails if the
-/// nearest ring is the mainland or Bear Island.
+/// `Dropped` group, drawn as land since review finding 5, which the shorter pane's coarser fit
+/// brings on screen — and with that one ring excluded the box clears the rest of the land by
+/// ≥ 40 pt. Since I1 (commit 5) the drawn box is the 78 % one, which clears Jan Mayen by ≥ 12.
+/// Fails if the nearest ring is the mainland or Bear Island, and with own `Dropped` groups not
+/// drawn (Svalbard then clears: 49.42 ≥ 12).
 #[test]
 fn svalbard_clearance_at_178_is_jan_mayen() {
     use ondar_map::laea::haversine_km;

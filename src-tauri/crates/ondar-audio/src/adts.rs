@@ -577,11 +577,11 @@ mod tests {
     /// (10) Review finding 4: a stream that has aligned once never passes through. Station 02's
     /// `FFF9` frames, 20 KiB of junk (a splice, a restarting source: no chain in more than the
     /// limit), then 02's frames again: every frame comes out `FFF1` and no junk byte does, in
-    /// every chunking, and the head stays bounded while the window slides. Fails on `da36489`:
-    /// 28 660 B out where 8 180 were due (chunks of 1) — the first run normalised, then all
-    /// 20 480 B of junk and the second run's 4 090 B raw `FFF9`, because the realign after the
-    /// sync loss gave up at 16 KiB and passed through for the rest of the stream. Mutation: the slide removed (pass-through after alignment)
-    /// reads the same.
+    /// every chunking, and the head stays bounded (limit + 3 frames + one read) while the
+    /// window slides. Fails with the slide removed — pass-through after an alignment, the
+    /// realign after the sync loss giving up at 16 KiB: 28 660 B out where 8 180 were due
+    /// (chunks of 1), the first run normalised, then all 20 480 B of junk and the second run's
+    /// 4 090 B of raw `FFF9` passed through for the rest of the stream.
     #[test]
     fn t_b3_10_after_the_first_alignment_it_never_passes_through() {
         let f02 = &HEAD_02[id3_end(HEAD_02)..];
@@ -618,8 +618,8 @@ mod tests {
     /// (11) Review fixes F4 (D2): the chain check requires a sample-rate index that names a
     /// rate ([`Header::rate_known`]), which `parse_header` leaves to its callers. Six chained
     /// `FFF9` frames with the reserved index 13 are not an alignment: the body passes through
-    /// unchanged (aligned, the ID bit would be rewritten). Passes on `da36489`, where the check
-    /// sat inline in `candidate`; it pins the check through the refactor — fails with
+    /// unchanged (aligned, the ID bit would be rewritten). Passes with the check inline in
+    /// `candidate`, as it first was; it pins the check through the refactor — fails with
     /// `candidate` calling `parse_header` alone.
     #[test]
     fn t_b3_11_a_reserved_rate_is_not_an_alignment() {
@@ -643,7 +643,9 @@ mod tests {
     /// chunks: no panic, output no longer than input, and every row that cannot align comes out
     /// unchanged. Fails on any unchecked index or subtraction reached by these shapes (a panic),
     /// on a `frame_length` below its header looping, and on a front end that eats a body it
-    /// did not align.
+    /// did not align. Also recorded: fails on a chain of one header, on EOF dropping an
+    /// unaligned head, and with the realign off; the inner `Interrupted` reaches the caller
+    /// with the state kept, and a zero-length read consumes nothing.
     #[test]
     fn t_b3_8_hostile_input_never_panics_and_unaligned_bodies_pass_unchanged() {
         let mut falsesync = junk(64 * 1024, 5);

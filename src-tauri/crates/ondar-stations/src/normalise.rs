@@ -220,6 +220,8 @@ mod tests {
         assert_eq!(codec("aac"), (Codec::Aac, false), "case-insensitive");
     }
 
+    /// The geo rule: `(0, 0)` and a missing half are `None`, a real pair is `Some`; the country
+    /// code is upper-cased.
     #[test]
     fn geo_both_zero_is_none() {
         let mk = |lat, lng| {

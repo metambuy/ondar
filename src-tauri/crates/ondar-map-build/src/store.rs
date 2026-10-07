@@ -967,7 +967,8 @@ mod tests {
     /// A unit is the main unit of one country at most (review 2, second pass): the frame
     /// reprojects a country's main unit by translation alone, so a unit stored in one country's
     /// LAEA and framed as another's main unit would be drawn in the wrong place. Two plans naming
-    /// the same main unit are refused; on `8324e68` the last one's centre won silently.
+    /// the same main unit are refused. Fails with the check off: it builds, and the last one's
+    /// centre wins silently.
     #[test]
     fn a_main_unit_shared_by_two_countries_is_refused() {
         use crate::world::tests::{square, unit};
@@ -1229,12 +1230,14 @@ mod tests {
         assert!(!store_exact_only(0, 0));
     }
 
+    /// k' is 1 at the centre and √2 at 90°. Fails inverted.
     #[test]
     fn k_prime_is_one_at_the_centre_and_root_two_at_90_degrees() {
         assert_eq!(k_prime(0.0), 1.0);
         assert!((k_prime(std::f64::consts::FRAC_PI_2) - 2f64.sqrt()).abs() < 1e-12);
     }
 
+    /// A ring is stored open without repeated quanta. Fails if they are kept.
     #[test]
     fn a_ring_is_stored_open_without_repeated_quanta() {
         let c = |x: f64, y: f64| Coord { x, y };

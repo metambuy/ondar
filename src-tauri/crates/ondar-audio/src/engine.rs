@@ -1894,7 +1894,7 @@ mod session_tests {
     }
 
     /// The harness's own promise, "no state is lost between calls" (round-3 review, finding
-    /// 3, 2026-09-25). No session: the events are queued by hand, all before the first call,
+    /// 3). No session: the events are queued by hand, all before the first call,
     /// so the order the helpers see is fixed. `states_until(Playing)` stops at `Playing`, and
     /// its grace picks up `Started` and holds `Buffering`. `await_started` finds `Started`
     /// already recorded, so its condition holds on entry and it runs `grace` again, which
@@ -2039,7 +2039,9 @@ mod session_tests {
         h.ctx.cancel();
     }
 
-    /// Same shape for a 404 on the first open: the resource is not there for us.
+    /// Same shape for a 404 on the first open: the resource is not there for us — `Error {
+    /// Http }` with one request and no `Reconnecting`. Fails with the terminal branch disabled,
+    /// as the ICY test does: a `Reconnecting` state and a second request.
     #[test]
     fn a_404_fails_the_session_on_the_first_attempt() {
         let (url, requests) = counting_server(
@@ -2115,8 +2117,8 @@ mod session_tests {
     /// Fails on the "every 4xx is terminal" rule (an `Error { Http }` before any
     /// `Reconnecting`, one request) and if the header is ignored (the backoff alone sends the
     /// second request ~1.1 s after the first; the gap, on the server's clock, must be at least
-    /// the header's 3 s — a slow runner only lengthens it). Until 2026-09-25 this was "no second
-    /// request by 2 s", which a late check could break on a correct build.
+    /// the header's 3 s — a slow runner only lengthens it). An earlier form, "no second request
+    /// by 2 s", a late check could break on a correct build.
     #[test]
     fn a_429_is_retried_after_its_retry_after() {
         let (url, requests, times) = timed_scripted_server(vec![
@@ -2519,7 +2521,8 @@ mod session_tests {
     /// Fails on `main`: `Connecting` when the server has sent 1 MiB. Mutations: the bound never
     /// firing reads the same; the phase checked on `Err` only (not on `Ok`) reads `Buffering`
     /// with `StreamInfo` 24 000/1 and then `Reconnecting { 1 }` (S3's empty `Ok`); the cause
-    /// rule inverted reads `Reconnecting { 1 }`.
+    /// rule inverted reads `Reconnecting { 1 }`; the engine's bound check placed behind the
+    /// ring's early return fails this and the other five bound tests.
     #[test]
     fn t_b1a_a_false_adts_header_is_bounded() {
         let server = paced_server(vec![answer(
@@ -2574,8 +2577,8 @@ mod session_tests {
     ///
     /// - An elapsed-time bound fires at the first tick at or past 2 s after the stamp: at least
     ///   2 s and at most one tick period over, after about 14 ticks.
-    /// - A tick-counted bound fires on the 20th tick, about 2.9 s in (recorded failing on
-    ///   `a8585c6` at 2.908 s after 20 ticks).
+    /// - A tick-counted bound fires on the 20th tick, about 2.9 s in (fails so: 2.908 s after
+    ///   20 ticks).
     ///
     /// Asserted: at least the bound, below 1.25 × it (2.5 s), and fewer ticks than 20. The tick
     /// count cannot be broken by a slow runner, which only makes each tick longer and the count
@@ -2622,9 +2625,9 @@ mod session_tests {
     /// 1. Build N gets a first byte, a tick sees it, and it ages past the bound.
     /// 2. Build N returns (`BUILT`) and build N+1 begins, with **no tick in between**; N+1 is
     ///    ticked before and after its first byte: still `PROBING` (fails too if `begin_build`
-    ///    keeps N's first-byte stamp). Recorded failing on `da36489` (with the
-    ///    phase stored by hand, the one knob it has): `left: 3` (`BOUND`) — its `probing_since`
-    ///    was kept from build N, since only a tick that saw another phase reset it.
+    ///    keeps N's first-byte stamp). Fails with the build's start kept on the engine and
+    ///    reset only by a tick that saw another phase: `left: 3` (`BOUND`) — N+1 read build
+    ///    N's `probing_since`.
     /// 3. A bound decided from N's word, after N+1 began: N+1 is still `PROBING` and its
     ///    download's token is not cancelled. Fails on a swap that compares the phase alone.
     #[test]
@@ -2676,7 +2679,8 @@ mod session_tests {
     /// T-B1b (defect B C2): F-nosync as `audio/mpeg`. On `main` Symphonia refuses it only after
     /// its 1 MiB search, 8 s at the pace; the bound sits below that. Fails on `main`: the wait
     /// ends at 1 MiB sent, before the search's `Error` (and that error does not name the
-    /// bound). Mutation: the bound never firing reads the same.
+    /// bound). Mutations: the bound never firing reads the same; so does the phase checked
+    /// after the `UnrecognizedFormat` arm.
     #[test]
     fn t_b1b_no_marker_is_bounded_below_the_search() {
         let server = paced_server(vec![answer(
@@ -2713,7 +2717,9 @@ mod session_tests {
     /// cannot be shortened per test. Fails on `main`: `Error { UnsupportedFormat }` when the
     /// re-fed scan reaches 1 MiB, about 50 s in (the wrong cause). Mutations: a cause rule
     /// "bytes flowing ⇒ format" reads `Error { UnsupportedFormat }`; so does the phase checked
-    /// after the `UnrecognizedFormat` arm.
+    /// after the `UnrecognizedFormat` arm. The bound must have been decided on a gap ≥
+    /// `retry_timeout` (review 2, G1): with the gap dropped from the rule, "decided on a 0ns
+    /// gap".
     #[test]
     fn t_b1c_a_silent_server_is_a_network_cause() {
         let bound = (stream::retry_timeout() * 3).max(Duration::from_secs(2));
@@ -2787,9 +2793,9 @@ mod session_tests {
     /// `on_reconnect` (0.24.4 `source/mod.rs:272–287`), so the count stays at 0 — the gap
     /// decides. The format bound is T-B1c's 15 s, since the gap must reach `retry_timeout`
     /// inside it. Asserted: `Reconnecting { 1 }`; no `Reconnect` event (this is the hung case,
-    /// not T-B1c's); a reconnect was attempted. Recorded failing on `da36489`: `Error {
-    /// UnsupportedFormat, "no decodable audio in the first 15 s of the stream (audio/mpeg)" }`,
-    /// terminal. Mutation: the longest gap dropped from the rule reads the same. ~16 s.
+    /// not T-B1c's); a reconnect was attempted. Fails with the longest gap dropped from the
+    /// rule: `Error { UnsupportedFormat, "no decodable audio in the first 15 s of the stream
+    /// (audio/mpeg)" }`, terminal. ~16 s.
     #[test]
     fn f1_a_hung_reconnect_is_a_network_cause() {
         let format = (stream::retry_timeout() * 3).max(Duration::from_secs(2));
@@ -2835,9 +2841,11 @@ mod session_tests {
     /// in the paced server's small writes), no ICY metadata, never pausing, is a format cause:
     /// terminal `Error { UnsupportedFormat }` at the format bound, no `Reconnecting`, one
     /// connection, and the bound decided on a longest gap under 1 s. A 4 KiB prefetch, the
-    /// production `starved` (5 s) and T-B1c's 15 s format bound. On `688c9fd` the gaps were
-    /// per-read times, and Symphonia's 32 KiB read takes 8.2 s at this rate, so the build read
-    /// `Starved` and backed off. ~16 s.
+    /// production `starved` (5 s) and T-B1c's 15 s format bound. Fails with the gaps measured
+    /// per decoder read instead of by `on_progress` on the open — `on_progress` off on the HTTP
+    /// open, or each decoder read stamping the arrival: Symphonia's 32 KiB read takes 8.2 s at
+    /// this rate, so the build reads `Starved` and backs off, `Reconnecting { 1 }`, "the
+    /// connection stalled (8.1 s without data)". ~16 s.
     #[test]
     fn g1_a_steady_32_kbit_unsyncable_is_a_format_cause() {
         const RATE: u64 = 4_000;
@@ -2852,8 +2860,9 @@ mod session_tests {
 
     /// G1, review 2 finding 1, behind ICY metadata: the same body at 20 kbit/s (2 500 B/s) with
     /// `icy-metaint: 16000`, where `IcyReader` caps a read at 16 000 B — 6.4 s per read at this
-    /// rate (at the finding's ~26 kbit/s a read takes 4.9 s and `688c9fd` would pass, proving
-    /// nothing). The same assertions as (a). ~16 s.
+    /// rate (at the finding's ~26 kbit/s a read takes 4.9 s and the per-read mutation would
+    /// pass, proving nothing). The same assertions as (a); fails as (a) does, on a 6.4 s "gap".
+    /// ~16 s.
     #[test]
     fn g1_b_icy_16000_below_26_kbit_is_a_format_cause() {
         let server = paced_server(vec![Answer {
@@ -2901,11 +2910,11 @@ mod session_tests {
     /// because the bound counts from the first byte, not from `open`. The finding's shape
     /// scaled by 1/10: there, an 80 000 B prefetch at 3 KB/s is 26.7 s against 20 s; here a
     /// tone WAV at 8 kHz mono 16-bit (16 000 B/s) paced at that rate with no burst, a 64 000 B
-    /// prefetch (4 s to meet), a 2 s format bound and an 8 s no-bytes bound. Recorded failing
-    /// on `da36489`: `Error { UnsupportedFormat, "no decodable audio in the first 2 s of the
-    /// stream (audio/wav)" }`, terminal, never `Playing`. Mutation: the format bound also run
-    /// before the first byte, from the build's start (`da36489`'s clock), reads the same. (The
-    /// format bound read from the build's start only once a first byte exists survives here —
+    /// prefetch (4 s to meet), a 2 s format bound and an 8 s no-bytes bound. Fails with the
+    /// format bound run from the build's start, before any first byte: `Error {
+    /// UnsupportedFormat, "no decodable audio in the first 2 s of the stream (audio/wav)" }`,
+    /// terminal, never `Playing`. (The format bound read from the build's start only once a
+    /// first byte exists survives here —
     /// the WAV builds within microseconds of its first byte, before any tick — and is pinned by
     /// `format_fires_at_its_bound_from_the_first_byte_and_not_before`.)
     #[test]
@@ -2940,10 +2949,10 @@ mod session_tests {
     /// from the end) is station 10's head alone, below the 32 KiB prefetch; every later segment
     /// request sleeps 15 s (the routed server is serial, so the host stalls as a dead network
     /// does). No byte reaches the decoder, and HLS's `retry_timeout` (≥ 55 s) means no internal
-    /// reconnect either: the no-bytes bound (3 s here) ends the build as the network.
-    /// Recorded failing on `da36489`: `Error { UnsupportedFormat, "no decodable audio in the
-    /// first 2 s of the stream (audio/aac)" }`, terminal. Mutation: `NoBytes` mapped to
-    /// `Format` reads an `Error`.
+    /// reconnect either: the no-bytes bound (3 s here) ends the build as the network. Fails
+    /// with `NoBytes` mapped to `Format`, or the format bound run before the first byte:
+    /// `Error { UnsupportedFormat, "no decodable audio in the first 2 s of the stream
+    /// (audio/aac)" }`, terminal.
     #[test]
     fn f1_an_hls_stall_before_the_first_byte_is_a_network_cause() {
         let head = fixture("10-seg-head.aac");
@@ -3013,10 +3022,10 @@ mod session_tests {
     /// generation-gated, so A's would land on B's row. B never builds, as a server that never
     /// answers, so any `StreamInfo` after B's play is A's. (B's `Connecting` sends no event
     /// here: the state is already `Connecting`, as it is in production when A was still
-    /// connecting; the boundary is read at the cancel.) The events are read after A's decode thread has exited
-    /// (its handle on the context dropped), never inside a window. Recorded failing on
-    /// `da36489`: see the F2 commit. Mutation: the check placed after the `StreamInfo` emit
-    /// reads the same.
+    /// connecting; the boundary is read at the cancel.) The events are read after A's decode
+    /// thread has exited (its handle on the context dropped), never inside a window. Fails
+    /// with the check placed after the `StreamInfo` emit, or absent: A's 24 000/1
+    /// `StreamInfo` after B's play — S3's empty `Ok` after the cancel.
     #[test]
     fn f2_a_cancelled_build_emits_no_stream_info() {
         let server = paced_server(vec![answer(
@@ -3110,10 +3119,10 @@ mod session_tests {
     /// T-B2a (defect B C4): an Icecast `audio/aac` mount sending `FFF9` frames (station 02's,
     /// repeated), with `icy-metaint: 1024` and a `StreamTitle` in the first block. The front
     /// end aligns at 0 and rewrites every header: `Playing`, `StreamInfo` 24 000/1, one
-    /// `Started`, one title. On `d1b127b` the build never ends (S1 (i): `Connecting` for 150 s
-    /// live). Mutations: the front end off → the build bound's `Error { UnsupportedFormat }`;
-    /// the front end placed **before** `IcyReader` (review P4) → not both a `Metadata` event
-    /// and `Playing`.
+    /// `Started`, one title. Without the front end the build never ends on its own (S1 (i):
+    /// `Connecting` for 150 s live). Mutations: the front end off → the build bound's `Error {
+    /// UnsupportedFormat }`; the front end placed **before** `IcyReader` (review P4) → not
+    /// both a `Metadata` event and `Playing` (`[Buffering, Reconnecting { 1 }]`).
     #[test]
     fn t_b2a_an_fff9_icecast_mount_plays_through_the_front_end() {
         let audio = frames_02().repeat(REPEATS_02);
@@ -3145,8 +3154,8 @@ mod session_tests {
     /// MP3 frame header `FF FB 90 C4` planted 10 B into that partial — S2's live shape, where
     /// the probe met a false MP3 marker first and resynced for ever. The front end realigns to
     /// the first whole header: `Playing` at 24 000/1, one `Started`, `aligned at` the partial's
-    /// length. On `d1b127b`: never `Playing` (the MP3 marker wins). Mutation: realign off (a
-    /// rewrite only at offset 0) → the build bound's `Error`.
+    /// length. Without the front end: `Connecting`, never `Playing` (the MP3 marker wins).
+    /// Mutation: realign off (a rewrite only at offset 0) → the build bound's `Error`.
     #[test]
     fn t_b2b_a_mid_frame_fff9_start_with_a_false_mp3_marker_realigns() {
         let frames = frames_02();
@@ -3169,8 +3178,9 @@ mod session_tests {
 
     /// F4 (finding 7): T-B2b's shape — station 02's `FFF9` frames, held open — served as
     /// `audio/x-aac`, a type real servers send (Antena 1's HLS segments, `m3c-plan.md:769`).
-    /// The front end aligns at 0: `Playing` at 24 000/1, one `Started`. Recorded failing on
-    /// `da36489` (see the F4 commit): no front end, so the build bound's `Error`.
+    /// The front end aligns at 0: `Playing` at 24 000/1, one `Started`. Fails without the
+    /// front end on `audio/x-aac`: the build bound's `Error { UnsupportedFormat, "…first 2
+    /// s…(audio/x-aac)" }`.
     #[test]
     fn f4_an_x_aac_fff9_mount_plays() {
         let body = frames_02().repeat(REPEATS_02);
@@ -3188,7 +3198,8 @@ mod session_tests {
     /// Which streams get the front end: HTTP `audio/aac`, `audio/aacp` and (review fixes F4,
     /// finding 7) `audio/x-aac`, in any case and with parameters; never another type — not
     /// `audio/x-aiff`, whose prefix `audio/x-a` a loose match would take — a missing one, or
-    /// the HLS source (review P3). Fails on `da36489` at `audio/x-aac`.
+    /// the HLS source (review P3). Fails on an exact `audio/aac` match, on a filter that
+    /// ignores the source kind, on `audio/x-aac` dropped and on a loose `audio/x-a` prefix.
     #[test]
     fn the_front_end_applies_to_http_aac_only() {
         use stream::SourceKind::{Hls, Http};
@@ -3635,12 +3646,12 @@ mod session_tests {
     /// playlist served gzip, ADTS segments — reaches `Playing` with `StreamInfo` 48 000 / 2
     /// and one `Started`. The master is requested **twice** (the `HttpStream` GET, then
     /// `hls::open`'s own — review R1), then the media playlist, then the start segments
-    /// 97880–97882 (three from the end, D5). On `b7e050a`: `Error { UnsupportedFormat }`
-    /// after one request, no `Playing` (F7). Fails without gunzip — the parser refuses the
-    /// media playlist's compressed bytes as `NotPlaylist` ("not a playlist (no #EXTM3U)"), so
-    /// the session ends `Error { UnsupportedFormat }` (the census probe's run-1 bug was the
-    /// other shape: garbage URIs, because its parser had no `#EXTM3U` check) — or without the
-    /// dispatch.
+    /// 97880–97882 (three from the end, D5). Without the HLS path (F7): `Error {
+    /// UnsupportedFormat }` after one request, no `Playing`. Fails without gunzip — the parser
+    /// refuses the media playlist's compressed bytes as `NotPlaylist` ("not a playlist (no
+    /// #EXTM3U)"), so the session ends `Error { UnsupportedFormat }` (the census probe's run-1
+    /// bug was the other shape: garbage URIs, because its parser had no `#EXTM3U` check) — or
+    /// without the dispatch.
     #[test]
     fn t12_adts_hls_behind_a_gzipped_media_playlist_plays() {
         let master = fixture("10-master.m3u8");
@@ -3712,8 +3723,9 @@ mod session_tests {
 
     /// T13: a media playlist given directly whose segments are MPEG-TS (Известия, 09) → one
     /// terminal `Error { UnsupportedFormat, "…MPEG-TS…" }`, no `Reconnecting`, **3** requests
-    /// (the playlist twice — R1 — and one segment, read only to its head), no `Started`. On
-    /// `b7e050a`: the state passes, the count is 1 and the message the generic one (F7).
+    /// (the playlist twice — R1 — and one segment, read only to its head), no `Started`.
+    /// Without the HLS path the state passes, but the count is 1 and the message the generic
+    /// one (F7).
     /// Fails if the refusal is not terminal (`Reconnecting { 1 }` inside the window), or if a
     /// third playlist request is made.
     #[test]
@@ -3758,9 +3770,9 @@ mod session_tests {
 
     /// T14: a master whose variants are all video (Fox, 03) → `Error { UnsupportedFormat,
     /// "…video only…" }` after **2** requests (the master twice, R1) and none for a media
-    /// playlist. On `b7e050a`: 1 request, the generic message. Fails with the video-only filter
-    /// dropped: a media playlist (on the real host — the fixture's URIs are absolute) and its
-    /// segment would be fetched.
+    /// playlist. Without the HLS path: 1 request, the generic message. Fails with the
+    /// video-only filter dropped: a media playlist (on the real host — the fixture's URIs are
+    /// absolute) and its segment would be fetched.
     #[test]
     fn t14_a_video_only_master_is_refused_after_two_requests() {
         let master = fixture("03-master.m3u8");
@@ -3868,7 +3880,7 @@ mod session_tests {
 
     /// T16: the window stops advancing → the stall bound (3 × TD) ends the source → the
     /// session's own backoff, `Reconnecting { 1 }` → the playlist is requested again → `Playing`
-    /// — and **one `Started` in total**: a reopen is inside the session. On `b7e050a`:
+    /// — and **one `Started` in total**: a reopen is inside the session. Without the HLS path:
     /// `Error`, 0 `Started`. Fails without the stall bound (the task waits for ever; nothing
     /// ends the source, and the watchdog does not see a full ring under `Playing`).
     #[test]
@@ -3907,8 +3919,10 @@ mod session_tests {
 
     /// T17: a segment whose ADTS format differs from the session's first (48 000 / 2, then
     /// 08's 22 050 / 2) ends the source; the reopen builds a new decoder, ring and converter,
-    /// so `StreamInfo` is emitted twice — 48 000 then 22 050 — and `Started` once. Fails with
-    /// the guard off: one `StreamInfo`, and the 22 050 frames play through a 48 000 ring.
+    /// so `StreamInfo` is emitted twice — 48 000 then 22 050 — and `Started` once. The
+    /// guard-off mutation still passes: Symphonia's ADTS reader ends the stream on a header
+    /// whose rate differs, so the reopen happens either way; the guard is the first line (T10
+    /// pins it), the decoder the second, and this test pins the outcome.
     #[test]
     fn t17_a_format_change_reopens_with_a_new_stream_info_and_one_started() {
         let head48 = fixture("10-seg-head.aac");
@@ -3976,9 +3990,10 @@ mod session_tests {
         })
     }
 
-    /// Review 2026-09-25, finding 4 (fix B): a 404 on the **first** segment means the origin
-    /// evicted it — the next pending segment is tried and plays. On `cce9ffa`: the playlist
-    /// policy applied and the session ended `Error { Http }`, terminal, after one chain.
+    /// Review finding 4 (fix B): a 404 on the **first** segment means the origin evicted it —
+    /// the next pending segment is tried and plays. Fails with the playlist policy applied to
+    /// a segment: the session ends `Error { Http, "…answered HTTP 404 Not Found" }`, terminal,
+    /// after one chain.
     #[test]
     fn t18_an_evicted_first_segment_is_skipped_for_the_next_one() {
         let head = fixture("10-seg-head.aac");
@@ -4001,8 +4016,9 @@ mod session_tests {
     }
 
     /// Fix B, the other half: every start segment evicted → not terminal — the session's
-    /// backoff reopens (`Reconnecting { 1 }`), and once the window has moved on it plays. On
-    /// `cce9ffa`: `Error { Http }` at once, no `Reconnecting`. The segments are gone for the
+    /// backoff reopens (`Reconnecting { 1 }`), and once the window has moved on it plays. Fails
+    /// with the playlist policy applied to a segment: `Error { Http }` at once, no
+    /// `Reconnecting`. The segments are gone for the
     /// **first open** — while the playlist has been asked for at most twice (R1: the
     /// `HttpStream` GET, then `hls::open`'s own) — and back for the reopen, the third and
     /// fourth requests. Keyed to requests, not to a clock (review 2, finding 6: an 800 ms window
@@ -4028,12 +4044,12 @@ mod session_tests {
         h.ctx.cancel();
     }
 
-    /// Review 2 (2026-09-25), finding 5: every start segment gone is an answer the server
-    /// sent, so the open's error is `Http` — retriable (`terminal: false`, the backoff reopens
-    /// on a fresher window) and carrying the server's `Retry-After` — not `Network`, which put
-    /// `network: … 404 …` on the page after the fifth attempt, code and message disagreeing.
-    /// `hls::open` is called directly: `run_session` shows its error only after 31 s of
-    /// backoff. On `b07e04e`: `code: Network`, `retry_after: None`.
+    /// Review 2, finding 5: every start segment gone is an answer the server sent, so the
+    /// open's error is `Http` — retriable (`terminal: false`, the backoff reopens on a fresher
+    /// window) and carrying the server's `Retry-After` — not `Network`, which put `network: …
+    /// 404 …` on the page after the fifth attempt, code and message disagreeing. `hls::open`
+    /// is called directly: `run_session` shows its error only after 31 s of backoff. Fails with
+    /// the gone segments read as a transport failure: `(Network, false, None)`.
     #[test]
     fn t26_start_segments_gone_is_a_retriable_http_error_with_its_retry_after() {
         let (base, _paths) = routed_server(|path| {
@@ -4075,7 +4091,7 @@ mod session_tests {
 
     /// Fix B keeps 401/403 terminal: access denial (a geo-block) does not change with a retry,
     /// and five backoff attempts before the same answer would be worse than the honest error
-    /// now. One chain: the playlist twice, the segment once. Unchanged from `cce9ffa`.
+    /// now. One chain: the playlist twice, the segment once. Unchanged by fix B.
     #[test]
     fn t20_a_forbidden_first_segment_is_terminal_after_one_chain() {
         let head = fixture("10-seg-head.aac");
@@ -4101,11 +4117,11 @@ mod session_tests {
         assert_eq!(paths.len(), 3, "playlist ×2 + one segment: {paths:?}");
     }
 
-    /// Review 2026-09-25, finding 5 (fix C): a **gzip-encoded** first segment must still be
-    /// sniffed after inflating. On `28f7098` the early sniff was skipped for a gzipped body and
-    /// the post-inflate sniff was guarded by the same flag, so a gzipped MPEG-TS segment read
-    /// the generic "HLS segment format not recognised" instead of the MPEG-TS message T13 pins
-    /// for the plain case.
+    /// Review finding 5 (fix C): a **gzip-encoded** first segment must still be sniffed after
+    /// inflating. Fails with one flag serving both the early sniff and the post-inflate one —
+    /// a gzipped body gets neither — so a gzipped MPEG-TS segment reads the generic "HLS
+    /// segment format not recognised" instead of the MPEG-TS message T13 pins for the plain
+    /// case.
     #[test]
     fn t21_a_gzipped_ts_first_segment_is_refused_as_mpeg_ts() {
         let media = fixture("09-media.m3u8");
@@ -4143,10 +4159,10 @@ mod session_tests {
         assert_eq!(paths.lock().unwrap().len(), 3);
     }
 
-    /// Review 2 (2026-09-25), finding 1, through a caller: a gzip-encoded media playlist
-    /// whose body is a few KB but inflates past `PLAYLIST_MAX_BYTES` (a 2 MiB comment line) is
-    /// refused as the over-cap body already was — terminal, after the two requests of R1. On
-    /// `fe120a2` the inflate had no bound and the session played. Fails if a caller passes a
+    /// Review 2, finding 1, through a caller: a gzip-encoded media playlist whose body is a
+    /// few KB but inflates past `PLAYLIST_MAX_BYTES` (a 2 MiB comment line) is refused as the
+    /// over-cap body already was — terminal, after the two requests of R1. Fails with the
+    /// inflate unbounded (the session plays: `[Buffering, Playing]`), or if a caller passes a
     /// cap other than the playlist's.
     #[test]
     fn t22_a_gzipped_playlist_that_inflates_past_the_cap_is_refused() {
@@ -4248,9 +4264,9 @@ mod session_tests {
         }
     }
 
-    /// Review 2 (2026-09-25), finding 4 as triaged: a **410** in the fetch task is permanent —
-    /// one request, then the next segment. On `0f045b3` a 410 took the transient path and was
-    /// retried at 1 s steps for the whole TD (10 s here) before the gap.
+    /// Review 2, finding 4 as triaged: a **410** in the fetch task is permanent — one request,
+    /// then the next segment. Fails with a 410 on the transient path: retried at 1 s steps for
+    /// the whole TD (10 s here) before the gap, ten requests for seq 4 (`[3, 4 ×10, 5]`).
     #[test]
     fn t23_a_gone_segment_in_the_task_is_skipped_after_one_request() {
         let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(410));
@@ -4282,11 +4298,11 @@ mod session_tests {
         );
     }
 
-    /// Round-3 review (2026-09-25), finding 2: the two 404 retries are counted apart from other
-    /// failures. Seq 4 answers 503, 503, then 404 for good: two transient retries, then the
-    /// first 404 and its **two** retries — five requests — then the gap and seq 5. On
-    /// `9a6a059` one counter served both, so the first 404 found it at 2 and skipped at once:
-    /// three requests, and no retry for a CDN edge that was about to have the segment.
+    /// Round-3 review, finding 2: the two 404 retries are counted apart from other failures.
+    /// Seq 4 answers 503, 503, then 404 for good: two transient retries, then the first 404 and
+    /// its **two** retries — five requests — then the gap and seq 5. Fails with one counter
+    /// serving both: the first 404 finds it at 2 and skips at once — `[3, 4, 4, 4, 5]`, three
+    /// requests, and no retry for a CDN edge that was about to have the segment.
     #[test]
     fn t27_404_retries_are_not_used_up_by_earlier_transient_failures() {
         let (base, paths) = task_segment_server(|seq, n| match (seq, n) {
@@ -4306,8 +4322,8 @@ mod session_tests {
     }
 
     /// Finding 4: a 404 that does not heal is a gap after the two retries — three requests,
-    /// then the next segment — never a whole-TD retry. On `0f045b3`: ten requests over the
-    /// TD of 10 s.
+    /// then the next segment — never a whole-TD retry. Fails with the 404 on the whole-TD
+    /// transient path: ten requests over the TD of 10 s (`[3, 4 ×10, 5]`).
     #[test]
     fn t25_a_404_that_stays_is_a_gap_after_two_retries() {
         let (base, paths) = task_segment_server(|seq, _| (seq == 4).then_some(404));
@@ -4413,10 +4429,10 @@ mod started_tests {
     /// decode thread emitting with a generation that is no longer live, and that is what is
     /// driven here, for `StreamInfo` and for the ICY title callback. Session 1's events after
     /// session 2 began, and session 2's after its own cancel with no successor (a Stop), are
-    /// dropped; session 2's while live land. Recorded failing on `688c9fd` through a shim of
-    /// `SessionCtx::emit` and `title_sink` as pass-throughs to the ungated `Shared::emit` (the
-    /// code there): `["info:A", "title:A"]` on the channel. Fails with the generation check
-    /// removed from `emit_from`.
+    /// dropped; session 2's while live land. Fails with the generation check removed from
+    /// `emit_from` — `SessionCtx::emit` and `title_sink` as pass-throughs to an ungated
+    /// `Shared::emit`: `["info:A", "title:A"]` on the channel. (F2's session test passes with
+    /// its `cancelled()` check removed — the gate alone covers it.)
     #[test]
     fn g2_a_stale_session_emits_nothing() {
         let (s, rx) = shared();
@@ -4526,7 +4542,7 @@ mod started_tests {
         assert_eq!(events.len(), 2, "one State and one Started: {events:?}");
     }
 
-    /// `/code-review` finding 1 (2026-09-23): the engine thread's `cancel` + `begin_session`
+    /// `/code-review` finding 1: the engine thread's `cancel` + `begin_session`
     /// can run between a decode thread's cancel check and its write. Modelled from the
     /// writer's side — its check passed, so the write reaches `Shared` — with the next session
     /// already begun. Fails if the write is gated on a flag read before the lock (the code
@@ -4949,7 +4965,8 @@ mod tick_tests {
     /// `Engine::tick` hands over the longest gap with the open one included, so a stall that
     /// is still open at the bound and one that resumed just before it read alike: here the
     /// rule sees the longest gap whatever its origin — `BuildClock::inputs` takes the max,
-    /// pinned in `build::tests`. Fails if the rule reads only a gap below `starved`.
+    /// pinned in `build::tests`. Fails with the gap clause dropped from the rule, or if the
+    /// rule reads only a gap below `starved`.
     #[test]
     fn a_stall_that_resumed_before_the_bound_is_the_network() {
         assert_eq!(
@@ -5036,7 +5053,7 @@ mod tick_tests {
     /// engine decided on, not from the clock read again after the cancel, whose open gap has
     /// grown. A clock whose open gap is ≥ 300 ms, a bound decided on 50 ms and 2 reconnects →
     /// the message's inputs carry 50 ms and 2. Fails with `decided_inputs` returning the clock's
-    /// own inputs (the code on `688c9fd`).
+    /// own inputs.
     #[test]
     fn the_bound_message_carries_the_decided_figures() {
         let clock = BuildClock::new(BuildBounds::for_prefetch(stream::PREFETCH_FLOOR_BYTES));

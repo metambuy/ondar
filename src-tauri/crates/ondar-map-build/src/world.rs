@@ -1207,6 +1207,7 @@ pub(crate) mod tests {
     }
 
     /// Two 10 km squares on the equator, their gap 299 km then 301 km: one group, then two.
+    /// Fails at 298 or 301.
     #[test]
     fn grouping_at_299_and_301_km() {
         for (gap, groups) in [(299.0, 1), (301.0, 2)] {
@@ -1227,7 +1228,7 @@ pub(crate) mod tests {
     }
 
     /// The override's anchor picks its group over the largest part's (whose group then has to be
-    /// an inset); an anchor in no part is refused.
+    /// an inset); an anchor in no part is refused. Fails with the override ignored.
     #[test]
     fn the_override_anchor() {
         let w = world_of(vec![unit(
@@ -1274,7 +1275,9 @@ pub(crate) mod tests {
     }
 
     /// S6: a remote group of 999 km² is dropped; of 1 001 km² it must be listed, and is refused
-    /// unlisted; listed, it is an inset whose box keeps its clearance.
+    /// unlisted; listed, it is an inset whose box keeps its clearance. A box over the land is 0 %
+    /// at every band and the gate names it (since I1); an anchor 150 km off is refused. Fails at
+    /// 998 or 1 002 km², with the clearance or the anchor bound off.
     #[test]
     fn the_s6_threshold() {
         let small = square(0.0, 30.0, 999f64.sqrt());
@@ -1331,10 +1334,10 @@ pub(crate) mod tests {
     /// small ones it drops into the padding band (review 2, finding 2). A 4 000 km square (fit
     /// 15.4 km/pt, its sides at x 34 and 294 pt), a 20 km islet 400 km east of it — its own
     /// group, under 1 000 km², outside the usable area and inside the pane at (320, 150) — and a
-    /// remote inset whose box sits 14 pt right of the square and ~4 pt above the islet. Refused;
-    /// on `8324e68` it built, its clearance read from the square alone (14 pt); since I1 (M4b
-    /// commit 4) the figure is recorded, under 12, rather than refused. The same box
-    /// with no islet builds.
+    /// remote inset whose box sits 14 pt right of the square and ~4 pt above the islet: the
+    /// clearance counts the islet (under 12 — since I1, M4b commit 4, recorded rather than
+    /// refused) and not one past the frame's 2 pt clip margin. The same box with no islet reads
+    /// 14. Killed with the land unclipped or by `Frame` groups only (the square alone: 14 pt).
     #[test]
     fn s6_clearance_counts_the_dropped_groups() {
         let (lon, lat) = Laea::new(0.0, 0.0).inv(2400.0, 0.0).unwrap();

@@ -110,7 +110,8 @@ mod tests {
 
     /// A 288 × 260 km country fits at 1 km/pt, so its widest view is the floor's, 1.5: the fit
     /// rectangle is the pane at 1.5, and the reach adds 2 pt at 1.5. At fit 20 (top level 3, 12
-    /// km/pt) level 0's coarsest view is just under 3 km/pt and level 3's is the fit.
+    /// km/pt) level 0's coarsest view is just under 3 km/pt and level 3's is the fit. Fails
+    /// without the margin, with the rectangle at the fit, or with the scale uncapped.
     #[test]
     fn the_reach_is_the_fit_rectangle_and_the_clip_margin() {
         let b = [-144.0, -130.0, 144.0, 130.0];
@@ -150,6 +151,8 @@ mod tests {
         assert_eq!(clip_rect(&anmite), [-2.0, -2.0, 330.0, 180.0]);
     }
 
+    /// Caps meet within the tolerance and not 1e-6 km past it: 10 km at the origin and 100 km
+    /// at 1° east (~111.2 km). Fails with the tolerance ignored.
     #[test]
     fn caps_meet_with_the_tolerance() {
         let c = Cap {
@@ -164,6 +167,8 @@ mod tests {
         assert!(!cap_meets(&c, g, deg - 110.0 - 1e-6));
     }
 
+    /// A rectangle off the LAEA disc is the whole sphere (radius πR); a 200 km square is a cap of
+    /// ~√2 × 100 × 1.01 + 1 km. Fails if the off-disc samples are skipped.
     #[test]
     fn a_rectangle_off_the_disc_is_the_whole_sphere() {
         let l = Laea::new(0.0, 0.0);

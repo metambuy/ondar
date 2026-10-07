@@ -884,6 +884,8 @@ mod tests {
         });
     }
 
+    /// A missing list errors after three attempts (`Exhausted`) and still ends with its
+    /// `Failed` event; an expired one is served, its failed refresh announced, and kept.
     #[test]
     fn a_missing_list_returns_the_error_when_every_attempt_fails_and_an_expired_one_is_kept() {
         let transport = FakeTransport::new(vec![Err("connect refused".into())]);
@@ -1024,6 +1026,8 @@ mod tests {
         });
     }
 
+    /// Offline search falls back to the cache (the hit's codec intact); a country code that is
+    /// not two letters is `InvalidCountry`, upper-cased.
     #[test]
     fn search_falls_back_to_the_cache_when_offline_and_invalid_codes_are_refused() {
         let (clock, _) = fake_clock(T0);
@@ -1136,6 +1140,8 @@ mod tests {
         });
     }
 
+    /// Countries follow the same path: the first call fetches (`Fresh`, 240, one
+    /// `CountriesUpdated { Landed }`), the second is `Cached` from the one request.
     #[test]
     fn countries_follow_the_same_path() {
         const COUNTRIES: &[u8] = include_bytes!("../fixtures/countries.json");

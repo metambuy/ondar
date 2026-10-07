@@ -228,8 +228,9 @@ fn coverage_matches_clamp_at(
 /// commit 5's): every country at its sampled band heights. Fails if the tool's coverage is smaller
 /// than the clamp's reach at any sampled band — without the clip margin, without the cap
 /// tolerance, with the reach taken at one band, or with a frame index that admits more than the
-/// tool stored (on the M4a resource `e2775f81…`: "Angola at 328 × 140: unit SHN at level 1 is not
-/// stored", `_handover/m4b-c3/bands-shipped-record.log`).
+/// tool stored (on M4a's golden-pane-only resource: "Angola at 328 × 140: unit SHN at level 1 is
+/// not stored"; on a resource rebuilt with the margin dropped, or with a level's coarsest scale
+/// taken as its own: "Australia: unit NFK at level 3 is not stored").
 #[test]
 fn coverage_matches_clamp() {
     let s = store();

@@ -80,6 +80,7 @@ pub fn check_all(dir: &Path) -> Result<std::collections::BTreeMap<String, Vec<u8
 mod tests {
     use super::*;
 
+    /// The table holds 12 pins (M4a commit 3).
     #[test]
     fn the_table_has_twelve_pins() {
         let p = parse(PINS_TSV).unwrap();
@@ -88,7 +89,8 @@ mod tests {
     }
 
     /// A temp file with one flipped byte is refused before it is read, and so is one of the
-    /// wrong size; the original passes. Fails if the check is skipped.
+    /// wrong size; the original passes. Fails if the check is skipped (the size check alone is
+    /// an equivalent mutant — the SHA covers it).
     #[test]
     fn pins_refuse() {
         let dir = std::env::temp_dir().join(format!("ondar-pins-{}", std::process::id()));

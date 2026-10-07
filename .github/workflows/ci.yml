@@ -94,7 +94,8 @@ jobs:
         run: pnpm typecheck
 
       # The renderer's own tests (vitest under jsdom, from M3b 1b): a separate step and a
-      # separate count from `cargo test` — CLAUDE.md reports the two side by side.
+      # separate count from `cargo test` — reported beside the Rust count, never summed (CLAUDE.md,
+      # "Test counts").
       - name: pnpm test
         run: pnpm test
 
