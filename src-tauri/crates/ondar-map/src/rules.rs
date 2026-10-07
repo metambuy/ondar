@@ -22,6 +22,15 @@ pub const BAND_PADDING_PT: f64 = 20.0;
 pub const BAND_FLOOR: u32 = 140;
 pub const BAND_MAX: u32 = 300;
 
+/// Band height `h`'s index in a per-band table (`h − BAND_FLOOR`), or `None` outside
+/// `BAND_FLOOR..=BAND_MAX` (M4b's review, latent 6: the tool's six sites subtracted unchecked).
+pub fn band_index(h: u32) -> Option<usize> {
+    if h > BAND_MAX {
+        return None;
+    }
+    usize::try_from(h.checked_sub(BAND_FLOOR)?).ok()
+}
+
 /// The map pane, points; `padding` on every side is kept clear at the fit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pane {
@@ -395,6 +404,17 @@ mod tests {
             padding: 20.0,
         };
         assert_eq!(fit_scale(1.0, 1.0, &none), None);
+    }
+
+    /// A per-band table's index: the floor is 0, the top 160, and a height outside the range has
+    /// none. Fails if the subtraction goes unchecked (139 underflows: a panic in a debug build,
+    /// a wrapped index in release) or the top is not bounded (301 → 161, past the table).
+    #[test]
+    fn band_index_is_bounded_at_both_ends() {
+        assert_eq!(band_index(BAND_FLOOR - 1), None);
+        assert_eq!(band_index(BAND_FLOOR), Some(0));
+        assert_eq!(band_index(BAND_MAX), Some(160));
+        assert_eq!(band_index(BAND_MAX + 1), None);
     }
 
     /// The band at 300 is the golden pane; at the floor its usable area is 288 × 100, so a

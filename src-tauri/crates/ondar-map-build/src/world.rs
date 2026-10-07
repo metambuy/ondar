@@ -308,7 +308,6 @@ pub fn inset_tables(
             .collect();
         (pcts, corners)
     });
-    let at = |h: u32| usize::try_from(h - BAND_FLOOR).unwrap_or(0);
     let scale_pct = (0..rows.len())
         .map(|k| per_band.iter().map(|(p, _)| p[k].0).collect())
         .collect();
@@ -324,6 +323,7 @@ pub fn inset_tables(
                 .enumerate()
                 .map(|(ci, &corner)| {
                     let series: Vec<(u8, f64)> = per_band.iter().map(|(_, c)| c[k][ci]).collect();
+                    let at = |h: u32| rules::band_index(h).and_then(|i| series.get(i));
                     let (min_i, &(min_pct, _)) = series
                         .iter()
                         .enumerate()
@@ -334,10 +334,10 @@ pub fn inset_tables(
                         rect: rules::inset_rect_at_corner(row.rect, row.corner, corner),
                         min_pct,
                         min_at: BAND_FLOOR + min_i as u32,
-                        pct_161: series.get(at(161)).map_or(0, |x| x.0),
-                        pct_178: series.get(at(178)).map_or(0, |x| x.0),
-                        pct_300: series.get(at(300)).map_or(0, |x| x.0),
-                        clearance_161: series.get(at(161)).map_or(f64::NAN, |x| x.1),
+                        pct_161: at(161).map_or(0, |x| x.0),
+                        pct_178: at(178).map_or(0, |x| x.0),
+                        pct_300: at(300).map_or(0, |x| x.0),
+                        clearance_161: at(161).map_or(f64::NAN, |x| x.1),
                     }
                 })
                 .collect()
@@ -389,8 +389,9 @@ pub struct ShipGate {
 /// at M4b commit 4b): Hawaii's 60 × 32 box meets the 28 × 12 pt land minimum at no corner from 140
 /// to 273, with or without the stacking rule beside Alaska (Alaska is 83 % at 178, which frees 14
 /// pt; the mainland takes the rest), so it is dropped there, counted, and first appears at 274
-/// (88 %), whole from 290. Everything else must be drawn at 178.
-pub const MAY_DROP_AT_178: [&str; 1] = ["Hawaii"];
+/// (88 %), whole from 290. Everything else must be drawn at 178. Keyed by (country, label): a
+/// label alone would let another country's "Hawaii" through (M4b's review, latent 13).
+pub const MAY_DROP_AT_178: [(&str, &str); 1] = [("US", "Hawaii")];
 
 /// The first band height at which an inset is drawn, if any.
 pub fn first_band(ins: &InsetPlan) -> Option<u32> {
@@ -406,13 +407,14 @@ pub fn ship_gate(plans: &[CountryPlan]) -> ShipGate {
         for ins in &p.insets {
             let width = rules::label_width_pt(&ins.row.label);
             for h in [178u32, 300] {
-                let pct = ins
-                    .scale_pct
-                    .get(usize::try_from(h - BAND_FLOOR).unwrap_or(0))
+                let pct = rules::band_index(h)
+                    .and_then(|i| ins.scale_pct.get(i))
                     .copied()
                     .unwrap_or(0);
                 if pct == 0 {
-                    if h == 178 && MAY_DROP_AT_178.contains(&ins.row.label.as_str()) {
+                    if h == 178
+                        && MAY_DROP_AT_178.contains(&(p.code.as_str(), ins.row.label.as_str()))
+                    {
                         continue;
                     }
                     g.dropped.push(format!(
@@ -421,9 +423,8 @@ pub fn ship_gate(plans: &[CountryPlan]) -> ShipGate {
                     ));
                     continue;
                 }
-                let rect = ins
-                    .rects
-                    .get(usize::try_from(h - BAND_FLOOR).unwrap_or(0))
+                let rect = rules::band_index(h)
+                    .and_then(|i| ins.rects.get(i))
                     .copied()
                     .unwrap_or_else(|| {
                         rules::inset_box_at(
@@ -1181,9 +1182,10 @@ pub(crate) mod tests {
         assert_eq!(first_band(&p.insets[1]), Some(140));
     }
 
-    /// The ship gate's one allowance (decision 1, case (c)): a row labelled "Hawaii" dropped at 178
-    /// passes, any other label dropped there is named, and Hawaii dropped at 300 is named too
-    /// (fails with the allowance widened to every label or to 300).
+    /// The ship gate's one allowance (decision 1, case (c)): the US's "Hawaii" dropped at 178
+    /// passes; any other label dropped there is named, so is a "Hawaii" of another country, and
+    /// the US's Hawaii dropped at 300 is named too (fails with the allowance widened to every
+    /// label, matched on the label alone — M4b's review, latent 13 — or widened to 300).
     #[test]
     fn hawaii_alone_may_drop_at_178() {
         let far = row(Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], "Far");
@@ -1193,16 +1195,22 @@ pub(crate) mod tests {
             vec!["AA Far: dropped at 328 × 178".to_string()]
         );
         let hawaii = row(Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], "Hawaii");
-        let (_, thick) = bar_with_inset(600.0, 200.0, &hawaii);
+        let (_, mut thick) = bar_with_inset(600.0, 200.0, &hawaii);
         assert_eq!(thick.insets[0].scale_pct[38], 0);
+        assert_eq!(
+            ship_gate(std::slice::from_ref(&thick)).dropped,
+            vec!["AA Hawaii: dropped at 328 × 178".to_string()]
+        );
+        thick.code = "US".into();
         assert!(ship_gate(std::slice::from_ref(&thick)).dropped.is_empty());
         // dropped at 300 as well: a box over the land everywhere
         let over = row(Corner::TopLeft, [150.0, 100.0, 80.0, 60.0], "Hawaii");
-        let (_, p) = bar_with_inset(600.0, 104.0, &over);
+        let (_, mut p) = bar_with_inset(600.0, 104.0, &over);
         assert_eq!(p.insets[0].scale_pct[160], 0);
+        p.code = "US".into();
         assert_eq!(
             ship_gate(std::slice::from_ref(&p)).dropped,
-            vec!["AA Hawaii: dropped at 328 × 300".to_string()]
+            vec!["US Hawaii: dropped at 328 × 300".to_string()]
         );
     }
 

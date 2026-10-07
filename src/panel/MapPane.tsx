@@ -8,7 +8,7 @@
 // and pulls nothing.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { map } from "../api";
-import type { Frame, MapBand, MapInputs, MapReply, Shape } from "../api";
+import type { Frame, MapBand, MapInputs, MapReply, MapStatus, Shape } from "../api";
 import { measureMode, measureParam, report, sampleFrames } from "../measure";
 import styles from "./panel.module.css";
 
@@ -25,6 +25,26 @@ export function pathOf(shape: Shape): string {
     d += "Z";
   }
   return d;
+}
+
+/** The line a status puts on the platter, or none. Exhaustive: a status Rust adds that this
+ *  switch does not name fails typecheck at the `never` arm (M4b's review, latent 14). */
+function statusMessage(status: MapStatus): string | null {
+  switch (status) {
+    case "frame":
+      return null;
+    case "no_map":
+      return "No map for this country";
+    case "unavailable":
+      return "Map unavailable";
+    case "no_band":
+      // the band is Rust's: with none, the page draws nothing
+      return null;
+    default: {
+      const unknown: never = status;
+      return unknown;
+    }
+  }
 }
 
 function lineOf(line: [number, number][]): string {
@@ -346,12 +366,7 @@ export default function MapPane({ band, country }: Props) {
   }, [push, zoom]);
 
   const frame: Frame | null = reply?.status === "frame" ? (reply.frame ?? null) : null;
-  const message =
-    reply?.status === "no_map"
-      ? "No map for this country"
-      : reply?.status === "unavailable"
-        ? "Map unavailable"
-        : null;
+  const message = reply ? statusMessage(reply.status) : null;
 
   return (
     <div className={styles.platter} data-measure="map_band" data-seq={reply?.seq ?? -1}>

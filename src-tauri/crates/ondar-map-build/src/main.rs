@@ -34,12 +34,17 @@ struct Args {
     bench: bool,
     /// M4b commit 4: build although a label is wider than its box (review P3) or an inset is
     /// dropped at 178 or 300 (the brief's STOP) — for the tables at the STOP, never for a shipped
-    /// resource.
+    /// resource: `parse` refuses either with `--out`.
     allow_wide_labels: bool,
     allow_dropped_insets: bool,
 }
 
 fn args() -> Result<Args, String> {
+    parse(std::env::args().skip(1))
+}
+
+/// The arguments after the program's name.
+fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut a = Args {
         input: Path::new(env!("CARGO_MANIFEST_DIR")).join("input"),
         tables: None,
@@ -51,7 +56,6 @@ fn args() -> Result<Args, String> {
         allow_wide_labels: false,
         allow_dropped_insets: false,
     };
-    let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         let mut val = || {
             it.next()
@@ -82,6 +86,13 @@ fn args() -> Result<Args, String> {
             }
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    // checked here, not at the gate: `main` writes the tables before the gate runs
+    if a.out.is_some() && (a.allow_dropped_insets || a.allow_wide_labels) {
+        return Err(
+            "--allow-dropped-insets / --allow-wide-labels are for the tables at a STOP, never with --out"
+                .into(),
+        );
     }
     Ok(a)
 }
@@ -188,8 +199,8 @@ fn inset_table(inp: &Inputs) -> String {
             let g = &p.groups[i.group];
             let [x, y, w, h] = i.row.rect;
             let at = |h: u32| {
-                i.scale_pct
-                    .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+                ondar_map::rules::band_index(h)
+                    .and_then(|k| i.scale_pct.get(k))
                     .copied()
                     .unwrap_or(0)
             };
@@ -293,9 +304,8 @@ fn inset_labels_table(inp: &Inputs) -> String {
         for i in &p.insets {
             let width = ondar_map::rules::label_width_pt(&i.row.label);
             let at = |h: u32| {
-                let pct = i
-                    .scale_pct
-                    .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+                let pct = ondar_map::rules::band_index(h)
+                    .and_then(|k| i.scale_pct.get(k))
                     .copied()
                     .unwrap_or(0);
                 let inner = if pct == 0 {
@@ -551,6 +561,37 @@ fn main() {
 
 /// The input-bound checks (`#[ignore]`: the NE inputs never enter CI). Run at each build:
 /// `cargo test -p ondar-map-build --release -- --ignored`, the result in the commit message.
+#[cfg(test)]
+mod args_tests {
+    use super::*;
+
+    fn parse_strs(a: &[&str]) -> Result<Args, String> {
+        parse(a.iter().map(|s| s.to_string()))
+    }
+
+    /// An `--allow-*` flag builds past the ship gate, for the tables at a STOP only: with `--out`
+    /// it is refused in the parser, before `main` writes the tables (M4b's review, latent 10).
+    /// Each flag alone, or `--out` alone, parses. Fails if either refusal is dropped.
+    #[test]
+    fn an_allow_flag_with_out_is_refused() {
+        for flag in ["--allow-dropped-insets", "--allow-wide-labels"] {
+            assert!(
+                parse_strs(&[flag, "--out", "w.ondarmap"]).is_err(),
+                "{flag} then --out"
+            );
+            assert!(
+                parse_strs(&["--out", "w.ondarmap", flag]).is_err(),
+                "--out then {flag}"
+            );
+            assert!(
+                parse_strs(&[flag, "--tables", "t"]).is_ok(),
+                "{flag} with --tables"
+            );
+        }
+        assert!(parse_strs(&["--out", "w.ondarmap"]).is_ok());
+    }
+}
+
 #[cfg(test)]
 mod input_tests {
     use super::*;

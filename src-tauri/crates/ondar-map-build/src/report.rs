@@ -261,8 +261,8 @@ pub fn write(
         "| inset | corner | min % (at) | 140 | 161 | 178 | 200 | 250 | 300 | label pt | inner 178 / 300 |\n|---|---|---|---|---|---|---|---|---|---|---|"
     );
     let at = |i: &crate::world::InsetPlan, h: u32| {
-        i.scale_pct
-            .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+        ondar_map::rules::band_index(h)
+            .and_then(|k| i.scale_pct.get(k))
             .copied()
             .unwrap_or(0)
     };

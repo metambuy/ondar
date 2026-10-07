@@ -21,7 +21,8 @@ The decisions and figures: ONDAR.md, "M4: the drawn map", the M4a and M4b sectio
   never fetched at runtime; the NE inputs never enter CI. The tool: `cargo run -p ondar-map-build
   --release -- [--tables DIR] [--out FILE] [--report FILE] [--encoding deflate|raw]
   [--simplifier hybrid|vw] [--bench] [--allow-dropped-insets] [--allow-wide-labels]`, ~20 s; the
-  tables are written before the ship gate, so a refused build still leaves them to read. Its rules:
+  tables are written before the ship gate, so a refused build still leaves them to read; an
+  `--allow-*` flag is for those tables only and is refused with `--out`. Its rules:
   parts under 300 km on the ground group; a remote group ≥ 1 000 km² must be a listed inset,
   matched ≤ 100 km from its anchor; an admin-1 edge found once must lie within 375 m of admin 0.
 - **Never frame or clamp in lon/lat.** Centres, fits, pan limits and boxes are in projected km

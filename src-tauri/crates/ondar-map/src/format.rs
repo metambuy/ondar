@@ -494,8 +494,12 @@ fn index16(v: u16) -> Option<u16> {
     (v != NONE16).then_some(v)
 }
 
+/// A unit's smallest encoding, the table's bound (`Cursor::count`): `a3` 3, the code 2, an empty
+/// name 1, `lat0` and `lon0` 8 + 8, the cap 12, the part count 4.
+const UNIT_MIN_BYTES: usize = 3 + 2 + 1 + 8 + 8 + 12 + 4;
+
 fn read_units(c: &mut Cursor) -> Option<Vec<Unit>> {
-    let n = c.count(40)?;
+    let n = c.count(UNIT_MIN_BYTES)?;
     let mut units = Vec::with_capacity(n);
     for _ in 0..n {
         let a3 = c.array::<3>()?;
@@ -540,8 +544,12 @@ fn read_units(c: &mut Cursor) -> Option<Vec<Unit>> {
 }
 
 /// `n_units`: the units table's length, which every unit index a country names must be under.
+/// A country's smallest encoding, the table's bound: the code 2, an empty name 1, the unit count
+/// 2, `lat0` and `lon0` 8 + 8, the bbox 4 × 8, the flags 1, the inset count 1, the line count 4.
+const COUNTRY_MIN_BYTES: usize = 2 + 1 + 2 + 8 + 8 + 4 * 8 + 1 + 1 + 4;
+
 fn read_countries(c: &mut Cursor, n_units: usize, n_pct: usize) -> Option<Vec<Country>> {
-    let n = c.count(60)?;
+    let n = c.count(COUNTRY_MIN_BYTES)?;
     let mut countries = Vec::with_capacity(n);
     for _ in 0..n {
         let code = read_code(c)??;
@@ -625,8 +633,12 @@ fn read_countries(c: &mut Cursor, n_units: usize, n_pct: usize) -> Option<Vec<Co
         .then_some(countries)
 }
 
+/// One blob row, the table's bound: the owner 2, the level, layer and encoding 1 + 1 + 1, the
+/// offset, both lengths, the CRC and the vertex count 5 × 4, the bound 4.
+const BLOB_ROW_BYTES: usize = 2 + 1 + 1 + 1 + 5 * 4 + 4;
+
 fn read_blob_table(c: &mut Cursor) -> Option<Vec<BlobMeta>> {
-    let n = c.count(33)?;
+    let n = c.count(BLOB_ROW_BYTES)?;
     let mut blobs = Vec::with_capacity(n);
     for _ in 0..n {
         blobs.push(BlobMeta {
@@ -1051,6 +1063,104 @@ pub(crate) mod tests {
         // the deflated file is smaller on random-ish data only a little, but never larger by
         // more than deflate's framing; the point is that both read back
         assert_ne!(synthetic(Encoding::Raw), synthetic(Encoding::Deflate));
+    }
+
+    /// The smallest item of each table (no parts, no units, no insets, no lines, empty names, a
+    /// blob with no rings), one each, written by the writer: the file, and each table's bytes —
+    /// its count then its one item — as `[units, countries, blob table]`.
+    fn minimum_tables() -> (Vec<u8>, [Vec<u8>; 3]) {
+        let h = header();
+        let unit = Unit {
+            a3: *b"AAA",
+            code: None,
+            name: String::new(),
+            lat0: 0.0,
+            lon0: 0.0,
+            cap: cap(0.0, 0.0, 1.0),
+            parts: vec![],
+        };
+        let country = Country {
+            code: *b"AA",
+            name: String::new(),
+            units: vec![],
+            lat0: 0.0,
+            lon0: 0.0,
+            bbox_km: [0.0; 4],
+            subdivisions: false,
+            overridden: false,
+            alias: false,
+            insets: vec![],
+            sub_lines: vec![],
+        };
+        let blob = || BlobIn {
+            owner: 0,
+            level: 0,
+            layer: Layer::Land,
+            bound_pt: 0.0,
+            rings: vec![],
+        };
+        let len = |u: &[Unit], c: &[Country], b: &[BlobIn]| {
+            write(&h, u, c, b, Encoding::Raw).unwrap().len()
+        };
+        let empty = len(&[], &[], &[]);
+        // each item's size from the writer alone: the file with it less the file without it
+        let u = len(std::slice::from_ref(&unit), &[], &[]) - empty;
+        let ct = len(&[], std::slice::from_ref(&country), &[]) - empty;
+        let b = len(&[], &[], &[blob()]) - empty - blob_raw(&[]).len();
+        let bytes = write(&h, &[unit], &[country], &[blob()], Encoding::Raw).unwrap();
+        let header_len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+        let at = 14 + header_len;
+        let tables = [
+            bytes[at..at + 4 + u].to_vec(),
+            bytes[at + 4 + u..at + 8 + u + ct].to_vec(),
+            bytes[at + 8 + u + ct..at + 12 + u + ct + b].to_vec(),
+        ];
+        (bytes, tables)
+    }
+
+    /// The tables' bounds are each table's smallest item (38, 59, 29 B; the OCR run's finding
+    /// against 40 and 33, and 60 beside them): a table of one minimum item, built by the writer,
+    /// reads back, and so does the file. Fails if a constant is one too high: `Cursor::count`
+    /// refuses the table before a field is read.
+    #[test]
+    fn a_table_at_the_exact_minimum_loads() {
+        let (bytes, [units, countries, blobs]) = minimum_tables();
+        let mut c = Cursor::new(&units);
+        assert_eq!(read_units(&mut c).map(|u| u.len()), Some(1));
+        assert_eq!(c.remaining(), 0);
+        let mut c = Cursor::new(&countries);
+        let n_pct = Bands::BUILT.span();
+        assert_eq!(read_countries(&mut c, 1, n_pct).map(|c| c.len()), Some(1));
+        assert_eq!(c.remaining(), 0);
+        let mut c = Cursor::new(&blobs);
+        assert_eq!(read_blob_table(&mut c).map(|b| b.len()), Some(1));
+        assert_eq!(c.remaining(), 0);
+        assert!(Store::load(&bytes).is_ok());
+    }
+
+    /// The same tables one byte short are refused by the count itself, and by the readers. Fails
+    /// if a constant is one too low: `Cursor::count` admits the short table (the readers would
+    /// still run out of bytes in a field, so the count is asserted on directly).
+    #[test]
+    fn a_table_one_byte_under_is_refused() {
+        let (_, [units, countries, blobs]) = minimum_tables();
+        for (t, min) in [
+            (&units, UNIT_MIN_BYTES),
+            (&countries, COUNTRY_MIN_BYTES),
+            (&blobs, BLOB_ROW_BYTES),
+        ] {
+            assert_eq!(Cursor::new(t).count(min), Some(1), "{min}: the whole table");
+            assert_eq!(
+                Cursor::new(&t[..t.len() - 1]).count(min),
+                None,
+                "{min}: one under"
+            );
+        }
+        let short = |t: &Vec<u8>| t[..t.len() - 1].to_vec();
+        assert!(read_units(&mut Cursor::new(&short(&units))).is_none());
+        let n_pct = Bands::BUILT.span();
+        assert!(read_countries(&mut Cursor::new(&short(&countries)), 1, n_pct).is_none());
+        assert!(read_blob_table(&mut Cursor::new(&short(&blobs))).is_none());
     }
 
     /// (a) Every truncation of the first 4 KiB and 1 000 seeded lengths → `Err`, never a panic.

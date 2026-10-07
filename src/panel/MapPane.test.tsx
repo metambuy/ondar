@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Frame, MapBand, MapInputs, MapReply } from "../api";
+import type { Frame, MapBand, MapInputs, MapReply, MapStatus } from "../api";
 import MapPane, { DRAG_THRESHOLD_PT, pathOf } from "./MapPane";
 
 type Deferred = { resolve: (r: MapReply | null) => void; inputs: MapInputs };
@@ -264,6 +264,32 @@ describe("MapPane", () => {
 
   // 8. A theme change pulls nothing: recolouring is CSS. Fails if the pane requests a frame on
   //    `prefers-color-scheme`.
+  // 12. Each status renders its text or nothing: `frame` draws the paths and no line,
+  //     `no_map` and `unavailable` their line and no path, `no_band` neither (the band is Rust's;
+  //     with none the page draws nothing). Fails if a status's text changes or `no_band` shows
+  //     a line. That a status the switch does not know fails typecheck is the `never` arm's, not
+  //     this test's (M4b's review, latent 14).
+  it("12. each status renders its text or nothing", async () => {
+    const cases: [MapStatus, string | null, number][] = [
+      ["frame", null, 2],
+      ["no_map", "No map for this country", 0],
+      ["unavailable", "Map unavailable", 0],
+      ["no_band", null, 0],
+    ];
+    for (const [status, text, paths] of cases) {
+      const { container, unmount } = await mounted();
+      const r: MapReply =
+        status === "frame" ? reply(1, 2) : { seq: 1, status, band: null, view: null, frame: null };
+      act(() => pulls[0].resolve(r));
+      await settle();
+      expect(container.querySelector("p")?.textContent ?? null, status).toBe(text);
+      expect(landPaths(container).length, status).toBe(paths);
+      unmount();
+      pulls.length = 0;
+      selects.length = 0;
+    }
+  });
+
   it("8. a theme change pulls nothing", async () => {
     await mounted();
     act(() => pulls[0].resolve(reply(1, 1)));
