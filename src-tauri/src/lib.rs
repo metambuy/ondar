@@ -233,6 +233,8 @@ pub fn run() {
             commands::panel::panel_set_expanded,
             commands::panel::panel_layout_committed,
             commands::panel::panel_view_back,
+            commands::map::map_select,
+            commands::map::map_pull,
             commands::stations::list_countries,
             commands::stations::list_stations,
             commands::stations::search_stations,

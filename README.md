@@ -2,7 +2,7 @@
 
 macOS menu bar radio player. Tauri v2 + Rust core. See `ONDAR.md` for the project document.
 
-## Status: M2 done; M3a/M3b/defect A/M3c merged (`m3c-done`, 2026-09-26). M3 is complete except defect B (an unbounded `Connecting`), sequenced before M4.
+## Status: M2 and M3 done (defect B merged 2026-09-30, `defect-b-done`). M4 split M4a/M4b/M4c; **M4a merged** (`m4a-done`): geodata and the `ondar-map` crate, no UI. **M4b in progress** on branch `m4b`: IPC and the SVG renderer with pan and zoom.
 
 M1 (scaffold + audio engine) and M2 (tray + NSPanel popover, merged 2026-09-21 at `m2d-done`) are
 done. M2d added the two height states: an Expand/Collapse control in

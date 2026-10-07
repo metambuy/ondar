@@ -173,3 +173,112 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* The map band (M4b commit 7, B1): a rounded platter the drawn sea fills, its size the band Rust
+   laid out (`--map-band-*`, set by `MapPane.tsx` from `PanelLayout.band`), the last child of the
+   panel so it sits at the band's rect (the body above it is flexible). */
+.platter {
+  position: relative;
+  flex: none;
+  width: var(--map-band-width);
+  height: var(--map-band-height);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  background: var(--map-sea);
+}
+
+.map {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The layers, in draw order (the artifact's table): neighbours; the country's land — one flat
+   tone per theme (A1, 2026-10-06; Ink's filtered inland tone is gone) with its hairline edge on the
+   same path (round 3, C1 + C2: a `<use>` clone takes the original's style in WebKit, so an edge
+   group of `<use>`s painted the fill again over the subdivisions and no stroke); subdivisions
+   above it; then the insets. Every colour and width is a token; no filter, no opacity. */
+.neighbours path {
+  fill: var(--map-neighbour);
+  stroke: var(--map-neighbour-stroke);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.land path {
+  fill: var(--map-land);
+  stroke: var(--map-edge);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.subdivisions path {
+  fill: none;
+  stroke: var(--map-sub);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.insetBox {
+  fill: var(--map-sea);
+  stroke: var(--map-inset-stroke);
+  stroke-width: var(--map-stroke);
+  rx: var(--map-inset-radius);
+}
+
+.insetLand path {
+  fill: var(--map-land);
+  stroke: var(--map-edge);
+  stroke-width: var(--map-stroke);
+  stroke-linejoin: round;
+}
+
+.insetLabel {
+  font: var(--text-map-label);
+  fill: var(--map-label);
+}
+
+/* "No map for this country" / "Map unavailable": one line on the platter. */
+.mapMessage {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: var(--text-subheadline);
+  color: var(--color-label-secondary);
+  pointer-events: none;
+}
+
+/* C1: the `− fit +` row at the rect Rust reserved (`--map-controls-*` from the layout). Native
+   buttons, so they look like the system's; the row's box is the reserved one. */
+.controls {
+  position: absolute;
+  left: var(--map-controls-x);
+  top: var(--map-controls-y);
+  width: var(--map-controls-w);
+  height: var(--map-controls-h);
+  display: flex;
+  gap: var(--space-1);
+  align-items: stretch;
+}
+
+/* The buttons follow the theme (round 3, C3, Martín): a translucent dark plate in Ink, a light one in
+   Sand — the tokens; the native button look is off. Alpha only, no backdrop blur (a filter, and a
+   paint cost on every frame of a pan). */
+.controls > button {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font: var(--text-callout);
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--map-controls-bg);
+  color: var(--map-controls-fg);
+  border: var(--map-stroke) solid var(--map-controls-stroke);
+  border-radius: var(--map-inset-radius);
+}

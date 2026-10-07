@@ -198,14 +198,35 @@ from a bundled resource. The satellite map was reversed 2026-09-24 and the rever
 - [x] Record the installed bundle size in ONDAR.md (10 576 KiB, from 7 908; built 2026-10-01 on
       branch `m4a`, ONDAR.md "M4a: built and measured")
 
-**4b — IPC and the SVG renderer**
+**4b — IPC and the SVG renderer, with pan and zoom** (Step 0 2026-10-02,
+`_handover/m4b-step0-report.md`; brief `m4b-brief.md`; plan `m4b-plan.md`, reviewed P1–P6)
 
-- [ ] IPC `map_frame` and view commands with `ts-rs` types; the payload transport chosen from a
-      measured Russia-at-fit figure (Step 0's R8)
-- [ ] The SVG in both themes (Sand, Ink), drawing exactly the paths Rust sends
-- [ ] Pan and zoom: gestures in the non-activating `NSPanel` measured first; insets while zoomed
-      decided there
-- [ ] The list stays the navigation; the map is never the only route to a station
+- [x] Transport `json` with `ts-rs` types (Step 0 rule C: RU at fit 14 ms invoke → commit at the
+      real pane; `path` / `raw` save ≤ 4 ms for a hand-written codec) — built (commits 6–7); the
+      bar re-derived at the acceptance review (a country change from idle to the painted frame
+      ≤ 100 ms p90) and met, RU at 300 by 1 ms (ONDAR.md "M4b: built and measured"); `raw` parked
+      at the top of M4c's brief
+- [x] The view in Rust (`MapSession`): inputs from the page (scroll, drag, `− fit +`) and from Rust
+      (a native pinch) accumulated, never dropped; one `map_pull` reply per animation frame, every
+      frame with a sequence number; `clamp_view` in Rust — built (commit 6; no Rust-born input,
+      the pinch having failed)
+- [x] Zoom: `− fit +` controls always (C1, a 74 × 24 pt row in the band's reserved bottom-right
+      corner). The native pinch (Z1) was **a removable spike first**, to ship only if magnify events
+      reached Rust with the panel key, `frontmost` unchanged, and Q1's click, scroll and drag
+      unaffected — **FAILED 2026-10-05** (`b9531a0`, reverted `fab802a`): three instruments, zero
+      magnify events, a scroll control of 511 in the same state; ONDAR.md "M4b: the pinch spike,
+      measured". Zoom is the controls alone.
+- [x] The band: the expanded panel's full extra height, 328 wide, a rounded platter (B1) — 328 ×
+      178 on the ANMITE, 328 × 300 uncapped; the band rect a Rust constant from the layout; D1's
+      floor a band of 140 pt (no band below it)
+- [x] Insets at every band (I1): a per-band scale the tool computes and the resource stores; a
+      minimum legible box; labels never clipped; one rebuild with coverage for every band from
+      140 to 300 (`missing_blobs` = 0 at every band) — above 4.55 MB, stop
+- [x] The SVG in both themes (Sand, Ink), drawing exactly the paths Rust sends; a theme change
+      recolours without a frame — one flat land tone per theme with its hairline (the two-tone
+      filter and a `<use>` edge group both went at the acceptance), Martín's palette at round 3
+- [x] D7 kept: insets at the fit view only; `fit` is the return route
+- [x] The list stays the navigation; the map is never the only route to a station
 
 **4c — Stations**
 

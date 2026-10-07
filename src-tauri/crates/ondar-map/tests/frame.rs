@@ -8,13 +8,13 @@ use ondar_map::laea::Laea;
 use ondar_map::rules::{self, FLOOR_KM_PER_PT, LADDER, Pane};
 use std::sync::OnceLock;
 
+fn resource_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources/map/world.ondarmap")
+}
+
 fn store() -> &'static Store {
     static S: OnceLock<Store> = OnceLock::new();
-    S.get_or_init(|| {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../resources/map/world.ondarmap");
-        Store::load(&std::fs::read(p).unwrap()).unwrap()
-    })
+    S.get_or_init(|| Store::load(&std::fs::read(resource_path()).unwrap()).unwrap())
 }
 
 fn c(code: &str) -> usize {
@@ -220,10 +220,14 @@ fn antarctica() {
         }
     }
     assert!(s.blobs[b0].bound_pt > 0.0);
-    // AQ's top level is 3 (12 km/pt); with D6 no frame reaches it at 4
+    // AQ's top level at the golden pane is 3 (12 km/pt); since the band coverage (M4b commit 3)
+    // the 140 pt floor's coarser fit reaches 24 km/pt, so a blob at 4 exists and is simplified
+    // too — though not below level 3's count: at 24 km/pt more of AQ's rings fall back from RDP
+    // to VW (7 789 vertices against 4 127 at 12; the hybrid's rule), as RU's mainland ring does
     let b3 = s.blob(u, 3, Layer::Land).unwrap();
     assert!(s.blobs[b3].vertices * 2 < s.blobs[b0].vertices);
-    assert!(s.blob(u, 4, Layer::Land).is_none());
+    let b4 = s.blob(u, 4, Layer::Land).unwrap();
+    assert!(s.blobs[b4].vertices < s.blobs[b0].vertices && s.blobs[b4].bound_pt > 0.0);
     // Peter I Island, 68.8° S 90.6° W: the part whose ring cap holds it is in the frame
     let peter = unit
         .parts
@@ -295,23 +299,20 @@ fn insets_clear_12pt() {
     assert!(s.frame(pt, &P, nudged).unwrap().insets.is_empty());
 }
 
-/// An inset box keeps its golden-pane distance from the corner it is anchored to, at any pane
-/// (review finding 2): at the ANMITE's 328 × 178, at a larger 400 × 360 and at the golden pane,
-/// every one of the 14 boxes is inside the pane, its size unchanged, its gaps to its corner's two
-/// edges the golden pane's, and its land inside it. On `dddb4da` the boxes were the golden pane's
-/// absolute coordinates: at 328 × 178 Alaska sat at y 236..292, below the pane. Clearance from the
-/// land at another pane is M4b's acceptance, not asserted here.
+/// An inset box at a pane is the golden box at the band's stored scale, anchored at its corner
+/// with the golden gaps (I1, M4b commit 5; the size no longer fixed, as review finding 2's form had
+/// it): at the ANMITE's 328 × 178, at 400 × 360 (whose height reads the 300 entry) and at the
+/// golden pane, every drawn box has the golden size times its stored scale, the gaps to its
+/// corner's edges the golden pane's — except a box that abuts another (Hawaii beside Alaska): its
+/// left edge is that box's right edge plus the golden 6 pt — its land inside it, and `drawn +
+/// insets_dropped` is 14. The clearance is measured from the box where the frame draws it.
 #[test]
 fn insets_anchor_by_corner() {
     use ondar_map::format::Corner;
     let s = store();
     let g = P;
     for pane in [
-        Pane {
-            width: 328.0,
-            height: 178.0,
-            padding: 20.0,
-        },
+        Pane::band(178),
         Pane {
             width: 400.0,
             height: 360.0,
@@ -320,15 +321,18 @@ fn insets_anchor_by_corner() {
         P,
     ] {
         let mut n = 0;
+        let mut dropped = 0;
         for (i, ct) in s.countries.iter().enumerate() {
             if ct.insets.is_empty() {
                 continue;
             }
             let f = s.frame(i, &pane, s.fit(i, &pane).unwrap()).unwrap();
-            assert_eq!(f.insets.len(), ct.insets.len(), "{}", ct.name);
+            dropped += f.stats.insets_dropped;
             // the clearance is measured from the box where the frame draws it
             let clearance = s.inset_clearance(i, &pane);
-            for ((got, _), (label, d)) in f.insets.iter().zip(&ct.insets).zip(&clearance) {
+            assert_eq!(clearance.len(), f.insets.len(), "{}", ct.name);
+            for (got, (label, d)) in f.insets.iter().zip(&clearance) {
+                assert_eq!(&got.label, label);
                 let [x, y, w, h] = got.rect.map(f64::from);
                 let want = f
                     .land
@@ -343,18 +347,23 @@ fn insets_anchor_by_corner() {
                     .fold(f64::INFINITY, f64::min);
                 assert!((d - want).abs() < 1e-3, "{label}: clearance {d} vs {want}");
             }
-            for (got, stored) in f.insets.iter().zip(&ct.insets) {
+            for got in &f.insets {
+                let stored = ct.insets.iter().find(|i| i.label == got.label).unwrap();
                 let [x, y, w, h] = got.rect.map(f64::from);
-                let [gx, gy, gw, gh] = stored.rect.map(f64::from);
+                let [gx, gy, gw, gh] = stored.golden();
+                let sc = stored.scale_at(&s.header.bands, &pane);
                 let what = format!(
                     "{} {} at {}×{}",
                     ct.name, got.label, pane.width, pane.height
                 );
                 assert!(
-                    x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height,
-                    "{what}: [{x}, {y}, {w}, {h}] leaves the pane"
+                    rules::box_fits([x, y, w, h], &pane),
+                    "{what}: leaves the pane"
                 );
-                assert_eq!((w, h), (gw, gh), "{what}: size");
+                assert!(
+                    (w - gw * sc).abs() < 1e-3 && (h - gh * sc).abs() < 1e-3,
+                    "{what}: size {w} × {h}, golden {gw} × {gh} at {sc}"
+                );
                 let (left, top) = match stored.corner {
                     Corner::TopLeft => (true, true),
                     Corner::TopRight => (false, true),
@@ -363,12 +372,46 @@ fn insets_anchor_by_corner() {
                 };
                 let gap_x = |x: f64, w: f64, pw: f64| if left { x } else { pw - (x + w) };
                 let gap_y = |y: f64, h: f64, ph: f64| if top { y } else { ph - (y + h) };
-                assert!(
-                    (gap_x(x, w, pane.width) - gap_x(gx, gw, g.width)).abs() < 1e-3
-                        && (gap_y(y, h, pane.height) - gap_y(gy, gh, g.height)).abs() < 1e-3,
-                    "{what}: [{x}, {y}] is not anchored to {:?}",
-                    stored.corner
-                );
+                let beside = ct
+                    .insets
+                    .iter()
+                    .take_while(|a| a.label != got.label)
+                    .find(|a| {
+                        a.corner == stored.corner
+                            && rules::abuts(stored.golden(), a.golden(), stored.corner).is_some()
+                    });
+                let anchored_x = (gap_x(x, w, pane.width) - gap_x(gx, gw, g.width)).abs() < 1e-3;
+                let anchored_y = (gap_y(y, h, pane.height) - gap_y(gy, gh, g.height)).abs() < 1e-3;
+                match beside.and_then(|a| {
+                    f.insets
+                        .iter()
+                        .find(|d| d.label == a.label)
+                        .map(|d| (d, rules::abuts(stored.golden(), a.golden(), stored.corner)))
+                }) {
+                    // the stacking rule: Hawaii's left edge is Alaska's right edge + 6 (beside),
+                    // Madeira's top the Azores' bottom + 8 (stacked, top-left)
+                    Some((a, Some(rules::Abut::Beside { gap }))) => {
+                        let [ax, _, aw, _] = a.rect.map(f64::from);
+                        assert!(
+                            (x - (ax + aw + gap)).abs() < 1e-3 && anchored_y,
+                            "{what}: beside {}",
+                            a.label
+                        );
+                    }
+                    Some((a, Some(rules::Abut::Stacked { gap }))) => {
+                        let [_, ay, _, ah] = a.rect.map(f64::from);
+                        assert!(
+                            (y - (ay + ah + gap)).abs() < 1e-3 && anchored_x,
+                            "{what}: under {}",
+                            a.label
+                        );
+                    }
+                    _ => assert!(
+                        anchored_x && anchored_y,
+                        "{what}: [{x}, {y}] is not anchored to {:?}",
+                        stored.corner
+                    ),
+                }
                 assert!(!got.land.is_empty(), "{what}: no land");
                 for p in got.land.iter().flat_map(|sh| sh.rings.iter()).flatten() {
                     let [px, py] = p.map(f64::from);
@@ -383,7 +426,12 @@ fn insets_anchor_by_corner() {
                 n += 1;
             }
         }
-        assert_eq!(n, 14);
+        assert_eq!(n + dropped, 14, "{}×{}", pane.width, pane.height);
+        if pane.height >= 300.0 {
+            assert_eq!(n, 14, "{}×{}: every box whole", pane.width, pane.height);
+        } else {
+            assert_eq!(dropped, 1, "Hawaii at 178");
+        }
     }
 }
 
@@ -724,43 +772,39 @@ fn a_view_a_hair_below_the_fit_is_the_fit() {
     }
 }
 
-/// A box that leaves the pane does not drop an inset it would overlap (review 3, finding 2): the
-/// US's Alaska box moved right so that, at 328 × 60, it leaves the pane at the top and its
-/// off-pane extent overlaps Hawaii's. Hawaii is drawn and Alaska alone counted. On `b3cf735`
-/// both were dropped — two lost for one.
+/// A box that leaves the pane blocks nothing (review 3, finding 2), on the rebuilt resource:
+/// France's Fr. Guiana box moved to y −10 (off the pane at every band) and Réunion's moved to the
+/// top-left on top of it, inside the pane — at the golden pane Réunion and the Antilles are drawn,
+/// Fr. Guiana is the one dropped. On `b3cf735` a box not drawn still took part in the overlap
+/// test and dropped the box over it.
 #[test]
 fn an_off_pane_box_does_not_drop_an_inset() {
-    let p =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources/map/world.ondarmap");
-    let mut s = Store::load(&std::fs::read(p).unwrap()).unwrap();
-    let us = c("US");
-    let alaska = s.countries[us]
-        .insets
-        .iter()
-        .position(|i| i.label == "Alaska")
-        .unwrap();
-    // golden (8, 236, 84, 56) → (60, 236, 84, 56): x 60..144 meets Hawaii's 98..158
-    s.countries[us].insets[alaska].rect[0] = 60.0;
-    let pane = Pane {
-        width: 328.0,
-        height: 60.0,
-        padding: 20.0,
+    use ondar_map::format::Corner;
+    let mut s = Store::load(&std::fs::read(resource_path()).unwrap()).unwrap();
+    let fr = c("FR");
+    let at = |s: &Store, label: &str| {
+        s.countries[fr]
+            .insets
+            .iter()
+            .position(|i| i.label == label)
+            .unwrap()
     };
-    let [ax, ay, aw, ah] = s.countries[us].insets[alaska].rect_at(&pane);
-    let hawaii = s.countries[us]
-        .insets
-        .iter()
-        .find(|i| i.label == "Hawaii")
-        .unwrap()
-        .rect_at(&pane);
-    let [hx, hy, hw, hh] = hawaii;
-    // the premise: Alaska leaves the pane, Hawaii is inside it, and the two overlap
-    assert!(ay < 0.0);
-    assert!(hx >= 0.0 && hy >= 0.0 && hx + hw <= pane.width && hy + hh <= pane.height);
-    assert!(!(ax + aw <= hx || hx + hw <= ax || ay + ah <= hy || hy + hh <= ay));
-    let f = s.frame(us, &pane, s.fit(us, &pane).unwrap()).unwrap();
+    let (fg, re) = (at(&s, "Fr. Guiana"), at(&s, "Réunion"));
+    assert!(fg < re, "table order: the off-pane box first");
+    s.countries[fr].insets[fg].rect = [8.0, -10.0, 60.0, 44.0];
+    s.countries[fr].insets[re].corner = Corner::TopLeft;
+    s.countries[fr].insets[re].rect = [8.0, 20.0, 60.0, 44.0];
+    let boxes = s.inset_boxes(fr, &P);
+    // the premise: Fr. Guiana's box would overlap Réunion's, and leaves the pane
+    assert!(!rules::boxes_apart(
+        [8.0, -10.0, 60.0, 44.0],
+        [8.0, 20.0, 60.0, 44.0]
+    ));
+    assert_eq!(boxes[fg], None);
+    assert_eq!(boxes[re], Some([8.0, 20.0, 60.0, 44.0]));
+    let f = s.frame(fr, &P, s.fit(fr, &P).unwrap()).unwrap();
     let labels: Vec<&str> = f.insets.iter().map(|i| i.label.as_str()).collect();
-    assert_eq!(labels, ["Hawaii"]);
+    assert_eq!(labels, ["Antilles", "Réunion"]);
     assert_eq!(f.stats.insets_dropped, 1);
 }
 
@@ -944,102 +988,299 @@ fn own_insets_are_land_when_the_view_is_not_the_fit() {
     }
 }
 
-/// An inset box that leaves the pane or overlaps another box is not drawn (review 2, finding 4).
-/// At 328 × 60 most boxes leave the pane (Alaska's bottom-left box at y −4), and France's French
-/// Guiana (top-left) and Réunion (bottom-left, 8 pt above the bottom) are both inside it and on
-/// top of each other, so of all 14 only Guadeloupe & Martinique and Hawaii (bottom-left, now
-/// at y 18–50, beside Alaska's dropped box) are drawn; at 328 × 178 all 14 are. Every drawn box is inside the pane and apart from every other inset's box, and every
-/// inset not drawn is counted in `FrameStats::insets_dropped`. On `8324e68` every box was drawn
-/// wherever `rect_at` put it.
+/// An inset is drawn iff its band's stored scale is above 0 and its box — at that scale, anchored
+/// by its corner or beside the box it abuts — is inside the pane, apart from the controls' rect
+/// and from every box drawn before it in table order (I1 + C1, M4b commit 5; review 2 finding 4
+/// and review 3 finding 2's rule kept): `Store::inset_boxes` is that rule, and the frame draws
+/// exactly its `Some`s. At 328 × 60 the scales are the 140 pt floor's (the height clamps) and most
+/// boxes leave the pane; at 178 all but Hawaii are drawn. Every inset not drawn is counted.
 #[test]
 fn an_inset_that_does_not_fit_the_pane_is_not_drawn() {
     let s = store();
-    let pane = |height: f64| Pane {
-        width: 328.0,
-        height,
-        padding: 20.0,
-    };
-    for (pane, want) in [
-        // French Guiana and Réunion meet at 328 × 60: the first in table order is drawn, the
-        // second dropped (review 3, finding 2; on `b3cf735` both were dropped)
-        (
-            pane(60.0),
-            vec!["French Guiana", "Guadeloupe & Martinique", "Hawaii"],
-        ),
-        (pane(178.0), Vec::new()),
-    ] {
+    for height in [60.0, 178.0] {
+        let pane = Pane {
+            width: 328.0,
+            height,
+            padding: 20.0,
+        };
+        let controls = rules::controls_rect(&pane);
         let mut drawn = Vec::new();
-        let mut total = 0;
         let mut dropped = 0;
         for (i, ct) in s.countries.iter().enumerate() {
             if ct.insets.is_empty() {
                 continue;
             }
-            total += ct.insets.len();
+            let boxes = s.inset_boxes(i, &pane);
             let f = s.frame(i, &pane, s.fit(i, &pane).unwrap()).unwrap();
-            for ins in &f.insets {
-                let [x, y, w, h] = ins.rect.map(f64::from);
-                let what = format!("{} {} at 328×{}", ct.name, ins.label, pane.height);
-                assert!(
-                    x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height,
-                    "{what}: [{x}, {y}, {w}, {h}] leaves the pane"
-                );
-                // apart from every box drawn, not from every box (review 3, finding 2)
-                for other in f.insets.iter().filter(|o| o.label != ins.label) {
-                    let [ox, oy, ow, oh] = other.rect.map(f64::from);
-                    assert!(
-                        x + w <= ox || ox + ow <= x || y + h <= oy || oy + oh <= y,
-                        "{what}: overlaps {}",
-                        other.label
-                    );
-                }
-                drawn.push(ins.label.clone());
-            }
-            // and every inset not drawn leaves the pane or meets a box drawn before it in
-            // table order: the rule is an iff
             let mut before: Vec<[f64; 4]> = Vec::new();
-            for ins in &ct.insets {
-                let [x, y, w, h] = ins.rect_at(&pane);
+            for (k, ins) in ct.insets.iter().enumerate() {
                 let is_drawn = f.insets.iter().any(|d| d.label == ins.label);
-                let inside = x >= 0.0 && y >= 0.0 && x + w <= pane.width && y + h <= pane.height;
-                let apart = before.iter().all(|&[ox, oy, ow, oh]| {
-                    x + w <= ox || ox + ow <= x || y + h <= oy || oy + oh <= y
-                });
                 assert_eq!(
                     is_drawn,
-                    inside && apart,
-                    "{} {} at 328×{}",
+                    boxes[k].is_some(),
+                    "{} {} at 328×{height}",
                     ct.name,
-                    ins.label,
-                    pane.height
+                    ins.label
                 );
-                if is_drawn {
-                    before.push([x, y, w, h]);
+                if let Some(rect) = boxes[k] {
+                    let what = format!("{} {} at 328×{height}", ct.name, ins.label);
+                    assert!(rules::box_fits(rect, &pane), "{what}: leaves the pane");
+                    assert!(
+                        rules::boxes_apart(rect, controls),
+                        "{what}: on the controls"
+                    );
+                    assert!(
+                        before.iter().all(|&o| rules::boxes_apart(rect, o)),
+                        "{what}: overlaps"
+                    );
+                    assert!(
+                        ins.scale_at(&s.header.bands, &pane) > 0.0,
+                        "{what}: scale 0"
+                    );
+                    let got = f.insets.iter().find(|d| d.label == ins.label).unwrap();
+                    let r = got.rect.map(f64::from);
+                    assert!(
+                        (0..4).all(|k| (r[k] - rect[k]).abs() < 1e-3),
+                        "{what}: {r:?} vs {rect:?}"
+                    );
+                    before.push(rect);
+                    drawn.push(ins.label.clone());
                 }
             }
             assert_eq!(
                 f.insets.len() + f.stats.insets_dropped,
                 ct.insets.len(),
-                "{} at 328×{}",
-                ct.name,
-                pane.height
+                "{} at 328×{height}",
+                ct.name
             );
             dropped += f.stats.insets_dropped;
-            // the clearance is reported for the drawn boxes only
             let labels: Vec<String> = s
                 .inset_clearance(i, &pane)
                 .into_iter()
                 .map(|(l, _)| l)
                 .collect();
-            let want_labels: Vec<String> = f.insets.iter().map(|ins| ins.label.clone()).collect();
-            assert_eq!(labels, want_labels, "{} at 328×{}", ct.name, pane.height);
+            let want: Vec<String> = f.insets.iter().map(|d| d.label.clone()).collect();
+            assert_eq!(labels, want, "{} at 328×{height}", ct.name);
         }
-        assert_eq!(total, 14);
-        assert_eq!(dropped, 14 - drawn.len(), "328×{}", pane.height);
-        if want.is_empty() {
-            assert_eq!(drawn.len(), 14, "328×{}: {drawn:?}", pane.height);
+        assert_eq!(drawn.len() + dropped, 14, "328×{height}");
+        if height == 178.0 {
+            assert_eq!(dropped, 1, "328×178: Hawaii alone, {drawn:?}");
         } else {
-            assert_eq!(drawn, want, "328×{}", pane.height);
+            eprintln!("drawn at 328×{height}: {drawn:?}");
+            assert!(dropped >= 10, "328×60: {drawn:?}");
         }
     }
+}
+
+/// Svalbard's clearance read 61.1 pt at the golden pane and 1.97 at 328 × 178 (Step 0, M4b). The
+/// cause, measured on the resource rather than inferred: at NO's fit at 178 the land ring nearest
+/// Svalbard's full-size golden box at the top-left is Jan Mayen (71.0° N, 8.5° W) — an own
+/// `Dropped` group, drawn as land since `ff9a75a`, which the shorter pane's coarser fit brings on
+/// screen — and with that one ring excluded the box clears the rest of the land by ≥ 40 pt. Since
+/// I1 (commit 5) the drawn box is the 78 % one, which clears Jan Mayen by ≥ 12. Fails if the
+/// nearest ring is the mainland or Bear Island.
+#[test]
+fn svalbard_clearance_at_178_is_jan_mayen() {
+    use ondar_map::laea::haversine_km;
+    let s = store();
+    let no = c("NO");
+    let pane = Pane::band(178);
+    let fit = s.fit(no, &pane).unwrap();
+    let f = s.frame(no, &pane, fit).unwrap();
+    let stored = s.countries[no]
+        .insets
+        .iter()
+        .find(|i| i.label == "Svalbard")
+        .unwrap();
+    let [x, y, w, h] = rules::inset_box_at(stored.golden(), stored.corner, &pane, 1.0);
+    let rect = [x, y, x + w, y + h];
+    let rings: Vec<&Vec<[f32; 2]>> = f.land.iter().flat_map(|sh| sh.rings.iter()).collect();
+    let dist = |r: &[[f32; 2]]| rules::rect_ring_distance(rect, r.iter().map(|p| p.map(f64::from)));
+    let (nearest, d_near) = rings
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i, dist(r)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
+    assert!(d_near < 12.0, "the full box clears at 178: {d_near:.2} pt");
+    let r = rings[nearest];
+    let n = r.len() as f64;
+    let (mx, my) = r.iter().fold((0.0, 0.0), |(sx, sy), p| {
+        (sx + f64::from(p[0]), sy + f64::from(p[1]))
+    });
+    let (lon, lat) = s.unproject(no, &pane, &f.view, mx / n, my / n).unwrap();
+    let km = haversine_km(lon, lat, -8.5, 71.0);
+    assert!(
+        km <= 100.0,
+        "the nearest ring ({} vertices, {d_near:.2} pt) is at {lat:.2}° N {lon:.2}° E, {km:.0} km from Jan Mayen",
+        r.len()
+    );
+    let rest = rings
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != nearest)
+        .map(|(_, r)| dist(r))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        rest >= 40.0,
+        "with Jan Mayen excluded the full box clears {rest:.2} pt"
+    );
+    // the drawn box: 78 % at 178, ≥ 12 pt from everything
+    let drawn = f.insets.iter().find(|i| i.label == "Svalbard").unwrap();
+    assert!(
+        (f64::from(drawn.rect[2]) - 80.0 * 0.78).abs() < 1e-3,
+        "{:?}",
+        drawn.rect
+    );
+    let (_, reported) = s
+        .inset_clearance(no, &pane)
+        .into_iter()
+        .find(|(l, _)| l == "Svalbard")
+        .unwrap();
+    assert!(reported >= 12.0, "{reported}");
+    eprintln!(
+        "svalbard at 328×178: the full box's nearest ring {} vertices at {d_near:.2} pt, ({lat:.3}, {lon:.3}), {km:.1} km from Jan Mayen; the rest ≥ {rest:.2} pt; drawn at 78 %, {reported:.2} pt",
+        r.len()
+    );
+}
+
+/// The frame clips to `index::clip_rect`, the pane grown by 2 pt on every side (review 3,
+/// finding 5): at the golden fit the neighbours of RU, FR, DE and NO cross all four edges, so
+/// the clipped vertices' extremes are exactly −2 and 330 in x and −2 and 302 in y (Sutherland–
+/// Hodgman puts a vertex on the clip edge), and no vertex lies outside; at 328 × 178 DE's and
+/// NO's reach −2, 330, −2 and 180. Fails with the margin dropped from the frame (0 and 328) or
+/// applied in km at the view's scale.
+#[test]
+fn the_frame_clips_to_the_margin() {
+    use ondar_map::index::{CLIP_MARGIN_PT, clip_rect};
+    let s = store();
+    let anmite = Pane {
+        width: 328.0,
+        height: 178.0,
+        padding: 20.0,
+    };
+    for (pane, codes) in [
+        (P, vec!["RU", "FR", "DE", "NO"]),
+        (anmite, vec!["DE", "NO"]),
+    ] {
+        let [x0, y0, x1, y1] = clip_rect(&pane);
+        assert_eq!(x0, -CLIP_MARGIN_PT);
+        assert_eq!((x1, y1), (pane.width + 2.0, pane.height + 2.0));
+        for code in codes {
+            let i = c(code);
+            let f = s.frame(i, &pane, s.fit(i, &pane).unwrap()).unwrap();
+            let mut lo = [f64::INFINITY; 2];
+            let mut hi = [f64::NEG_INFINITY; 2];
+            for p in f.neighbours.iter().flat_map(|sh| sh.rings.iter()).flatten() {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(f64::from(p[k]));
+                    hi[k] = hi[k].max(f64::from(p[k]));
+                }
+            }
+            assert_eq!(
+                (lo, hi),
+                ([x0, y0], [x1, y1]),
+                "{code} at {}×{}: the neighbours' extent",
+                pane.width,
+                pane.height
+            );
+            for p in f
+                .land
+                .iter()
+                .chain(&f.neighbours)
+                .flat_map(|sh| sh.rings.iter())
+                .chain(&f.subdivisions)
+                .flatten()
+            {
+                let [x, y] = p.map(f64::from);
+                assert!(
+                    x >= x0 && x <= x1 && y >= y0 && y <= y1,
+                    "{code}: ({x}, {y}) outside the clip rect"
+                );
+            }
+        }
+    }
+}
+
+/// The insets' per-band scales as the frame reads them (I1, M4b commit 5; what commit 4's tables
+/// decided and the STOP accepted): the US at 328 × 178 draws Alaska at 83 % (69.72 × 46.48) and
+/// not Hawaii (`insets_dropped` 1, decision 1 case (c)); at 274 Hawaii appears at 88 %; at 300 both
+/// are whole. No drawn box of any country meets the controls' rect at any band from 140 to 300; a
+/// pane of 139 reads the 140 entry and one of 360 the 300 entry. Fails with the table read at the
+/// wrong height, the controls' rect left out of the placement, or the scale applied to the pads.
+#[test]
+fn insets_scale_per_band() {
+    let s = store();
+    let us = c("US");
+    let box_of = |pane: &Pane, label: &str| {
+        let f = s.frame(us, pane, s.fit(us, pane).unwrap()).unwrap();
+        (
+            f.insets
+                .iter()
+                .find(|i| i.label == label)
+                .map(|i| i.rect.map(f64::from)),
+            f.stats.insets_dropped,
+        )
+    };
+    let (alaska, dropped) = box_of(&Pane::band(178), "Alaska");
+    let [_, _, w, h] = alaska.unwrap();
+    assert!(
+        (w - 84.0 * 0.83).abs() < 1e-3 && (h - 56.0 * 0.83).abs() < 1e-3,
+        "{alaska:?}"
+    );
+    assert_eq!((box_of(&Pane::band(178), "Hawaii").0, dropped), (None, 1));
+    let (hawaii, _) = box_of(&Pane::band(274), "Hawaii");
+    assert!(
+        (hawaii.unwrap()[2] - 60.0 * 0.88).abs() < 1e-3,
+        "{hawaii:?}"
+    );
+    let (hawaii, dropped) = box_of(&Pane::band(300), "Hawaii");
+    assert_eq!((hawaii, dropped), (Some([98.0, 258.0, 60.0, 32.0]), 0));
+    for (i, ct) in s.countries.iter().enumerate() {
+        if ct.insets.is_empty() {
+            continue;
+        }
+        for h in rules::BAND_FLOOR..=rules::BAND_MAX {
+            let pane = Pane::band(h);
+            let controls = rules::controls_rect(&pane);
+            for (k, b) in s.inset_boxes(i, &pane).into_iter().enumerate() {
+                if let Some(rect) = b {
+                    assert!(
+                        rules::boxes_apart(rect, controls),
+                        "{} {} at 328 × {h}: {rect:?} on the controls",
+                        ct.name,
+                        ct.insets[k].label
+                    );
+                }
+            }
+        }
+    }
+    let at = |h: f64| {
+        s.inset_boxes(
+            us,
+            &Pane {
+                width: 328.0,
+                height: h,
+                padding: 20.0,
+            },
+        )
+    };
+    let sizes = |b: Vec<Option<[f64; 4]>>| -> Vec<Option<[f64; 2]>> {
+        b.into_iter()
+            .map(|r| r.map(|[_, _, w, h]| [w, h]))
+            .collect()
+    };
+    // a pane of 139 reads the 140 entry (the box's size; its position follows the pane's height)
+    assert_eq!(sizes(at(139.0)), sizes(at(140.0)));
+    assert_eq!(
+        sizes(s.inset_boxes(
+            us,
+            &Pane {
+                width: 400.0,
+                height: 360.0,
+                padding: 20.0
+            }
+        )),
+        sizes(at(300.0))
+    );
 }

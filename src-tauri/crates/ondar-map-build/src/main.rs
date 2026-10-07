@@ -32,6 +32,11 @@ struct Args {
     encoding: ondar_map::format::Encoding,
     simplifier: store::Simplifier,
     bench: bool,
+    /// M4b commit 4: build although a label is wider than its box (review P3) or an inset is
+    /// dropped at 178 or 300 (the brief's STOP) — for the tables at the STOP, never for a shipped
+    /// resource.
+    allow_wide_labels: bool,
+    allow_dropped_insets: bool,
 }
 
 fn args() -> Result<Args, String> {
@@ -43,6 +48,8 @@ fn args() -> Result<Args, String> {
         encoding: ondar_map::format::Encoding::Deflate,
         simplifier: store::Simplifier::Hybrid,
         bench: false,
+        allow_wide_labels: false,
+        allow_dropped_insets: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -57,6 +64,8 @@ fn args() -> Result<Args, String> {
             "--out" => a.out = Some(val()?),
             "--report" => a.report = Some(val()?),
             "--bench" => a.bench = true,
+            "--allow-wide-labels" => a.allow_wide_labels = true,
+            "--allow-dropped-insets" => a.allow_dropped_insets = true,
             "--simplifier" => {
                 a.simplifier = match it.next().as_deref() {
                     Some("hybrid") => store::Simplifier::Hybrid,
@@ -172,15 +181,27 @@ fn fit_table(inp: &Inputs) -> String {
 
 fn inset_table(inp: &Inputs) -> String {
     let mut t = String::from(
-        "code\tlabel\tcorner\tx\ty\tw\th\tgroup_parts\tgroup_area_km2\tanchor_km\tlat0\tlon0\tscale_km_per_pt\tlevel\tclearance_pt\n",
+        "code\tlabel\tcorner\tx\ty\tw\th\tgroup_parts\tgroup_area_km2\tanchor_km\tlat0\tlon0\tscale_km_per_pt\tlevel\tclearance_pt\tpct_178\tpct_300\tmin_pct\tmin_at\tfirst_band\n",
     );
     for p in &inp.plans {
         for i in &p.insets {
             let g = &p.groups[i.group];
             let [x, y, w, h] = i.row.rect;
+            let at = |h: u32| {
+                i.scale_pct
+                    .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            let (min_i, &min_pct) = i
+                .scale_pct
+                .iter()
+                .enumerate()
+                .min_by_key(|&(_, &p)| p)
+                .unwrap_or((0, &0));
             let _ = writeln!(
                 t,
-                "{}\t{}\t{:?}\t{x}\t{y}\t{w}\t{h}\t{}\t{:.0}\t{:.2}\t{:.6}\t{:.6}\t{:.4}\t{}\t{:.2}",
+                "{}\t{}\t{:?}\t{x}\t{y}\t{w}\t{h}\t{}\t{:.0}\t{:.2}\t{:.6}\t{:.6}\t{:.4}\t{}\t{:.2}\t{}\t{}\t{min_pct}\t{}\t{}",
                 p.code,
                 i.row.label,
                 i.row.corner,
@@ -191,7 +212,114 @@ fn inset_table(inp: &Inputs) -> String {
                 i.lon0,
                 i.scale,
                 ondar_map::rules::level_for(i.scale),
-                i.clearance_pt
+                i.clearance_pt,
+                at(178),
+                at(300),
+                ondar_map::rules::BAND_FLOOR + min_i as u32,
+                world::first_band(i).map_or("never".to_string(), |h| h.to_string())
+            );
+        }
+    }
+    t
+}
+
+/// I1 (M4b commit 4): per inset, the scale in percent at every band height, one row per height.
+fn inset_bands_table(inp: &Inputs) -> String {
+    let mut t = String::from("code\tlabel\tcorner\th\tscale_pct\tx\ty\tw\th_pt\tinner_width\n");
+    for p in &inp.plans {
+        for i in &p.insets {
+            for (k, &pct) in i.scale_pct.iter().enumerate() {
+                let h = ondar_map::rules::BAND_FLOOR + k as u32;
+                // the placed rect (the stacking rule applied); zero where dropped
+                let r = i.rects.get(k).copied().unwrap_or([0.0; 4]);
+                let _ = writeln!(
+                    t,
+                    "{}\t{}\t{:?}\t{h}\t{pct}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}",
+                    p.code,
+                    i.row.label,
+                    i.row.corner,
+                    r[0],
+                    r[1],
+                    r[2],
+                    r[3],
+                    ondar_map::rules::label_inner_width(r)
+                );
+            }
+        }
+    }
+    t
+}
+
+/// The corner table (M4b commit 4): per inset and corner in {TL, TR, BL}, the box alone after the
+/// controls — the minimum scale over the bands and where, the scales at 178 and 300, the full
+/// box's clearance at 161 (Step 0's figure).
+fn inset_corners_table(inp: &Inputs) -> String {
+    let mut t = String::from(
+        "code\tlabel\tcurrent\tcorner\tx\ty\tw\th\tmin_pct\tmin_at\tpct_178\tpct_300\tclearance_161\n",
+    );
+    for p in &inp.plans {
+        for i in &p.insets {
+            for c in &i.corners {
+                let _ = writeln!(
+                    t,
+                    "{}\t{}\t{:?}\t{:?}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\t{}\t{}\t{:.2}",
+                    p.code,
+                    i.row.label,
+                    i.row.corner,
+                    c.corner,
+                    c.rect[0],
+                    c.rect[1],
+                    c.rect[2],
+                    c.rect[3],
+                    c.min_pct,
+                    c.min_at,
+                    c.pct_178,
+                    c.pct_300,
+                    c.clearance_161
+                );
+            }
+        }
+    }
+    t
+}
+
+/// Review P3 (M4b commit 4): per inset, the label's conservative width at the artifact's 8 pt
+/// against the box's inner width at 178 and 300 (at the band's scale).
+fn inset_labels_table(inp: &Inputs) -> String {
+    let mut t = String::from(
+        "code\tlabel\tchars\twidth_pt\tpct_178\tinner_178\tfits_178\tpct_300\tinner_300\tfits_300\n",
+    );
+    for p in &inp.plans {
+        for i in &p.insets {
+            let width = ondar_map::rules::label_width_pt(&i.row.label);
+            let at = |h: u32| {
+                let pct = i
+                    .scale_pct
+                    .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+                    .copied()
+                    .unwrap_or(0);
+                let inner = if pct == 0 {
+                    0.0
+                } else {
+                    ondar_map::rules::label_inner_width(ondar_map::rules::inset_box_at(
+                        i.row.rect,
+                        i.row.corner,
+                        &ondar_map::rules::Pane::band(h),
+                        f64::from(pct) / 100.0,
+                    ))
+                };
+                (pct, inner, pct > 0 && width <= inner)
+            };
+            let (p178, i178, f178) = at(178);
+            let (p300, i300, f300) = at(300);
+            let _ = writeln!(
+                t,
+                "{}\t{}\t{}\t{width:.1}\t{p178}\t{i178:.1}\t{}\t{p300}\t{i300:.1}\t{}",
+                p.code,
+                i.row.label,
+                i.row.label.chars().count(),
+                u8::from(f178),
+                u8::from(f300)
             );
         }
     }
@@ -313,6 +441,42 @@ fn run() -> Result<(), String> {
         borders.len(),
         t1.elapsed().as_secs_f64()
     );
+    // the tables first (M4b commit 4: the STOP reads them even when the gate below refuses)
+    if let Some(dir) = &a.tables {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for (name, body) in [
+            ("fit.tsv", fit_table(&inp)),
+            ("insets.tsv", inset_table(&inp)),
+            ("inset-bands.tsv", inset_bands_table(&inp)),
+            ("inset-corners.tsv", inset_corners_table(&inp)),
+            ("inset-labels.tsv", inset_labels_table(&inp)),
+            ("s4.tsv", s4_table(&inp)),
+            ("borders.tsv", borders_table(&borders)),
+        ] {
+            std::fs::write(dir.join(name), body).map_err(|e| format!("{name}: {e}"))?;
+        }
+        eprintln!("tables written to {}", dir.display());
+    }
+    // the ship gate (M4b commit 4): no inset dropped at 178 or 300, no label wider than its box
+    let gate = world::ship_gate(&inp.plans);
+    for d in &gate.dropped {
+        eprintln!("inset dropped: {d}");
+    }
+    for w in &gate.wide_labels {
+        eprintln!("label too wide: {w}");
+    }
+    if !gate.dropped.is_empty() && !a.allow_dropped_insets {
+        return Err(format!(
+            "{} inset(s) dropped at 328 × 178 or × 300 (the brief's STOP); --allow-dropped-insets builds regardless, for the tables only",
+            gate.dropped.len()
+        ));
+    }
+    if !gate.wide_labels.is_empty() && !a.allow_wide_labels {
+        return Err(format!(
+            "{} label(s) wider than their box (review P3); shorten them in insets.tsv, or --allow-wide-labels for the tables only",
+            gate.wide_labels.len()
+        ));
+    }
     if a.out.is_some() || a.report.is_some() || a.bench {
         let built = store::build(
             &inp.world,
@@ -331,6 +495,20 @@ fn run() -> Result<(), String> {
             built.p4.2,
             built.p4.3,
             built.simplifier
+        );
+        eprintln!(
+            "coverage for bands {}..={}: the bound adds {} blob(s), {} B of {} B deflated{}; {} collapsed ring(s)",
+            built.bands.0,
+            built.bands.1,
+            built.bound_added.blobs,
+            built.bound_added.bytes,
+            built.bound_added.total_bytes,
+            if built.bound_added.exact_stored {
+                " — over 5 %, the exact union stored"
+            } else {
+                ""
+            },
+            built.collapsed.len()
         );
         let bench = if a.bench {
             Some(bench::run(&built)?)
@@ -360,18 +538,6 @@ fn run() -> Result<(), String> {
             std::fs::write(path, r).map_err(|e| format!("{}: {e}", path.display()))?;
             eprintln!("report written to {}", path.display());
         }
-    }
-    if let Some(dir) = a.tables {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        for (name, body) in [
-            ("fit.tsv", fit_table(&inp)),
-            ("insets.tsv", inset_table(&inp)),
-            ("s4.tsv", s4_table(&inp)),
-            ("borders.tsv", borders_table(&borders)),
-        ] {
-            std::fs::write(dir.join(name), body).map_err(|e| format!("{name}: {e}"))?;
-        }
-        eprintln!("tables written to {}", dir.display());
     }
     Ok(())
 }
@@ -466,6 +632,81 @@ mod input_tests {
         assert!(b.iter().all(|x| x.passes()));
         let inside = b.iter().map(|x| x.far_inside_worst_km).fold(0.0, f64::max);
         assert!(inside < 0.080, "{inside} km");
+    }
+
+    /// Review P6 (M4b commit 4): the tool's corner table at 328 × 161 with the controls' rect
+    /// disabled against Step 0's (`fixtures/step0-corners-161.tsv`, the shipped resource framed
+    /// by `Store::frame`), for the eight countries Step 0 framed on complete land (IN and US had
+    /// 11 and 48 missing blobs there): the full box's clearance within 0.3 pt (the drawn bound,
+    /// 0.25 + 0.035, and the table's 0.01 rounding: Step 0 measured simplified rings, the tool
+    /// the input), and the largest scale within 0.02 of Step 0's bisected fraction — or 0 where
+    /// that fraction is under the row's minimum, which Step 0 did not apply.
+    #[test]
+    #[ignore]
+    fn corner_table_at_161_matches_step0() {
+        let i = inputs();
+        let t = include_str!("../fixtures/step0-corners-161.tsv");
+        let name = |c: ondar_map::format::Corner| match c {
+            ondar_map::format::Corner::TopLeft => "TL",
+            ondar_map::format::Corner::TopRight => "TR",
+            ondar_map::format::Corner::BottomLeft => "BL",
+            ondar_map::format::Corner::BottomRight => "BR",
+        };
+        let mut compared = 0;
+        for p in i
+            .plans
+            .iter()
+            .filter(|p| ["EC", "ES", "FR", "MY", "NO", "PF", "PT", "YE"].contains(&p.code.as_str()))
+        {
+            let tables = world::inset_tables_for(p, &i.world, false);
+            for (ins, corners) in p.insets.iter().zip(&tables.corners) {
+                for c in corners {
+                    let line = t
+                        .lines()
+                        .find(|l| {
+                            let f: Vec<&str> = l.split('\t').collect();
+                            f.first() == Some(&"corner")
+                                && f.get(1) == Some(&p.code.as_str())
+                                && f.get(2) == Some(&ins.row.label.as_str())
+                                && f.get(3) == Some(&name(c.corner))
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("{} {} {}", p.code, ins.row.label, name(c.corner))
+                        });
+                    let f: Vec<&str> = line.split('\t').collect();
+                    let step0_clear: f64 = f[5].parse().unwrap();
+                    let step0_frac: f64 = f[7].split(' ').next().unwrap().parse().unwrap();
+                    assert!(
+                        (c.clearance_161 - step0_clear).abs() <= 0.3,
+                        "{} {} {}: clearance {:.2} vs Step 0's {step0_clear}",
+                        p.code,
+                        ins.row.label,
+                        name(c.corner),
+                        c.clearance_161
+                    );
+                    let want = if step0_frac < ondar_map::rules::inset_min_scale(ins.row.rect) {
+                        0.0
+                    } else {
+                        step0_frac
+                    };
+                    assert!(
+                        (f64::from(c.pct_161) / 100.0 - want).abs() <= 0.02,
+                        "{} {} {}: {} % vs Step 0's {step0_frac} (minimum {:.3})",
+                        p.code,
+                        ins.row.label,
+                        name(c.corner),
+                        c.pct_161,
+                        ondar_map::rules::inset_min_scale(ins.row.rect)
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(
+            compared,
+            3 * 11,
+            "eleven insets in the eight countries, three corners each"
+        );
     }
 
     /// Determinism: two builds give the same bytes from the end of the header on, and every

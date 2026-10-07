@@ -1,13 +1,13 @@
 # world.ondarmap — build report
 
-Built by `ondar-map-build` at `56c35156d91ef2f97b56fe6a549e51017f62ab1d` from Natural Earth 10m v5.1.2 (the 12 pinned inputs below). Format v1, Deflate per blob.
+Built by `ondar-map-build` at `2e9ec11c59876a188b7a78b5ae4b720153ba943a` (working tree with changes) from Natural Earth 10m v5.1.2 (the 12 pinned inputs below). Format v2, Deflate per blob.
 
 | | |
 |---|---|
-| resource | 2712599 B (2.713 MB) |
-| SHA-256 | `e2775f811c08f5bc9d52f4653741e8fede00b7d0a1238bd095e306e60f52dc3a` |
-| units / countries / blobs | 267 / 248 / 1131 |
-| build time | 19.7 s total (store 4.2 s, 14 threads) — the ~10 min budget |
+| resource | 2852927 B (2.853 MB) |
+| SHA-256 | `e003f07ec34b4099179fad126ccaf4e63e3c7c34b3ab46b4a931376dc6023f97` |
+| units / countries / blobs | 267 / 248 / 1381 |
+| build time | 19.6 s total (store 5.4 s, 14 threads) — the ~10 min budget |
 
 ## Bytes, vertices and bounds per layer and level
 
@@ -15,28 +15,79 @@ Bounds are the exact measure (every original vertex to the simplified line), poi
 
 | layer | level km/pt | blobs | vertices in | vertices out | raw B | deflated B | max bound pt | + codec |
 |---|---|---|---|---|---|---|---|---|
-| Land | 1.5 | 267 | 547394 | 324794 | 1352168 | 871139 | 0.2500 | 0.2854 |
-| Land | 3 | 256 | 544849 | 253690 | 1066556 | 636161 | 0.2500 | 0.2853 |
-| Land | 6 | 252 | 543479 | 215181 | 911868 | 482362 | 0.2500 | 0.2854 |
-| Land | 12 | 203 | 496049 | 160563 | 689876 | 322050 | 0.2500 | 0.2854 |
-| Land | 24 | 124 | 373958 | 93194 | 407460 | 164492 | 0.2500 | 0.2853 |
+| Land | 1.5 | 267 | 547394 | 324789 | 1352140 | 871122 | 0.2500 | 0.2854 |
+| Land | 3 | 267 | 547394 | 254797 | 1072160 | 639798 | 0.2500 | 0.2853 |
+| Land | 6 | 267 | 547394 | 216305 | 918144 | 486268 | 0.2500 | 0.2854 |
+| Land | 12 | 267 | 547394 | 170981 | 736628 | 350049 | 0.2500 | 0.2854 |
+| Land | 24 | 267 | 547394 | 131628 | 578744 | 242338 | 0.2500 | 0.2854 |
 | Subdivisions | 6 | 18 | 133691 | 15021 | 71352 | 45638 | 0.5000 | 0.5353 |
-| Subdivisions | 12 | 10 | 100239 | 6306 | 32116 | 19559 | 0.4998 | 0.5352 |
-| Subdivisions | 24 | 1 | 48679 | 1541 | 8568 | 4662 | 0.4998 | 0.5352 |
+| Subdivisions | 12 | 17 | 131536 | 8863 | 46176 | 27940 | 0.4998 | 0.5352 |
+| Subdivisions | 24 | 11 | 112444 | 4141 | 24084 | 13543 | 0.4998 | 0.5352 |
 
-Total blob bytes: 4539964 B raw (4.540 MB), 2546063 B deflated per blob (2.546 MB). Neighbour-only blobs (a unit at a level only other countries' frames need): 1015404 B raw, 536436 B deflated = 21.1 % of the deflated total. Max bound: land 0.2500 pt, subdivisions 0.5000 pt (spec 0.25 / 0.5).
+Total blob bytes: 4799428 B raw (4.799 MB), 2676696 B deflated per blob (2.677 MB). Neighbour-only blobs (a unit at a level only other countries' frames need): 541944 B raw, 297110 B deflated = 11.1 % of the deflated total. Max bound: land 0.2500 pt, subdivisions 0.5000 pt (spec 0.25 / 0.5).
 
 ## Coverage
 
-D6 (decided 2026-10-01): the view stays inside the fit rectangle (the pane at the widest scale, centred on the frame bbox). A unit is stored at level k when a ring's cap, grown by the level's tolerance (bound + codec), meets some country's reach at k — its fit rectangle grown by the 2 pt clip margin at the coarsest scale that uses k — or it is in an inset at the inset's level.
+D6 (decided 2026-10-01): the view stays inside the fit rectangle (the pane at the widest scale, centred on the frame bbox). **Per band (M4b commit 3):** the pane is 328 × h for every integer h in 140..=300, each with its own fit and fit rectangle. A unit is stored at level k when a ring's cap, grown by the level's tolerance (bound + codec), meets some country's reach at k — the bounding rectangle, over every band whose views can use k, of that band's fit rectangle grown by the 2 pt clip margin at the coarsest scale that uses k — or it is in an inset at the inset's level.
 
 | level km/pt | units stored (of 267) |
 |---|---|
 | 1.5 | 267 |
-| 3 | 256 |
-| 6 | 252 |
-| 12 | 203 |
-| 24 | 124 |
+| 3 | 267 |
+| 6 | 267 |
+| 12 | 267 |
+| 24 | 267 |
+
+**The bound against the exact union** (the union of the bands' reaches is not a rectangle): the bounding rectangle asks for 0 land blob(s) no single band's reach asks for, 0 B deflated of 2589575 B (0.00 %). The rule: over 5 % and the exact union is stored instead — not applied, the bound's blobs are stored.
+
+**Collapsed rings** (fewer than three distinct quanta at the level; stored empty, no frame can draw them): 286. Kept as empty rings rather than dropped (the commit 4 STOP's decision 7): the loader requires a land blob's ring count to equal its unit's, part by part (`Corrupt { owner }`), because the ring index — the caps in the units table — addresses a blob's rings by position without decoding them; dropping a ring from one level's blob would need a per-blob ring map, and the slot costs 8 B in the ring table (2288 B raw here, before deflate). By level 1.5 / 3 / 6 / 12 / 24: 2 / 5 / 17 / 72 / 190. By unit (counts at each level): AIA 0/0/0/0/3, ATF 0/0/0/1/2, ATG 0/0/0/0/1, BHS 0/0/0/1/3, BJN 0/0/0/1/1, BRA 0/0/0/0/1, CHL 0/0/0/0/1, CHN 0/0/0/1/1, COK 0/0/0/0/1, COL 0/0/1/1/1, CSI 0/1/1/1/1, ECU 0/0/0/1/1, ESP 0/1/3/2/4, FRA 0/0/0/0/1, FSM 0/0/0/0/1, GAB 0/0/0/0/1, GBR 0/0/0/0/1, IDN 0/0/0/0/2, IND 0/0/0/0/1, IOT 0/0/0/0/2, ITA 0/1/0/1/1, JPN 1/1/3/5/9, KIR 0/0/0/0/1, KOR 0/0/0/1/1, MDV 1/0/4/40/109, MEX 0/0/0/1/1, MHL 0/0/0/1/2, NCL 0/0/0/0/1, PGA 0/0/0/2/3, PHL 0/0/0/1/4, PNG 0/0/0/0/1, PRT 0/0/0/1/1, PYF 0/0/0/1/2, SCR 0/0/0/1/1, SER 0/0/0/1/1, SYC 0/0/0/0/4, TUV 0/0/0/0/1, UMI 0/0/1/1/3, USA 0/0/1/1/7, VAT 0/1/1/1/1, VEN 0/0/2/4/6
+
+**Subdivision candidates at the shortest band** (flagged off at the golden fit, fit at 140 above 8 km/pt; the flag is decided at the golden fit — an observation, not a rule the build applies): AF (10.09 at 140), AO (15.13 at 140), BO (14.73 at 140), BW (10.18 at 140), CF (9.73 at 140), CG (9.71 at 140), CM (12.69 at 140), CO (18.56 at 140), DE (8.68 at 140), DZ (20.23 at 140), EG (10.86 at 140), ES (9.70 at 140), ET (12.77 at 140), FI (11.37 at 140), FR (10.56 at 140), GB (12.14 at 140), GY (8.20 at 140), IQ (9.21 at 140), IR (16.43 at 140), IT (12.89 at 140), KE (10.79 at 140), LA (9.54 at 140), LY (15.16 at 140), MA (16.00 at 140), MG (15.17 at 140), ML (16.50 at 140), MR (13.96 at 140), MV (8.67 at 140), MW (8.62 at 140), MZ (18.18 at 140), NA (13.25 at 140), NE (13.13 at 140), NG (10.69 at 140), NO (14.36 at 140), NZ (20.54 at 140), OM (10.81 at 140), PE (20.38 at 140), PF (10.23 at 140), PG (11.47 at 140), PH (18.28 at 140), PK (14.98 at 140), PY (9.24 at 140), SA (17.61 at 140), SD (14.97 at 140), SE (15.16 at 140), SO (15.22 at 140), SS (9.71 at 140), TD (17.77 at 140), TH (16.47 at 140), TM (8.47 at 140), TZ (11.93 at 140), UZ (9.44 at 140), VE (12.85 at 140), VN (16.44 at 140), ZA (14.10 at 140), ZM (10.96 at 140).
+
+## Insets per band (I1, C1)
+
+At every band height the controls' rect (`rules::controls_rect`, 74 × 24 pt, 8 pt from the bottom and right) is placed first; each inset row, in table order, takes the largest scale in whole percent at which its box — the golden size scaled, the label strip and the pads not, anchored at its corner with the row's gaps — is inside the pane, apart from every box placed before it and ≥ 12 pt from the land the frame draws there. The minimum is a land area of 28 × 12 pt (box ≥ 36 × 28). Labels at the artifact's 8 pt, 0.6 em a character and 0.3 em a space.
+
+| inset | corner | min % (at) | 140 | 161 | 178 | 200 | 250 | 300 | label pt | inner 178 / 300 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| EC Galápagos | TopLeft | 79 (300) | 100 | 100 | 100 | 100 | 94 | 79 | 43.2 | 72 / 55 |
+| ES Canaries | BottomLeft | 71 (284) | 100 | 100 | 98 | 86 | 81 | 74 | 38.4 | 70 / 51 |
+| FR Fr. Guiana | TopLeft | 99 (202) | 100 | 100 | 100 | 100 | 100 | 100 | 45.6 | 52 / 52 |
+| FR Antilles | TopRight | 100 (140) | 100 | 100 | 100 | 100 | 100 | 100 | 38.4 | 52 / 52 |
+| FR Réunion | BottomLeft | 100 (140) | 100 | 100 | 100 | 100 | 100 | 100 | 33.6 | 52 / 52 |
+| IN Andamans | TopLeft | 89 (227) | 100 | 100 | 100 | 95 | 90 | 90 | 38.4 | 72 / 64 |
+| MY Sabah & Sarawak | TopRight | 100 (140) | 100 | 100 | 100 | 100 | 100 | 100 | 67.2 | 72 / 72 |
+| NO Svalbard | TopLeft | 0 (225) | 100 | 90 | 78 | 63 | 0 | 100 | 38.4 | 54 / 72 |
+| PF Marquesas | TopRight | 78 (165) | 81 | 79 | 80 | 88 | 100 | 100 | 43.2 | 56 / 72 |
+| PT Azores | TopLeft | 100 (140) | 100 | 100 | 100 | 100 | 100 | 100 | 28.8 | 84 / 84 |
+| PT Madeira | TopLeft | 100 (140) | 100 | 100 | 100 | 100 | 100 | 100 | 33.6 | 44 / 44 |
+| US Alaska | BottomLeft | 80 (156) | 85 | 80 | 83 | 83 | 100 | 100 | 28.8 | 62 / 76 |
+| US Hawaii | BottomLeft | 0 (140) | 0 | 0 | 0 | 0 | 0 | 100 | 28.8 | — / 52 |
+| YE Socotra | TopLeft | 61 (192) | 86 | 74 | 65 | 61 | 92 | 100 | 33.6 | 44 / 72 |
+
+The corner table — each box alone after the controls, with its own gaps, at TL / TR / BL: min % over the bands (at), % at 178, % at 300, the full box's clearance at 161 in pt.
+
+| inset | current | TL | TR | BL |
+|---|---|---|---|---|
+| EC Galápagos | TopLeft | 79 (300) · 100 · 79 · 23.5 | 79 (296) · 100 · 79 · 21.7 | 60 (300) · 100 · 60 · 22.4 |
+| ES Canaries | BottomLeft | 0 (222) · 79 · 0 · 5.2 | 58 (263) · 96 · 73 · 7.1 | 71 (284) · 98 · 74 · 18.8 |
+| FR Fr. Guiana | TopLeft | 99 (202) · 100 · 100 · 30.3 | 100 (140) · 100 · 100 · 49.6 | 100 (140) · 100 · 100 · 55.2 |
+| FR Antilles | TopRight | 99 (202) · 100 · 100 · 30.3 | 100 (140) · 100 · 100 · 49.6 | 100 (140) · 100 · 100 · 55.2 |
+| FR Réunion | BottomLeft | 99 (202) · 100 · 100 · 30.3 | 100 (140) · 100 · 100 · 49.6 | 100 (140) · 100 · 100 · 55.2 |
+| IN Andamans | TopLeft | 89 (227) · 100 · 90 · 18.1 | 74 (238) · 97 · 89 · 18.1 | 59 (300) · 100 · 59 · 26.6 |
+| MY Sabah & Sarawak | TopRight | 0 (290) · 100 · 0 · 24.4 | 100 (140) · 100 · 100 · 42.6 | 100 (140) · 100 · 100 · 48.9 |
+| NO Svalbard | TopLeft | 0 (225) · 78 · 100 · 4.7 | 0 (295) · 100 · 0 · 24.5 | 0 (294) · 100 · 0 · 24.5 |
+| PF Marquesas | TopRight | 0 (148) · 0 · 100 · 0.0 | 78 (165) · 80 · 100 · 0.0 | 63 (184) · 68 · 100 · 0.0 |
+| PT Azores | TopLeft | 100 (140) · 100 · 100 · 35.6 | 85 (300) · 100 · 85 · 32.7 | 100 (140) · 100 · 100 · 32.7 |
+| PT Madeira | TopLeft | 100 (140) · 100 · 100 · 72.7 | 0 (140) · 100 · 100 · 84.8 | 100 (140) · 100 · 100 · 74.9 |
+| US Alaska | BottomLeft | 0 (183) · 52 · 68 · 0.0 | 0 (171) · 0 · 86 · 0.0 | 80 (156) · 83 · 100 · 0.0 |
+| US Hawaii | BottomLeft | 0 (140) · 0 · 100 · 0.0 | 0 (140) · 0 · 100 · 0.0 | 0 (140) · 0 · 100 · 0.0 |
+| YE Socotra | TopLeft | 61 (192) · 65 · 100 · 0.0 | 0 (199) · 59 · 64 · 0.0 | 0 (181) · 48 · 64 · 0.0 |
+
+**The stacking rule** (commit 4b, decision 1): a box whose golden rect abuts another's row or column at the same corner keeps the golden gap to that box's near edge as it shrinks (Hawaii beside Alaska, Madeira under the Azores). First band each inset is drawn at: EC Galápagos 140, ES Canaries 140, FR Fr. Guiana 140, FR Antilles 140, FR Réunion 140, IN Andamans 140, MY Sabah & Sarawak 140, NO Svalbard 140, PF Marquesas 140, PT Azores 140, PT Madeira 140, US Alaska 140, US Hawaii 274, YE Socotra 140.
+
+
+The ship gate (an inset in `MAY_DROP_AT_178`, ["Hawaii"], may be dropped at 178 — decision 1, case (c)): 0 inset(s) dropped at 178 or 300; 0 label(s) wider than their box.
 
 ## P4 — the simplifier
 
@@ -49,13 +100,13 @@ Open vertices before quantisation, summed over the stored blobs:
 | layer | level km/pt | rings | per-ring VW | RDP | stored | stored / RDP | rings that fell back to VW |
 |---|---|---|---|---|---|---|---|
 | Land | 1.5 | 4327 | 450653 | 310744 | 324830 | 1.045 | 16 |
-| Land | 3 | 4231 | 379615 | 213554 | 253803 | 1.188 | 41 |
-| Land | 6 | 4178 | 302697 | 135358 | 215572 | 1.593 | 89 |
-| Land | 12 | 3901 | 200572 | 77223 | 161447 | 2.091 | 154 |
-| Land | 24 | 2849 | 109523 | 42349 | 96044 | 2.268 | 216 |
+| Land | 3 | 4327 | 380946 | 214671 | 254922 | 1.188 | 43 |
+| Land | 6 | 4327 | 304144 | 136502 | 216730 | 1.588 | 97 |
+| Land | 12 | 4327 | 218342 | 85542 | 172104 | 2.012 | 181 |
+| Land | 24 | 4327 | 156441 | 62425 | 135733 | 2.174 | 344 |
 | Subdivisions | 6 | 933 | 20795 | 15003 | 15003 | 1.000 | 0 |
-| Subdivisions | 12 | 571 | 8897 | 6300 | 6300 | 1.000 | 0 |
-| Subdivisions | 24 | 200 | 2057 | 1560 | 1560 | 1.000 | 0 |
+| Subdivisions | 12 | 888 | 12264 | 8853 | 8853 | 1.000 | 0 |
+| Subdivisions | 24 | 623 | 5411 | 4158 | 4158 | 1.000 | 0 |
 
 ## P2 — neighbours drawn in another projection
 
@@ -63,11 +114,11 @@ Per level, the largest stretch of a displacement between a ring's storage LAEA a
 
 | level km/pt | max ratio | worst displacement pt | where |
 |---|---|---|---|
-| 1.5 | 1.3971 | 0.3663 | FRA ring 8 in MG |
-| 3 | 1.3971 | 0.3758 | UMI ring 10 in US |
-| 6 | 1.3971 | 0.3455 | USA ring 242 in RU |
-| 12 | 1.3971 | 0.3420 | PRT ring 0 in RU |
-| 24 | 1.2221 | 0.3413 | ESP ring 2 in RU |
+| 1.5 | 1.4982 | 0.4254 | GIN ring 0 in RU |
+| 3 | 1.4994 | 0.4260 | GIN ring 0 in RU |
+| 6 | 1.5018 | 0.4274 | LBR ring 0 in RU |
+| 12 | 1.5018 | 0.4280 | LBR ring 0 in RU |
+| 24 | 1.5242 | 0.4295 | LBR ring 0 in RU |
 
 ## R9 — the seam
 
@@ -104,29 +155,22 @@ The gate (decided 2026-10-01): every once-found edge whose midpoint lies inside 
 
 Edge-match shares over the 18: 132758 edges found twice (interior borders), 297851 once (the outline), 22 along the seam; the gate passes for 18 of 18.
 
-Subdivision bytes: 69859 B deflated (112036 B raw), against 527 856 B deflated when 13 of the 18 were stored as polygons (commit 4, VW).
+Subdivision bytes: 87121 B deflated (141612 B raw), against 527 856 B deflated when 13 of the 18 were stored as polygons (commit 4, VW).
 
 ## D1 — raw or deflated
 
-`Store::load` from a file (read + parse + inflate + CRC), release build, 10 warm-ups + 100 runs; the clock reads in 14 ns.
-
-| encoding | bytes | load median ms | p90 ms |
-|---|---|---|---|
-| raw | 4706500 | 0.60 | 0.63 |
-| deflated per blob | 2712599 | 17.70 | 18.22 |
-
-The rule: deflate unless its load exceeds 50 ms → **Deflate**.
+Not run (`--bench`).
 
 ## Insets (S6)
 
 | code | label | box (x, y, w, h) | km/pt | level | clearance pt |
 |---|---|---|---|---|---|
-| EC | Galápagos | 240, 232, 80, 60 | 7.749 | 6 | 53.5 |
-| ES | Canary Islands | 240, 232, 80, 60 | 6.446 | 6 | 48.7 |
-| FR | French Guiana | 8, 8, 60, 44 | 14.431 | 12 | 15.0 |
-| FR | Guadeloupe & Martinique | 260, 8, 60, 44 | 8.358 | 6 | 20.3 |
+| EC | Galápagos | 8, 8, 80, 60 | 7.749 | 6 | 0.0 |
+| ES | Canaries | 8, 232, 80, 60 | 6.446 | 6 | 0.0 |
+| FR | Fr. Guiana | 8, 8, 60, 44 | 14.431 | 12 | 15.0 |
+| FR | Antilles | 260, 8, 60, 44 | 8.358 | 6 | 20.3 |
 | FR | Réunion | 8, 248, 60, 44 | 2.023 | 1.5 | 17.4 |
-| IN | Andaman & Nicobar | 240, 232, 80, 60 | 17.521 | 12 | 76.5 |
+| IN | Andamans | 8, 8, 80, 60 | 17.521 | 12 | 2.9 |
 | MY | Sabah & Sarawak | 240, 8, 80, 60 | 16.432 | 12 | 26.6 |
 | NO | Svalbard | 8, 8, 80, 60 | 16.185 | 12 | 61.1 |
 | PF | Marquesas | 240, 8, 80, 60 | 6.572 | 6 | 21.4 |
@@ -134,7 +178,7 @@ The rule: deflate unless its load exceeds 50 ms → **Deflate**.
 | PT | Madeira | 10, 84, 52, 40 | 14.273 | 12 | 55.2 |
 | US | Alaska | 8, 236, 84, 56 | 51.131 | 24 | 35.3 |
 | US | Hawaii | 98, 258, 60, 32 | 32.642 | 24 | 19.5 |
-| YE | Socotra | 240, 232, 80, 60 | 3.735 | 3 | 55.2 |
+| YE | Socotra | 8, 8, 80, 60 | 3.735 | 3 | 32.7 |
 
 ## S4 — map units
 

@@ -8,12 +8,26 @@
 //! centre moves only so far that the view's edge reaches the rectangle's. Every frame clips to
 //! the view grown by `CLIP_MARGIN_PT` (so a hairline at the pane's edge stays outside).
 
+use crate::clip::Rect;
 use crate::format::Cap;
 use crate::laea::{Laea, R_AUTHALIC_KM, haversine_km};
 use crate::rules::{LADDER, Pane, initial_scale, level_for};
 
 /// The clip rectangle is the view grown by this on every side, points.
 pub const CLIP_MARGIN_PT: f64 = 2.0;
+
+/// The clip rectangle in pane points, `[x0, y0, x1, y1]`: the pane grown by `CLIP_MARGIN_PT` on
+/// every side. The frame clips every ring to it and the tool clips the land its clearance check
+/// measures to it — one function, so the two cannot drift (review 3, finding 5: the Jan Mayen
+/// defect was the tool measuring land the frame never draws).
+pub fn clip_rect(pane: &Pane) -> Rect {
+    [
+        -CLIP_MARGIN_PT,
+        -CLIP_MARGIN_PT,
+        pane.width + CLIP_MARGIN_PT,
+        pane.height + CLIP_MARGIN_PT,
+    ]
+}
 /// Land's simplification bound, points at its level (R3).
 pub const LAND_TOL_PT: f64 = 0.25;
 /// Subdivisions' (S7).
@@ -120,6 +134,20 @@ mod tests {
             reach(b, 20.0, &Pane::GOLDEN, 0)[2],
             164.0 * 20.0 + 2.0 * 3.0
         );
+    }
+
+    /// The clip rectangle is the pane plus 2 pt per side: at the golden pane `[-2, -2, 330, 302]`,
+    /// the literal the tool and the frame each built by hand before (fails with the margin
+    /// applied on one side only, or in km).
+    #[test]
+    fn the_clip_rect_is_the_pane_plus_the_margin() {
+        assert_eq!(clip_rect(&Pane::GOLDEN), [-2.0, -2.0, 330.0, 302.0]);
+        let anmite = Pane {
+            width: 328.0,
+            height: 178.0,
+            padding: 20.0,
+        };
+        assert_eq!(clip_rect(&anmite), [-2.0, -2.0, 330.0, 180.0]);
     }
 
     #[test]

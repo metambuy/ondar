@@ -55,6 +55,39 @@
      report R9). The same number is `PANEL_CORNER_RADIUS` in `src-tauri/src/panel.rs`, and a
      shell test reads this file and fails if the two disagree. */
   --radius-panel: 8px;
+
+  /* The drawn map, Sand by day (M4b commit 7): the "Ondar map style" artifact's specification
+     table (v3, 2026-09-24; ONDAR.md's style line), sRGB. DECISIONS of the design round, not
+     measurements of the system. The sea fills the platter; the country is one flat fill with a
+     hairline edge on the same path, the subdivisions drawn above it (round 3, C1 + C2: the
+     artifact's "edge above the subdivisions" needed a second drawing of the land, and a `<use>`
+     clone takes the original's style in WebKit); neighbours a paler fill with their own stroke;
+     an inset box is sea-filled with a 0.5 pt frame and a radius of 4, its label 8 pt in the
+     label colour, bottom-right (the artifact's row "Inset labels: 8 pt name"). One flat land
+     tone per theme — decided at the acceptance review (A1, 2026-10-06): the artifact's two-tone
+     Ink land through an erode/blur filter cost ~90 ms a paint at 300 and its glow over the
+     neighbours broke the flat-neighbours row. Neighbours flat and opaque in both themes. The sets
+     are Martín's pick at round 3 (C4, 2026-10-06) from three per theme: Sand "deeper more" and Ink
+     "lifted more" — the sea, land and neighbours the chat's, the edge, subdivision and stroke
+     colours following by the artifact's relationships (`_handover/m4b-palette/variants.md`). */
+  --map-sea: #ADC6CE;
+  --map-land: #D2BA86;
+  --map-neighbour: #DDD3BE;
+  --map-neighbour-stroke: #C3B393;
+  --map-edge: #7A663B;
+  --map-sub: #988357;
+  --map-inset-stroke: #A3957D;
+  --map-label: #6E6454;
+  /* The `− fit +` buttons on the band (round 3, C3): a light translucent plate by day, dark by night
+     (below); the text in the panel's ink, the border a hairline of the opposite tone. */
+  --map-controls-bg: rgb(255 255 255 / 0.72);
+  --map-controls-fg: #3B3630;
+  --map-controls-stroke: rgb(0 0 0 / 0.12);
+  /* 0.5 pt hairlines (edge, neighbour stroke, subdivisions, inset frame) and the inset box's
+     radius: the artifact's. */
+  --map-stroke: 0.5px;
+  --map-inset-radius: 4px;
+  --text-map-label: 400 8px/10px var(--font-system);
 }
 
 /* Dark appearance (NSAppearanceNameDarkAqua), measured in the same run. Defined in the same
@@ -69,5 +102,21 @@
     --color-label-quaternary: rgb(255 255 255 / 0.098);
     --color-separator: rgb(255 255 255 / 0.098);
     --color-accent: rgb(0 122 255);
+
+    /* Ink by night (the same artifact): one flat land tone (A1, 2026-10-06 — the inland tone and
+       its filter are gone), "lifted more" at round 3 (C4: the artifact's #121A25 / #6B5E47 /
+       #262C34 read too dark on screen); neighbours dark, flat and opaque; the inset frame and
+       label dim. */
+    --map-sea: #263345;
+    --map-land: #8A7B5E;
+    --map-neighbour: #3A4350;
+    --map-neighbour-stroke: #48525E;
+    --map-edge: #C2AF8E;
+    --map-sub: #9A8D73;
+    --map-inset-stroke: #424D5A;
+    --map-label: #8C8574;
+    --map-controls-bg: rgb(0 0 0 / 0.45);
+    --map-controls-fg: #E8E2D6;
+    --map-controls-stroke: rgb(255 255 255 / 0.14);
   }
 }

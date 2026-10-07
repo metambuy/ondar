@@ -17,6 +17,10 @@ thiserror = "2"
 # `Serialize` on the frame types: the bench's `bytes_out` now, and M4b's IPC payload (after R8's
 # transport measurement). Already in the tree (every crate here uses it).
 serde = { version = "1", features = ["derive"] }
+# The frame types cross the IPC boundary as JSON (M4b commit 6, Step 0's rule C): exported by ts-rs
+# exactly as ondar-audio's and ondar-stations' types are (`cargo test --workspace` writes
+# `src/bindings/`). The same crate at the same version, not a new dependency.
+ts-rs = { version = "12", features = ["serde-compat"] }
 
 [dev-dependencies]
 # The bench's `bytes_out` (R8's baseline). In the tree.

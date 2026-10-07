@@ -1,6 +1,10 @@
 # Ondar — project document
 
-*Last updated: 2026-09-30, later (M4's reversal: the drawn map replaces the satellite map; pan
+*Last updated: 2026-10-05 (M4b on branch `m4b`: the pinch spike measured and reverted — "M4b: the pinch
+spike, measured" — commits 2–4 built, the commit 4 STOP decided, `_handover/m4b-c4-decisions-2026-10-05.md`;
+the full "M4b" section lands with the build). Previously 2026-10-02 (Step 0 measured — `_handover/m4b-step0-report.md` —
+the brief and the plan reviewed, `_handover/m4b-plan.md`).
+Previously 2026-09-30, later (M4's reversal: the drawn map replaces the satellite map; pan
 and zoom kept; M4 split into M4a/M4b/M4c — see "M4: the drawn map — the reversal").
 Previously 2026-09-30 (defect B's second `/code-review`: the build clock's gaps were read
 times, not arrival; G1–G3 and the re-acceptance — see "Defect B", "Code review 2 and G1–G3";
@@ -85,8 +89,13 @@ or a matching icon set, SF Pro type, 8pt spacing rhythm, subtle depth, no drop s
 elements, full light/dark support driven by the system appearance.
 
 The map is **drawn from Natural Earth 10m shapes** (public domain), designed twice: **Sand** by
-day (flat fill, sea `#D3E0E3`, land `#E6D5B1`, neighbours `#EFE9DC`, hairline edge `#8F7A55`),
-**Ink** by night (sea `#121A25`, two-tone land `#524A3E`/`#6B5E47`, neighbours `#262C34`). The
+day (flat fill, sea `#ADC6CE`, land `#D2BA86`, neighbours `#DDD3BE`, hairline edge `#7A663B`),
+**Ink** by night (sea `#263345`, one flat land tone `#8A7B5E` — two-tone until the M4b acceptance
+review, A1, 2026-10-06 — neighbours `#3A4350`, flat and opaque in both themes). Those are Martín's
+pick at the review's round 3 (C4, 2026-10-06: the artifact's Sand `#D3E0E3`/`#E6D5B1`/`#EFE9DC` read
+too light on screen and its Ink `#121A25`/`#6B5E47`/`#262C34` too dark; "deeper more" and "lifted more"
+of three steps each, the edge, subdivision and stroke colours following by the artifact's relationships).
+The
 sea is drawn, not vibrancy. The country is fitted to the pane on an equal-area projection centred
 on its mainland; outlying territory (Azores, Madeira; Alaska, Hawaii) sits in insets with the
 territory's name; countries coarser than 8 km/pt show their subdivisions. Stations gather by
@@ -465,7 +474,7 @@ TABLE 2 — what it bounds (EQ engaged, shaper on the EQ output)
   `I16`, the cast (rodio `stream.rs:531`) is the last step before the device callback, still
   downstream of `.amplify()`. Ondar's own code does no int cast either way. Two observations
   that still hold: the `Vol` slider is applied *after* the EQ and `set_volume` clamps to
-  `0.0..=1.0` (`engine.rs:523`), so bounding the EQ output bounds the whole chain to the
+  `0.0..=1.0` (`Session::set_volume`), so bounding the EQ output bounds the whole chain to the
   device; and clipping only ever required the boosted band to contain real energy — a
   high-passed talk stream has almost nothing at 63 Hz, so +12 dB there was near-inaudible on
   it while music at the same setting was not.
@@ -860,7 +869,9 @@ The file grows by the deflated total, 76 B. Land is unchanged.
 - PT fit 0.154 ms, US 2.142 ms, RU 4.165 ms (p90 4.270);
 - the sweep's p90 1.617 ms, max 4.269 ms (RU), 0 missing blobs;
 - `bytes_out` unchanged for PT and US; RU at fit 780 764 B, +118 B from the closed loops and the
-  own islets.
+  own islets. (After review 2's `4fb01f3` it is 780 783 B: the 19 bytes are the serialised
+  `,"insets_dropped":0` field `FrameStats` gained there — M4b Step 0's `pane_sweep` and
+  `frame_bench` both read 780 783 on `f7a3fd8`.)
 
 **For M4b: the insets at the ANMITE's pane.** Finding 2 anchors the boxes. It does not make them
 clear the land. At 328 × 178 four of the 14 boxes are under S6's 12 pt
@@ -917,6 +928,136 @@ apart, is written twice, in `world.rs` and in `frame.rs`; one `rules::box_fits` 
 Finding 5: the clip rectangle, the pane grown by 2 pt, is built by hand in `world.rs` and in
 `frame.rs`; one `index::clip_rect(pane)` should serve both, with `to_pt` returning `[f64; 2]`.
 There is no fourth review: the chat reads the fix diff, then the branch merges.
+
+### M4b: the pinch spike, measured (2026-10-05)
+
+**Finding: macOS delivers no magnify event to the non-activating panel while another app is active.**
+M4b's Z1 asked for pinch zoom caught natively in Rust, built as a removable spike (commit 1,
+`b9531a0`). Three instruments, each with zero magnify lines over Martín's pinches with TextEdit
+frontmost and the popover key: an `NSMagnificationGestureRecognizer` on the panel's content view
+(`WryWebViewParent`), the same recognizer on wry's `WKWebView` itself, and a local `NSEvent` monitor
+for `NSEventMaskMagnify`. The positive control: the monitor widened to `ScrollWheel` logged 511 scroll
+events in the identical state, so the instrument works and the events are not there to catch. Logs
+`_handover/m4b-c1/*-2026-10-05.log`, the tried tree `spike-final-tree-2026-10-05.patch`. The spike was
+reverted as `fab802a`, pushed alone; zoom is the `− fit +` row alone (Z1's fallback), commit 8 is
+dropped, nothing else in the plan changes. **Do not retry pinch blind:** a later attempt needs a
+different mechanism (the panel made key *and* active, which Step 0's Q1 ruled out for focus, or an
+event tap), measured first.
+
+**Also decided at the commit 4 STOP (2026-10-05, `_handover/m4b-c4-decisions-2026-10-05.md`):**
+subdivisions stay the 18 countries decided in M4a at every band; the 8 km/pt line was the selection
+rule at the golden pane, not a per-band switch (commit 3's report lists 57 countries whose fit at the
+140 pt floor passes it; they stay unflagged). I1 as built: the golden pane is one band among 161 and a
+box may shrink there too (the Canaries read 74 % at 300); no 100 % rule. Svalbard's drop at 225–257
+(Jan Mayen under its box) accepted and counted. Hawaii: the stacking rule beside Alaska, measured;
+if it misses the minimum anywhere in 178–300 it drops there, counted, and the ship gate's 178 rule is
+amended for Hawaii alone. Labels: Canaries, Fr. Guiana, Antilles, Andamans.
+
+
+### M4b: the acceptance review's decisions (2026-10-06)
+
+**A1 — Ink is one flat land tone (Martín).** Commit 7 drew the style artifact's two-tone night land:
+the coast colour as the land fill, and the inland tone laid over it by an SVG filter (`feMorphology`
+erode 7 + `feGaussianBlur` 5 of land ∪ neighbours), displayed under the dark appearance only. The
+acceptance measured that filter at ~85–90 ms a paint at the 300 pt band and ~50–60 at 178, nearly
+independent of the vertex count (Portugal's 973 vertices paid 89 ms), and during a pan it was paid
+every frame — the page animated at 90 / 58 ms a frame. Martín's photo of the running app also showed
+the filter's blurred copy of the neighbours as a glow around the selected country, which the style
+table's flat-neighbours row never allowed. Decided: the filter and the inland tone are removed; Ink's
+land is one opaque fill, `#6B5E47` (the artifact's coast colour), with the hairline edge; Sand is
+unchanged; neighbours in both themes are the table's flat, opaque quiet tone (Sand `#EFE9DC`, Ink
+`#262C34`) — no opacity, no blur, in CSS or SVG. `MapPane.test.tsx` test 9 pins it on the DOM and on
+the stylesheets' source. Without the filter the loop drew one frame per animation frame at both bands
+(56 cycles/s, none dropped); the first-paint figures that remain over the bar are the reply's
+round trip, decomposed under A3.
+
+**A2 — the map follows the dropdown.** The acceptance photo (the US drawn under a Portugal dropdown) was
+the paint driver — `m=paint` selects RU, US, PT, AQ through `map.select` every 1.5 s, past the country
+control, with the panel left on screen. Not a defect; pinned anyway (`Panel.test.tsx`: a change of the
+select reaches `map.select` with the new code and back, killed by the pane ignoring the prop), and
+`map_select` logs `map select code=… lookup=…` so a normal run shows each change.
+
+**A3 — RU's first paint, decomposed (`_handover/m4b-a3-decomp/README.md`).** Step 0 read RU's reply at
+9 ms; the acceptance read 21 for the same 51 797 vertices. Step 0's probe re-run today reads 9 again; the
+app's pull, instrumented, reads the frame at 11 ms where `frame_bench` reads 3.9 in the same dev-opt3
+profile and the probe 4.8 — on the blocking pool and, tried as a synchronous command, on the calling
+thread alike (unchanged; dropped). The frame computed twice in one pull reads 11.8 then 8.6 with dips
+to 4.0; the paint driver's interval between country changes decides it: **100 ms apart (Step 0's
+back-to-back probe) the frame is 6.4 ms and the round trip ~13; 1 500 ms apart (a country change from
+idle, the user's case) 11.4 and ~21.** The idle core scales every stage alike — frame, serialise,
+delivery, parse — so the gap is the core's state, not the thread, the code, the profile, the payload or
+the transport. Consequence: no code path removes it; only less work per frame (`raw`, or RU's ring RDP
+retry) reduces it. And the page's half, found at the re-run: Step 0's probe re-selected one country back
+to back, a no-op DOM update (`commit` 2); a real change of country sets all of RU's 1 410 path `d`
+attributes and WebKit re-parses and re-lays them out — `commit` 26 ms at 300, 20 at 178, the first
+animation frame 20 ms after (the A/B on one binary: RU after RU 7 ms, RU after AQ 26). So the bar's 16 ms
+was measured without the two costs a person's country change pays, and RU from idle after another country
+is **48 ms at 300 and 41 at 178** against 20 / 16.7; US 31 / 31; PT and AQ inside. Neither lever was built;
+the call on the bar, and on building them, is the chat's with the figures. The decomposition's instrument
+stays in the harness (`decomposition::log`, `parse_ms` under `decomp=1`, `period=`).
+
+**Round 2 (the chat, 2026-10-06): the bar re-derived, and the levers parked for M4c.** The 20 / 16.7 ms
+bars came from Step 0's hot, no-op instrument and measured a quantity no country change has — the chat's
+error. The bar is now **a country change, from idle (1.5 s cadence), to the painted frame, ≤ 100 ms p90**, at
+178 and 300, for RU, US, PT, AQ (the response limit for "instantaneous": Card, Moran & Newell 1983;
+Nielsen 1993), the warm figures reported beside it (`_handover/m4b-acceptance.md`). **Levers (2) and (3)
+are not built in M4b; they are the first levers if M4c's station layer pushes a country change past the
+bar:** (2) `raw` — Step 0's binary transport (an `f32` ring stream, 0.55× the JSON's bytes; the probe's
+encoder and the page's decoder are in `_handover/m4b-step0/probe.patch`): hot, the reply fell 9 → 6 ms at
+RU; from idle the decomposition's estimate is ~6–7 ms off RU's 22 ms reply and the page's parse (3) traded
+for its own build (4–5), **the 26 ms commit untouched** — ~44 ms at 300 for 48; (3) RU's mainland ring RDP
+retry at ε/2, ε/4, ε/8 (M4a's stated rule, not taken then: the ring is 24 183 of RU's 51 797 vertices and
+falls to VW because its RDP result is not simple): a retry that lands simple cuts the vertex count and
+with it every term — frame, serialise, parse, build and the DOM update — in proportion; a resource rebuild,
+measured only by making it.
+
+**Round 3 (the chat and Martín, 2026-10-06): the captures read.** **C1 + C2 — a defect:** every capture of
+RU, US and IN was a plain fill, no interior borders, no coast. The frame carried them
+(`map::session_tests::c1_the_fit_frame_carries_subdivisions`: RU 200 lines at both bands, no blob
+missing); the renderer hid them — commit 7 drew the coast as an edge group of `<use>` clones of the land
+paths, and WebKit styles a `<use>` clone as the original element, so each clone painted the land again,
+over the subdivisions drawn between, with the land's `stroke: none`. Decided: the land is drawn once with
+its hairline on the same path, the subdivisions above it, no `<use>` (`397e515`; the artifact's "edge above
+the subdivisions" would need the land painted twice — 1 410 more nodes for RU, whose commit is the bar's
+critical path — and on one path a subdivision line overlaps the coast by half a hairline where it meets
+it). **C3 (Martín):** the `− fit +` buttons follow the theme — a translucent black plate in Ink, white in
+Sand (`648bdf5`). **C4 (Martín):** "the dark is a bit too dark, the light a bit too light" — three sets per
+theme captured through a debug-only knob (`eb628dd`; `_handover/m4b-palette/`), the pick above; the knob
+and its blocks went with the pick. **C6:** RU at 300 passes the 100 ms bar at 98 ms p90, a 2 % margin — a
+pass recorded as fragile; `raw` and RU's ring retry go to the **top** of M4c's brief, not later.
+
+### M4b: built and measured (2026-10-06)
+
+**What shipped** (branch `m4b`, `f7a3fd8..06a96a8`, each commit pushed alone, CI green): the band — the
+expanded panel's extra height, `[16, 404, 328, h − 420]` from 560 up, 178 on the ANMITE and 300 uncapped,
+carried on every `PanelLayout` with the `− fit +` row's rect inside it; coverage for every band 140..=300 and
+I1's per-band inset scales in the resource (format v2, 2 852 927 B, `e003f07e…`, +5.2 % over M4a's; Hawaii
+dropped below 274, Svalbard 225–257, both decided); the view session in Rust (`map::Session`: select,
+pull, fit → zoom steps → pan, `clamp_view`), `map_select` / `map_pull` with replies that carry `seq`; the
+renderer — a rounded platter the sea fills, one `<path>` per shape in three layers (neighbours; the land
+with its hairline on the same path; subdivisions above it) and the insets with whole labels, Sand and Ink
+by CSS alone, the pull loop (input accumulated between animation frames, one pull in flight, a reply drawn
+only if newer), wheel and drag pan, the `− fit +` row themed. Zoom is the controls alone: the native pinch
+never reached the panel (the spike, above). The palette is Martín's pick at round 3.
+
+**Measured** (`_handover/m4b-acceptance.md`; S1's instrument, the built-in display, the 178 band by the
+harness's height knob, Ink): the band exact at both heights; `band_sweep` 0 missing blobs at every fit and
+over 711 850 D6 views, 0 insets dropped at 300 and Hawaii alone at 178, every box ≥ 12 pt from the source
+land and ≥ 11.7 from the drawn; the heavy case (RU at one `+`) at one frame per animation frame — 56
+cycles/s, none dropped, no transform fallback; and the bar, re-derived at round 2 — **a country change from
+idle (1.5 s cadence) to the painted frame ≤ 100 ms p90** — on the final build: **RU 99 / 82 ms at 300 / 178,
+US 76 / 65, PT 34 / 31, AQ 33 / 44**, all eight under, RU at 300 by 1 ms (fragile — C6). `Ondar.app` 10 744 KiB
+(M4a 10 576); the release binary's `strings` carries no harness. Tests **415 + 27**.
+
+**What the acceptance taught, in order.** The Ink two-tone land's SVG filter cost ~90 ms a paint and went
+(A1). The bar's provenance was Step 0's hot, no-op instrument: a country change from idle pays an idle core
+(every stage ~2×) and a real DOM update (26 ms for RU's 1 410 paths) that the probe's back-to-back
+re-select of one country never paid (A3) — the bar was re-derived from the response limit, not fitted. A
+`<use>` clone takes the original's style in WebKit, which hid the subdivisions and the coast until round 3
+(C1 + C2). The controls follow the theme (C3); the palette is lifted by night and deepened by day (C4).
+
+**Carried to M4c:** `raw` and RU's ring RDP retry at the top of the brief (C6); the station layer itself.
+Next: `/code-review` on Fable, `f7a3fd8..HEAD`, merge criterion no crash and no behaviour finding.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -1324,7 +1465,7 @@ on a speed defect) not fired.
 
 **Defect B — an unbounded `Connecting` — opened, not M3c's** (the gate review, 2026-09-24). Any
 live stream whose bytes the decoder cannot sync on keeps `main` in `Connecting` indefinitely:
-`build()` scans the arriving bytes, the watchdog covers `Buffering` only (`engine.rs:1063-1076`),
+`build()` scans the arriving bytes, the watchdog covers `Buffering` only (`decide_tick`'s `// Watchdog.` block),
 `read_timeout` never fires while bytes arrive, and Stop is the only exit. `FFF9` on an Icecast
 mount is one trigger (measured: 34 s on a paced fixture, unbounded live); a mislabelled or garbage
 mount is another. Sequenced **after the M3c merge, before M4**, as its own measured piece like
@@ -1477,7 +1618,7 @@ The WAV run locked to 44 100, not to the device's 48 000: **the lock is to the f
 
 **The fix.** Each session converts its own ring to the sink's format before the EQ:
 `ring → UniformSourceIterator(OutputFormat) → Equalizer → Player`. `OutputFormat` is read once
-from `MixerDeviceSink::config()`; the mixer is built from it, `stream.rs:497`. The converter is
+from `MixerDeviceSink::config()` in `Engine::ensure_player`; the mixer is built from it. The converter is
 built per ring at attach, on the decode thread, with the ring at `fill_target`. When the rates
 differ, its construction reads two frames, so it never reads an empty ring or counts a false
 underrun. It bootstraps once from the ring's format, which is right precisely because it is per
@@ -3033,10 +3174,9 @@ Corollary: the count is itself worth pinning down, because 47 is the number you 
    `m3a-done`) — see "M3a: the station directory, built"; **M3b merged 2026-09-24** (`f7af9dc`,
    `m3b-done`); **defect A** (M1's sample-rate defect, found at M3b acceptance) **merged
    2026-09-24** (`b7e050a`, `defect-a-done`); **M3c (HLS, the ADTS half) merged 2026-09-26**
-   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) **built and accepted
-   2026-09-29 on branch `defect-b`** (`f95e530`…`49e6a72`); `/code-review` the same day, ten
-   findings, the bound redesigned and fixed in F1–F4 (`2784efd`…`dd469e4`), re-accepted; the last
-   scoped review and the merge to come, before M4 — see "Defect B".
+   (`8b5b1fb`, `m3c-done`). **Defect B** (an unbounded `Connecting`) **merged 2026-09-30** (`dc9200d`, `defect-b-done`): built and
+   accepted 2026-09-29 on branch `defect-b`, two `/code-review` rounds (F1–F4 the bound's redesign,
+   G1–G3 the arrival clock), re-accepted after each; see "Defect B". **M3 complete.**
    See "M3c: HLS, the ADTS half", "Defect A".
 4. **M4 — Map**, split (2026-09-30): **M4a** geodata + the `ondar-map` crate (no UI); **M4b**
    IPC + the SVG renderer with pan and zoom; **M4c** stations, gathering, hit-testing. Drawn map

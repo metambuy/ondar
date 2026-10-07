@@ -127,13 +127,16 @@ pub fn write(
 
     // coverage
     let _ = writeln!(r, "## Coverage\n");
+    let (h0, h1) = built.bands;
     let _ = writeln!(
         r,
         "D6 (decided 2026-10-01): the view stays inside the fit rectangle (the pane at the \
-         widest scale, centred on the frame bbox). A unit is stored at level k when a ring's cap, \
-         grown by the level's tolerance (bound + codec), meets some country's reach at k — its fit \
-         rectangle grown by the {CLIP_MARGIN_PT} pt clip margin at the coarsest scale that uses \
-         k — or it is in an inset at the inset's level.\n"
+         widest scale, centred on the frame bbox). **Per band (M4b commit 3):** the pane is \
+         328 × h for every integer h in {h0}..={h1}, each with its own fit and fit rectangle. A \
+         unit is stored at level k when a ring's cap, grown by the level's tolerance (bound + \
+         codec), meets some country's reach at k — the bounding rectangle, over every band whose \
+         views can use k, of that band's fit rectangle grown by the {CLIP_MARGIN_PT} pt clip \
+         margin at the coarsest scale that uses k — or it is in an inset at the inset's level.\n"
     );
     let _ = writeln!(
         r,
@@ -149,6 +152,226 @@ pub fn write(
         let _ = writeln!(r, "| {l} | {n} |");
     }
     let _ = writeln!(r);
+    let ba = &built.bound_added;
+    let _ = writeln!(
+        r,
+        "**The bound against the exact union** (the union of the bands' reaches is not a \
+         rectangle): the bounding rectangle asks for {} land blob(s) no single band's reach asks \
+         for, {} B deflated of {} B ({:.2} %). The rule: over 5 % and the exact union is stored \
+         instead — {}.\n",
+        ba.blobs,
+        ba.bytes,
+        ba.total_bytes,
+        100.0 * ba.bytes as f64 / ba.total_bytes.max(1) as f64,
+        if ba.exact_stored {
+            "**applied**, those blobs are not in this file"
+        } else {
+            "not applied, the bound's blobs are stored"
+        }
+    );
+    let _ = writeln!(
+        r,
+        "**Collapsed rings** (fewer than three distinct quanta at the level; stored empty, no \
+         frame can draw them): {}. Kept as empty rings rather than dropped (the commit 4 STOP's \
+         decision 7): the loader requires a land blob's ring count to equal its unit's, part by \
+         part (`Corrupt {{ owner }}`), because the ring index — the caps in the units table — \
+         addresses a blob's rings by position without decoding them; dropping a ring from one \
+         level's blob would need a per-blob ring map, and the slot costs 8 B in the ring table \
+         ({} B raw here, before deflate).{}\n",
+        built.collapsed.len(),
+        built.collapsed.len() * 8,
+        if built.collapsed.is_empty() {
+            String::new()
+        } else {
+            // per unit, the count at each level: `MDV 1/0/4/45/112` reads as the Maldives' rings
+            // collapsing at 1.5 / 3 / 6 / 12 / 24 km/pt
+            let mut by_unit: std::collections::BTreeMap<String, [usize; LADDER.len()]> =
+                Default::default();
+            for &(u, k, _) in &built.collapsed {
+                if let Some(slot) = by_unit
+                    .entry(String::from_utf8_lossy(&built.units[u].a3).into_owned())
+                    .or_default()
+                    .get_mut(k)
+                {
+                    *slot += 1;
+                }
+            }
+            let per_level: Vec<usize> = (0..LADDER.len())
+                .map(|k| built.collapsed.iter().filter(|c| c.1 == k).count())
+                .collect();
+            format!(
+                " By level {}: {}. By unit (counts at each level): {}",
+                LADDER
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" / "),
+                per_level
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" / "),
+                by_unit
+                    .iter()
+                    .map(|(a3, ns)| format!(
+                        "{a3} {}",
+                        ns.iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
+    let _ = writeln!(
+        r,
+        "**Subdivision candidates at the shortest band** (flagged off at the golden fit, fit at \
+         {h0} above {} km/pt; the flag is decided at the golden fit — an observation, not a rule \
+         the build applies): {}.\n",
+        ondar_map::rules::SUBDIVISIONS_ABOVE_KM_PER_PT,
+        if built.subdivision_candidates.is_empty() {
+            "none".to_string()
+        } else {
+            built.subdivision_candidates.join(", ")
+        }
+    );
+
+    // I1 + C1 (M4b commit 4): the per-band inset scales, the corner table, the labels
+    let _ = writeln!(r, "## Insets per band (I1, C1)\n");
+    let _ = writeln!(
+        r,
+        "At every band height the controls' rect (`rules::controls_rect`, {} × {} pt, {} pt from the \
+         bottom and right) is placed first; each inset row, in table order, takes the largest scale in \
+         whole percent at which its box — the golden size scaled, the label strip and the pads not, \
+         anchored at its corner with the row's gaps — is inside the pane, apart from every box placed \
+         before it and ≥ {} pt from the land the frame draws there. The minimum is a land area of \
+         {} × {} pt (box ≥ 36 × 28). Labels at the artifact's {} pt, 0.6 em a character and 0.3 em a space.\n",
+        ondar_map::rules::CONTROLS_SIZE_PT[0],
+        ondar_map::rules::CONTROLS_SIZE_PT[1],
+        ondar_map::rules::CONTROLS_MARGIN_PT,
+        ondar_map::rules::INSET_CLEARANCE_PT,
+        ondar_map::rules::INSET_MIN_LAND_PT[0],
+        ondar_map::rules::INSET_MIN_LAND_PT[1],
+        ondar_map::rules::INSET_LABEL_FONT_PT
+    );
+    let _ = writeln!(
+        r,
+        "| inset | corner | min % (at) | 140 | 161 | 178 | 200 | 250 | 300 | label pt | inner 178 / 300 |\n|---|---|---|---|---|---|---|---|---|---|---|"
+    );
+    let at = |i: &crate::world::InsetPlan, h: u32| {
+        i.scale_pct
+            .get(usize::try_from(h - ondar_map::rules::BAND_FLOOR).unwrap_or(0))
+            .copied()
+            .unwrap_or(0)
+    };
+    let inner = |i: &crate::world::InsetPlan, h: u32| {
+        let pct = at(i, h);
+        if pct == 0 {
+            "—".to_string()
+        } else {
+            format!(
+                "{:.0}",
+                ondar_map::rules::label_inner_width(ondar_map::rules::inset_box_at(
+                    i.row.rect,
+                    i.row.corner,
+                    &ondar_map::rules::Pane::band(h),
+                    f64::from(pct) / 100.0
+                ))
+            )
+        }
+    };
+    for p in &inp.plans {
+        for i in &p.insets {
+            let (min_i, &min_pct) = i
+                .scale_pct
+                .iter()
+                .enumerate()
+                .min_by_key(|&(_, &p)| p)
+                .unwrap_or((0, &0));
+            let _ = writeln!(
+                r,
+                "| {} {} | {:?} | {min_pct} ({}) | {} | {} | {} | {} | {} | {} | {:.1} | {} / {} |",
+                p.code,
+                i.row.label,
+                i.row.corner,
+                ondar_map::rules::BAND_FLOOR + min_i as u32,
+                at(i, 140),
+                at(i, 161),
+                at(i, 178),
+                at(i, 200),
+                at(i, 250),
+                at(i, 300),
+                ondar_map::rules::label_width_pt(&i.row.label),
+                inner(i, 178),
+                inner(i, 300)
+            );
+        }
+    }
+    let _ = writeln!(
+        r,
+        "\nThe corner table — each box alone after the controls, with its own gaps, at TL / TR / BL: \
+         min % over the bands (at), % at 178, % at 300, the full box's clearance at 161 in pt.\n"
+    );
+    let _ = writeln!(
+        r,
+        "| inset | current | TL | TR | BL |\n|---|---|---|---|---|"
+    );
+    for p in &inp.plans {
+        for i in &p.insets {
+            let cell = |c: &crate::world::CornerChoice| {
+                format!(
+                    "{} ({}) · {} · {} · {:.1}",
+                    c.min_pct, c.min_at, c.pct_178, c.pct_300, c.clearance_161
+                )
+            };
+            let cells: Vec<String> = i.corners.iter().map(cell).collect();
+            let _ = writeln!(
+                r,
+                "| {} {} | {:?} | {} |",
+                p.code,
+                i.row.label,
+                i.row.corner,
+                cells.join(" | ")
+            );
+        }
+    }
+    let _ = writeln!(
+        r,
+        "\n**The stacking rule** (commit 4b, decision 1): a box whose golden rect abuts another's row or \
+         column at the same corner keeps the golden gap to that box's near edge as it shrinks (Hawaii \
+         beside Alaska, Madeira under the Azores). First band each inset is drawn at: {}.\n",
+        inp.plans
+            .iter()
+            .flat_map(|p| p.insets.iter().map(move |i| (p, i)))
+            .map(|(p, i)| format!(
+                "{} {} {}",
+                p.code,
+                i.row.label,
+                crate::world::first_band(i).map_or("never".to_string(), |h| h.to_string())
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let gate = crate::world::ship_gate(&inp.plans);
+    let _ = writeln!(
+        r,
+        "\nThe ship gate (an inset in `MAY_DROP_AT_178`, {:?}, may be dropped at 178 — decision 1, case (c)): {} inset(s) dropped at 178 or 300{}; {} label(s) wider than their box{}.\n",
+        crate::world::MAY_DROP_AT_178,
+        gate.dropped.len(),
+        if gate.dropped.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", gate.dropped.join("; "))
+        },
+        gate.wide_labels.len(),
+        if gate.wide_labels.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", gate.wide_labels.join("; "))
+        }
+    );
 
     // P4
     let _ = writeln!(r, "## P4 — the simplifier\n");

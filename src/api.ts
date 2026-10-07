@@ -18,6 +18,15 @@ import type { Station } from "./bindings/Station";
 import type { StationsUpdated } from "./bindings/StationsUpdated";
 import type { CountriesUpdated } from "./bindings/CountriesUpdated";
 import type { RefreshOutcome } from "./bindings/RefreshOutcome";
+import type { Frame } from "./bindings/Frame";
+import type { FrameStats } from "./bindings/FrameStats";
+import type { Inset } from "./bindings/Inset";
+import type { MapBand } from "./bindings/MapBand";
+import type { MapInputs } from "./bindings/MapInputs";
+import type { MapReply } from "./bindings/MapReply";
+import type { MapStatus } from "./bindings/MapStatus";
+import type { Shape } from "./bindings/Shape";
+import type { View } from "./bindings/View";
 
 export type { EqBand, IcyMetadata, PanelHeight, PanelLayout, PanelView, PlaybackState, StreamInfo };
 export type {
@@ -31,6 +40,8 @@ export type {
   Station,
   StationsUpdated,
 };
+
+export type { Frame, FrameStats, Inset, MapBand, MapInputs, MapReply, MapStatus, Shape, View };
 
 export type OndarError = { code: string; message: string };
 
@@ -63,6 +74,17 @@ export const panel = {
   // (orders a pending show in, or resizes) on it, or on its fallback timer if this never arrives.
   layoutCommitted: (generation: number) =>
     invoke<void>("panel_layout_committed", { generation }),
+};
+
+// The map (M4b commit 6). Rust owns the view: `select` reports the country the page shows,
+// `pull` hands over what the page accumulated since its last pull (wheel and drag deltas in
+// points, zoom steps, a `fit` press) and is answered with the frame as JSON — the clamped view,
+// every path in pane points, a sequence number the page compares before drawing — or `null` when
+// nothing changed. One pull in flight at a time, once per animation frame while anything is
+// pending; the page draws exactly the paths it is sent and decides none of the geometry.
+export const map = {
+  select: (code: string) => invoke<void>("map_select", { code }),
+  pull: (inputs: MapInputs) => invoke<MapReply | null>("map_pull", { inputs }),
 };
 
 export const onPanelLayout = (cb: (l: PanelLayout) => void): Promise<UnlistenFn> =>

@@ -15,6 +15,12 @@
 //!   stays, or `n` show/hide cycles from +8 s, 1 s apart. Every step is logged with its offset,
 //!   and the `panel show … after_ms=` lines the shows produce are the `LAYOUT_FALLBACK`
 //!   distribution the M2d acceptance left at n = 8 (M3b plan, commit 2's m2).
+//! - `ONDAR_MEASURE_EXPAND=1` — with a sequence, the first show is followed one second later by
+//!   `panel::set_expanded(true)`, the production resize path, so the map band mounts with no hand
+//!   on the control (M4b commit 7: the `map` mode's drivers run in the expanded panel).
+//! - `ONDAR_MEASURE_EXPANDED_HEIGHT=<pt>` — the expanded layout's nominal height (`panel.rs`,
+//!   `expanded_nominal`): `598` lays the panel out as the ANMITE caps it, on any display (the M4b
+//!   acceptance's 178 pt band without moving the menu bar). Debug builds only.
 //! - `measure_report`, the page's one command: a log line `measure[<mode>] <kind> <fields>
 //!   t_page_ms=… t_ms=…` stamped with this process's clock, so the page's marks and the panel's
 //!   own log lines share a timeline (`performance.now()` is a different clock, used only for the
@@ -118,6 +124,11 @@ fn run_sequence<R: Runtime>(handle: &AppHandle<R>, mode: &str, cycles: Option<u3
     };
     let Some(n) = cycles else {
         show(1);
+        if std::env::var("ONDAR_MEASURE_EXPAND").is_ok_and(|v| v == "1") {
+            thread::sleep(SEQ_STEP);
+            log::info!("measure[{mode}] seq expand t_ms={:.1}", t_ms());
+            panel::set_expanded(handle, true);
+        }
         return;
     };
     for i in 1..=n {

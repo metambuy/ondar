@@ -1,5 +1,5 @@
-//! `world.ondarmap`, version 1: the bundled map resource, its writer (the build tool's) and its
-//! loader (the app's) — one code path.
+//! `world.ondarmap`, version 2 (M4b commit 5; v1 was M4a's): the bundled map resource, its writer
+//! (the build tool's) and its loader (the app's) — one code path.
 //!
 //! Little-endian throughout. Every count is bounded by the bytes that remain, every offset is
 //! checked, every blob's raw bytes carry a CRC32, and nothing in the loader can panic on any
@@ -8,7 +8,9 @@
 //! ```text
 //! header   "ONDARMAP" · u16 version · u32 length of the rest of the header ·
 //!          tool git hash (40 ASCII) · NE tag (str8) · u8 n · n × (file str8, SHA-256 [32]) ·
-//!          golden pane (W, H, padding: 3 × f32) · radius km f64 · u8 n · n × level f32
+//!          the bands (width f32, padding f32, h_min u16, h_max u16: the pane is width × h for
+//!          every integer h in h_min..=h_max; the golden pane is h_max's) · radius km f64 ·
+//!          u8 n · n × level f32
 //! units    u32 n · n × Unit       (the stored geometry's owners: NE admin 0 + map units)
 //! countries u32 n · n × Country   (what a code frames)
 //! blobs    u32 n · n × BlobMeta · the blob bytes (offsets from the start of this region)
@@ -25,7 +27,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 
 pub const MAGIC: &[u8; 8] = b"ONDARMAP";
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 /// No blob inflates past this, whatever its table says (the largest at Q2b was ~0.3 MB).
 pub const MAX_BLOB_RAW: usize = 64 << 20;
@@ -55,10 +57,71 @@ pub struct Pins {
     pub inputs: Vec<(String, [u8; 32])>,
 }
 
+/// The band heights the resource is built for (M4b commit 3's coverage, commit 4's inset scales):
+/// the pane is `width × h`, padding `padding`, for every integer `h` in `h_min..=h_max`; the
+/// golden pane (the tables', the inset boxes') is `h_max`'s.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bands {
+    pub width: f64,
+    pub padding: f64,
+    pub h_min: u32,
+    pub h_max: u32,
+}
+
+impl Bands {
+    /// The resource the tool builds: `rules::BAND_WIDTH_PT` × `BAND_FLOOR..=BAND_MAX`.
+    pub const BUILT: Bands = Bands {
+        width: crate::rules::BAND_WIDTH_PT,
+        padding: crate::rules::BAND_PADDING_PT,
+        h_min: crate::rules::BAND_FLOOR,
+        h_max: crate::rules::BAND_MAX,
+    };
+
+    /// Finite, positive width, non-negative padding, `1 ≤ h_min ≤ h_max`, at most 1 024 heights.
+    pub fn is_valid(&self) -> bool {
+        self.width.is_finite()
+            && self.width > 0.0
+            && self.padding.is_finite()
+            && self.padding >= 0.0
+            && self.h_min >= 1
+            && self.h_min <= self.h_max
+            && self.h_max - self.h_min < 1024
+    }
+
+    /// How many heights the range holds: the length of every inset's scale table.
+    pub fn span(&self) -> usize {
+        usize::try_from(self.h_max - self.h_min + 1).unwrap_or(0)
+    }
+
+    pub fn pane(&self, h: u32) -> Pane {
+        Pane {
+            width: self.width,
+            height: f64::from(h),
+            padding: self.padding,
+        }
+    }
+
+    /// The golden pane, `h_max`'s.
+    pub fn golden(&self) -> Pane {
+        self.pane(self.h_max)
+    }
+
+    /// The scale table's index for a pane: its height floored and clamped into the range — a pane
+    /// of 139 reads 140's entry, one of 360 reads 300's (frame.rs).
+    pub fn index(&self, pane: &Pane) -> usize {
+        let h = pane.height.floor();
+        let lo = f64::from(self.h_min);
+        let hi = f64::from(self.h_max);
+        // max then min, never `f64::clamp` (the crate's no-panic rule)
+        let h = if h.is_finite() { h.max(lo).min(hi) } else { lo };
+        (h - lo) as usize
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Header {
     pub pins: Pins,
-    pub golden_pane: Pane,
+    pub bands: Bands,
     pub radius_km: f64,
     pub ladder: Vec<f64>,
 }
@@ -123,14 +186,21 @@ pub enum Corner {
 pub struct Inset {
     pub label: String,
     pub corner: Corner,
-    /// x, y, w, h on the golden pane, points; at another pane the box keeps its distance from
-    /// `corner` (`rect_at`, frame.rs).
+    /// x, y, w, h on the golden pane, points; at another pane the box is this scaled by the
+    /// band's entry of `scale_pct`, anchored at `corner` with these gaps (`rules::inset_box_at`;
+    /// beside the box it abuts under the stacking rule, `rules::inset_box_beside`).
     pub rect: [f32; 4],
-    /// The inset's own LAEA (R1 on its group), the group's bbox centre in it (km) and its scale.
+    /// The inset's own LAEA (R1 on its group), the group's bbox centre in it (km), the group's
+    /// bbox size (km, what the box's land area is fitted to) and the scale at the golden box.
     pub lat0: f64,
     pub lon0: f64,
     pub centre_km: [f64; 2],
+    pub size_km: [f64; 2],
     pub scale: f64,
+    /// I1 (M4b commit 4): the box's scale in whole percent at each band height of the header's
+    /// `bands`, index `h − h_min`; 0 = not drawn at that band. The tool computes it; the frame
+    /// reads it (format v2).
+    pub scale_pct: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -221,8 +291,8 @@ impl Store {
             return Err(LoadError::Malformed("ladder"));
         }
         let units = read_units(&mut c).ok_or(LoadError::Malformed("units"))?;
-        let countries =
-            read_countries(&mut c, units.len()).ok_or(LoadError::Malformed("countries"))?;
+        let countries = read_countries(&mut c, units.len(), header.bands.span())
+            .ok_or(LoadError::Malformed("countries"))?;
         let blobs = read_blob_table(&mut c).ok_or(LoadError::Malformed("blob table"))?;
         let region = c.take(c.remaining()).unwrap_or_default();
         let mut raw = Vec::with_capacity(blobs.len());
@@ -364,11 +434,15 @@ fn read_header(c: &mut Cursor) -> Option<Header> {
     for _ in 0..n {
         inputs.push((h.str8()?, h.array::<32>()?));
     }
-    let golden_pane = Pane {
+    let bands = Bands {
         width: f64::from(h.f32()?),
-        height: f64::from(h.f32()?),
         padding: f64::from(h.f32()?),
+        h_min: u32::from(h.u16()?),
+        h_max: u32::from(h.u16()?),
     };
+    if !bands.is_valid() {
+        return None;
+    }
     let radius_km = h.f64()?;
     let n = usize::from(h.u8()?);
     let mut ladder = Vec::with_capacity(n);
@@ -387,7 +461,7 @@ fn read_header(c: &mut Cursor) -> Option<Header> {
             ne_tag,
             inputs,
         },
-        golden_pane,
+        bands,
         radius_km,
         ladder,
     })
@@ -466,7 +540,7 @@ fn read_units(c: &mut Cursor) -> Option<Vec<Unit>> {
 }
 
 /// `n_units`: the units table's length, which every unit index a country names must be under.
-fn read_countries(c: &mut Cursor, n_units: usize) -> Option<Vec<Country>> {
+fn read_countries(c: &mut Cursor, n_units: usize, n_pct: usize) -> Option<Vec<Country>> {
     let n = c.count(60)?;
     let mut countries = Vec::with_capacity(n);
     for _ in 0..n {
@@ -501,14 +575,26 @@ fn read_countries(c: &mut Cursor, n_units: usize) -> Option<Vec<Country>> {
                 _ => return None,
             };
             let rect = [c.f32()?, c.f32()?, c.f32()?, c.f32()?];
+            let lat0 = finite(c.f64()?)?;
+            let lon0 = finite(c.f64()?)?;
+            let centre_km = [finite(c.f64()?)?, finite(c.f64()?)?];
+            let size_km = [finite(c.f64()?)?, finite(c.f64()?)?];
+            let scale = finite(c.f64()?)?;
+            // the scale table: one byte per band height, each at most 100
+            let scale_pct = c.take(n_pct)?.to_vec();
+            if scale_pct.iter().any(|&p| p > 100) {
+                return None;
+            }
             insets.push(Inset {
                 label,
                 corner,
                 rect,
-                lat0: finite(c.f64()?)?,
-                lon0: finite(c.f64()?)?,
-                centre_km: [finite(c.f64()?)?, finite(c.f64()?)?],
-                scale: finite(c.f64()?)?,
+                lat0,
+                lon0,
+                centre_km,
+                size_km,
+                scale,
+                scale_pct,
             });
         }
         let nl = c.count(12)?;
@@ -642,9 +728,15 @@ pub fn write(
         put_str8(&mut h, name)?;
         h.extend_from_slice(sha);
     }
-    let p = header.golden_pane;
-    for v in [p.width, p.height, p.padding] {
+    let b = header.bands;
+    if !b.is_valid() {
+        return Err(bad("bands"));
+    }
+    for v in [b.width, b.padding] {
         h.extend_from_slice(&(v as f32).to_le_bytes());
+    }
+    for v in [b.h_min, b.h_max] {
+        h.extend_from_slice(&u16::try_from(v).map_err(|_| bad("bands"))?.to_le_bytes());
     }
     put_f64(&mut h, &[header.radius_km]);
     h.push(u8::try_from(header.ladder.len()).map_err(|_| bad("ladder"))?);
@@ -711,7 +803,14 @@ pub fn write(
                 out.extend_from_slice(&v.to_le_bytes());
             }
             let [cx, cy] = i.centre_km;
-            put_f64(&mut out, &[i.lat0, i.lon0, cx, cy, i.scale]);
+            let [sw, sh] = i.size_km;
+            put_f64(&mut out, &[i.lat0, i.lon0, cx, cy, sw, sh, i.scale]);
+            if i.scale_pct.len() != header.bands.span() || i.scale_pct.iter().any(|&p| p > 100) {
+                return Err(bad(
+                    "an inset's scale table must have one entry ≤ 100 per band",
+                ));
+            }
+            out.extend_from_slice(&i.scale_pct);
         }
         out.extend_from_slice(&(c.sub_lines.len() as u32).to_le_bytes());
         for l in &c.sub_lines {
@@ -767,7 +866,7 @@ pub(crate) mod tests {
                 ne_tag: "v5.1.2".into(),
                 inputs: vec![("ne_10m_admin_0_countries.shp".into(), [7u8; 32])],
             },
-            golden_pane: Pane::GOLDEN,
+            bands: Bands::BUILT,
             radius_km: crate::laea::R_AUTHALIC_KM,
             ladder: crate::rules::LADDER.to_vec(),
         }
@@ -859,7 +958,11 @@ pub(crate) mod tests {
                 lat0: 38.4,
                 lon0: -27.3,
                 centre_km: [0.5, -0.25],
+                // the box's area is 84 × 36 pt: at 7.37 km/pt the group is 619 × 265 km, so the
+                // scale at the golden box re-fits to 7.37 (`rules::inset_scale`)
+                size_km: [84.0 * 7.37, 36.0 * 7.37],
                 scale: 7.37,
+                scale_pct: vec![100; Bands::BUILT.span()],
             }],
             sub_lines: vec![cap(-8.0, 40.0, 100.0)],
         }]
@@ -1009,11 +1112,111 @@ pub(crate) mod tests {
     #[test]
     fn version_and_magic() {
         let mut m = synthetic(Encoding::Raw);
+        m[8] = 1;
+        assert_eq!(Store::load(&m).unwrap_err(), LoadError::Version(1));
+        m[8] = 3;
+        assert_eq!(Store::load(&m).unwrap_err(), LoadError::Version(3));
         m[8] = 2;
-        assert_eq!(Store::load(&m).unwrap_err(), LoadError::Version(2));
         m[0] = b'X';
         assert_eq!(Store::load(&m).unwrap_err(), LoadError::Magic);
         assert_eq!(Store::load(&[]).unwrap_err(), LoadError::Magic);
+    }
+
+    /// Format v2's inset table (M4b commit 5): a scale table of the wrong length, or an entry
+    /// over 100, is refused by the writer and, planted in the bytes, by the loader as
+    /// `Malformed("countries")`; a bands header out of order or too wide is `Malformed("header")`.
+    #[test]
+    fn the_scale_table_is_checked() {
+        let mut countries = synthetic_countries();
+        countries[0].insets[0].scale_pct = vec![100; Bands::BUILT.span() - 1];
+        assert!(
+            write(
+                &header(),
+                &synthetic_units(),
+                &countries,
+                &synthetic_blobs(),
+                Encoding::Raw
+            )
+            .is_err()
+        );
+        countries[0].insets[0].scale_pct = vec![100; Bands::BUILT.span()];
+        countries[0].insets[0].scale_pct[38] = 101;
+        assert!(
+            write(
+                &header(),
+                &synthetic_units(),
+                &countries,
+                &synthetic_blobs(),
+                Encoding::Raw
+            )
+            .is_err()
+        );
+        // planted: find the table in a good file (161 bytes of 100 after the inset's f64s)
+        let good = synthetic(Encoding::Raw);
+        let table = vec![100u8; Bands::BUILT.span()];
+        let at = good
+            .windows(table.len())
+            .position(|w| w == table.as_slice())
+            .unwrap();
+        let mut m = good.clone();
+        m[at + 38] = 101;
+        assert_eq!(
+            Store::load(&m).unwrap_err(),
+            LoadError::Malformed("countries")
+        );
+        let s = Store::load(&good).unwrap();
+        assert_eq!(s.header.bands, Bands::BUILT);
+        assert_eq!(s.header.bands.golden(), Pane::GOLDEN);
+        assert_eq!(s.countries[0].insets[0].scale_pct.len(), 161);
+        assert_eq!(s.countries[0].insets[0].size_km, [84.0 * 7.37, 36.0 * 7.37]);
+        for (h, want) in [
+            (139.0, 0usize),
+            (140.0, 0),
+            (178.0, 38),
+            (300.0, 160),
+            (360.0, 160),
+            (178.9, 38),
+        ] {
+            assert_eq!(
+                s.header.bands.index(&Pane {
+                    width: 328.0,
+                    height: h,
+                    padding: 20.0
+                }),
+                want,
+                "{h}"
+            );
+        }
+        let mut bad = header();
+        bad.bands.h_min = 301;
+        assert!(
+            write(
+                &bad,
+                &synthetic_units(),
+                &synthetic_countries(),
+                &synthetic_blobs(),
+                Encoding::Raw
+            )
+            .is_err()
+        );
+        assert!(
+            !Bands {
+                width: 328.0,
+                padding: 20.0,
+                h_min: 0,
+                h_max: 300
+            }
+            .is_valid()
+        );
+        assert!(
+            !Bands {
+                width: 328.0,
+                padding: 20.0,
+                h_min: 1,
+                h_max: 1025
+            }
+            .is_valid()
+        );
     }
 
     /// A blob whose ring count disagrees with its owner's rings is refused: the index would

@@ -5,19 +5,23 @@
 # is x, y, w, h on the golden pane (328 × 300), points; the tool refuses a box closer than 12 pt
 # to the country's land at the initial view, outside the pane, or overlapping another box.
 # PT and US boxes are the style page's (ondar-map-style-chosen.html, 2026-09-24); the rest 80 × 60
-# at a corner, 8 pt from the pane's edges, proposed here.
+# at a corner, 8 pt from the pane's edges, proposed here. Since M4b commit 4 (I1, C1) the corner is
+# one of top-left, top-right, bottom-left — the bottom-right is the zoom controls' — and the box
+# shrinks per band as far as it must (the tool's `inset-bands.tsv`, `inset-corners.tsv`); the
+# corners of EC, ES, IN and YE (bottom-right until then) were set from the tool's corner table of
+# 2026-10-05: the corner with the largest minimum scale over the bands, ties to the current one.
 # code	lat	lon	keep	corner	x	y	w	h	label
 PT	38.38	-27.31	area 2 606 km²	top-left	10	24	92	52	Azores
 PT	32.76	-16.94	station (812 km²; 3 live stations, 2026-09-30)	top-left	10	84	52	40	Madeira
-ES	28.35	-15.68	area 7 446 km²	bottom-right	240	232	80	60	Canary Islands
+ES	28.35	-15.68	area 7 446 km²	bottom-left	8	232	80	60	Canaries
 US	63.97	-152.23	area 1 495 711 km²	bottom-left	8	236	84	56	Alaska
 US	20.26	-156.32	area 16 892 km²	bottom-left	98	258	60	32	Hawaii
-FR	3.93	-53.24	area 83 552 km²	top-left	8	8	60	44	French Guiana
-FR	15.59	-61.32	area 2 764 km²	top-right	260	8	60	44	Guadeloupe & Martinique
+FR	3.93	-53.24	area 83 552 km²	top-left	8	8	60	44	Fr. Guiana
+FR	15.59	-61.32	area 2 764 km²	top-right	260	8	60	44	Antilles
 FR	-21.12	55.54	area 2 590 km²	bottom-left	8	248	60	44	Réunion
-EC	-0.55	-90.91	area 7 736 km²	bottom-right	240	232	80	60	Galápagos
-IN	11.12	92.97	area 7 135 km²	bottom-right	240	232	80	60	Andaman & Nicobar
+EC	-0.55	-90.91	area 7 736 km²	top-left	8	8	80	60	Galápagos
+IN	11.12	92.97	area 7 135 km²	top-left	8	8	80	60	Andamans
 MY	2.5	113.5	area 197 359 km² (Borneo, under the override)	top-right	240	8	80	60	Sabah & Sarawak
 NO	78.81	18.31	area 61 559 km²	top-left	8	8	80	60	Svalbard
 PF	-9.38	-139.58	area 1 079 km²	top-right	240	8	80	60	Marquesas
-YE	12.49	53.80	area 3 830 km²	bottom-right	240	232	80	60	Socotra
+YE	12.49	53.80	area 3 830 km²	top-left	8	8	80	60	Socotra
