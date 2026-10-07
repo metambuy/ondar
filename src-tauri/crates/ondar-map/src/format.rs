@@ -1089,7 +1089,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// (c) A flipped byte inside a blob's raw bytes → `Corrupt { blob }` for that blob.
+    /// (c) A flipped byte inside a blob's raw bytes → `Corrupt { blob }` for that blob. Fails
+    /// with the CRC skipped.
     #[test]
     fn crc_catches_a_broken_blob() {
         let bytes = synthetic(Encoding::Raw);
@@ -1108,7 +1109,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// (d) Version 2 → `Version(2)`; a bad magic → `Magic`.
+    /// (d) A version byte of 1 or 3 → `Version(1)` / `Version(3)` (v1 was M4a's format, refused
+    /// as such); a bad magic, or no bytes, → `Magic`.
     #[test]
     fn version_and_magic() {
         let mut m = synthetic(Encoding::Raw);
@@ -1124,7 +1126,8 @@ pub(crate) mod tests {
 
     /// Format v2's inset table (M4b commit 5): a scale table of the wrong length, or an entry
     /// over 100, is refused by the writer and, planted in the bytes, by the loader as
-    /// `Malformed("countries")`; a bands header out of order or too wide is `Malformed("header")`.
+    /// `Malformed("countries")`; `Bands::index` clamps 139 → 140's entry and 360 → 300's; a bands
+    /// header out of order or wider than 1 024 heights is invalid.
     #[test]
     fn the_scale_table_is_checked() {
         let mut countries = synthetic_countries();
@@ -1220,7 +1223,8 @@ pub(crate) mod tests {
     }
 
     /// A blob whose ring count disagrees with its owner's rings is refused: the index would
-    /// address the wrong rings.
+    /// address the wrong rings. Fails with the check dropped — the fuzz cannot reach it behind
+    /// the CRC.
     #[test]
     fn a_blob_must_match_its_owner() {
         let mut units = vec![];
@@ -1259,7 +1263,8 @@ pub(crate) mod tests {
     /// level's index and tolerance from the compiled ladder and decodes at the file's scale for
     /// that index, so a resource with a shorter or shifted ladder loaded and drew rings at the
     /// wrong scale (×1.33 for `[2, 4, …]`). A ladder that is increasing and positive but not
-    /// `LADDER` is `Malformed("ladder")`; the compiled one loads.
+    /// `LADDER` is `Malformed("ladder")`; the compiled one loads. Fails with the check off, by
+    /// length only, or by the first level only.
     #[test]
     fn the_ladder_must_be_the_compiled_one() {
         let s = synthetic(Encoding::Raw);
@@ -1282,7 +1287,8 @@ pub(crate) mod tests {
 
     /// Every unit a country names must exist (review finding 6: the comment claimed the check
     /// and nothing did it). A country naming unit 9 999 of 2 is `Malformed("countries")`, not a
-    /// store whose every `units[ct.units[0]]` panics; the last real index (1) loads.
+    /// store whose every `units[ct.units[0]]` panics; the last real index (1) loads. Fails with
+    /// the check off, on `<=`, or on the main unit only.
     #[test]
     fn a_country_names_only_units_that_exist() {
         for (named, ok) in [(1u16, true), (2, false), (9_999, false)] {
@@ -1308,7 +1314,8 @@ pub(crate) mod tests {
 
     /// A blob's ring table must tile its bytes exactly: a ring past the end, bytes the table
     /// does not account for, or a ring shorter than its vertex count allows are all refused
-    /// (behind the CRC this guards a writer bug, not a corrupt file).
+    /// (behind the CRC this guards a writer bug, not a corrupt file). Each fails with its check
+    /// dropped — the fuzz cannot reach these behind the CRC.
     #[test]
     fn ring_table_must_tile_the_bytes() {
         let raw = blob_raw(&[vec![[0, 0], [1, 1], [2, 2]], vec![[5, 5]; 4]]);

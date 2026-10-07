@@ -1,37 +1,7 @@
-// The map pane's pull rules (M4b commit 7 — vitest under jsdom, `pnpm test`). `../api` is mocked
-// whole: every `pull` is a deferred promise the test resolves, so what the pane sends, and when,
-// is observable. Each test states what it would have to see to fail:
-//
-// 1. one pull in flight: three wheel events while a reply is held produce one pull after it
-//    resolves, carrying the summed deltas (fails on a pull per event, or input lost);
-// 2. a reply whose `seq` is not newer than the frame on screen is not drawn, a newer one is
-//    (fails if a stale reply replaces the paths);
-// 3. a `null` reply leaves the paths as they are (fails if the map clears);
-// 4. idle → no pull: once the pending input is sent nothing pulls until new input (fails on a
-//    pull per animation frame);
-// 5. a drag under 4 pt sends nothing, over it sends the delta negated (fails with no threshold,
-//    or with the sign of a wheel pan);
-// 6. `+` sends `zoom_steps: 1`, `−` −1, `fit` sends `fit: true` (fails if the controls are wired
-//    to the wrong field);
-// 7. one `<path>` per shape with `fill-rule="evenodd"`, every inset's label whole, the platter at
-//    the band's size and the controls at the rect Rust gave (fails if the renderer computes any
-//    of it);
-// 8. a theme change pulls nothing: recolouring is CSS (fails if the pane requests a frame on
-//    `prefers-color-scheme`);
-// 9. one flat land tone per theme (the acceptance review's A1, 2026-10-06): the SVG carries no
-//    `<filter>` and no element is filtered, and the stylesheets carry no `filter`, no `opacity` and
-//    no coast token — Ink's inland tone through an erode/blur filter cost ~90 ms a paint at 300 and
-//    its glow over the neighbours broke the flat-neighbours spec (fails on the code before it);
-// 10. the land is drawn once, with its hairline, and the subdivisions above it (round 3, C1 + C2,
-//    2026-10-06): the SVG carries no `<use>` — WebKit styles a `<use>` clone as the original
-//    element, so the edge group's clones of the land paths painted the land fill again, over the
-//    subdivisions, with `stroke: none`: no interior borders, no coast, in every capture — the
-//    land rule strokes `--map-edge`, and the subdivisions group follows the land group (fails on
-//    the code before it: a `<use>` per land path and `stroke: none` on the land);
-// 11. the controls follow the theme (round 3, C3, Martín): the `− fit +` buttons take their background,
-//    text and border from `--map-controls-*` tokens defined under both the light root and the dark
-//    block — dark translucent in Ink, light in Sand (fails on the code before it: the native button
-//    look, no such tokens).
+// The map pane's pull rules and rendering (M4b commit 7 and the acceptance review) — vitest
+// under jsdom, `pnpm test`. `../api` is mocked whole: every `pull` is a deferred promise the
+// test resolves, so what the pane sends, and when, is observable. Each test's comment states
+// what it pins and what it would have to see to fail.
 import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -104,6 +74,8 @@ async function mounted() {
 }
 
 describe("MapPane", () => {
+  // 1. One pull in flight: three wheel events while a reply is held produce one pull after it
+  //    resolves, carrying the summed deltas. Fails on a pull per event, or input lost.
   it("1. holds one pull in flight and sums the input that arrives meanwhile", async () => {
     const { container } = await mounted();
     const svg = container.querySelector("svg")!;
@@ -119,6 +91,8 @@ describe("MapPane", () => {
     expect(pulls[1].inputs).toEqual({ pan_pt: [12, 6], zoom_steps: 0, fit: false });
   });
 
+  // 2. A reply whose `seq` is not newer than the frame on screen is not drawn, a newer one is.
+  //    Fails if a stale reply replaces the paths.
   it("2. draws only a reply newer than the frame on screen", async () => {
     const { container } = await mounted();
     act(() => pulls[0].resolve(reply(5, 3)));
@@ -137,6 +111,9 @@ describe("MapPane", () => {
     expect(landPaths(container).length).toBe(7);
   });
 
+  // 3. A `null` reply leaves the paths as they are (fails if the map clears). 4. Idle → no pull:
+  //    once the pending input is sent nothing pulls until new input (fails on a pull per
+  //    animation frame).
   it("3. a null reply leaves the paths; 4. idle, nothing pulls", async () => {
     const { container } = await mounted();
     act(() => pulls[0].resolve(reply(1, 4)));
@@ -151,6 +128,8 @@ describe("MapPane", () => {
     expect(pulls.length).toBe(2);
   });
 
+  // 5. A drag under 4 pt sends nothing, over it sends the delta negated. Fails with no threshold,
+  //    or with the sign of a wheel pan.
   it("5. a drag pans past the threshold, negated; under it nothing", async () => {
     const { container } = await mounted();
     act(() => pulls[0].resolve(reply(1, 1)));
@@ -168,6 +147,8 @@ describe("MapPane", () => {
     expect(pulls[1].inputs.pan_pt).toEqual([-(DRAG_THRESHOLD_PT + 6), 3]);
   });
 
+  // 6. `+` sends `zoom_steps: 1`, `−` −1, `fit` sends `fit: true`. Fails if the controls are
+  //    wired to the wrong field.
   it("6. the controls send zoom steps and fit", async () => {
     const r = await mounted();
     act(() => pulls[0].resolve(reply(1, 1)));
@@ -188,6 +169,9 @@ describe("MapPane", () => {
     expect(pulls[3].inputs.fit).toBe(true);
   });
 
+  // 7. One `<path>` per shape with `fill-rule="evenodd"`, every inset's label whole, the platter
+  //    at the band's size and the controls at the rect Rust gave. Fails if the renderer computes
+  //    any of it.
   it("7. one path per shape, even-odd, the label whole, the platter and controls at the rects given", async () => {
     const { container } = await mounted();
     act(() => pulls[0].resolve(reply(1, 2)));
@@ -208,6 +192,11 @@ describe("MapPane", () => {
     expect(pathOf({ rings: [[[1, 2], [3, 4]], [[5, 6]]] })).toBe("M1 2L3 4ZM5 6Z");
   });
 
+  // 9. One flat land tone per theme (the acceptance review's A1): the SVG carries no `<filter>`
+  //    and no element is filtered, and the stylesheets carry no `filter`, no `opacity` and no
+  //    coast token — Ink's inland tone through an erode/blur filter cost ~90 ms a paint at 300
+  //    and its glow over the neighbours broke the flat-neighbours spec. Fails on the code before
+  //    it.
   it("9. one flat land tone per theme: no filter, no opacity, no coast token", async () => {
     const { container } = await mounted();
     act(() => pulls[0].resolve(reply(1, 2)));
@@ -225,6 +214,12 @@ describe("MapPane", () => {
     expect(tokensCss).toContain("--map-land:");
   });
 
+  // 10. The land is drawn once, with its hairline, and the subdivisions above it (round 3,
+  //    C1 + C2): the SVG carries no `<use>` — WebKit styles a `<use>` clone as the original
+  //    element, so the edge group's clones of the land paths painted the land fill again, over
+  //    the subdivisions, with `stroke: none`: no interior borders, no coast, in every capture —
+  //    the land rule strokes `--map-edge`, and the subdivisions group follows the land group.
+  //    Fails on the code before it: a `<use>` per land path and `stroke: none` on the land.
   it("10. the land is drawn once with its hairline, the subdivisions above it", async () => {
     const { container } = await mounted();
     const r = reply(1, 2);
@@ -249,6 +244,10 @@ describe("MapPane", () => {
     expect(landRule).not.toMatch(/stroke:\s*none/);
   });
 
+  // 11. The controls follow the theme (round 3, C3, Martín): the `− fit +` buttons take their
+  //    background, text and border from `--map-controls-*` tokens defined under both the light
+  //    root and the dark block — dark translucent in Ink, light in Sand. Fails on the code
+  //    before it: the native button look, no such tokens.
   it("11. the controls follow the theme", async () => {
     const panelCss = readFileSync("src/panel/panel.module.css", "utf8");
     const start = panelCss.indexOf(".controls > button {");
@@ -263,6 +262,8 @@ describe("MapPane", () => {
     }
   });
 
+  // 8. A theme change pulls nothing: recolouring is CSS. Fails if the pane requests a frame on
+  //    `prefers-color-scheme`.
   it("8. a theme change pulls nothing", async () => {
     await mounted();
     act(() => pulls[0].resolve(reply(1, 1)));

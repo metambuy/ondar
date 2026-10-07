@@ -356,6 +356,8 @@ mod session_tests {
 
     /// `select` resets to the fit and bumps `seq`; the first pull frames at the fit; a pull with
     /// nothing pending frames nothing; re-selecting the same country frames again (a new seq).
+    /// Fails with every pull framing, with `seq` bumped on select alone, or with select not
+    /// resetting.
     #[test]
     fn select_resets_to_the_fit_and_bumps_seq() {
         let s = store();
@@ -393,7 +395,8 @@ mod session_tests {
     }
 
     /// `+` halves the scale about the pane's centre, `−` doubles it back (clamped at the fit); a
-    /// band change returns the view to the fit; `fit` wins over pending pan and zoom.
+    /// band change returns the view to the fit; `fit` wins over pending pan and zoom. Fails with
+    /// the zoom sign inverted, the band change not resetting, or fit not winning.
     #[test]
     fn zoom_steps_band_change_and_fit() {
         let s = store();
@@ -442,7 +445,8 @@ mod session_tests {
     }
 
     /// Pan deltas sum across pulls and apply once at the new scale, y down on the pane; at the
-    /// fit a pan changes nothing and replies `None` (D6); `seq` grows only with a frame.
+    /// fit a pan changes nothing and replies `None` (D6); `seq` grows only with a frame; a huge
+    /// pan is clamped to the fit rectangle and frames once. Fails with y not negated.
     #[test]
     fn pan_sums_and_the_fit_cannot_pan() {
         let s = store();
@@ -497,7 +501,8 @@ mod session_tests {
     }
 
     /// Inputs folded while a frame is held are applied on the next pull, none lost: two `pull`s
-    /// whose steps are not framed in between fold into one frame.
+    /// whose steps are not framed in between fold into one frame, with a higher `seq`. Fails
+    /// with the pending set applied twice.
     #[test]
     fn inputs_fold_while_a_frame_is_held() {
         let s = store();
@@ -573,9 +578,10 @@ mod session_tests {
         );
     }
 
-    /// Round 3, C1 (2026-10-06): RU, US and IN at fit are coarser than 8 km/pt and flagged, so the
-    /// frame the session hands the page must carry their subdivision lines, with no blob missing —
-    /// if this passes, the renderer is where they vanish.
+    /// Round 3, C1: RU, US and IN at 300 and RU, US at 178 are coarser than 8 km/pt and flagged,
+    /// so the frame the session hands the page must carry their subdivision lines (RU 200 lines /
+    /// 1 541 points at level 24, US 121, IN 73), with no blob missing — if this passes, the
+    /// renderer is where they vanish (it was: the frame had them, the renderer hid them).
     #[test]
     fn c1_the_fit_frame_carries_subdivisions() {
         let s = store();
@@ -613,8 +619,9 @@ mod session_tests {
 mod tests {
     use super::*;
 
-    /// The shipped resource loads through the shell's path rule; a missing file and a file that
-    /// is not a resource are reasons, not panics.
+    /// The shipped resource loads through the shell's path rule (`resources/` +
+    /// `map/world.ondarmap`; fails with `map/` dropped); a missing file and a file that is not a
+    /// resource are reasons, not panics.
     #[test]
     fn the_resource_loads_and_failures_are_reasons() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");

@@ -563,8 +563,9 @@ mod tests {
     /// `missing_blobs` counts units, as documented (review finding 9): a neighbour unit with three
     /// parts in view and no blob at the frame's level adds one missing blob, and its rings are not
     /// counted as considered — none was decoded; an inset of two parts whose level has no blob is
-    /// one missing blob, as an inset of one part was. On `dddb4da` the two added 4 (one per part),
-    /// and `rings_considered` counted the three rings never read. The unindexed frame agrees.
+    /// one missing blob, as an inset of one part was. The unindexed frame agrees. Fails with the
+    /// count per part for the land or for the inset (the two add 4, and `rings_considered` counts
+    /// the three rings never read), with it dropped, or with the ring caps ignored.
     #[test]
     fn missing_blobs_counts_units_not_parts() {
         let mut units = synthetic_units();
@@ -704,9 +705,10 @@ mod tests {
     /// The subdivisions count a missing blob only when one of the country's lines meets the view,
     /// as the land does (review 2, finding 5). A synthetic country 4 000 km across (fit 15.4
     /// km/pt, level 3) whose subdivisions are stored at level 2 only: a line far from the view
-    /// adds nothing to `missing_blobs` — on `8324e68` it added 1 — and a line in the view, or
-    /// just past it within the level's tolerance, adds one. The unindexed frame admits every
-    /// line, as it admits every land ring.
+    /// adds nothing to `missing_blobs` (fails with the count unconditional: it adds 1, 3 for 2)
+    /// and a line in the view, or just past it within the level's tolerance, adds one (fails
+    /// with the count never made, by the index in the unindexed frame, or without the
+    /// tolerance). The unindexed frame admits every line, as it admits every land ring.
     #[test]
     fn subdivisions_count_a_missing_blob_only_in_view() {
         let resource = |subdivisions: bool, line: crate::format::Cap| {

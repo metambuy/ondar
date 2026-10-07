@@ -194,7 +194,8 @@ mod tests {
         r
     }
 
-    /// The square [−5, 5]² against [0, 10]² is the quarter [0, 5]².
+    /// The square [−5, 5]² against [0, 10]² is the quarter [0, 5]². Fails on an inverted inside
+    /// test or a wrong crossing point.
     #[test]
     fn a_square() {
         let sq = [[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]];
@@ -204,6 +205,7 @@ mod tests {
     }
 
     /// A ring with a hole: each ring is clipped alone and the hole stays a hole (even-odd).
+    /// Fails on an inverted inside test or a wrong crossing point.
     #[test]
     fn a_ring_with_a_hole() {
         let outer = [[2.0, 2.0], [14.0, 2.0], [14.0, 8.0], [2.0, 8.0]];
@@ -218,7 +220,8 @@ mod tests {
         );
     }
 
-    /// A triangle across the window's corner: the corner is a vertex of the result.
+    /// A triangle across the window's corner: the corner is a vertex of the result. Fails on an
+    /// inverted inside test or a wrong crossing point.
     #[test]
     fn a_ring_across_a_corner() {
         let tri = [[8.0, 4.0], [14.0, 10.0], [8.0, 16.0]];
@@ -230,6 +233,8 @@ mod tests {
         );
     }
 
+    /// No intersection → empty: a ring far off, a triangle beside the window, an empty ring.
+    /// Fails on an inverted inside test.
     #[test]
     fn no_intersection_is_empty() {
         let far = [[20.0, 20.0], [30.0, 20.0], [30.0, 30.0]];
@@ -240,6 +245,8 @@ mod tests {
         assert!(clip_ring(&[], &W).is_empty());
     }
 
+    /// A ring containing the window → the window. Fails on an inverted inside test or a wrong
+    /// crossing point.
     #[test]
     fn a_ring_containing_the_window_is_the_window() {
         let big = [[-50.0, -50.0], [50.0, -50.0], [50.0, 50.0], [-50.0, 50.0]];
@@ -247,13 +254,15 @@ mod tests {
         assert_eq!(c, vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);
     }
 
+    /// A ring inside the window is unchanged, vertex for vertex. Fails on an inverted inside test.
     #[test]
     fn a_ring_inside_is_unchanged() {
         let r = vec![[1.0, 1.0], [2.0, 1.0], [2.0, 2.0]];
         assert_eq!(clip_ring(&r, &W), r);
     }
 
-    /// A polyline leaving and re-entering the window is two pieces, cut at the boundary.
+    /// A polyline leaving and re-entering the window is two pieces, cut at the boundary
+    /// (Liang–Barsky). Fails on t0/t1 swapped.
     #[test]
     fn a_polyline_in_pieces() {
         let line = [

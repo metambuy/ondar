@@ -710,6 +710,7 @@ mod tests {
         );
     }
 
+    /// `gunzip` on the gzip fixture, refusing plain text.
     #[test]
     fn gunzip_inflates_the_gzip_fixture_and_refuses_plain_text() {
         let gz = head!("10-media.m3u8.gz");
@@ -721,10 +722,11 @@ mod tests {
         ));
     }
 
-    /// Review 2 (2026-09-25), finding 1: the inflated body is bounded by the caller's cap, as
-    /// the compressed one already was. 64 KiB of zeros gzips to about a hundred bytes; with a
-    /// cap one byte short it is refused, at the cap it inflates whole. On `fe120a2` there was no
-    /// cap: the same ~1000:1 ratio made a 4 MB compressed segment a ~4 GB `Vec`.
+    /// Review 2, finding 1: the inflated body is bounded by the caller's cap, as the compressed
+    /// one already was — `gunzip` reads at most cap + 1 bytes. 64 KiB of zeros gzips to about a
+    /// hundred bytes; with a cap one byte short it is refused, at the cap it inflates whole.
+    /// Fails with no cap on the inflate, as it was: the same ~1000:1 ratio made a 4 MB
+    /// compressed segment a ~4 GB `Vec`.
     #[test]
     fn gunzip_refuses_a_body_that_inflates_past_its_cap() {
         use std::io::Write;
@@ -743,11 +745,11 @@ mod tests {
             Err(GunzipError::TooLarge(_))
         ));
     }
-    /// Review fixes F4 (D2, 2026-09-29): one header parser, and the HLS walk unchanged by it. A
-    /// frame with a reserved sample-rate index (13) is walked, not lost: its format is `sri13`
-    /// (what `FormatGuard` prints) and nothing is a sync loss. `parse_header` returns the header
-    /// and `rate_known` is false. Fails if the rate check moves into `parse_header` (the
-    /// triage's first placement), which would make a reserved index an HLS sync loss.
+    /// Review fixes F4 (D2): one header parser, and the HLS walk unchanged by it. A frame with
+    /// a reserved sample-rate index (13) is walked, not lost: its format is `sri13` (what
+    /// `FormatGuard` prints) and nothing is a sync loss. `parse_header` returns the header and
+    /// `rate_known` is false. Fails if the rate check moves into `parse_header` (the triage's
+    /// first placement), which would make a reserved index an HLS sync loss.
     #[test]
     fn a_reserved_sample_rate_index_is_walked_not_lost() {
         let f = frame(13, 2, 50, 0, false, false);

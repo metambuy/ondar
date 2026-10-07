@@ -411,7 +411,8 @@ mod tests {
 
     /// The simplicity check: a bow tie, a spike folding back, a zero-area ring and a repeated
     /// vertex are not simple; a square and an open zigzag are; a long ring with two far-apart
-    /// vertices swapped crosses itself across many grid cells.
+    /// vertices swapped crosses itself across many grid cells. Fails with crossings, fold-backs
+    /// or repeats unchecked; the area check and the hybrid's bound check are equivalent mutants.
     #[test]
     fn simplicity() {
         let sq = [
@@ -468,7 +469,8 @@ mod tests {
     }
 
     /// Tuning meets the tolerance exactly measured, and keeps fewer vertices at a larger
-    /// tolerance. Fails if the bisection accepts a bound above t.
+    /// tolerance; an open line keeps both ends. Fails if the bisection or its expansion accepts
+    /// a bound above t, or with no halvings.
     #[test]
     fn tune_meets_the_tolerance() {
         let ring = wiggle(2000, 8.0, 42);

@@ -1,38 +1,7 @@
-// The station list's reply rules (M3b 1b, extended at commit 4 for the three sources — vitest
-// under jsdom, `pnpm test`). Each test states what it would have to see to fail:
-//
-// 1. the wrong-source guard: a slow reply for the previous country landing after the fast one
-//    for the current selection is dropped (fails if the late reply replaces the list);
-// 2. `stations:updated` landed → the list is requested again; another country's event is not
-//    ours (fails if no third request, or if PT's event triggers one);
-// 3. `stations:updated` failed → `refreshing…` clears and nothing is requested (fails if the
-//    flag stays, or if a request follows);
-// 4. a show re-requests the selected source (fails if `showGeneration` changes nothing);
-// 5. ★ on lists the favourites, then the recents not among them, marked and counted, and a late
-//    reply for the country left behind is dropped (fails if the country's rows show over the ★
-//    list, if a favourite shows twice, or if the order is not favourites first);
-// 6. the guard the other way: a ★ reply landing after ★ was turned off is dropped (fails if the
-//    stores' rows replace the country's — finding C: the guard covers whichever list shows);
-// 7. `recents:updated` re-requests the ★ list only while it is shown (fails if a country list
-//    is re-requested on it, or if the ★ list is not);
-// 8. a favourite toggle (`storeGeneration`) re-requests the ★ list only (fails if it
-//    re-requests a country list);
-// 9. a click on the playing row does nothing, on the paused row resumes, on another row plays
-//    (fails if the row always plays — F6 review F2);
-// 10. a click on the playing row while `reconnecting` does nothing: the row reads it as audible,
-//    the reading the transport is pinned to in Transport.test.tsx (`/code-review` finding 3,
-//    2026-09-23; fails if `audible` stops counting `reconnecting` — a `play` there is a second
-//    vote and a reset backoff);
-// 11. the previous source's error does not outlive a source change: PT's failure is not shown
-//    as FR's status while FR's reply is on its way (`/code-review` finding 4, 2026-09-23; fails
-//    on the code before it, where `error` was cleared only by a reply). On a show with the same
-//    source the last answer stays until the new one lands — that is a re-request, not a change;
-// 12. a reply is not serialised outside the measurement harness: `JSON.stringify` of a 750-row
-//    list (~319 KB) fed only `?measure=perf`'s `reply_bytes` (`/code-review` finding 5,
-//    2026-09-23; fails on the code before it, where every reply paid it).
-//
-// `../api` is mocked whole: nothing reaches Tauri, and every request is a deferred promise
-// the test resolves in the order it chooses — which is the point.
+// The station list's reply rules (M3b 1b, extended at commit 4 for the three sources) — vitest
+// under jsdom, `pnpm test`. `../api` is mocked whole: nothing reaches Tauri, and every request
+// is a deferred promise the test resolves in the order it chooses — which is the point. Each
+// test's comment states what it pins and what it would have to see to fail.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ListedStations, Station, StationsUpdated } from "../api";
@@ -159,6 +128,8 @@ afterEach(() => {
 });
 
 describe("StationList", () => {
+  // 1. The wrong-source guard: a slow reply for the previous country landing after the fast one
+  //    for the current selection is dropped. Fails if the late reply replaces the list.
   it("drops a reply for a country that is no longer selected", async () => {
     const view = render(list(country("PT")));
     expect(whats()).toEqual(["cc:PT"]);
@@ -172,6 +143,8 @@ describe("StationList", () => {
     expect(screen.getByText(/1 stations/)).toBeTruthy();
   });
 
+  // 2. `stations:updated` landed → the list is requested again; another country's event is not
+  //    ours. Fails if no third request, or if PT's event triggers one.
   it("re-requests the selected country when its refresh landed, and ignores another's", async () => {
     render(list(country("FR")));
     await resolve(requests()[0], listed("FR", ["FIP"], true));
@@ -185,6 +158,8 @@ describe("StationList", () => {
     expect(screen.queryByText(/refreshing…/)).toBeNull();
   });
 
+  // 3. `stations:updated` failed → `refreshing…` clears and nothing is requested. Fails if the
+  //    flag stays, or if a request follows.
   it("clears the refreshing flag on a failed refresh without asking again", async () => {
     render(list(country("FR")));
     await resolve(requests()[0], listed("FR", ["FIP"], true));
@@ -195,6 +170,7 @@ describe("StationList", () => {
     expect(requests()).toHaveLength(1);
   });
 
+  // 4. A show re-requests the selected source. Fails if `showGeneration` changes nothing.
   it("re-requests the selected source on every show", async () => {
     const view = render(list(country("FR")));
     await resolve(requests()[0], listed("FR", ["FIP"]));
@@ -204,6 +180,9 @@ describe("StationList", () => {
     expect(requests()).toHaveLength(2);
   });
 
+  // 5. ★ on lists the favourites, then the recents not among them, marked and counted, and a
+  //    late reply for the country left behind is dropped. Fails if the country's rows show over
+  //    the ★ list, if a favourite shows twice, or if the order is not favourites first.
   it("lists the favourites then the recents with ★ on, and drops the country reply left behind", async () => {
     const view = render(list(country("PT")));
     view.rerender(list(mine));
@@ -221,6 +200,8 @@ describe("StationList", () => {
     expect(screen.getByText("★ Jazz FM")).toBeTruthy();
   });
 
+  // 6. The guard the other way: a ★ reply landing after ★ was turned off is dropped. Fails if
+  //    the stores' rows replace the country's — finding C: the guard covers whichever list shows.
   it("drops a ★ reply that lands after ★ was turned off", async () => {
     const view = render(list(mine));
     expect(whats()).toEqual(["favourites", "recents"]);
@@ -235,6 +216,8 @@ describe("StationList", () => {
     expect(screen.getByText(/1 stations/)).toBeTruthy();
   });
 
+  // 7. `recents:updated` re-requests the ★ list only while it is shown. Fails if a country list
+  //    is re-requested on it, or if the ★ list is not.
   it("re-requests the ★ list on recents:updated, and only while it shows", async () => {
     const view = render(list(country("FR")));
     await resolve(requests()[0], listed("FR", ["FIP"]));
@@ -248,6 +231,8 @@ describe("StationList", () => {
     expect(whats()).toEqual(["cc:FR", "favourites", "recents", "favourites", "recents"]);
   });
 
+  // 8. A favourite toggle (`storeGeneration`) re-requests the ★ list only. Fails if it
+  //    re-requests a country list.
   it("re-requests the ★ list on a favourite toggle, and only the ★ list", async () => {
     const view = render(list(country("FR")));
     await resolve(requests()[0], listed("FR", ["FIP"]));
@@ -259,6 +244,8 @@ describe("StationList", () => {
     expect(whats()).toEqual(["cc:FR", "favourites", "recents", "favourites", "recents"]);
   });
 
+  // 9. A click on the playing row does nothing, on the paused row resumes, on another row plays
+  //    (M3b 5, F2). Fails if the row always plays.
   it("does nothing on the playing row, resumes the paused one, plays another", async () => {
     const view = render(list(country("FR"), 0, 0, "FR-FIP"));
     await resolve(requests()[0], listed("FR", ["FIP", "France Inter"]));
@@ -275,6 +262,10 @@ describe("StationList", () => {
     view.unmount();
   });
 
+  // 10. A click on the playing row while `reconnecting` does nothing: the row reads it as
+  //    audible, the reading the transport is pinned to in Transport.test.tsx (`/code-review`
+  //    finding 3). Fails if `audible` stops counting `reconnecting` — a `play` there is a second
+  //    vote and a reset backoff.
   it("does nothing on the playing row while reconnecting — the row reads it as audible", async () => {
     render(list(country("FR"), 0, 0, "FR-FIP"));
     await resolve(requests()[0], listed("FR", ["FIP"]));
@@ -285,6 +276,10 @@ describe("StationList", () => {
     expect(mock.resumed()).toBe(resumed);
   });
 
+  // 11. The previous source's error does not outlive a source change: PT's failure is not shown
+  //    as FR's status while FR's reply is on its way (`/code-review` finding 4). On a show with
+  //    the same source the last answer stays until the new one lands — that is a re-request,
+  //    not a change. Fails on the code before it, where `error` was cleared only by a reply.
   it("clears the previous source's error when the source changes, and keeps it across a show", async () => {
     const view = render(list(country("PT")));
     await reject(requests()[0], offline);
@@ -302,6 +297,9 @@ describe("StationList", () => {
     expect(screen.queryByText(/radio-browser unreachable/)).toBeNull();
   });
 
+  // 12. A reply is not serialised outside the measurement harness: `JSON.stringify` of a 750-row
+  //    list (~319 KB) fed only `?measure=perf`'s `reply_bytes` (`/code-review` finding 5; a
+  //    `JSON.stringify` spy). Fails on the code before it, where every reply paid it.
   it("does not serialise a reply outside the measurement harness", async () => {
     render(list(country("FR")));
     const stringify = vi.spyOn(JSON, "stringify");

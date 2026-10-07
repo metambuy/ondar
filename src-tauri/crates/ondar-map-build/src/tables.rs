@@ -121,6 +121,7 @@ pub fn aliases(tsv: &str) -> Result<Vec<Alias>, String> {
 mod tests {
     use super::*;
 
+    /// The shipped `overrides.tsv` (1), `insets.tsv` (14) and `aliases.tsv` (9) parse.
     #[test]
     fn the_shipped_tables_parse() {
         assert_eq!(overrides(OVERRIDES_TSV).unwrap().len(), 1);
@@ -133,6 +134,7 @@ mod tests {
         assert!(a.iter().all(|x| x.code.len() == 2 && x.gu_a3.len() == 3));
     }
 
+    /// A malformed row names its line.
     #[test]
     fn a_malformed_row_names_its_line() {
         let e = insets("PT\t1\t2\tk\tleft\t0\t0\t1\t1\tX\n").unwrap_err();

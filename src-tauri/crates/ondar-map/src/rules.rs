@@ -376,7 +376,8 @@ mod tests {
     use super::*;
 
     /// A synthetic 288 × 260 km rectangle fills the golden pane's usable area at exactly
-    /// 1 km/pt; on the ANMITE's 328 × 178 pane the height binds: h / 138.
+    /// 1 km/pt; on the ANMITE's 328 × 178 pane the height binds: h / 138. Fails on padding
+    /// once, or `min` for `max`.
     #[test]
     fn pane_arithmetic() {
         assert_eq!(fit_scale(288.0, 260.0, &Pane::GOLDEN), Some(1.0));
@@ -408,6 +409,7 @@ mod tests {
         assert_eq!(Pane::band(178).height, 178.0);
     }
 
+    /// The S1 floor: a fit finer than 1.5 km/pt starts at 1.5, a coarser one at itself.
     #[test]
     fn initial_scale_floor() {
         assert_eq!(initial_scale(0.102), 1.5);
@@ -415,7 +417,7 @@ mod tests {
     }
 
     /// The Azores' box on the style page, 92 × 52 at (10, 24): the land area is 84 × 36 pt,
-    /// centred 4 pt below the top and above the 8 pt label strip.
+    /// centred 4 pt below the top and above the 8 pt label strip. Fails with the strip dropped.
     #[test]
     fn inset_box_arithmetic() {
         assert_eq!(
@@ -540,7 +542,8 @@ mod tests {
     /// top-right one its right gap; at `s = 0.5` the size halves and the gaps stay (fails with the
     /// gaps scaled, the size unscaled, or a corner's axis mixed up). The minimum scale: Hawaii's
     /// 60 × 32 needs 0.875 (the height binds), the Azores' 92 × 52 0.538 (the height again:
-    /// 28 / 52), an 80 × 60 box 0.467 (fails with the strip or a pad scaled, or `min` for `max`).
+    /// 28 / 52), an 80 × 60 box 0.467 (fails with the strip or a pad scaled, or `min` for `max`;
+    /// the moved row fails with the rect not moved).
     #[test]
     fn the_inset_box_at_a_band_and_a_scale() {
         let anmite = Pane::band(178);
@@ -602,7 +605,7 @@ mod tests {
     /// Hawaii at 100 % sits at x 83.72 (Alaska's right edge + 6), its bottom 10 pt up as before;
     /// Madeira under a shrunken Azores box follows its bottom + 8. At 100 % and the golden pane the
     /// stacked box is the row's own rect (fails with the gap dropped, A's far edge taken for its
-    /// near one, or the other axis re-anchored).
+    /// near one, the y-overlap check dropped, or the other axis re-anchored).
     #[test]
     fn the_stacking_rule() {
         let alaska = [8.0, 236.0, 84.0, 56.0];
@@ -710,7 +713,8 @@ mod tests {
         assert_eq!(label_inner_width([0.0, 0.0, 60.0, 44.0]), 52.0);
     }
 
-    /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6.
+    /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6. Fails on
+    /// `<` for `≤`.
     #[test]
     fn level_is_the_coarsest_at_or_below() {
         let at = |s: f64| LADDER[level_for(s)];

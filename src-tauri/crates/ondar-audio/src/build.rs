@@ -559,8 +559,8 @@ mod tests {
 
     /// The no-bytes bound at exactly 10 kbit/s (review 2, finding 3): at the floor, a 320 kbit/s
     /// record and the ceiling, the bound covers the prefetch's time at 1 250 B/s with a 10 %
-    /// margin, rounded up. Fails on `688c9fd`, where the ceiling's 104 857 ms (integer division)
-    /// is below the 104 857.6 ms the prefetch takes; and with the margin's factor at 1.0.
+    /// margin, rounded up. Fails with integer division at the ceiling (104 857 ms is below the
+    /// 104 857.6 ms the prefetch takes), and with the margin's factor at 1.0 (104.858 s).
     #[test]
     fn the_no_bytes_bound_keeps_a_margin_at_10_kbit() {
         for (prefetch, pinned) in [

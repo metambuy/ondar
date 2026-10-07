@@ -165,7 +165,8 @@ mod tests {
     /// The three implementations agree to 1.2e-8 m, so 1 mm is 100× their spread and 10⁶× below
     /// the codec's 0.0354 pt quantum. The fixture's radius is 6 371 007.2 m, so the test also
     /// pins `R_AUTHALIC_KM`: the mean radius 6 371.0088 moves a point 60° out by ~10 m.
-    /// Snyder's example (R = 3) to 1e-7 against the source's seven decimals.
+    /// Snyder's example (R = 3) to 1e-7 against the source's seven decimals. Fails on the mean
+    /// radius 6 371.0088, `k' = √(1/d)`, a sign in y or in the inverse, degrees for radians.
     #[test]
     fn reference_table() {
         let rows = reference();
@@ -206,6 +207,9 @@ mod tests {
         }
     }
 
+    /// `lon_interval` across 180° (R1): {170, −170} is the short way across the antimeridian,
+    /// a 300° set leaves out its one 60° gap, Russia's bulk and Chukotka give one midpoint, and
+    /// no longitudes is `None`. Fails with the wrap-around gap dropped.
     #[test]
     fn lon_interval_wraps_the_antimeridian() {
         // {170, −170}: the short way is across 180°, not the 340° through 0°
@@ -223,6 +227,7 @@ mod tests {
         assert_eq!(lon_interval(&mut []), None);
     }
 
+    /// `wrap_lon` into [−180, 180]: 190 → −170, −190 → 170, 540 → 180, and ±180 stay as given.
     #[test]
     fn wrap_lon_into_range() {
         assert_eq!(wrap_lon(190.0), -170.0);
@@ -232,6 +237,7 @@ mod tests {
         assert_eq!(wrap_lon(-180.0), -180.0);
     }
 
+    /// The antipode and a point outside the disc are `None`; so is NaN, both ways.
     #[test]
     fn antipode_and_outside_are_none() {
         let l = Laea::new(0.0, 0.0);

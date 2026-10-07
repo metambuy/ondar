@@ -109,6 +109,8 @@ mod tests {
         assert_eq!(ids, ["a", "b"]);
     }
 
+    /// The recents cap: 25 plays keep `RECENTS_CAP` rows, newest first, the oldest evicted —
+    /// trimmed in the table, not only in the query.
     #[test]
     fn recents_cap_evicts_the_oldest() {
         let (clock, now) = fake_clock(T0);
@@ -153,6 +155,8 @@ mod tests {
         assert!(is_favourite(&cache, "fav").unwrap());
     }
 
+    /// Idempotent add: a re-add keeps the favourite's place (most recently added first);
+    /// `remove_favourite` reports whether it removed anything.
     #[test]
     fn add_is_idempotent_and_remove_reports_whether_it_removed() {
         let (clock, now) = fake_clock(T0);

@@ -137,6 +137,7 @@ mod tests {
         assert_eq!(out.len(), 2);
     }
 
+    /// Broken and empty-url rows are dropped whatever their votes; the playable row stays.
     #[test]
     fn broken_and_empty_url_rows_are_dropped() {
         let mut broken = st("x", "X", "http://x", 100, Some(128), 0);
@@ -150,6 +151,8 @@ mod tests {
         );
     }
 
+    /// The cap cuts after sorting: 900 rows truncate to `CAP`, the highest votes first and the
+    /// cut at the bottom.
     #[test]
     fn the_cap_truncates_after_sorting() {
         let many: Vec<Station> = (0..900)

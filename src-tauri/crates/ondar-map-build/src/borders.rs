@@ -225,7 +225,8 @@ mod tests {
 
     /// A fourth square above the middle one: the interior edges x = 1, y = 1 and x = 2 chain
     /// through two vertices of degree 2 into one line, not three. Two rows of two: the four
-    /// interior edges meet at the centre (degree 4), a junction, so four lines.
+    /// interior edges meet at the centre (degree 4), a junction, so four lines. Fails if chains
+    /// are not cut.
     #[test]
     fn junctions_and_chains() {
         let c = census(&[sq(0.0, 0.0), sq(1.0, 0.0), sq(2.0, 0.0), sq(1.0, 1.0)]);
@@ -266,6 +267,7 @@ mod tests {
         assert_eq!(c.lines[0].len(), 5);
     }
 
+    /// An edge found three times is counted.
     #[test]
     fn an_edge_three_times_is_counted() {
         let c = census(&[sq(0.0, 0.0), sq(0.0, 0.0), sq(0.0, 0.0)]);
@@ -273,7 +275,7 @@ mod tests {
     }
 
     /// Two halves of one subdivision cut at 180°, shifted: their shared seam edge is found twice
-    /// and dropped, not drawn as a border.
+    /// and dropped, not drawn as a border. Fails if only once-found seam edges are dropped.
     #[test]
     fn a_seam_edge_is_not_a_border() {
         let a = Polygon::new(
@@ -302,7 +304,8 @@ mod tests {
     }
 
     /// The rule: 375 m inside the land passes, 375.001 m fails, an edge found three times fails
-    /// whatever the distances. Fails at 1 m (the plan's test) or with the 3+ check dropped.
+    /// whatever the distances. Fails at 1 m (the plan's test), on `<` for `≤`, or with the 3+
+    /// check dropped.
     #[test]
     fn the_gate_rule() {
         assert!(judge(0.0, 0));
@@ -313,6 +316,7 @@ mod tests {
         assert!(!judge(f64::INFINITY, 0));
     }
 
+    /// The 1 m on-ring prefilter. Fails with the tolerance × 10.
     #[test]
     fn the_gate_measures_once_edges_against_admin0() {
         let id = |c: Coord<f64>| Some(c);

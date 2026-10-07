@@ -104,6 +104,7 @@ pub fn cap<'a>(points: impl IntoIterator<Item = &'a Coord<f64>> + Clone) -> Opti
 mod tests {
     use super::*;
 
+    /// R1's centre of a square across 180° is 180°.
     #[test]
     fn lonlat_centre_across_the_antimeridian() {
         let p = Polygon::new(

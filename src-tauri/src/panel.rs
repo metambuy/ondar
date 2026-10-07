@@ -1762,17 +1762,17 @@ mod tests {
         );
     }
 
-    /// Measured 2026-09-16, menu bar on the 1x BenQ: rect (1286,0) 24x30 landed the panel at
+    /// Measured with the menu bar on the 1x BenQ: rect (1286,0) 24x30 landed the panel at
     /// points (1118,36) — `[1118,624 360x420]` in Cocoa, 1080 − (624+420) = 36.
     ///   x = 1286 + 24/2 − 360/2 = 1118    y = 0 + 30 + 6 = 36
     ///
     /// Until M2d a second test, `mixed_scale_does_not_change_the_answer`, fed the same rect with the
     /// panel's size as a 2x `outer_size` (720x840) and scale 2, pinning the division into points
-    /// inside `anchor_points` (`/code-review` finding 3, 2026-09-16). M2d made the size a Rust
-    /// constant in points that is never read from the window, so that division — and the quantity
-    /// it was about — no longer exists; the test's inputs would be identical to this one's and it
-    /// could not fail on its own, which is the very condition its own comment gave for rewriting
-    /// it. Retired 2026-09-18 rather than kept as coverage that is not.
+    /// inside `anchor_points` (`/code-review` finding 3). M2d made the size a Rust constant in
+    /// points that is never read from the window, so that division — and the quantity it was
+    /// about — no longer exists; the test's inputs would be identical to this one's and it could
+    /// not fail on its own, which is the very condition its own comment gave for rewriting it.
+    /// Retired at M2d rather than kept as coverage that is not.
     #[test]
     fn measured_1x_tray_rect_matches_the_observed_landing() {
         let displays = menubar_on_benq();
@@ -1783,7 +1783,7 @@ mod tests {
         assert_inside_work_area(&got, &displays);
     }
 
-    /// Measured 2026-09-16 with the menu bar on the 2x built-in: rect (1760,0) 48x66 = (880,0)
+    /// Measured with the menu bar on the 2x built-in: rect (1760,0) 48x66 = (880,0)
     /// 24x33 in points. x = 880 + 12 − 180 = 712, y = 0 + 33 + 6 = 39. (The landing measured that
     /// day was y = 36 with the old 6-physical-pixel gap, i.e. 3 pt; the gap is now 6 pt.)
     #[test]
@@ -1794,7 +1794,7 @@ mod tests {
         assert_inside_work_area(&got, &displays);
     }
 
-    /// The 2026-09-12 fixture, now in point terms: rect (1932,0) 48x66 on the 2x built-in =
+    /// The rect measured that day, now in point terms: rect (1932,0) 48x66 on the 2x built-in =
     /// (966,0) 24x33 points. x = 966 + 12 − 180 = 798, y = 33 + 6 = 39.
     #[test]
     fn the_2026_09_12_rect_still_centres_under_the_icon() {
@@ -2222,7 +2222,7 @@ mod tests {
         );
     }
 
-    /// Decided 2026-09-21: the About pane shows at the collapsed height whatever the user chose,
+    /// Decided at M2d: the About pane shows at the collapsed height whatever the user chose,
     /// and the transport shows the choice. An inverted match, or one that ignores the view, fails.
     #[test]
     fn about_shows_collapsed_and_the_transport_shows_the_choice() {
