@@ -183,8 +183,8 @@ pub fn write(
         if built.collapsed.is_empty() {
             String::new()
         } else {
-            // per unit, the count at each level: `MDV 1/0/4/45/112` reads as the Maldives' rings
-            // collapsing at 1.5 / 3 / 6 / 12 / 24 km/pt
+            // per unit, the count at each level: `MDV 1/0/4/45/112/0` reads as the Maldives' rings
+            // collapsing at 1.5 / 3 / 6 / 12 / 24 / 48 km/pt
             let mut by_unit: std::collections::BTreeMap<String, [usize; LADDER.len()]> =
                 Default::default();
             for &(u, k, _) in &built.collapsed {
@@ -376,25 +376,35 @@ pub fn write(
     // P4
     let _ = writeln!(r, "## P4 — the simplifier\n");
     let (vin, vw, rdp, chosen) = built.p4;
+    let (k, retries) = (built.p4_level, built.p4_fallback.2);
     let _ = writeln!(
         r,
         "Stored: **{:?}**. The hybrid (decided 2026-10-01): per ring and level, RDP at the level's \
          tolerance, kept if simple (no self-intersection, ≥ 3 distinct vertices, non-zero area) \
-         and its exact measure is within the bound; else that ring's per-ring VW. No repair. The \
-         rule: ship the hybrid if every bound holds and the build stays under ~10 min, else VW.\n",
+         and its exact measure is within the bound; else RDP again at t/2, t/4, t/8, the first \
+         simple result within the bound kept iff it has fewer vertices than the ring's per-ring \
+         VW (the retry, M4c); else that VW. No repair. The rule: ship the hybrid if every bound \
+         holds and the build stays under ~10 min, else VW.\n",
         built.simplifier
     );
     let _ = writeln!(
         r,
-        "RU land at 24 km/pt (open rings, RU's frame LAEA, after the seam stitch): **{vin} in; \
-         per-ring VW {vw}, RDP {rdp}, stored {chosen}** (commit 4 measured VW 13 664, RDP 3 904; \
-         Q2b one ε per country 16 667 against RDP 4 128). In that blob {} ring(s) fell back to \
-         VW; the largest has {} vertices in, RDP {} (not simple, or over the bound), VW {}.\n",
-        built.p4_fallback.0, built.p4_fallback.1.2, built.p4_fallback.1.0, built.p4_fallback.1.1
+        "RU land at level {k}, {} km/pt, the level its fit draws it at (open rings, RU's frame \
+         LAEA, after the seam stitch): **{vin} in; per-ring VW {vw}, RDP {rdp}, stored {chosen}** \
+         (M4a commit 4 measured VW 13 664, RDP 3 904; Q2b one ε per country 16 667 against RDP \
+         4 128). In that blob the retry landed {} ring(s) at t/2, t/4, t/8 and {} ring(s) fell \
+         back to VW; the largest has {} vertices in, RDP {} (not simple, or over the bound), VW \
+         {}.\n",
+        LADDER.get(k).copied().unwrap_or(f64::NAN),
+        retries.map(|n| n.to_string()).join(" / "),
+        built.p4_fallback.0,
+        built.p4_fallback.1.2,
+        built.p4_fallback.1.0,
+        built.p4_fallback.1.1
     );
     let _ = writeln!(
         r,
-        "Open vertices before quantisation, summed over the stored blobs:\n\n| layer | level km/pt | rings | per-ring VW | RDP | stored | stored / RDP | rings that fell back to VW |\n|---|---|---|---|---|---|---|---|"
+        "Open vertices before quantisation, summed over the stored blobs:\n\n| layer | level km/pt | rings | per-ring VW | RDP | stored | stored / RDP | rings the retry landed, t/2 / t/4 / t/8 | rings that fell back to VW |\n|---|---|---|---|---|---|---|---|---|"
     );
     for layer in [Layer::Land, Layer::Subdivisions] {
         for (k, l) in LADDER.iter().enumerate() {
@@ -414,9 +424,17 @@ pub fn write(
             );
             let _ = writeln!(
                 r,
-                "| {layer:?} | {l} | {} | {vw} | {rdp} | {ch} | {:.3} | {} |",
+                "| {layer:?} | {l} | {} | {vw} | {rdp} | {ch} | {:.3} | {} | {} |",
                 sum(|b| b.rings.len()),
                 ch as f64 / rdp.max(1) as f64,
+                (0..3)
+                    .map(|i| bs
+                        .iter()
+                        .map(|b| b.retries.get(i).copied().unwrap_or(0))
+                        .sum::<usize>()
+                        .to_string())
+                    .collect::<Vec<_>>()
+                    .join(" / "),
                 sum(|b| b.fallbacks)
             );
         }

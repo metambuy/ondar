@@ -28,15 +28,17 @@ The decisions and figures: ONDAR.md, "M4: the drawn map", the M4a and M4b sectio
 - **Never frame or clamp in lon/lat.** Centres, fits, pan limits and boxes are in projected km
   (antimeridian-aware; Antarctica pole-centred).
 - **The crate takes the pane as an argument**; the page is told its size and computes nothing.
-- **The ladder and the clamp:** 1.5/3/6/12/24 km/pt; a view uses the coarsest level at or below its
-  scale; zoom is clamped to [1.5 km/pt, fit] and the view stays inside the fit rectangle (D6).
+- **The ladder and the clamp:** 1.5/3/6/12/24/48 km/pt; a view draws its own land, insets and
+  subdivisions at the coarsest level at or below its scale, capped at 24 (`OWN_TOP_LEVEL`), and its
+  neighbours one rung coarser (`neighbour_level`, M4c; 48 is the neighbours' alone); zoom is clamped to [1.5 km/pt, fit] and the view stays inside the fit rectangle (D6).
   Coverage and the frame's index both go through `ondar_map::index`, so the frame never asks for a
   blob the tool did not store. Subdivisions show above 8 km/pt, by a per-country flag.
 - **Coverage is built for every band** 140..=300 pt at 328 wide. A missing blob is skipped and
   counted in `FrameStats::missing_blobs`; a frame never fails.
 - **The drawn bound:** land ≤ 0.25 pt simplified + ≤ 0.035 pt quantised; subdivisions ≤ 0.5 +
-  0.035 pt. The simplifier is the per-ring hybrid (RDP if simple and within the bound, else VW).
-- **No panic from bytes:** the format is v2 (v1 is refused as `Version(1)`); the loader reads
+  0.035 pt. The simplifier is the per-ring hybrid (RDP if simple and within the bound; else
+  RDP at t/2, t/4, t/8, the first simple one within the bound kept if shorter than VW; else VW).
+- **No panic from bytes:** the format is v3 (v1 and v2 are refused as `Version(n)`); the loader reads
   through one bounded cursor, and a corrupt resource is an error — the app runs without a map.
   The crate's non-test code has no panic shape, no index and no `.clamp(` (a scan test refuses
   them).
@@ -51,5 +53,7 @@ The decisions and figures: ONDAR.md, "M4: the drawn map", the M4a and M4b sectio
   width is a token. One `map_pull` in flight, once per animation frame while input is pending; a
   reply is drawn only if its `seq` is newer than the frame on screen.
 - **The bar:** a country change from idle to the painted frame ≤ 100 ms p90 at 178 and 300 (RU, US,
-  PT, AQ). RU at 300 reads 99 ms. Measure it after any change to the frame, the payload or the page.
+  PT, AQ). RU at 300 reads 80 / 81 ms md / p90 on 60 runs since M4c's rebuild (83 / 96 on the
+  M4b file, the same session, 2026-10-08). Measure it after any change to the frame, the payload
+  or the page.
 - **Station coordinates are radio-browser's `geo` only.**

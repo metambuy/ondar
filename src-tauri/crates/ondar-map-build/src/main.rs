@@ -497,9 +497,14 @@ fn run() -> Result<(), String> {
             a.simplifier,
         )?;
         eprintln!(
-            "store built in {:.1} s: {} blobs; P4 RU land at 24 km/pt: {} in, {} per-ring VW, {} RDP, {} stored ({:?})",
+            "store built in {:.1} s: {} blobs; P4 RU land at level {} ({} km/pt): {} in, {} per-ring VW, {} RDP, {} stored ({:?})",
             built.seconds,
             built.blobs.len(),
+            built.p4_level,
+            ondar_map::rules::LADDER
+                .get(built.p4_level)
+                .copied()
+                .unwrap_or(f64::NAN),
             built.p4.0,
             built.p4.1,
             built.p4.2,

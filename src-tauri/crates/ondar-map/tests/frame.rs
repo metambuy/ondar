@@ -1293,3 +1293,116 @@ fn insets_scale_per_band() {
         sizes(at(300.0))
     );
 }
+
+/// The in-pane vertices (0.05 pt inside its edges, where the clip leaves a vertex as it is) of
+/// every unit's rings at level `k`, decoded through `blob` / `decode` and projected through
+/// lon/lat: the country's own units' `Frame` and `Dropped` parts if `own`, else every other
+/// unit's parts that are not omitted in the country (an alias's parent copy).
+fn vertices_at_level(s: &Store, i: usize, view: &View, k: usize, own: bool) -> Vec<[f64; 2]> {
+    let ct = &s.countries[i];
+    let c16 = u16::try_from(i).unwrap();
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    for (u, unit) in s.units.iter().enumerate() {
+        let u = u16::try_from(u).unwrap();
+        if ct.units.contains(&u) != own {
+            continue;
+        }
+        let ul = Laea::new(unit.lat0, unit.lon0);
+        let Some(b) = s.blob(u, u8::try_from(k).unwrap(), Layer::Land) else {
+            continue;
+        };
+        let mut ri = 0;
+        for part in &unit.parts {
+            let first = ri;
+            ri += part.rings.len();
+            let drawn = if own {
+                matches!(part.role, Role::Frame | Role::Dropped)
+            } else {
+                part.omit_in != Some(c16)
+            };
+            if !drawn {
+                continue;
+            }
+            for j in 0..part.rings.len() {
+                s.decode(b, first + j, &mut buf).unwrap();
+                if buf.len() < 3 {
+                    continue;
+                }
+                for &[x, y] in &buf {
+                    let (lon, lat) = ul.inv(x, y).unwrap();
+                    let Some([px, py]) = s.project(i, &P, view, lon, lat) else {
+                        continue;
+                    };
+                    if (0.05..P.width - 0.05).contains(&px) && (0.05..P.height - 0.05).contains(&py)
+                    {
+                        out.push([px, py]);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Two vertex lists are the same within 0.02 pt (the frame rounds to 0.01): equal counts, and
+/// each of `a` has a partner in `b`.
+fn same_vertices(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|&[x, y]| {
+            b.iter()
+                .any(|&[bx, by]| (bx - x).abs() < 0.02 && (by - y).abs() < 0.02)
+        })
+}
+
+/// The neighbours' rung (M4c, lever (c)): at RU's fit (level 4, 24 km/pt) every in-pane vertex
+/// of the frame's neighbour shapes is a vertex of the neighbour units' level-5 rings (48 km/pt)
+/// and the reverse, decoded directly from the blobs; the own land's are level 4's, and level 5
+/// is not (S2: own land stays capped at level 4). At US's fit (level 3) the neighbours are level
+/// 4's. Fails if the neighbours stay at the view's level or own land moves to the rung.
+#[test]
+fn neighbours_take_one_rung_coarser() {
+    let s = store();
+    let pts = |shapes: &[ondar_map::frame::Shape]| -> Vec<[f64; 2]> {
+        shapes
+            .iter()
+            .flat_map(|sh| sh.rings.iter())
+            .flatten()
+            .map(|&[x, y]| [f64::from(x), f64::from(y)])
+            .filter(|&[x, y]| {
+                (0.05..P.width - 0.05).contains(&x) && (0.05..P.height - 0.05).contains(&y)
+            })
+            .collect()
+    };
+    for (code, k) in [("RU", 4usize), ("US", 3)] {
+        let i = c(code);
+        let fit = s.fit(i, &P).unwrap();
+        let f = s.frame(i, &P, fit).unwrap();
+        assert_eq!((f.level, f.stats.missing_blobs), (LADDER[k], 0), "{code}");
+        let (nb, land) = (pts(&f.neighbours), pts(&f.land));
+        assert!(
+            nb.len() > 1000 && land.len() > 1000,
+            "{code}: {} / {}",
+            nb.len(),
+            land.len()
+        );
+        assert!(
+            same_vertices(&nb, &vertices_at_level(s, i, &fit, k + 1, false)),
+            "{code}: the neighbours are not level {}'s",
+            k + 1
+        );
+        assert!(
+            !same_vertices(&nb, &vertices_at_level(s, i, &fit, k, false)),
+            "{code}: the neighbours are level {k}'s"
+        );
+        assert!(
+            same_vertices(&land, &vertices_at_level(s, i, &fit, k, true)),
+            "{code}: the own land is not level {k}'s"
+        );
+        assert!(
+            !same_vertices(&land, &vertices_at_level(s, i, &fit, k + 1, true)),
+            "{code}: the own land is level {}'s",
+            k + 1
+        );
+    }
+}

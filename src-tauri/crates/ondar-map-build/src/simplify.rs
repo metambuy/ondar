@@ -286,6 +286,8 @@ pub fn is_simple(line: &[Coord<f64>], closed: bool) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     Rdp,
+    /// RDP at `t / 2^k`, `k` in 1..=3, landed simple and within `t` with fewer vertices than VW.
+    RdpRetry(u8),
     Vw,
 }
 
@@ -301,27 +303,43 @@ fn open_len(line: &[Coord<f64>], closed: bool) -> usize {
     line.len().saturating_sub(usize::from(closed))
 }
 
-/// The per-ring hybrid (P4, decided 2026-10-01): RDP at `t`, kept if the result is simple and
-/// its exact measure is within `t`; otherwise this ring's per-ring VW. No repair step.
+/// The per-ring hybrid (P4, decided 2026-10-01; the retry M4c's): RDP at `t`, kept if the result
+/// is simple and its exact measure is within `t`. Otherwise RDP again at `t/2`, `t/4`, `t/8`: the
+/// first result that is simple and within `t` is kept iff it has fewer open vertices than this
+/// ring's per-ring VW, else VW (M4a's stated rule, first taken in M4c). No repair step.
 pub fn hybrid(line: &[Coord<f64>], closed: bool, t: f64) -> Hybrid {
     let vw = tune(line, closed, t);
     let r = rdp(line, closed, t);
     let (vw_n, rdp_n) = (open_len(&vw.line, closed), open_len(&r, closed));
-    if is_simple(&r, closed) {
-        let bound = exact(line, &r, t.max(1e-9));
-        if bound <= t {
-            let evaluations = vw.evaluations + 1;
-            return Hybrid {
-                chosen: Tuned {
-                    line: r,
-                    bound,
-                    evaluations,
-                },
-                pick: Pick::Rdp,
-                vw: vw_n,
-                rdp: rdp_n,
-            };
+    let within = |cand: &[Coord<f64>]| {
+        if !is_simple(cand, closed) {
+            return None;
         }
+        let bound = exact(line, cand, t.max(1e-9));
+        (bound <= t).then_some(bound)
+    };
+    let mut first = Some(r);
+    for k in 0u8..=3 {
+        let c = match first.take() {
+            Some(c) => c,
+            None => rdp(line, closed, t / f64::from(1u32 << k)),
+        };
+        let Some(bound) = within(&c) else {
+            continue;
+        };
+        if k > 0 && open_len(&c, closed) >= vw_n {
+            break;
+        }
+        return Hybrid {
+            chosen: Tuned {
+                line: c,
+                bound,
+                evaluations: vw.evaluations + 1 + usize::from(k),
+            },
+            pick: if k == 0 { Pick::Rdp } else { Pick::RdpRetry(k) },
+            vw: vw_n,
+            rdp: rdp_n,
+        };
     }
     Hybrid {
         chosen: vw,
@@ -378,13 +396,68 @@ mod tests {
         Coord { x, y }
     }
 
-    /// A thin band: the bottom edge dips 1.0 below its chord, the top edge's middle vertex sits
-    /// 0.5 above that dip but 2.5 below its own chord. RDP at 1.2 straightens the bottom and keeps
-    /// the top's vertex, so the result crosses itself; the hybrid must return VW's ring, which is
-    /// simple. Fails if the hybrid keeps RDP without the simplicity check.
+    /// A thin band 100 long, 20 tall: the bottom edge dips `dip` below its chord at x = 50, and
+    /// the top edge comes down to an apex at (50, `apex`), just above the dip and below the
+    /// bottom's chord, 20 below its own. Along the top, a spike 3 tall and 0.2 wide (area 0.3:
+    /// it caps VW's area threshold) and shallow bumps `bump` tall and 10 wide (area ≥ 0.5, so VW
+    /// keeps them while RDP below `bump`'s tolerance drops them). RDP at any ε above `dip`
+    /// straightens the bottom, keeps the apex, and the ring crosses itself.
+    fn band(dip: f64, apex: f64, bump: f64) -> Vec<Coord<f64>> {
+        let mut v = vec![c(0.0, 0.0), c(50.0, -dip), c(100.0, 0.0), c(100.0, 20.0)];
+        v.extend([c(80.1, 20.0), c(80.0, 23.0), c(79.9, 20.0)]);
+        let top = |x: f64, i: i32| c(x, 20.0 + if i % 2 == 1 { bump } else { 0.0 });
+        v.extend((1..=6).map(|i| top(80.0 - 5.0 * f64::from(i), i)));
+        v.extend([c(50.0, apex), c(45.0, 20.0)]);
+        v.extend((1..=8).map(|i| top(45.0 - 5.0 * f64::from(i), i)));
+        v.extend([c(0.0, 20.0), c(0.0, 0.0)]);
+        v
+    }
+
+    /// The fallback the retry cannot fix (M4c (b)): the band with its dip 0.1 below the chord,
+    /// under every retry's ε (t/8 = 0.15 at t = 1.2), so RDP crosses itself at t, t/2, t/4 and t/8;
+    /// the hybrid returns VW's ring (23 vertices, simple). RDP at t/8 has 10, fewer than VW's, so
+    /// only the simplicity check refuses it. Fails if the hybrid keeps RDP or a retry without the
+    /// simplicity check (`Rdp` / `RdpRetry(1)`).
     #[test]
-    fn a_self_intersecting_rdp_ring_falls_back_to_vw() {
-        let ring = vec![
+    fn a_ring_no_retry_makes_simple_falls_back_to_vw() {
+        let ring = band(0.1, -0.05, 0.1);
+        assert!(is_simple(&ring, true));
+        for k in 0..=3 {
+            let r = rdp(&ring, true, 1.2 / f64::from(1u32 << k));
+            assert!(
+                !is_simple(&r, true),
+                "RDP at t/{} gave a simple ring",
+                1 << k
+            );
+            assert!(open_len(&r, true) < open_len(&tune(&ring, true, 1.2).line, true));
+        }
+        let h = hybrid(&ring, true, 1.2);
+        assert_eq!(h.pick, Pick::Vw);
+        assert_eq!(h.chosen.line, tune(&ring, true, 1.2).line);
+        assert!(is_simple(&h.chosen.line, true));
+        // a well-behaved ring keeps RDP's result at t
+        let w = wiggle(400, 6.0, 9);
+        let h = hybrid(&w, true, 1.0);
+        assert_eq!(h.pick, Pick::Rdp);
+        assert!(h.chosen.bound <= 1.0 && h.rdp <= h.vw);
+    }
+
+    /// The retry (M4c (b)): the band with its dip 0.4 — dropped by RDP at t = 1.2 and t/2 (the ring
+    /// crosses), kept at t/4 = 0.3, where the ring is simple, within t, and has 11 vertices
+    /// against VW's 24 (VW keeps the shallow bumps) → `RdpRetry(2)`, RDP's t/4 ring. And a retry
+    /// that lands simple but not shorter is not kept: M4a's thin band (dip 1.0, apex 0.5 above
+    /// it) is simple at t/2 with 6 vertices, VW's count → `Vw`. Fails with no retry (`Vw` for the
+    /// first), or with the retry kept whatever its length (`RdpRetry(1)` for the second).
+    #[test]
+    fn a_ring_simple_at_a_quarter_takes_the_retry() {
+        let ring = band(0.4, -0.2, 0.2);
+        assert!(is_simple(&ring, true));
+        let h = hybrid(&ring, true, 1.2);
+        assert_eq!(h.pick, Pick::RdpRetry(2));
+        assert_eq!(h.chosen.line, rdp(&ring, true, 0.3));
+        assert!(is_simple(&h.chosen.line, true) && h.chosen.bound <= 1.2);
+        assert_eq!((open_len(&h.chosen.line, true), h.vw), (11, 24));
+        let thin = vec![
             c(0.0, 0.0),
             c(2.5, -0.5),
             c(5.0, -1.0),
@@ -395,18 +468,10 @@ mod tests {
             c(0.0, 2.0),
             c(0.0, 0.0),
         ];
-        assert!(is_simple(&ring, true));
-        let r = rdp(&ring, true, 1.2);
-        assert!(!is_simple(&r, true), "RDP gave a simple ring: {r:?}");
-        let h = hybrid(&ring, true, 1.2);
-        assert_eq!(h.pick, Pick::Vw);
-        assert_eq!(h.chosen.line, tune(&ring, true, 1.2).line);
-        assert!(is_simple(&h.chosen.line, true));
-        // a well-behaved ring keeps RDP's result
-        let w = wiggle(400, 6.0, 9);
-        let h = hybrid(&w, true, 1.0);
-        assert_eq!(h.pick, Pick::Rdp);
-        assert!(h.chosen.bound <= 1.0 && h.rdp <= h.vw);
+        let half = rdp(&thin, true, 0.6);
+        assert!(is_simple(&half, true) && !is_simple(&rdp(&thin, true, 1.2), true));
+        let h = hybrid(&thin, true, 1.2);
+        assert_eq!((open_len(&half, true), h.vw, h.pick), (6, 6, Pick::Vw));
     }
 
     /// The simplicity check: a bow tie, a spike folding back, a zero-area ring and a repeated

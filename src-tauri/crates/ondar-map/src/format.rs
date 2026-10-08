@@ -1,4 +1,5 @@
-//! `world.ondarmap`, version 2 (M4b commit 5; v1 was M4a's): the bundled map resource, its writer
+//! `world.ondarmap`, version 3 (M4c: the ladder's sixth level, the neighbours' rung; v2 was M4b's,
+//! v1 M4a's): the bundled map resource, its writer
 //! (the build tool's) and its loader (the app's) — one code path.
 //!
 //! Little-endian throughout. Every count is bounded by the bytes that remain, every offset is
@@ -27,7 +28,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 
 pub const MAGIC: &[u8; 8] = b"ONDARMAP";
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 
 /// No blob inflates past this, whatever its table says (the largest at Q2b was ~0.3 MB).
 pub const MAX_BLOB_RAW: usize = 64 << 20;
@@ -1219,16 +1220,19 @@ pub(crate) mod tests {
         );
     }
 
-    /// (d) A version byte of 1 or 3 → `Version(1)` / `Version(3)` (v1 was M4a's format, refused
-    /// as such); a bad magic, or no bytes, → `Magic`.
+    /// (d) A version byte of 1, 2 or 4 → `Version(1)` / `Version(2)` / `Version(4)` (v1 was
+    /// M4a's format, v2 M4b's five-level ladder, each refused as such); 3 loads; a bad magic, or
+    /// no bytes, → `Magic`. Fails with `VERSION` left at 2.
     #[test]
     fn version_and_magic() {
         let mut m = synthetic(Encoding::Raw);
-        m[8] = 1;
-        assert_eq!(Store::load(&m).unwrap_err(), LoadError::Version(1));
+        assert!(Store::load(&m).is_ok());
+        for v in [1u8, 2, 4] {
+            m[8] = v;
+            assert_eq!(Store::load(&m).unwrap_err(), LoadError::Version(v.into()));
+        }
         m[8] = 3;
-        assert_eq!(Store::load(&m).unwrap_err(), LoadError::Version(3));
-        m[8] = 2;
+        assert!(Store::load(&m).is_ok());
         m[0] = b'X';
         assert_eq!(Store::load(&m).unwrap_err(), LoadError::Magic);
         assert_eq!(Store::load(&[]).unwrap_err(), LoadError::Magic);
@@ -1373,8 +1377,9 @@ pub(crate) mod tests {
     /// level's index and tolerance from the compiled ladder and decodes at the file's scale for
     /// that index, so a resource with a shorter or shifted ladder loaded and drew rings at the
     /// wrong scale (×1.33 for `[2, 4, …]`). A ladder that is increasing and positive but not
-    /// `LADDER` is `Malformed("ladder")`; the compiled one loads. Fails with the check off, by
-    /// length only, or by the first level only.
+    /// `LADDER` is `Malformed("ladder")` — v2's five levels among them, the file M4b shipped —;
+    /// the compiled one loads. Fails with the check off, by length only, or by the first level
+    /// only.
     #[test]
     fn the_ladder_must_be_the_compiled_one() {
         let s = synthetic(Encoding::Raw);
@@ -1382,7 +1387,8 @@ pub(crate) mod tests {
         for ladder in [
             vec![1.5, 3.0, 6.0, 12.0],
             vec![2.0, 4.0, 8.0, 16.0, 32.0],
-            vec![1.5, 3.0, 6.0, 12.0, 24.0, 48.0],
+            vec![1.5, 3.0, 6.0, 12.0, 24.0],
+            vec![1.5, 3.0, 6.0, 12.0, 24.0, 48.0, 96.0],
         ] {
             let mut h = header();
             h.ladder = ladder.clone();

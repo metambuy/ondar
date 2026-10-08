@@ -249,7 +249,14 @@ impl Store {
                 (cy - y) / s + pane.height / 2.0,
             ]
         };
-        let tol = index::tolerance_km(level, LAND_TOL_PT);
+        // own land at the view's level, neighbours one rung coarser (M4c, lever (c)); the index
+        // tests each unit at the tolerance of the level it is drawn at, as the tool's coverage does
+        let kn = rules::neighbour_level(k);
+        let (tol, tol_n) = (
+            index::tolerance_km(level, LAND_TOL_PT),
+            index::tolerance_km(*LADDER.get(kn)?, LAND_TOL_PT),
+        );
+        let kn8 = u8::try_from(kn).ok()?;
         let main = ct.units.first().copied();
         // D7: the insets are on screen at the fit view only
         let at_fit = view == fit_view;
@@ -266,11 +273,12 @@ impl Store {
         let mut buf = Vec::new();
         let mut pts = Vec::new();
         for (u, unit) in self.units.iter().enumerate() {
+            let Ok(u16_) = u16::try_from(u) else { continue };
+            let own = ct.units.contains(&u16_);
+            let (ku8, tol) = if own { (k8, tol) } else { (kn8, tol_n) };
             if use_index && !index::cap_meets(&unit.cap, ground, tol) {
                 continue;
             }
-            let Ok(u16_) = u16::try_from(u) else { continue };
-            let own = ct.units.contains(&u16_);
             let same = main == Some(u16_);
             let unit_l = Laea::new(unit.lat0, unit.lon0);
             // own land: the frame's parts and the small groups outside the usable area (S6's
@@ -284,7 +292,7 @@ impl Store {
                 Role::Inset(_) => (!at_fit).then_some(false),
                 Role::NeighbourOnly => None,
             };
-            let Some(b) = self.blob(u16_, k8, Layer::Land) else {
+            let Some(b) = self.blob(u16_, ku8, Layer::Land) else {
                 // no blob at this level: one missing unit if the index admits a ring this frame
                 // would draw — counted per unit, no ring considered (review finding 9)
                 let admitted = unit.parts.iter().any(|p| {
