@@ -23,10 +23,8 @@ export const DRAG_THRESHOLD_PT = 4;
 
 /** The playing dot's halo: a ring this many points outside the dot (D4). */
 const HALO_GAP_PT = 3;
-/** The hover label: its gap from the dot's edge, and the label's size (`--text-map-label`'s 8 pt),
- *  the least baseline that keeps its top inside the pane. */
-const LABEL_GAP_PT = 4;
-const LABEL_SIZE_PT = 8;
+/** The hover label's gap from the dot's edge, in points. */
+export const LABEL_GAP_PT = 4;
 
 /** A path's `d` for a shape: every ring closed, the fill rule even-odd (holes). */
 export function pathOf(shape: Shape): string {
@@ -66,20 +64,6 @@ function lineOf(line: [number, number][]): string {
     d += (i === 0 ? "M" : "L") + line[i][0] + " " + line[i][1];
   }
   return d;
-}
-
-/** The hover label (decision 7): beside the dot on the side toward the pane's centre, its
- *  baseline kept between the label's size and the bottom edge, so the text stays inside the
- *  pane. Placement only: the text is Rust's count and place. */
-function labelFor(d: Dot, band: MapBand) {
-  const right = d.x <= band.width / 2;
-  const gap = d.r + LABEL_GAP_PT;
-  return {
-    text: dotText(d.n, d.place),
-    anchor: right ? ("start" as const) : ("end" as const),
-    x: right ? d.x + gap : d.x - gap,
-    y: Math.min(Math.max(d.y + LABEL_SIZE_PT / 2, LABEL_SIZE_PT), band.height - LABEL_GAP_PT / 2),
-  };
 }
 
 const none = (): MapInputs => ({ pan_pt: [0, 0], zoom_steps: 0, fit: false });
@@ -433,7 +417,31 @@ export default function MapPane({ band, country, countryName, playingUuid, onHit
   const noLocations = frame !== null && frame.stats.stations_total > 0 && frame.stats.stations_located === 0;
   const hovered: Dot | null =
     frame !== null && hover !== null && hover.seq === reply?.seq ? (frame.dots[hover.i] ?? null) : null;
-  const label = hovered === null ? null : labelFor(hovered, band);
+  // The hover label (decision 7, amended at k+4b: the inset-label style read 1.13 to 3.91 against
+  // the map, under WCAG's 4.5) is HTML on the controls' plate over the SVG. Beside the dot on the
+  // side toward the pane's centre, `LABEL_GAP_PT` from its edge, its `max-width` ending at the
+  // pane's edge (a long place ends in an ellipsis); centred on the dot vertically, by the label's
+  // own box (line height plus padding), and clamped into the pane. Placement only, set on the
+  // element before paint: the words are Rust's count and place.
+  const tipRef = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    if (el === null || hovered === null) return;
+    const gap = hovered.r + LABEL_GAP_PT;
+    if (hovered.x <= band.width / 2) {
+      const left = hovered.x + gap;
+      el.style.left = `${left}px`;
+      el.style.right = "";
+      el.style.maxWidth = `${Math.max(0, band.width - left)}px`;
+    } else {
+      const edge = hovered.x - gap;
+      el.style.left = "";
+      el.style.right = `${band.width - edge}px`;
+      el.style.maxWidth = `${Math.max(0, edge)}px`;
+    }
+    const h = el.offsetHeight;
+    el.style.top = `${Math.min(Math.max(hovered.y - h / 2, 0), band.height - h)}px`;
+  }, [hovered, band]);
 
   return (
     <div className={styles.platter} data-measure="map_band" data-seq={reply?.seq ?? -1}>
@@ -510,16 +518,16 @@ export default function MapPane({ band, country, countryName, playingUuid, onHit
                 </g>
               ))}
             </g>
-            {label !== null && (
-              <text className={styles.dotLabel} x={label.x} y={label.y} textAnchor={label.anchor}>
-                {label.text}
-              </text>
-            )}
           </>
         )}
       </svg>
       {message !== null && <p className={styles.mapMessage}>{message}</p>}
-      {noLocations && <p className={styles.mapNote}>No station locations for {countryName}</p>}
+      {noLocations && <p className={`${styles.mapPlate} ${styles.mapNote}`}>No station locations for {countryName}</p>}
+      {hovered !== null && (
+        <p ref={tipRef} className={`${styles.mapPlate} ${styles.mapTip}`} aria-hidden="true">
+          {dotText(hovered.n, hovered.place)}
+        </p>
+      )}
       {/* C1: the `− fit +` row in the band's reserved bottom-right corner, native buttons placed
           at the rect Rust reserved (CSS variables from the layout), keyboard-reachable. */}
       <div className={styles.controls} role="group" aria-label="Zoom">

@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
+*Last updated: 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
+controls' plate, with the contrast figures). Previously 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
 exception, in "M4c: Step 0 and its decisions"). Previously 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
 and the chat's decisions S1–S4 — see "M4c: Step 0 and its decisions"; round 2's ring figure
 corrected). Previously 2026-10-07 (the CLAUDE.md rewrite on branch `claude-md`: area rules in
@@ -1156,6 +1157,25 @@ country the map shows (a choice the plan left open: under ★ the filter would h
 A reload by `stations:updated` keeps the filter by uuid; a station gone from the new list drops out. A
 hit answered after a country change is dropped. The playing dot carries a halo at `r + 3` in the dot
 colour (D4); MT's line reads "No station locations for {name}" from the countries list.
+
+**Decision 7 amended (k+4b, 2026-10-08): the hover label and MT's line on the controls' plate.**
+Martín's k+4 hand test passed everything except the hover label: it was there, but too small and grey to
+read. The cause was the spec, not the build. Decision 7 gave the label the inset-label style (8 px
+regular, `--map-label`), and its WCAG 2.x contrast against the map is under 1.4.3's 4.5 everywhere:
+Sand 3.07 on land, 3.25 on sea, 3.91 on neighbours; **Ink 1.13 on land**, 3.49 on sea, 2.73 on
+neighbours. MT's line shared the style on the sea (3.25 / 3.49) and carries information, so it fails too.
+Both now sit on the `− fit +` buttons' plate: `--map-controls-bg` behind `--map-controls-fg`, radius
+`--map-inset-radius`, padding `--chip-padding`, `--text-subheadline` (11/14). With the plate's background
+composited over each surface, the contrast is Sand 10.13 on land / 10.28 on sea / 10.76 on neighbours, and
+Ink 7.49 / 13.28 / 11.97 (the chat's figures, recomputed by `mapContrast.test.tsx` from the tokens).
+- **Element:** the hover label is HTML over the SVG, `aria-hidden`, with `pointer-events: none`, so it
+  never takes the pointer from its own dot or a neighbour's.
+- **Placement:** beside the dot on the side toward the pane's centre, `LABEL_GAP_PT` from the dot's
+  edge, centred on the dot vertically. It is clamped into the pane by its real box (`offsetHeight`:
+  line height plus padding), and its `max-width` ends at the pane's edge, where a long place name ends
+  in an ellipsis on one line.
+- **MT's line** keeps its bottom-left corner.
+- **Inset labels are unchanged.** They are names, and Martín judges them in the captures.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

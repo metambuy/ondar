@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Dot, Frame, MapBand, MapHit, MapInputs, MapReply, MapStatus } from "../api";
-import MapPane, { DRAG_THRESHOLD_PT, pathOf } from "./MapPane";
+import MapPane, { DRAG_THRESHOLD_PT, LABEL_GAP_PT, pathOf } from "./MapPane";
 import styles from "./panel.module.css";
 
 type Deferred = { resolve: (r: MapReply | null) => void; inputs: MapInputs };
@@ -463,8 +463,10 @@ describe("MapPane", () => {
   // 17. MT's line (decision 5): "No station locations for {name}" on the platter when the
   //     country has stations and none located; not when it has none (a missing list, or the
   //     dots still on their way) and not when any is located. Fails on a condition that reads
-  //     either count alone, or on the code (not the name) in the text.
-  it("17. MT's line for stations with no locations, and only then", async () => {
+  //     either count alone, or on the code (not the name) in the text. k+4b: the line is on the
+  //     controls' plate (decision 7 amended: 3.25 / 3.49 on the sea in the inset-label style);
+  //     fails if it loses the plate class.
+  it("17. MT's line for stations with no locations, and only then, on the plate", async () => {
     const cases: [number, number, string | null][] = [
       [13, 0, "No station locations for Malta"],
       [0, 0, null],
@@ -475,6 +477,7 @@ describe("MapPane", () => {
       act(() => pulls[0].resolve(withDots(1, [], { stations_total: total, stations_located: located })));
       await settle();
       expect(container.querySelector(`p.${styles.mapNote}`)?.textContent ?? null, `${total}/${located}`).toBe(text);
+      if (text !== null) expect(container.querySelector(`p.${styles.mapNote}`)!.classList.contains(styles.mapPlate)).toBe(true);
       unmount();
       pulls.length = 0;
       selects.length = 0;
@@ -493,40 +496,111 @@ describe("MapPane", () => {
     expect(container.querySelector("svg")!.getAttribute("role")).toBe("img");
   });
 
-  // 19. Hover (decision 7, S4 passed): entering a dot shows "n station(s) · place" beside it
-  //     (the count alone when the place is empty, "station" for one); a dot in the pane's right
-  //     half anchors the label to its left (`end`), one in the left half to its right, so the
-  //     label stays inside the pane; leaving clears it; a new frame drops it (the dot may have
-  //     moved). Fails on the wrong text, a label anchored outward, or one that outlives its dot.
-  it("19. hover: the count and place beside the dot, inside the pane, cleared on leave", async () => {
-    const { container } = await mounted();
-    act(() => pulls[0].resolve(withDots(1, three)));
-    await settle();
-    const label = () => container.querySelector(`svg text.${styles.dotLabel}`);
-    const c = dotCircles(container);
-    fireEvent.pointerEnter(c[0]);
-    expect(label()!.textContent).toBe("64 stations · Lisboa");
-    expect(label()!.getAttribute("text-anchor")).toBe("start");
-    expect(Number(label()!.getAttribute("x"))).toBeGreaterThan(three[0].x + three[0].r);
-    fireEvent.pointerLeave(c[0]);
-    expect(label()).toBeNull();
-    fireEvent.pointerEnter(c[1]);
-    expect(label()!.textContent).toBe("3 stations");
-    expect(label()!.getAttribute("text-anchor")).toBe("end");
-    expect(Number(label()!.getAttribute("x"))).toBeLessThan(three[1].x - three[1].r);
-    fireEvent.pointerLeave(c[1]);
-    fireEvent.pointerEnter(c[2]);
-    expect(label()!.textContent).toBe("1 station");
-    // at the top edge (y = 1): the baseline sits at least the label's 8 pt size down, so the
-    // text's top is inside the pane
-    expect(Number(label()!.getAttribute("y"))).toBeGreaterThanOrEqual(8);
-    const svg = container.querySelector("svg")!;
-    fireEvent.wheel(svg, { deltaX: 1, deltaY: 0 });
-    await frames();
-    act(() => pulls[1].resolve(withDots(2, three)));
-    await settle();
-    expect(label()).toBeNull();
-  });
+  // The hover label's box in pane points, from what the pane set on it: `left` or `right`, the
+  // `max-width` (the widest the label can be: its edge at the pane's) and `top`, with the
+  // label's height `TIP_H` (jsdom lays nothing out: `offsetHeight` is stubbed to it).
+  const TIP_H = 16;
+  const tip = (root: HTMLElement) => root.querySelector<HTMLElement>(`p.${styles.mapTip}`);
+  const px = (v: string) => {
+    expect(v).toMatch(/^-?[\d.]+px$/);
+    return Number(v.slice(0, -2));
+  };
+  const box = (el: HTMLElement) => {
+    const w = px(el.style.maxWidth);
+    const left = el.style.left !== "" ? px(el.style.left) : band.width - px(el.style.right) - w;
+    const top = px(el.style.top);
+    return { left, right: left + w, top, bottom: top + TIP_H, side: el.style.left !== "" ? "right" : "left" };
+  };
+  const withHeight = async (f: () => Promise<void>) => {
+    const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")!;
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => TIP_H });
+    try {
+      await f();
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", d);
+    }
+  };
+
+  // 19. Hover (decision 7, amended at k+4b): entering a dot shows "n station(s) · place" (the
+  //     count alone when the place is empty, "station" for one) on the controls' plate, an HTML
+  //     element over the SVG, `aria-hidden` like the dots. A dot in the pane's left half puts it
+  //     `LABEL_GAP_PT` right of the dot's edge, one in the right half `LABEL_GAP_PT` left of it,
+  //     centred on the dot vertically; leaving clears it; a new frame drops it (the dot may have
+  //     moved). Fails on the wrong text, a label outward of the dot or off its centre line, an
+  //     SVG `<text>` (8 px, unreadable at k+4), one exposed, or one that outlives its dot.
+  it("19. hover: the count and place on the plate beside the dot, cleared on leave", () =>
+    withHeight(async () => {
+      const { container } = await mounted();
+      act(() => pulls[0].resolve(withDots(1, three)));
+      await settle();
+      expect(container.querySelector(`svg text:not(.${styles.insetLabel})`)).toBeNull();
+      const c = dotCircles(container);
+      fireEvent.pointerEnter(c[0]);
+      let t = tip(container)!;
+      expect(t.textContent).toBe("64 stations · Lisboa");
+      expect(t.classList.contains(styles.mapPlate)).toBe(true);
+      expect(t.getAttribute("aria-hidden")).toBe("true");
+      let b = box(t);
+      expect(b.side).toBe("right");
+      expect(b.left).toBeCloseTo(three[0].x + three[0].r + LABEL_GAP_PT, 6);
+      expect((b.top + b.bottom) / 2).toBeCloseTo(three[0].y, 6);
+      fireEvent.pointerLeave(c[0]);
+      expect(tip(container)).toBeNull();
+      fireEvent.pointerEnter(c[1]);
+      t = tip(container)!;
+      expect(t.textContent).toBe("3 stations");
+      b = box(t);
+      expect(b.side).toBe("left");
+      expect(band.width - px(t.style.right)).toBeCloseTo(three[1].x - three[1].r - LABEL_GAP_PT, 6);
+      expect((b.top + b.bottom) / 2).toBeCloseTo(three[1].y, 6);
+      fireEvent.pointerLeave(c[1]);
+      fireEvent.pointerEnter(c[2]);
+      expect(tip(container)!.textContent).toBe("1 station");
+      const svg = container.querySelector("svg")!;
+      fireEvent.wheel(svg, { deltaX: 1, deltaY: 0 });
+      await frames();
+      act(() => pulls[1].resolve(withDots(2, three)));
+      await settle();
+      expect(tip(container)).toBeNull();
+    }));
+
+  // 22. The label stays inside the pane on all four sides, by its real box (`offsetHeight`:
+  //     line height plus padding), for dots on each edge and for a long place name: its widest
+  //     extent (`max-width`) ends at the pane's edge, its top and bottom are clamped into the
+  //     pane, and the long name is in the DOM whole (the ellipsis is CSS's, `mapContrast` 3).
+  //     Fails with no clamp (a dot at y = 0 puts the top at −8), a `max-width` past the edge, or
+  //     the label on the outward side of an edge dot.
+  it("22. the label stays inside the pane at all four edges and for a long place", () =>
+    withHeight(async () => {
+      const long = "Região Autónoma da Madeira e das Ilhas Desertas e Selvagens";
+      const edges = [
+        dot(1, 89, 3, ["l"], "Left"),
+        dot(band.width - 1, 89, 3, ["r"], "Right"),
+        dot(100, 0, 3, ["t"], "Top"),
+        dot(250, band.height, 3, ["b"], "Bottom"),
+        dot(band.width / 2, band.height - 2, 64, ["m"], long),
+      ];
+      const { container } = await mounted();
+      act(() => pulls[0].resolve(withDots(1, edges)));
+      await settle();
+      const c = dotCircles(container);
+      for (let i = 0; i < edges.length; i++) {
+        fireEvent.pointerEnter(c[i]);
+        const t = tip(container)!;
+        const b = box(t);
+        const what = `${edges[i].place} ${JSON.stringify(b)}`;
+        expect(b.left, what).toBeGreaterThanOrEqual(0);
+        expect(b.right, what).toBeLessThanOrEqual(band.width);
+        expect(b.top, what).toBeGreaterThanOrEqual(0);
+        expect(b.bottom, what).toBeLessThanOrEqual(band.height);
+        // beside the dot, never over it
+        if (b.side === "right") expect(b.left, what).toBeGreaterThan(edges[i].x + edges[i].r);
+        else expect(b.right, what).toBeLessThan(edges[i].x - edges[i].r);
+        fireEvent.pointerLeave(c[i]);
+      }
+      fireEvent.pointerEnter(c[4]);
+      expect(tip(container)!.textContent).toBe(`64 stations · ${long}`);
+    }));
 
   // 20. `map:changed` (the dots installed, or a landed refresh regathered) wakes the pull loop:
   //     one pull with no input, so the frame comes at the view the pane has. Fails if the event

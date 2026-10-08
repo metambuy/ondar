@@ -276,22 +276,38 @@
   pointer-events: none;
 }
 
-/* The hover label (decision 7): the inset label's style, beside the dot. */
-.dotLabel {
-  font: var(--text-map-label);
-  fill: var(--map-label);
+/* The map's text on the controls' plate (decision 7, amended at k+4b): the hover label and MT's
+   line. The inset-label style (8 px, `--map-label`) read 1.13–3.91 against the map, under WCAG
+   1.4.3's 4.5; the plate reads Sand 10.1–10.8, Ink 7.5–13.3 over sea, land and neighbours
+   (`mapContrast.test.tsx` computes it). HTML over the SVG; it never takes the pointer, so the
+   label beside a dot cannot fire its own dot's or a neighbour's leave and enter. */
+.mapPlate {
+  margin: 0;
+  box-sizing: border-box;
+  padding: var(--chip-padding);
+  border-radius: var(--map-inset-radius);
+  background: var(--map-controls-bg);
+  color: var(--map-controls-fg);
+  font: var(--text-subheadline);
   pointer-events: none;
 }
 
-/* MT (decision 5): "No station locations for …", one line on the platter in the inset label's
-   style, at the bottom-left corner (the controls hold the bottom-right). */
+/* The hover label: placed by `MapPane` (left or right, top, max-width to the pane's edge); one
+   line, a long place ends in an ellipsis. */
+.mapTip {
+  position: absolute;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* MT (decision 5): "No station locations for …", at the bottom-left corner (the controls hold the
+   bottom-right). */
 .mapNote {
   position: absolute;
   left: var(--space-2);
   bottom: var(--space-2);
-  margin: 0;
-  font: var(--text-map-label);
-  color: var(--map-label);
   pointer-events: none;
 }
 
