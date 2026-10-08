@@ -77,6 +77,8 @@ type Reply<T> = oneshot::Sender<Result<T, ServiceError>>;
 enum Msg {
     ListCountries(Reply<ListedCountries>),
     ListStations(String, Reply<ListedStations>),
+    /// The stored list as it stands, expired or not; never a fetch (M4c: the map's read).
+    CachedStations(String, Reply<Option<Vec<Station>>>),
     Search(String, Reply<Vec<Station>>),
     ListFavourites(Reply<Vec<Station>>),
     AddFavourite(Box<Station>, Reply<()>),
@@ -136,6 +138,16 @@ impl StationsHandle {
             return Err(ServiceError::InvalidCountry(cc));
         }
         self.ask(|r| Msg::ListStations(cc, r)).await
+    }
+    /// The country's stored list, expired or not, or `None` when nothing is stored. Never starts
+    /// a fetch and never waits on one (M4c, the map's dots): the page's `list_stations` is what
+    /// fetches, and a landed refresh is announced by `StationsUpdated` as before.
+    pub async fn cached_stations(&self, cc: &str) -> Result<Option<Vec<Station>>, ServiceError> {
+        let cc = cc.trim().to_ascii_uppercase();
+        if cc.len() != 2 || !cc.bytes().all(|b| b.is_ascii_uppercase()) {
+            return Err(ServiceError::InvalidCountry(cc));
+        }
+        self.ask(|r| Msg::CachedStations(cc, r)).await
     }
     pub async fn search_stations(&self, query: &str) -> Result<Vec<Station>, ServiceError> {
         self.ask(|r| Msg::Search(query.to_string(), r)).await
@@ -344,6 +356,10 @@ impl Service {
     fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::ListStations(cc, reply) => self.list_stations(cc, reply),
+            Msg::CachedStations(cc, reply) => {
+                let stored = self.cache.stations(&cc).map(|o| o.map(|s| s.items));
+                let _ = reply.send(stored.map_err(ServiceError::from));
+            }
             Msg::StationsDone(cc, result) => self.stations_done(cc, result),
             Msg::ListCountries(reply) => self.list_countries(reply),
             Msg::CountriesDone(result) => self.countries_done(result),
@@ -1023,6 +1039,40 @@ mod tests {
                     outcome: RefreshOutcome::Failed,
                 }]
             );
+        });
+    }
+
+    /// `cached_stations` (M4c, the map's read) answers from the cache alone: a missing list is
+    /// `None`, an expired one is served as stored, and neither starts a fetch. The fence is a
+    /// missing FR list read through `list_stations`, which fetches and returns only once its fetch
+    /// has landed; the request log is read after it, so a fetch the two reads had started (spawned
+    /// before FR's, on the same two-worker runtime) has made its request by then. Fails if the
+    /// handler fetches on a missing or an expired list (two more URLs, one for ES or PT), or if
+    /// the expired list is withheld.
+    #[test]
+    fn cached_stations_never_starts_a_fetch() {
+        let (clock, now) = fake_clock(T0);
+        let mut cache = Cache::in_memory(clock).unwrap();
+        cache.put_stations("PT", &[st("old", 1)], 1, T0).unwrap();
+        *now.lock().unwrap() = T0 + TTL_STATIONS + 1;
+        let transport = FakeTransport::new(vec![ok(&rows(3))]);
+        let (h, _) = service_with(cache, transport.clone());
+        block_on(async {
+            assert_eq!(within(100, h.cached_stations("es")).await, Ok(None));
+            let pt = within(100, h.cached_stations("PT")).await.unwrap().unwrap();
+            assert_eq!(
+                pt.iter().map(|s| s.uuid.as_str()).collect::<Vec<_>>(),
+                ["old"]
+            );
+            assert_eq!(
+                h.cached_stations("P1").await,
+                Err(ServiceError::InvalidCountry("P1".into()))
+            );
+            let fr = within(2000, h.list_stations("FR")).await.unwrap();
+            assert_eq!(fr.source, CacheSource::Fresh);
+            let urls = transport.urls.lock().unwrap().clone();
+            assert_eq!(urls.len(), 1, "{urls:?}");
+            assert!(urls[0].contains("/FR"), "{urls:?}");
         });
     }
 

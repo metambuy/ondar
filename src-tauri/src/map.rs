@@ -12,15 +12,26 @@
 //! the main thread with the lock released and replies. Every frame carries a sequence number,
 //! bumped only when a frame is produced (and on `select`), so a reply that arrives behind a newer
 //! one is never drawn over it. A pan at the fit changes nothing (D6) and replies nothing.
+//!
+//! **The stations (M4c, S3).** `select` frames at once with no dots: the stored list is read,
+//! gathered and located in a task spawned after it (`spawn_gather`), never in front of the first
+//! pull. The task holds a `Ticket` (the country, `select_gen`, an issue number); `install` takes
+//! its dots only if the selection and its generation are still the ticket's and no later ticket
+//! installed first, then bumps `dots_gen`, which the next pull treats as a change, at the view it
+//! has; the task then emits `map:changed`. A refresh that lands for the selected country takes the
+//! same path (`on_landed`). `hit` tests the dots of the newest frame produced.
 
 use ondar_map::format::Store;
-use ondar_map::frame::{Frame, Lookup, View};
+use ondar_map::frame::{Dot, Frame, Lookup, View};
+use ondar_map::gather::{Gathered, Point};
 use ondar_map::rules::{self, Pane};
+use ondar_stations::{ServiceError, Station};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use ts_rs::TS;
 
 use crate::panel::MapBand;
@@ -72,6 +83,19 @@ pub struct MapReply {
     pub frame: Option<Frame>,
 }
 
+/// What `map_hit` answers: the dot's stations (uuids, list order), their count and the dot's
+/// place (empty when none of its stations has one).
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct MapHit {
+    pub uuids: Vec<String>,
+    pub n: u32,
+    pub place: String,
+}
+
+/// How far outside a dot's radius a click still hits it, points.
+pub const HIT_SLOP_PT: f32 = 2.0;
+
 /// What `select` landed on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Selected {
@@ -90,8 +114,31 @@ pub struct Session {
     view: Option<View>,
     pending: MapInputs,
     seq: u32,
-    /// The (country, band, view) last framed, so an unchanged view frames nothing.
-    framed: Option<(usize, MapBand, View)>,
+    /// The (country, band, view, `dots_gen`) last framed, so an unchanged view frames nothing.
+    framed: Option<(usize, MapBand, View, u64)>,
+    /// The selected code as given, trimmed and upper-cased (`""` before any select).
+    code: String,
+    /// Bumped by every `select`: a ticket from before it installs nothing.
+    select_gen: u64,
+    /// The last ticket issued and the newest one installed, so a slower read of an older list
+    /// never replaces a newer one.
+    issued: u64,
+    installed: u64,
+    /// The selected country's dots and counts (empty after `select` until a task installs them).
+    dots: Arc<Gathered>,
+    /// Bumped by every install; part of `framed`, so the next pull frames them.
+    dots_gen: u64,
+    /// The newest frame's seq and its dots, for `hit`.
+    framed_dots: (u32, Vec<Dot>),
+}
+
+/// A gather in flight for the selected country, as `ticket_for` issued it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ticket {
+    pub code: String,
+    country: usize,
+    select_gen: u64,
+    issue: u64,
 }
 
 /// What a pull decided: a frame to compute (off the lock), or a reply as it stands.
@@ -107,6 +154,7 @@ pub enum Step {
         pane: Pane,
         view: View,
         band: MapBand,
+        dots: Arc<Gathered>,
     },
     Reply(Option<MapReply>),
 }
@@ -140,6 +188,10 @@ impl Session {
         self.pending = MapInputs::default();
         self.framed = None;
         self.seq = self.seq.wrapping_add(1);
+        self.code = code.trim().to_ascii_uppercase();
+        self.select_gen += 1;
+        self.dots = Arc::default();
+        self.framed_dots = (self.seq, Vec::new());
         match self.selected {
             Selected::None => "unavailable",
             Selected::NoMap => "no_map",
@@ -229,10 +281,10 @@ impl Session {
             return Step::Reply(None);
         };
         self.view = Some(view);
-        if self.framed == Some((country, band, view)) {
+        if self.framed == Some((country, band, view, self.dots_gen)) {
             return Step::Reply(None);
         }
-        self.framed = Some((country, band, view));
+        self.framed = Some((country, band, view, self.dots_gen));
         self.seq = self.seq.wrapping_add(1);
         Step::Frame {
             seq: self.seq,
@@ -240,7 +292,71 @@ impl Session {
             pane,
             view,
             band,
+            dots: self.dots.clone(),
         }
+    }
+
+    /// A ticket for a gather of `code`'s stations, iff `code` is the selected country's (a
+    /// landed refresh for another country, or no country selected, gets none).
+    pub fn ticket_for(&mut self, code: &str) -> Option<Ticket> {
+        let Selected::Country(country) = self.selected else {
+            return None;
+        };
+        if !code.trim().eq_ignore_ascii_case(&self.code) {
+            return None;
+        }
+        self.issued += 1;
+        Some(Ticket {
+            code: self.code.clone(),
+            country,
+            select_gen: self.select_gen,
+            issue: self.issued,
+        })
+    }
+
+    /// Install `g` as the selected country's dots iff the ticket's selection is still the
+    /// session's (same country, same `select_gen`) and no later ticket has installed; bumps
+    /// `dots_gen` so the next pull frames them. Returns whether it installed.
+    pub fn install(&mut self, t: &Ticket, g: Gathered) -> bool {
+        let current =
+            self.selected == Selected::Country(t.country) && self.select_gen == t.select_gen;
+        if !current || t.issue <= self.installed {
+            return false;
+        }
+        self.installed = t.issue;
+        self.dots = Arc::new(g);
+        self.dots_gen += 1;
+        true
+    }
+
+    /// A frame was produced for `seq`: its dots become the ones `hit` tests, unless a newer
+    /// frame (or a `select`) has already replaced them.
+    pub fn framed(&mut self, seq: u32, dots: &[Dot]) {
+        // wrapping order: `seq` is newer iff it is ahead by less than half the range
+        if (seq.wrapping_sub(self.framed_dots.0) as i32) > 0 {
+            self.framed_dots = (seq, dots.to_vec());
+        }
+    }
+
+    /// The dot under `pt` (pane points) in the newest frame: the nearest whose centre is within
+    /// its radius + `HIT_SLOP_PT`, with its index; `None` on a miss or before any frame.
+    pub fn hit(&self, pt: [f32; 2]) -> Option<(usize, MapHit)> {
+        let d2 = |d: &Dot| (d.x - pt[0]).powi(2) + (d.y - pt[1]).powi(2);
+        let (i, d) = self
+            .framed_dots
+            .1
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d2(d) <= (d.r + HIT_SLOP_PT).powi(2))
+            .min_by(|a, b| d2(a.1).total_cmp(&d2(b.1)))?;
+        Some((
+            i,
+            MapHit {
+                uuids: d.uuids.clone(),
+                n: d.n,
+                place: d.place.clone(),
+            },
+        ))
     }
 
     /// `pull`, with the frame computed inline (the tests; the command frames off the lock
@@ -260,7 +376,12 @@ impl Session {
                 pane,
                 view,
                 band,
-            } => Some(frame_reply(store?, seq, country, &pane, view, band)),
+                dots,
+            } => {
+                let r = frame_reply(store?, seq, country, &pane, view, band, &dots);
+                self.framed(seq, r.frame.as_ref().map_or(&[], |f| &f.dots));
+                Some(r)
+            }
         }
     }
 }
@@ -273,8 +394,9 @@ pub fn frame_reply(
     pane: &Pane,
     view: View,
     band: MapBand,
+    dots: &Gathered,
 ) -> MapReply {
-    let frame = store.frame(country, pane, view);
+    let frame = store.frame_dots(country, pane, view, dots);
     MapReply {
         seq,
         status: MapStatus::Frame,
@@ -282,6 +404,135 @@ pub fn frame_reply(
         view: Some(view),
         frame,
     }
+}
+
+/// The shell's one conversion from the directory to the map: a station's uuid, its `geo`
+/// (lat, lon) and its `state`, in list order.
+pub fn points_of(list: &[Station]) -> Vec<Point> {
+    list.iter()
+        .map(|s| Point {
+            id: s.uuid.clone(),
+            geo: s.geo,
+            place: s.state.clone(),
+        })
+        .collect()
+}
+
+/// Why a gather ran, for its log line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    Select,
+    Landed,
+}
+
+impl Cause {
+    fn as_str(self) -> &'static str {
+        match self {
+            Cause::Select => "select",
+            Cause::Landed => "landed",
+        }
+    }
+}
+
+/// The gather for a ticket: `read` the stored list, gather and locate it on a blocking thread
+/// (the store is read-only), then `install` under the session lock and, iff it installed, `emit`.
+/// One `map dots …` line: the counts and `ms` from `t0` (the select or the landing) to the
+/// install, or why nothing was installed. Returns whether it installed.
+pub async fn gather_and_install<R>(
+    map: MapState,
+    session: &MapSessionState,
+    ticket: Ticket,
+    cause: Cause,
+    t0: Instant,
+    read: R,
+    emit: impl FnOnce(),
+) -> bool
+where
+    R: Future<Output = Result<Option<Vec<Station>>, ServiceError>>,
+{
+    let (code, why) = (ticket.code.clone(), cause.as_str());
+    let list = match read.await {
+        Ok(Some(list)) => list,
+        Ok(None) => {
+            log::info!("map dots code={code} cause={why} none=no_stored_list");
+            return false;
+        }
+        Err(e) => {
+            log::warn!("map dots code={code} cause={why} none=read_failed: {e}");
+            return false;
+        }
+    };
+    let t_read = Instant::now();
+    let country = ticket.country;
+    let gathered = tauri::async_runtime::spawn_blocking(move || {
+        let points = points_of(&list);
+        map.0
+            .get()
+            .and_then(|s| s.as_ref())
+            .map(|s| s.gather_dots(country, &points))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(g) = gathered else {
+        log::warn!("map dots code={code} cause={why} none=no_store");
+        return false;
+    };
+    let t_gather = Instant::now();
+    let (total, located, dots, outside) = (g.total, g.located, g.dots.len(), g.outside);
+    if !session.0.lock().unwrap().install(&ticket, g) {
+        log::info!("map dots code={code} cause={why} dropped=superseded");
+        return false;
+    }
+    emit();
+    let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1e3;
+    log::info!(
+        "map dots code={code} cause={why} stations={total} located={located} dots={dots} \
+         outside={outside} read_ms={:.2} gather_ms={:.2} ms={:.2}",
+        ms(t0, t_read),
+        ms(t_read, t_gather),
+        ms(t0, Instant::now()),
+    );
+    true
+}
+
+/// Spawns `gather_and_install` for a ticket on Tauri's runtime, reading the stored list through
+/// the stations handle and emitting `map:changed` on install. Never awaited by its caller.
+pub fn spawn_gather(app: tauri::AppHandle, ticket: Ticket, cause: Cause, t0: Instant) {
+    tauri::async_runtime::spawn(async move {
+        let (Some(map), Some(session), Some(app_state)) = (
+            app.try_state::<MapState>(),
+            app.try_state::<MapSessionState>(),
+            app.try_state::<crate::AppState>(),
+        ) else {
+            return;
+        };
+        let code = ticket.code.clone();
+        let read = app_state.stations.cached_stations(&code);
+        let emit = || {
+            if let Err(e) = app.emit(crate::events::MAP_CHANGED, ()) {
+                log::warn!("failed to emit map:changed: {e}");
+            }
+        };
+        gather_and_install(map.inner().clone(), &session, ticket, cause, t0, read, emit).await;
+    });
+}
+
+/// A refresh landed for `cc` (the stations sink, on the service's DB thread): if `cc` is the
+/// selected country, regather in a spawned task. Never waits here: the DB thread is the one that
+/// answers the task's read, so awaiting it inline would deadlock.
+pub fn on_landed(app: &tauri::AppHandle, cc: String) {
+    let t0 = Instant::now();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(session) = app.try_state::<MapSessionState>() else {
+            return;
+        };
+        let ticket = session.0.lock().unwrap().ticket_for(&cc);
+        if let Some(t) = ticket {
+            spawn_gather(app.clone(), t, Cause::Landed, t0);
+        }
+    });
 }
 
 /// The resource's path under a resource directory.
@@ -616,6 +867,249 @@ mod session_tests {
                 f.land.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dots_tests {
+    //! M4c k+3: the dots reach the session off the select path, through a ticket, and the
+    //! newest frame's dots answer a click.
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tauri::async_runtime::block_on;
+
+    fn map_state() -> MapState {
+        static S: OnceLock<MapState> = OnceLock::new();
+        S.get_or_init(|| {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
+            let store = load(&resource_path(&dir)).unwrap().0;
+            MapState(Arc::new(OnceLock::from(Some(store))))
+        })
+        .clone()
+    }
+
+    fn store() -> &'static Store {
+        static S: OnceLock<MapState> = OnceLock::new();
+        S.get_or_init(map_state).0.get().unwrap().as_ref().unwrap()
+    }
+
+    /// A committed geo slice as the service serves it (normalised; every row survived the rank).
+    fn slice(cc: &str) -> Vec<Station> {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "crates/ondar-stations/fixtures/stations-{cc}-geo.json"
+        ));
+        ondar_stations::normalise::stations(&std::fs::read(p).unwrap()).unwrap()
+    }
+
+    fn band300() -> Option<MapBand> {
+        crate::panel::band_rect(420.0 + 300.0)
+    }
+
+    fn zoom(steps: i32) -> MapInputs {
+        MapInputs {
+            pan_pt: [0.0, 0.0],
+            zoom_steps: steps,
+            fit: false,
+        }
+    }
+
+    /// Runs `gather_and_install` to its end with `list` as the read, counting emits.
+    fn gather(
+        ses: &MapSessionState,
+        t: Ticket,
+        list: Option<Vec<Station>>,
+        emits: &AtomicUsize,
+    ) -> bool {
+        block_on(gather_and_install(
+            map_state(),
+            ses,
+            t,
+            Cause::Select,
+            Instant::now(),
+            async move { Ok(list) },
+            || {
+                emits.fetch_add(1, Ordering::SeqCst);
+            },
+        ))
+    }
+
+    fn pull(ses: &MapSessionState, inputs: MapInputs) -> Option<MapReply> {
+        ses.0
+            .lock()
+            .unwrap()
+            .pull_sync(Some(store()), band300(), inputs)
+    }
+
+    /// The select frames at once with no dots (the stations are not read on that path); a
+    /// refresh landing for the selected country, through `ticket_for` and the gather, installs
+    /// PT's slice (68 stations: 65 located, 3 outside), emits once, and the next pull frames them
+    /// at the zoomed view it had, the one after that frames nothing; a re-select drops them.
+    /// Fails if `dots_gen` is left out of `framed` (the pull after the install frames nothing),
+    /// if `points_of` swaps lat and lon (0 located), if the install does not emit, or if `select`
+    /// keeps the previous country's dots.
+    #[test]
+    fn a_landed_list_frames_its_dots_at_the_view_kept() {
+        let ses = MapSessionState::default();
+        ses.0.lock().unwrap().select(Some(store()), "PT");
+        let first = pull(&ses, MapInputs::default()).unwrap().frame.unwrap();
+        assert_eq!((first.dots.len(), first.stats.stations_total), (0, 0));
+        let zoomed = pull(&ses, zoom(1)).unwrap();
+        let t = ses.0.lock().unwrap().ticket_for("PT").unwrap();
+        let emits = AtomicUsize::new(0);
+        assert!(gather(&ses, t, Some(slice("PT")), &emits));
+        assert_eq!(emits.load(Ordering::SeqCst), 1);
+        let r = pull(&ses, MapInputs::default()).expect("the install is a change");
+        assert_eq!(r.view, zoomed.view, "the view is kept");
+        assert!(r.seq > zoomed.seq);
+        let f = r.frame.unwrap();
+        let st = f.stats;
+        assert_eq!(
+            (st.stations_total, st.stations_located, st.dots_outside),
+            (68, 65, 3)
+        );
+        assert!(!f.dots.is_empty());
+        assert_eq!(pull(&ses, MapInputs::default()), None);
+        ses.0.lock().unwrap().select(Some(store()), "PT");
+        let again = pull(&ses, MapInputs::default()).unwrap().frame.unwrap();
+        assert_eq!((again.dots.len(), again.stats.stations_total), (0, 0));
+    }
+
+    /// A refresh landing for a country that is not the selected one gets no ticket (no gather, no
+    /// `map:changed`), and nothing is framed; before any select nothing gets one. The code is
+    /// matched trimmed and case-blind, as `select` takes it. Fails if `ticket_for` ignores the
+    /// code (ES would regather PT).
+    #[test]
+    fn a_landed_list_for_another_country_gets_no_ticket() {
+        let mut ses = Session::default();
+        assert_eq!(ses.ticket_for("PT"), None, "nothing selected");
+        ses.select(Some(store()), "pt");
+        ses.pull_sync(Some(store()), band300(), MapInputs::default())
+            .unwrap();
+        assert_eq!(ses.ticket_for("ES"), None);
+        assert_eq!(
+            ses.pull_sync(Some(store()), band300(), MapInputs::default()),
+            None
+        );
+        assert!(ses.ticket_for(" PT ").is_some());
+        ses.select(Some(store()), "XX");
+        assert_eq!(ses.ticket_for("XX"), None, "no map, no dots");
+    }
+
+    /// Amendment 5: PT's gather is held on a gate after its ticket was issued; US is selected;
+    /// the gate opens and PT's result reaches `install`: nothing is installed and nothing emitted
+    /// (the pull after it frames nothing), then US's own gather installs US's slice (169
+    /// stations). Fails if `install` drops the re-check of the selection (PT's 68 land on US,
+    /// a second emit).
+    #[test]
+    fn a_select_between_the_landed_and_the_apply_installs_nothing() {
+        let ses: &'static MapSessionState = Box::leak(Box::default());
+        ses.0.lock().unwrap().select(Some(store()), "PT");
+        pull(ses, MapInputs::default()).unwrap();
+        let t_pt = ses.0.lock().unwrap().ticket_for("PT").unwrap();
+        let emits: &'static AtomicUsize = Box::leak(Box::default());
+        let (gate, mut opened) = tauri::async_runtime::channel::<()>(1);
+        let pt = slice("PT");
+        let held = tauri::async_runtime::spawn(gather_and_install(
+            map_state(),
+            ses,
+            t_pt,
+            Cause::Landed,
+            Instant::now(),
+            async move {
+                opened.recv().await;
+                Ok(Some(pt))
+            },
+            || {
+                emits.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+        ses.0.lock().unwrap().select(Some(store()), "US");
+        let us = pull(ses, MapInputs::default()).unwrap();
+        block_on(gate.send(())).unwrap();
+        assert!(!block_on(held).unwrap(), "PT's result is dropped");
+        assert_eq!(emits.load(Ordering::SeqCst), 0);
+        assert_eq!(pull(ses, MapInputs::default()), None, "nothing installed");
+        let t_us = ses.0.lock().unwrap().ticket_for("US").unwrap();
+        assert!(gather(ses, t_us, Some(slice("US")), emits));
+        let f = pull(ses, MapInputs::default()).unwrap();
+        assert_eq!(f.view, us.view);
+        assert_eq!(f.frame.unwrap().stats.stations_total, 169);
+        assert_eq!(emits.load(Ordering::SeqCst), 1);
+    }
+
+    /// `install` takes a ticket only for the current selection's generation (a re-select of the
+    /// same country makes an older ticket stale) and only if no later ticket installed first (a
+    /// slow read of an older list never replaces a newer one); no stored list installs nothing.
+    /// Fails without the generation check or without the issue order.
+    #[test]
+    fn install_takes_the_current_selection_and_the_newest_ticket() {
+        let g = |n: usize| Gathered {
+            total: n,
+            ..Gathered::default()
+        };
+        let mut ses = Session::default();
+        ses.select(Some(store()), "PT");
+        let (t1, t2) = (ses.ticket_for("PT").unwrap(), ses.ticket_for("PT").unwrap());
+        assert!(ses.install(&t2, g(2)));
+        assert!(!ses.install(&t1, g(1)), "older than the one installed");
+        assert_eq!(ses.dots.total, 2);
+        let t3 = ses.ticket_for("PT").unwrap();
+        ses.select(Some(store()), "PT");
+        assert!(!ses.install(&t3, g(3)), "from before the re-select");
+        let shared = MapSessionState::default();
+        shared.0.lock().unwrap().select(Some(store()), "PT");
+        let t = shared.0.lock().unwrap().ticket_for("PT").unwrap();
+        let emits = AtomicUsize::new(0);
+        assert!(!gather(&shared, t, None, &emits));
+        assert_eq!(emits.load(Ordering::SeqCst), 0);
+    }
+
+    fn dot(x: f32, r: f32, uuids: &[&str]) -> Dot {
+        Dot {
+            x,
+            y: 50.0,
+            r,
+            n: u32::try_from(uuids.len()).unwrap(),
+            uuids: uuids.iter().map(|u| u.to_string()).collect(),
+            place: "Lisboa".into(),
+        }
+    }
+
+    /// `hit` reads the newest frame's dots: `None` before any frame; within `r + 2` pt of a
+    /// centre hits, at `r + 2.1` misses; of two in reach the nearest wins; the dot's uuids come
+    /// back in its order; a frame with an older seq does not replace the dots; a `select` clears
+    /// them. Fails with the slop at 2.2, the first in reach taken, the seq order ignored, or the
+    /// select not clearing.
+    #[test]
+    fn a_click_hits_the_nearest_dot_within_r_plus_2() {
+        let mut ses = Session::default();
+        assert_eq!(ses.hit([100.0, 50.0]), None);
+        ses.select(Some(store()), "PT");
+        let seq = ses.seq().wrapping_add(1);
+        // dot 0 reaches 8 pt from x 112, dot 1 5 pt from x 100: at x 104.9 both are in reach
+        ses.framed(
+            seq,
+            &[dot(112.0, 6.0, &["c"]), dot(100.0, 3.0, &["b", "a"])],
+        );
+        let (i, h) = ses.hit([104.9, 50.0]).unwrap();
+        assert_eq!(
+            (i, h.uuids, h.n, h.place.as_str()),
+            (1, vec!["b".to_string(), "a".to_string()], 2, "Lisboa"),
+            "the nearest of two in reach, at r + 1.9 from it"
+        );
+        assert_eq!(
+            ses.hit([94.9, 50.0]),
+            None,
+            "r + 2.1 from dot 1, far from dot 0"
+        );
+        ses.framed(seq.wrapping_sub(1), &[dot(94.9, 1.0, &["old"])]);
+        assert_eq!(
+            ses.hit([94.9, 50.0]),
+            None,
+            "an older frame does not replace them"
+        );
+        ses.select(Some(store()), "ES");
+        assert_eq!(ses.hit([100.0, 50.0]), None, "a select clears them");
     }
 }
 

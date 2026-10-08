@@ -18,10 +18,12 @@ import type { Station } from "./bindings/Station";
 import type { StationsUpdated } from "./bindings/StationsUpdated";
 import type { CountriesUpdated } from "./bindings/CountriesUpdated";
 import type { RefreshOutcome } from "./bindings/RefreshOutcome";
+import type { Dot } from "./bindings/Dot";
 import type { Frame } from "./bindings/Frame";
 import type { FrameStats } from "./bindings/FrameStats";
 import type { Inset } from "./bindings/Inset";
 import type { MapBand } from "./bindings/MapBand";
+import type { MapHit } from "./bindings/MapHit";
 import type { MapInputs } from "./bindings/MapInputs";
 import type { MapReply } from "./bindings/MapReply";
 import type { MapStatus } from "./bindings/MapStatus";
@@ -41,7 +43,19 @@ export type {
   StationsUpdated,
 };
 
-export type { Frame, FrameStats, Inset, MapBand, MapInputs, MapReply, MapStatus, Shape, View };
+export type {
+  Dot,
+  Frame,
+  FrameStats,
+  Inset,
+  MapBand,
+  MapHit,
+  MapInputs,
+  MapReply,
+  MapStatus,
+  Shape,
+  View,
+};
 
 export type OndarError = { code: string; message: string };
 
@@ -82,10 +96,17 @@ export const panel = {
 // every path in pane points, a sequence number the page compares before drawing — or `null` when
 // nothing changed. One pull in flight at a time, once per animation frame while anything is
 // pending; the page draws exactly the paths it is sent and decides none of the geometry.
+// M4c: the country's station dots arrive after the first frame — Rust gathers them off the select
+// path and emits `map:changed` (no payload) when they are installed, or when a refresh of the
+// selected country's list lands; the page only pulls, and the frame comes at the view it has.
+// `hit` tests a click (pane points) against the dots on screen: the dot's stations, or `null`.
 export const map = {
   select: (code: string) => invoke<void>("map_select", { code }),
   pull: (inputs: MapInputs) => invoke<MapReply | null>("map_pull", { inputs }),
+  hit: (pt: [number, number]) => invoke<MapHit | null>("map_hit", { pt }),
 };
+export const onMapChanged = (cb: () => void): Promise<UnlistenFn> =>
+  listen<null>("map:changed", () => cb());
 
 export const onPanelLayout = (cb: (l: PanelLayout) => void): Promise<UnlistenFn> =>
   listen<PanelLayout>("panel:layout", (e) => cb(e.payload));

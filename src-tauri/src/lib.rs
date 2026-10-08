@@ -48,6 +48,9 @@ pub mod events {
     /// A play was recorded in the recents (M3b commit 4). No payload: the page showing the
     /// recents re-requests `list_recents`; any other page ignores it.
     pub const RECENTS_UPDATED: &str = "recents:updated";
+    /// The selected country's dots were installed (M4c): after a `map_select`, or after a refresh
+    /// of its list landed. No payload: the page pulls, and the frame comes at the view it has.
+    pub const MAP_CHANGED: &str = "map:changed";
 }
 
 /// Payload of `stations:updated`.
@@ -141,13 +144,20 @@ pub fn run() {
                     StationsEvent::StationsUpdated {
                         country_code,
                         outcome,
-                    } => sink_handle.emit(
-                        events::STATIONS_UPDATED,
-                        StationsUpdated {
-                            country_code,
-                            outcome,
-                        },
-                    ),
+                    } => {
+                        // The map regathers the selected country's dots in a spawned task, never
+                        // here: this is the DB thread, and that task's read is answered by it.
+                        if outcome == RefreshOutcome::Landed {
+                            map::on_landed(&sink_handle, country_code.clone());
+                        }
+                        sink_handle.emit(
+                            events::STATIONS_UPDATED,
+                            StationsUpdated {
+                                country_code,
+                                outcome,
+                            },
+                        )
+                    }
                     StationsEvent::CountriesUpdated { outcome } => {
                         sink_handle.emit(events::COUNTRIES_UPDATED, CountriesUpdated { outcome })
                     }
@@ -235,6 +245,7 @@ pub fn run() {
             commands::panel::panel_view_back,
             commands::map::map_select,
             commands::map::map_pull,
+            commands::map::map_hit,
             commands::stations::list_countries,
             commands::stations::list_stations,
             commands::stations::search_stations,

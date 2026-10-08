@@ -38,12 +38,17 @@ waits, bounded by the client's 200 s budget. Errors are `{ code: "stations", mes
 cached, a truncated list, a cache failure, the directory unavailable) or `invalid_argument`. Rust
 records a play itself; the page never fetches, filters or ranks.
 
-**Map** (`commands/map.rs`): `map_select(code)` and `map_pull(inputs)`. Replies, not events; every
-reply carries `seq`, and the page draws one only if it is newer than the frame on screen.
-`no_map`, `unavailable`, `no_band` are replies, not errors; `map_pull` is always `Ok`. The band is
-the one Rust laid out, never the page's.
+**Map** (`commands/map.rs`): `map_select(code)`, `map_pull(inputs)` and `map_hit(pt)`. Replies, not
+events; every reply carries `seq`, and the page draws one only if it is newer than the frame on
+screen. `no_map`, `unavailable`, `no_band` are replies, not errors; `map_pull` is always `Ok`. The
+band is the one Rust laid out, never the page's. `map_select` frames at once with no dots; the
+stored list (`cached_stations`, never a fetch) is gathered in a spawned task that re-checks the
+selection under the session lock, installs the dots and emits `map:changed` (no payload; the page
+pulls, the view is kept); a `stations:updated` `landed` for the selected country does the same.
+`map_hit(pt)` answers the newest frame's nearest dot within `r + 2` pt (`MapHit`) or `null`; a click
+never plays.
 
 **Events:** `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`,
 `stations:updated` and `countries:updated` (`outcome` `landed` → re-request; `failed` → keep the
 list, clear `refreshing`, do **not** re-request), `recents:updated`, `panel:layout` (a
-`PanelLayout`; the page mirrors it and computes none of it).
+`PanelLayout`; the page mirrors it and computes none of it), `map:changed` (no payload: pull).
