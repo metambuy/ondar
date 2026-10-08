@@ -95,6 +95,10 @@ pub struct Session {
 }
 
 /// What a pull decided: a frame to compute (off the lock), or a reply as it stands.
+// `Reply` holds a whole `Frame` inline (336 B since M4c's dots, the `Frame` variant 124): a `Step`
+// is one pull's return value, moved once and never stored in a collection, so boxing it would
+// add an allocation per pull for nothing the lint guards against.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
 pub enum Step {
     Frame {

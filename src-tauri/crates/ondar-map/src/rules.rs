@@ -345,6 +345,26 @@ pub fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> boo
     on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)
 }
 
+/// A ring's edges, the closing one included (a closed ring, first == last, adds a zero-length
+/// edge: no effect on `in_ring` or a distance).
+pub fn ring_edges(r: &[[f64; 2]]) -> impl Iterator<Item = ([f64; 2], [f64; 2])> + '_ {
+    r.iter()
+        .copied()
+        .zip(r.iter().copied().cycle().skip(1))
+        .take(r.len())
+}
+
+/// Whether `p` is inside the ring `r`, open or closed, by the even-odd rule (a horizontal edge
+/// never crosses). One ring only: a part's holes are each tested and the parities combined by
+/// the caller (`gather::Locator`). S6's clearance (`rect_ring_distance`) and M4c's `locate` share
+/// it.
+pub fn in_ring([px, py]: [f64; 2], r: &[[f64; 2]]) -> bool {
+    ring_edges(r).fold(false, |odd, ([ax, ay], [bx, by])| {
+        let crosses = (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax);
+        odd != crosses
+    })
+}
+
 /// The distance (same units) from a rectangle `[x0, y0, x1, y1]` to a ring — open or closed
 /// (first == last); 0 if they meet or one holds the other (even-odd). S6's clearance: the build
 /// tool's check at the golden pane and the frame's `inset_clearance` share this one function.
@@ -358,20 +378,9 @@ pub fn rect_ring_distance(
         return 0.0;
     }
     // every edge, the closing one included (a closed ring adds a zero-length edge: no effect)
-    let edges = || {
-        r.iter()
-            .copied()
-            .zip(r.iter().copied().cycle().skip(1))
-            .take(r.len())
-    };
-    let in_ring = |[px, py]: [f64; 2]| {
-        edges().fold(false, |odd, ([ax, ay], [bx, by])| {
-            let crosses = (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax);
-            odd != crosses
-        })
-    };
+    let edges = || ring_edges(&r);
     let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-    if corners.iter().any(|&c| in_ring(c)) {
+    if corners.iter().any(|&c| in_ring(c, &r)) {
         return 0.0;
     }
     let sides: Vec<([f64; 2], [f64; 2])> = corners

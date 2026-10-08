@@ -57,3 +57,12 @@ The decisions and figures: ONDAR.md, "M4: the drawn map", the M4a and M4b sectio
   M4b file, the same session, 2026-10-08). Measure it after any change to the frame, the payload
   or the page.
 - **Station coordinates are radio-browser's `geo` only.**
+- **Stations on the map (M4c, `ondar_map::gather`):** Q4's gathering at 10 km (densest first,
+  ties to the lowest uuid, the dot at the members' unit-vector centroid, `place` their majority
+  non-empty `state`); each dot, not each station, is located once against its country's own parts
+  at level 2 or the highest stored below it (`Store::locator`, decoded once per call); a dot more
+  than 25 km outside every part is not drawn and its stations count in `dots_outside` (R6).
+  `Store::frame_dots` places the dots: an inset's in its box at the fit, hidden and counted
+  (`dots_hidden`) when the box is not drawn or a main-projection dot falls under a drawn box;
+  `r = min(6, 2.5 + 0.6 ln n)`. The slices' counts are pinned in `tests/dots.rs`; timing:
+  `cargo run -p ondar-map --example dots_bench --release`.

@@ -11,6 +11,7 @@
 
 use crate::clip::{self, Rect};
 use crate::format::{self, Layer, Role, Store};
+use crate::gather::Gathered;
 use crate::index::{self, CLIP_MARGIN_PT, LAND_TOL_PT, SUB_TOL_PT};
 use crate::laea::Laea;
 use crate::rules::{self, LADDER, Pane};
@@ -72,6 +73,68 @@ pub struct FrameStats {
     /// order (review 2, finding 4; review 3, finding 2). 0 at every band but those the tool's
     /// tables name.
     pub insets_dropped: usize,
+    /// Located dots not drawn at this view (decision 4): at the fit, a dot in an inset whose box
+    /// is not drawn (US at 178: Honolulu), or a dot in the main projection under a drawn box.
+    pub dots_hidden: usize,
+    /// Stations more than 25 km outside every part of the country (R6), never drawn.
+    pub dots_outside: usize,
+    /// Stations in the located dots; with `stations_total > 0` and this 0 the page says the
+    /// country has no station locations (MT).
+    pub stations_located: usize,
+    /// The country's stations, with coordinates or not.
+    pub stations_total: usize,
+}
+
+/// A dot on the pane (M4c): its centre and radius, points; its stations (uuids, list order) and
+/// their majority place.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct Dot {
+    pub x: f32,
+    pub y: f32,
+    pub r: f32,
+    pub n: u32,
+    pub uuids: Vec<String>,
+    pub place: String,
+}
+
+/// A dot's radius for `n` stations, points: `min(6, 2.5 + 0.6 ln n)` (n = 1 → 2.5, 64 → 5.0,
+/// 1 000 → 6).
+pub fn dot_radius(n: usize) -> f64 {
+    (2.5 + 0.6 * (n.max(1) as f64).ln()).min(6.0)
+}
+
+/// An inset box's projection at a pane (`Store::inset_projection`): the group's LAEA, its centre,
+/// km, the box's scale, km/pt, and the centre of the box's land area, points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsetProjection {
+    pub laea: Laea,
+    pub centre_km: [f64; 2],
+    pub scale: f64,
+    pub origin: [f64; 2],
+}
+
+impl InsetProjection {
+    /// A lon/lat point in the box, points; `None` where the projection cannot reach it.
+    pub fn to_pt(&self, lon: f64, lat: f64) -> Option<[f64; 2]> {
+        let [x, y] = self.laea.fwd(lon, lat)?;
+        let ([icx, icy], [ox, oy]) = (self.centre_km, self.origin);
+        Some([(x - icx) / self.scale + ox, (icy - y) / self.scale + oy])
+    }
+}
+
+/// The projection of `ins`'s group into its box `rect` (`[x, y, w, h]`, points): the group fitted
+/// to the box's land area (`rules::inset_scale`). `None` for a box with no land area.
+pub fn inset_projection(ins: &format::Inset, rect: [f64; 4]) -> Option<InsetProjection> {
+    let [size_w, size_h] = ins.size_km;
+    let scale = rules::inset_scale(size_w, size_h, rect)?;
+    let (acx, acy, _, _) = rules::inset_area(rect);
+    Some(InsetProjection {
+        laea: Laea::new(ins.lat0, ins.lon0),
+        centre_km: ins.centre_km,
+        scale,
+        origin: [acx, acy],
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, ts_rs::TS)]
@@ -84,6 +147,8 @@ pub struct Frame {
     pub subdivisions: Vec<Vec<[f32; 2]>>,
     /// At the fit view only (D7).
     pub insets: Vec<Inset>,
+    /// The located dots on the pane, larger first (`Store::frame_dots`); empty from `frame`.
+    pub dots: Vec<Dot>,
     pub stats: FrameStats,
 }
 
@@ -213,19 +278,37 @@ impl Store {
         )
     }
 
-    /// The country's frame at a view (clamped first).
+    /// The country's frame at a view (clamped first), with no dots.
     pub fn frame(&self, c: usize, pane: &Pane, view: View) -> Option<Frame> {
-        self.frame_with(c, pane, view, true)
+        self.frame_dots(c, pane, view, &Gathered::default())
+    }
+
+    /// The frame with the country's located dots (M4c): a dot in a `Frame` or `Dropped` part is
+    /// projected with the view and kept if its centre is within its radius of the pane. At the
+    /// fit, a dot in an `Inset` part is projected with its box's projection (`inset_projection`)
+    /// and drawn iff the box is drawn and holds its centre, else counted in `dots_hidden`; a
+    /// main-projection dot whose centre is under a drawn box is counted there too (decision 4).
+    /// Away from the fit every dot is in the main projection (D7). The counts of `g` go to the
+    /// stats as they are.
+    pub fn frame_dots(&self, c: usize, pane: &Pane, view: View, g: &Gathered) -> Option<Frame> {
+        self.frame_with(c, pane, view, true, g)
     }
 
     /// The frame with the ring index disabled: every unit and ring is decoded and clipped. For
     /// the test that the index skips nothing visible (`index_is_exact`); never used by the app.
     #[doc(hidden)]
     pub fn frame_unindexed(&self, c: usize, pane: &Pane, view: View) -> Option<Frame> {
-        self.frame_with(c, pane, view, false)
+        self.frame_with(c, pane, view, false, &Gathered::default())
     }
 
-    fn frame_with(&self, c: usize, pane: &Pane, view: View, use_index: bool) -> Option<Frame> {
+    fn frame_with(
+        &self,
+        c: usize,
+        pane: &Pane,
+        view: View,
+        use_index: bool,
+        g: &Gathered,
+    ) -> Option<Frame> {
         let view = self.clamp_view(c, pane, view)?;
         let fit_view = self.fit(c, pane)?;
         let ct = self.countries.get(c)?;
@@ -268,7 +351,13 @@ impl Store {
             land: Vec::new(),
             subdivisions: Vec::new(),
             insets: Vec::new(),
-            stats: FrameStats::default(),
+            dots: Vec::new(),
+            stats: FrameStats {
+                dots_outside: g.outside,
+                stations_located: g.located,
+                stations_total: g.total,
+                ..FrameStats::default()
+            },
         };
         let mut buf = Vec::new();
         let mut pts = Vec::new();
@@ -396,8 +485,60 @@ impl Store {
         }
 
         // insets, at the fit view only (D7)
+        let boxes = if at_fit {
+            self.inset_boxes(c, pane)
+        } else {
+            Vec::new()
+        };
         if at_fit {
-            out.insets = self.insets(c, pane, &mut out.stats);
+            out.insets = self.insets(c, &boxes, &mut out.stats);
+        }
+
+        // the dots, larger first as gathered; an inset's in its box at the fit (decision 4)
+        let drawn_boxes: Vec<[f64; 4]> = boxes.iter().flatten().copied().collect();
+        let under = |[px, py]: [f64; 2], [x, y, w, h]: [f64; 4]| {
+            px >= x && px <= x + w && py >= y && py <= y + h
+        };
+        for d in &g.dots {
+            let r = dot_radius(d.ids.len());
+            let at = match d.part.role {
+                Role::Inset(i) if at_fit => {
+                    let placed = boxes.get(usize::from(i)).copied().flatten().and_then(|b| {
+                        let ins = ct.insets.get(usize::from(i))?;
+                        let p = inset_projection(ins, b)?.to_pt(d.lon, d.lat)?;
+                        under(p, b).then_some(p)
+                    });
+                    if placed.is_none() {
+                        out.stats.dots_hidden += 1;
+                    }
+                    placed
+                }
+                _ => {
+                    let Some([x, y]) = frame_l.fwd(d.lon, d.lat) else {
+                        continue;
+                    };
+                    let p = to_pt(x, y);
+                    if drawn_boxes.iter().any(|&b| under(p, b)) {
+                        out.stats.dots_hidden += 1;
+                        None
+                    } else {
+                        let [px, py] = p;
+                        let on =
+                            px >= -r && px <= pane.width + r && py >= -r && py <= pane.height + r;
+                        on.then_some(p)
+                    }
+                }
+            };
+            if let Some([x, y]) = at {
+                out.dots.push(Dot {
+                    x: round(x),
+                    y: round(y),
+                    r: round(r),
+                    n: u32::try_from(d.ids.len()).unwrap_or(u32::MAX),
+                    uuids: d.ids.clone(),
+                    place: d.place.clone(),
+                });
+            }
         }
         Some(out)
     }
@@ -446,13 +587,13 @@ impl Store {
         out
     }
 
-    fn insets(&self, c: usize, pane: &Pane, stats: &mut FrameStats) -> Vec<Inset> {
+    /// The insets drawn at the fit, in the boxes `inset_boxes` placed.
+    fn insets(&self, c: usize, boxes: &[Option<[f64; 4]>], stats: &mut FrameStats) -> Vec<Inset> {
         let Some(ct) = self.countries.get(c) else {
             return Vec::new();
         };
         let mut buf = Vec::new();
         let mut out = Vec::new();
-        let boxes = self.inset_boxes(c, pane);
         for (i, ins) in ct.insets.iter().enumerate() {
             let Some(rect) = boxes.get(i).copied().flatten() else {
                 stats.insets_dropped += 1;
@@ -461,18 +602,14 @@ impl Store {
             let [rx, ry, rw, rh] = rect;
             // the group fitted to this band's box: a smaller box, a coarser scale, maybe a
             // coarser level — the tool stored the blob for every band's level (commit 4)
-            let [size_w, size_h] = ins.size_km;
-            let Some(scale) = rules::inset_scale(size_w, size_h, rect) else {
+            let Some(proj) = inset_projection(ins, rect) else {
                 stats.insets_dropped += 1;
                 continue;
             };
-            let k = rules::level_for(scale);
+            let k = rules::level_for(proj.scale);
             let (Ok(k8), Ok(i8_)) = (u8::try_from(k), u8::try_from(i)) else {
                 continue;
             };
-            let (acx, acy, _, _) = rules::inset_area([rx, ry, rw, rh]);
-            let il = Laea::new(ins.lat0, ins.lon0);
-            let [icx, icy] = ins.centre_km;
             let rect: Rect = [rx, ry, rx + rw, ry + rh];
             let mut land = Vec::new();
             for &u in &ct.units {
@@ -502,8 +639,7 @@ impl Store {
                             .iter()
                             .map(|&[x, y]| {
                                 let (lon, lat) = unit_l.inv(x, y)?;
-                                let [x, y] = il.fwd(lon, lat)?;
-                                Some([(x - icx) / scale + acx, (icy - y) / scale + acy])
+                                proj.to_pt(lon, lat)
                             })
                             .collect();
                         let Some(pts) = pts else { continue };

@@ -35,7 +35,18 @@ const frame = (n: number): Frame => ({
   land: Array.from({ length: n }, (_, i) => ({ rings: [[[i, 0], [i + 5, 0], [i + 5, 5]]] })),
   subdivisions: [],
   insets: [{ label: "Antilles", rect: [260, 8, 60, 44], land: [{ rings: [[[270, 20], [280, 20], [280, 30]]] }] }],
-  stats: { vertices: 3 * n, rings_considered: n, rings_skipped: 0, missing_blobs: 0, insets_dropped: 0 },
+  dots: [],
+  stats: {
+    vertices: 3 * n,
+    rings_considered: n,
+    rings_skipped: 0,
+    missing_blobs: 0,
+    insets_dropped: 0,
+    dots_hidden: 0,
+    dots_outside: 0,
+    stations_located: 0,
+    stations_total: 0,
+  },
 });
 
 const reply = (seq: number, n: number): MapReply => ({

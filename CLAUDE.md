@@ -65,7 +65,7 @@ failing checks. History: ONDAR.md's milestone sections and `git log --first-pare
     └── crates/
         ├── ondar-audio/     the engine; no Tauri dependency
         ├── ondar-stations/  radio-browser client, SQLite cache, favourites; no Tauri dependency
-        ├── ondar-map/       map core: projection, format, frame; no Tauri, no network
+        ├── ondar-map/       map core: projection, format, frame, gather; no Tauri, no network
         └── ondar-map-build/ build-time tool, Natural Earth → the resource; never in the app
 ```
 
