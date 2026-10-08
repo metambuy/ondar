@@ -88,6 +88,18 @@
   --map-stroke: 0.5px;
   --map-inset-radius: 4px;
   --text-map-label: 400 8px/10px var(--font-system);
+  /* The station dots (M4c): the artifact's marker colours, Sand by day — the fill and its 1 pt
+     ring; the playing dot's halo is a second ring in the fill colour (D4). DECISIONS of the
+     design round, as the map's colours above. */
+  --map-dot: #1E6A73;
+  --map-dot-ring: #FFFFFF;
+  --map-dot-ring-width: 1px;
+  /* The list's filter chip (M4c, decision 3). DECISION, not a measurement: the quaternary label
+     tone as its plate, the label colour as its text, so it reads as the system's own fill. */
+  --chip-bg: rgb(0 0 0 / 0.098);
+  --chip-fg: rgb(0 0 0 / 0.847);
+  --chip-radius: 4px;
+  --chip-padding: 1px 6px;
 }
 
 /* Dark appearance (NSAppearanceNameDarkAqua), measured in the same run. Defined in the same
@@ -118,5 +130,10 @@
     --map-controls-bg: rgb(0 0 0 / 0.45);
     --map-controls-fg: #E8E2D6;
     --map-controls-stroke: rgb(255 255 255 / 0.14);
+    /* Ink's markers: the artifact's amber with a ring in its night sea. */
+    --map-dot: #F3C77A;
+    --map-dot-ring: #121A25;
+    --chip-bg: rgb(255 255 255 / 0.098);
+    --chip-fg: rgb(255 255 255 / 0.847);
   }
 }

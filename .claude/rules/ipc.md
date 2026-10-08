@@ -46,7 +46,9 @@ stored list (`cached_stations`, never a fetch) is gathered in a spawned task tha
 selection under the session lock, installs the dots and emits `map:changed` (no payload; the page
 pulls, the view is kept); a `stations:updated` `landed` for the selected country does the same.
 `map_hit(pt)` answers the newest frame's nearest dot within `r + 2` pt (`MapHit`) or `null`; a click
-never plays.
+never plays. The page narrows the list to the hit's uuids (`Panel`'s `dotFilter`, view state): the
+one filter the page applies, to rows Rust ranked. **Esc** clears that filter if one is set (transport
+pane), otherwise calls `panel_escape`; `panel_escape` itself is unchanged.
 
 **Events:** `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`,
 `stations:updated` and `countries:updated` (`outcome` `landed` → re-request; `failed` → keep the

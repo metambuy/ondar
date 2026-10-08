@@ -3,7 +3,7 @@
 // Each test's comment states what it pins and what it would have to see to fail.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ListedCountries, PanelLayout, Station } from "../api";
+import type { ListedCountries, ListedStations, MapHit, PanelLayout, Station } from "../api";
 import Panel from "./Panel";
 
 const orbital: Station = {
@@ -45,6 +45,12 @@ const offline = { code: "stations", message: "radio-browser unreachable after 3 
 let countriesReply: ListedCountries | null = null;
 // Every `map.select` the pane made, in order.
 const selects: string[] = [];
+// The dot-filter tests: a stations reply per country (`null`: offline), what `map.hit` answers,
+// how many times Esc reached Rust, and the page's `panel:layout` listener.
+const stationsReplies = new Map<string, ListedStations>();
+let hitReply: MapHit | null = null;
+let escapes = 0;
+let layoutListener: ((l: PanelLayout) => void) | null = null;
 
 vi.mock("../api", () => {
   const listener = () => Promise.resolve(() => {});
@@ -58,7 +64,10 @@ vi.mock("../api", () => {
       getPlaybackState: () => Promise.resolve({ kind: "idle" }),
     },
     panel: {
-      escape: () => Promise.resolve(),
+      escape: () => {
+        escapes += 1;
+        return Promise.resolve();
+      },
       viewBack: () => Promise.resolve(),
       setExpanded: () => Promise.resolve(),
       getLayout: () => Promise.resolve(layout),
@@ -72,11 +81,19 @@ vi.mock("../api", () => {
         return Promise.resolve();
       },
       pull: () => Promise.resolve(null),
+      hit: () => Promise.resolve(hitReply),
     },
-    onPanelLayout: listener,
+    onMapChanged: listener,
+    onPanelLayout: (cb: (l: PanelLayout) => void) => {
+      layoutListener = cb;
+      return Promise.resolve(() => {});
+    },
     stations: {
       listCountries: () => (countriesReply ? Promise.resolve(countriesReply) : Promise.reject(offline)),
-      listStations: () => Promise.reject(offline),
+      listStations: (cc: string) => {
+        const l = stationsReplies.get(cc);
+        return l ? Promise.resolve(l) : Promise.reject(offline);
+      },
       listFavourites: () => Promise.resolve([orbital]),
       listRecents: () => Promise.resolve([]),
       addFavourite: () => Promise.resolve(),
@@ -94,6 +111,10 @@ vi.mock("../api", () => {
 beforeEach(() => {
   countriesReply = null;
   selects.length = 0;
+  stationsReplies.clear();
+  hitReply = null;
+  escapes = 0;
+  layoutListener = null;
 });
 afterEach(() => {
   cleanup();
@@ -182,5 +203,133 @@ describe("Panel offline", () => {
     fireEvent.change(select, { target: { value: "PT" } });
     await settle();
     expect(selects).toEqual(["PT", "US", "PT"]);
+  });
+});
+
+// The dot filter (M4c k+4, decision 3 and the Esc rule): `Panel` holds it, `MapPane`'s click sets
+// it from `map.hit`'s reply, `StationList` shows it with the chip.
+describe("Panel's dot filter", () => {
+  const band = { x: 16, y: 404, width: 328, height: 178, controls: [246, 146, 74, 24] as [number, number, number, number] };
+  const row = (cc: string, name: string): Station => ({ ...orbital, uuid: `${cc}-${name}`, name, country_code: cc });
+  const listed = (cc: string, names: string[]): ListedStations => ({
+    country_code: cc,
+    items: names.map((n) => row(cc, n)),
+    fetched_at: 0,
+    age_secs: 0,
+    source: { kind: "fresh" },
+    refreshing: false,
+  });
+  const chip = () => screen.queryByRole("button", { name: "Show all stations" });
+  const rows = () =>
+    screen
+      .queryAllByRole("button")
+      .filter((b) => b.getAttribute("aria-label")?.startsWith("Play "))
+      .map((b) => b.getAttribute("aria-label")!.slice("Play ".length));
+  const esc = () => fireEvent.keyDown(window, { key: "Escape" });
+
+  async function expandedWithPT() {
+    countriesReply = {
+      items: [
+        { code: "PT", name: "Portugal", station_count: 3 },
+        { code: "US", name: "United States", station_count: 1 },
+      ],
+      fetched_at: 0,
+      age_secs: 0,
+      source: { kind: "fresh" },
+      refreshing: false,
+    };
+    stationsReplies.set("PT", listed("PT", ["A", "B", "C"]));
+    stationsReplies.set("US", listed("US", ["K"]));
+    Object.assign(layout, { state: "expanded", height: 598, band });
+    const r = render(<Panel />);
+    await settle();
+    expect(rows()).toEqual(["A", "B", "C"]);
+    return r;
+  }
+  // a click on the map: press and release in place, answered by `hitReply`
+  async function clickMap(hit: MapHit) {
+    hitReply = hit;
+    const svg = document.querySelector("svg")!;
+    svg.setPointerCapture = () => {};
+    fireEvent.pointerDown(svg, { button: 0, buttons: 1, clientX: 50, clientY: 50, pointerId: 1 });
+    fireEvent.pointerUp(svg, { clientX: 50, clientY: 50, pointerId: 1 });
+    await settle();
+  }
+  const hitB: MapHit = { uuids: ["PT-B"], n: 1, place: "Lisboa" };
+
+  // 4. A click on a dot filters the list and shows the chip; Esc with a filter clears it and
+  //    does not reach Rust; Esc again (no filter) does. The listener is registered once, at
+  //    mount, when the filter was null: it must read the filter through a ref. Fails with the
+  //    stale closure (the first Esc hides the panel with the filter still set), or if Esc
+  //    clears and hides at once.
+  it("4. Esc clears a filter without hiding; Esc with none hides", async () => {
+    await expandedWithPT();
+    await clickMap(hitB);
+    expect(rows()).toEqual(["B"]);
+    expect(chip()!.textContent).toBe("✕ 1 station · Lisboa");
+    esc();
+    await settle();
+    expect(escapes).toBe(0);
+    expect(chip()).toBeNull();
+    expect(rows()).toEqual(["A", "B", "C"]);
+    esc();
+    await settle();
+    expect(escapes).toBe(1);
+  });
+
+  // 5. Esc with no filter ever set hides at once (the M2c behaviour, unchanged). Fails if Esc is
+  //    swallowed when there is nothing to clear.
+  it("5. Esc without a filter reaches Rust", async () => {
+    await expandedWithPT();
+    esc();
+    await settle();
+    expect(escapes).toBe(1);
+  });
+
+  // 6. D8: in the About pane Esc keeps hiding the panel, filter or not — the filter is the
+  //    transport pane's, out of sight there. Fails if Esc in About clears an unseen filter
+  //    instead of hiding.
+  it("6. Esc in the About pane hides even with a filter set", async () => {
+    await expandedWithPT();
+    await clickMap(hitB);
+    expect(chip()).not.toBeNull();
+    act(() => layoutListener!({ ...layout, generation: 1, transition: "show", view: "about" }));
+    await settle();
+    esc();
+    await settle();
+    expect(escapes).toBe(1);
+  });
+
+  // 7. A country change clears the filter (the new country's list shows whole); so does ★
+  //    toggled on; and a dot clicked while ★ is on turns ★ off, so the filter applies to the
+  //    country the map shows. Fails if a filter outlives a country change or ★, or if a hit
+  //    under ★ filters the favourites (an empty list under a chip).
+  it("7. a country change clears the filter; ★ on clears it; a hit under ★ returns to the country", async () => {
+    await expandedWithPT();
+    await clickMap(hitB);
+    expect(chip()).not.toBeNull();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "US" } });
+    await settle();
+    expect(chip()).toBeNull();
+    expect(rows()).toEqual(["K"]);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "PT" } });
+    await settle();
+    await clickMap(hitB);
+    expect(chip()).not.toBeNull();
+    const star = screen.getByRole("button", { name: "Favourites and recents" });
+    fireEvent.click(star);
+    await settle();
+    expect(star.getAttribute("aria-pressed")).toBe("true");
+    expect(chip()).toBeNull();
+    await clickMap(hitB);
+    expect(star.getAttribute("aria-pressed")).toBe("false");
+    expect(rows()).toEqual(["B"]);
+  });
+
+  // 8. MT's line names the country, not its code: `Panel` passes the countries list's name.
+  //    Fails if the pane shows the code.
+  it("8. the map pane is given the country's name", async () => {
+    await expandedWithPT();
+    expect(screen.getByRole("img").getAttribute("aria-label")).toBe("Map of Portugal");
   });
 });

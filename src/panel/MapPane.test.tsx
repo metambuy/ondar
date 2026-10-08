@@ -5,12 +5,21 @@
 import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Frame, MapBand, MapInputs, MapReply, MapStatus } from "../api";
+import type { Dot, Frame, MapBand, MapHit, MapInputs, MapReply, MapStatus } from "../api";
 import MapPane, { DRAG_THRESHOLD_PT, pathOf } from "./MapPane";
+import styles from "./panel.module.css";
 
 type Deferred = { resolve: (r: MapReply | null) => void; inputs: MapInputs };
 const pulls: Deferred[] = [];
 const selects: string[] = [];
+// Every `map.hit` point, and what the next one answers.
+const hits: [number, number][] = [];
+let hitReply: MapHit | null = null;
+// Test 21 holds the hit's reply: the resolver of the last `map.hit`, when deferred.
+let deferHits = false;
+let heldHit: ((h: MapHit | null) => void) | null = null;
+// `map:changed` listeners the pane registered.
+const changed: (() => void)[] = [];
 
 vi.mock("../api", () => ({
   map: {
@@ -22,6 +31,18 @@ vi.mock("../api", () => ({
       new Promise<MapReply | null>((resolve) => {
         pulls.push({ resolve, inputs });
       }),
+    hit: (pt: [number, number]) => {
+      hits.push(pt);
+      if (deferHits)
+        return new Promise<MapHit | null>((resolve) => {
+          heldHit = resolve;
+        });
+      return Promise.resolve(hitReply);
+    },
+  },
+  onMapChanged: (cb: () => void) => {
+    changed.push(cb);
+    return Promise.resolve(() => {});
   },
   measure: { report: () => Promise.resolve() },
 }));
@@ -71,11 +92,28 @@ const landPaths = (root: HTMLElement) => root.querySelectorAll("svg g:nth-of-typ
 beforeEach(() => {
   pulls.length = 0;
   selects.length = 0;
+  hits.length = 0;
+  hitReply = null;
+  changed.length = 0;
+  deferHits = false;
+  heldHit = null;
 });
 afterEach(cleanup);
 
-async function mounted() {
-  const r = render(<MapPane band={band} country="FR" />);
+const noop = () => {};
+
+async function mounted(
+  props: { playingUuid?: string | null; onHit?: (h: MapHit) => void; countryName?: string } = {},
+) {
+  const r = render(
+    <MapPane
+      band={band}
+      country="FR"
+      countryName={props.countryName ?? "France"}
+      playingUuid={props.playingUuid ?? null}
+      onHit={props.onHit ?? noop}
+    />,
+  );
   await settle();
   await frames();
   // the mount: select, then one pull
@@ -309,5 +347,227 @@ describe("MapPane", () => {
     window.dispatchEvent(new Event("change"));
     await frames(3);
     expect(pulls.length).toBe(1);
+  });
+  // ---- M4c k+4: the dots layer ----
+
+  const dot = (x: number, y: number, n: number, uuids: string[], place = ""): Dot => ({
+    x,
+    y,
+    r: Math.min(6, 2.5 + 0.6 * Math.log(n)),
+    n,
+    uuids,
+    place,
+  });
+  const withDots = (seq: number, dots: Dot[], stats: Partial<Frame["stats"]> = {}): MapReply => {
+    const r = reply(seq, 1);
+    r.frame!.dots = dots;
+    Object.assign(r.frame!.stats, stats);
+    return r;
+  };
+  const dotCircles = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll(`svg g.${styles.dots} circle:not(.${styles.halo})`));
+  const halos = (root: HTMLElement) => Array.from(root.querySelectorAll(`svg circle.${styles.halo}`));
+  const three = [dot(40, 50, 64, ["a", "b", "c"], "Lisboa"), dot(200, 90, 3, ["d", "e", "f"]), dot(300, 1, 1, ["g"])];
+
+  // 13. One `<circle>` per dot at the frame's centre and radius, in the frame's order (larger
+  //     first, Rust's), drawn after the insets so a dot is never under a box's sea. Fails if a
+  //     dot is dropped, re-sized or re-ordered by the page, or the layer moves under the insets.
+  it("13. one circle per dot at the frame's x, y, r, in the frame's order, after the insets", async () => {
+    const { container } = await mounted();
+    act(() => pulls[0].resolve(withDots(1, three)));
+    await settle();
+    const c = dotCircles(container);
+    expect(c.map((e) => [e.getAttribute("cx"), e.getAttribute("cy"), e.getAttribute("r")])).toEqual(
+      three.map((d) => [String(d.x), String(d.y), String(d.r)]),
+    );
+    const groups = Array.from(container.querySelectorAll("svg > g"));
+    const dotsIdx = groups.findIndex((g) => g.classList.contains(styles.dots));
+    const insetsIdx = groups.findIndex((g) => g.classList.contains(styles.insets));
+    expect(insetsIdx).toBeGreaterThanOrEqual(0);
+    expect(dotsIdx).toBeGreaterThan(insetsIdx);
+  });
+
+  // 14. The playing dot (D4): a second circle at `r + 3` on the dot whose uuids hold the playing
+  //     uuid, and on no other; none with nothing playing or the station not on the map. Fails if
+  //     the halo is on every dot, on the wrong one, or at another radius.
+  it("14. the playing dot's halo at r + 3, on that dot only", async () => {
+    const { container, rerender } = await mounted({ playingUuid: "e" });
+    act(() => pulls[0].resolve(withDots(1, three)));
+    await settle();
+    let h = halos(container);
+    expect(h.length).toBe(1);
+    expect([h[0].getAttribute("cx"), h[0].getAttribute("cy"), h[0].getAttribute("r")]).toEqual([
+      "200",
+      "90",
+      String(three[1].r + 3),
+    ]);
+    rerender(<MapPane band={band} country="FR" countryName="France" playingUuid="zz" onHit={noop} />);
+    expect(halos(container).length).toBe(0);
+    rerender(<MapPane band={band} country="FR" countryName="France" playingUuid={null} onHit={noop} />);
+    expect(halos(container).length).toBe(0);
+    rerender(<MapPane band={band} country="FR" countryName="France" playingUuid="a" onHit={noop} />);
+    h = halos(container);
+    expect(h.length).toBe(1);
+    expect(h[0].getAttribute("cx")).toBe("40");
+  });
+
+  // 15. A click is a press and a release under `DRAG_THRESHOLD_PT`: it calls `map.hit` once with
+  //     the svg-local point; a drag past the threshold does not, and neither does a cancelled
+  //     press. jsdom's `getBoundingClientRect` is stubbed at an offset, so the point must be
+  //     the client point minus the svg's origin. Fails if the drag clicks, if the point is the
+  //     client point, or if a cancel hits.
+  it("15. a press and release under the threshold hits at the svg-local point; a drag does not", async () => {
+    const { container } = await mounted();
+    act(() => pulls[0].resolve(withDots(1, three)));
+    await settle();
+    const svg = container.querySelector("svg")!;
+    svg.setPointerCapture = () => {};
+    svg.getBoundingClientRect = () => ({ left: 16, top: 404, right: 344, bottom: 582, width: 328, height: 178, x: 16, y: 404, toJSON: () => ({}) });
+    fireEvent.pointerDown(svg, { button: 0, buttons: 1, clientX: 56, clientY: 454, pointerId: 1 });
+    fireEvent.pointerMove(svg, { buttons: 1, clientX: 58, clientY: 455, pointerId: 1 });
+    fireEvent.pointerUp(svg, { clientX: 58, clientY: 455, pointerId: 1 });
+    await settle();
+    expect(hits).toEqual([[42, 51]]);
+    fireEvent.pointerDown(svg, { button: 0, buttons: 1, clientX: 56, clientY: 454, pointerId: 1 });
+    fireEvent.pointerMove(svg, { buttons: 1, clientX: 56 + DRAG_THRESHOLD_PT + 1, clientY: 454, pointerId: 1 });
+    fireEvent.pointerUp(svg, { clientX: 56 + DRAG_THRESHOLD_PT + 1, clientY: 454, pointerId: 1 });
+    await settle();
+    fireEvent.pointerDown(svg, { button: 0, buttons: 1, clientX: 56, clientY: 454, pointerId: 1 });
+    fireEvent.pointerCancel(svg, { clientX: 56, clientY: 454, pointerId: 1 });
+    await settle();
+    expect(hits).toEqual([[42, 51]]);
+  });
+
+  // 16. The hit's reply reaches `onHit` whole; a miss (`null`) calls nothing. Fails if the reply
+  //     is dropped, or a miss clears or sets anything.
+  it("16. a hit reaches onHit, a miss does nothing", async () => {
+    const got: MapHit[] = [];
+    const { container } = await mounted({ onHit: (h) => got.push(h) });
+    act(() => pulls[0].resolve(withDots(1, three)));
+    await settle();
+    const svg = container.querySelector("svg")!;
+    svg.setPointerCapture = () => {};
+    const click = async (x: number, y: number) => {
+      fireEvent.pointerDown(svg, { button: 0, buttons: 1, clientX: x, clientY: y, pointerId: 1 });
+      fireEvent.pointerUp(svg, { clientX: x, clientY: y, pointerId: 1 });
+      await settle();
+    };
+    hitReply = null;
+    await click(5, 5);
+    expect(got).toEqual([]);
+    hitReply = { uuids: ["d", "e", "f"], n: 3, place: "" };
+    await click(200, 90);
+    expect(got).toEqual([{ uuids: ["d", "e", "f"], n: 3, place: "" }]);
+  });
+
+  // 17. MT's line (decision 5): "No station locations for {name}" on the platter when the
+  //     country has stations and none located; not when it has none (a missing list, or the
+  //     dots still on their way) and not when any is located. Fails on a condition that reads
+  //     either count alone, or on the code (not the name) in the text.
+  it("17. MT's line for stations with no locations, and only then", async () => {
+    const cases: [number, number, string | null][] = [
+      [13, 0, "No station locations for Malta"],
+      [0, 0, null],
+      [13, 2, null],
+    ];
+    for (const [total, located, text] of cases) {
+      const { container, unmount } = await mounted({ countryName: "Malta" });
+      act(() => pulls[0].resolve(withDots(1, [], { stations_total: total, stations_located: located })));
+      await settle();
+      expect(container.querySelector(`p.${styles.mapNote}`)?.textContent ?? null, `${total}/${located}`).toBe(text);
+      unmount();
+      pulls.length = 0;
+      selects.length = 0;
+    }
+  });
+
+  // 18. Decision 6: dots are not keyboard-reachable — no circle carries `tabIndex`, the layer is
+  //     `aria-hidden`, the SVG stays `role="img"`. Fails if a dot is made focusable or exposed.
+  it("18. dots carry no tabIndex; the layer is aria-hidden; the svg stays an img", async () => {
+    const { container } = await mounted({ playingUuid: "a" });
+    act(() => pulls[0].resolve(withDots(1, three)));
+    await settle();
+    expect(container.querySelectorAll("svg circle").length).toBe(4);
+    expect(container.querySelector("svg circle[tabindex]")).toBeNull();
+    expect(container.querySelector(`svg g.${styles.dots}`)!.getAttribute("aria-hidden")).toBe("true");
+    expect(container.querySelector("svg")!.getAttribute("role")).toBe("img");
+  });
+
+  // 19. Hover (decision 7, S4 passed): entering a dot shows "n station(s) · place" beside it
+  //     (the count alone when the place is empty, "station" for one); a dot in the pane's right
+  //     half anchors the label to its left (`end`), one in the left half to its right, so the
+  //     label stays inside the pane; leaving clears it; a new frame drops it (the dot may have
+  //     moved). Fails on the wrong text, a label anchored outward, or one that outlives its dot.
+  it("19. hover: the count and place beside the dot, inside the pane, cleared on leave", async () => {
+    const { container } = await mounted();
+    act(() => pulls[0].resolve(withDots(1, three)));
+    await settle();
+    const label = () => container.querySelector(`svg text.${styles.dotLabel}`);
+    const c = dotCircles(container);
+    fireEvent.pointerEnter(c[0]);
+    expect(label()!.textContent).toBe("64 stations · Lisboa");
+    expect(label()!.getAttribute("text-anchor")).toBe("start");
+    expect(Number(label()!.getAttribute("x"))).toBeGreaterThan(three[0].x + three[0].r);
+    fireEvent.pointerLeave(c[0]);
+    expect(label()).toBeNull();
+    fireEvent.pointerEnter(c[1]);
+    expect(label()!.textContent).toBe("3 stations");
+    expect(label()!.getAttribute("text-anchor")).toBe("end");
+    expect(Number(label()!.getAttribute("x"))).toBeLessThan(three[1].x - three[1].r);
+    fireEvent.pointerLeave(c[1]);
+    fireEvent.pointerEnter(c[2]);
+    expect(label()!.textContent).toBe("1 station");
+    // at the top edge (y = 1): the baseline sits at least the label's 8 pt size down, so the
+    // text's top is inside the pane
+    expect(Number(label()!.getAttribute("y"))).toBeGreaterThanOrEqual(8);
+    const svg = container.querySelector("svg")!;
+    fireEvent.wheel(svg, { deltaX: 1, deltaY: 0 });
+    await frames();
+    act(() => pulls[1].resolve(withDots(2, three)));
+    await settle();
+    expect(label()).toBeNull();
+  });
+
+  // 20. `map:changed` (the dots installed, or a landed refresh regathered) wakes the pull loop:
+  //     one pull with no input, so the frame comes at the view the pane has. Fails if the event
+  //     is not listened to, or if it re-selects (which would reset the view to the fit).
+  it("20. map:changed pulls once at the current view and does not re-select", async () => {
+    await mounted();
+    act(() => pulls[0].resolve(reply(1, 1)));
+    await settle();
+    await frames(2);
+    expect(pulls.length).toBe(1);
+    expect(changed.length).toBe(1);
+    act(() => changed[0]());
+    await frames();
+    expect(pulls.length).toBe(2);
+    expect(pulls[1].inputs).toEqual({ pan_pt: [0, 0], zoom_steps: 0, fit: false });
+    expect(selects).toEqual(["FR"]);
+  });
+  // 21. A hit's reply that lands after a country change is the old country's dot: dropped, so
+  //     the new country's list is not narrowed to stations it does not hold. Fails if the pane
+  //     hands any reply to `onHit`.
+  it("21. a hit reply landing after a country change is dropped", async () => {
+    const got: MapHit[] = [];
+    const onHit = (h: MapHit) => got.push(h);
+    const { container, rerender } = await mounted({ onHit });
+    act(() => pulls[0].resolve(withDots(1, three)));
+    await settle();
+    const svg = container.querySelector("svg")!;
+    svg.setPointerCapture = () => {};
+    deferHits = true;
+    fireEvent.pointerDown(svg, { button: 0, buttons: 1, clientX: 40, clientY: 50, pointerId: 1 });
+    fireEvent.pointerUp(svg, { clientX: 40, clientY: 50, pointerId: 1 });
+    rerender(<MapPane band={band} country="ES" countryName="Spain" playingUuid={null} onHit={onHit} />);
+    await settle();
+    act(() => heldHit!({ uuids: ["a", "b", "c"], n: 3, place: "Lisboa" }));
+    await settle();
+    expect(got).toEqual([]);
+    // the same click with no change lands
+    fireEvent.pointerDown(svg, { button: 0, buttons: 1, clientX: 40, clientY: 50, pointerId: 1 });
+    fireEvent.pointerUp(svg, { clientX: 40, clientY: 50, pointerId: 1 });
+    act(() => heldHit!({ uuids: ["x"], n: 1, place: "" }));
+    await settle();
+    expect(got).toEqual([{ uuids: ["x"], n: 1, place: "" }]);
   });
 });

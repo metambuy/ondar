@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
+*Last updated: 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
+exception, in "M4c: Step 0 and its decisions"). Previously 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
 and the chat's decisions S1–S4 — see "M4c: Step 0 and its decisions"; round 2's ring figure
 corrected). Previously 2026-10-07 (the CLAUDE.md rewrite on branch `claude-md`: area rules in
 `.claude/rules/`, the test table moved into each test's doc comment, no current test count
@@ -1128,6 +1129,33 @@ pointer line at all, not even `pointermove` — the panel had resigned key 1 s a
   nothing. A positive control first (the panel key, no other app activated, the pointer over the disc
   by hand), then the TextEdit case; **hover exists iff an `enter` line carries `key=true`**. Decision 7's
   hover waits on it; it blocks the page commit only, not the levers.
+
+**S4's result (2026-10-08): hover exists.** The probe was fixed first: Step 0's disc sat under the land
+paths, so `pointerenter` could not reach it (an instrument flaw, not a platform one). Martín's hand run
+(`_handover/m4c-s4/hand-A.log`, `hand-B.log`): the control (Terminal frontmost, the panel key) logged 6
+`enter pointer=mouse key=true` and 43 moves; the real case (TextEdit frontmost, the non-activating
+panel key) logged 3 `enter … key=true`. Once the panel resigned key no pointer line arrived until a
+click made it key again, which the product never sees (the panel hides on resign). Step 0's resign
+1.16 s after showing stays unexplained and outside the app. **Decision 7's hover is built at k+4**: a
+dot under the pointer shows "n station(s) · place" beside it, on the side toward the pane's centre, the
+baseline kept inside the pane; the place is the dot's majority `state`, the count alone when empty.
+
+**Decision 6's exception: the dots are not keyboard-reachable** (Martín). The one documented exception to
+"every interactive element is keyboard-reachable and labelled" (`.claude/rules/typescript.md`): a
+circle carries no `tabIndex`, the dots layer is `aria-hidden`, the SVG stays one `role="img"` named
+after the country. The reason: up to 124 dots a country at 10 km (BR's slice gathers 124 groups, 122 located), each tab stop a station group
+the list beside the map already reaches row by row; the list is the route. Hover has no touch or
+keyboard equivalent for the same reason. What a dot click does is reachable by keyboard: the filter's
+chip is a button (the one clear control besides Esc), and Esc clears the filter before it hides.
+
+**The page (k+4), as built.** A click is a press and release under `DRAG_THRESHOLD_PT`; `map_hit`'s
+answer becomes `Panel`'s `dotFilter` (view state), and the list shows those rows in its own order under
+the chip "✕ n station(s) · place". Cleared by the chip, Esc (in the transport pane; in About Esc hides,
+D8), a country change and ★ on. A dot clicked while ★ is on turns ★ off, so the filter applies to the
+country the map shows (a choice the plan left open: under ★ the filter would have emptied the list).
+A reload by `stations:updated` keeps the filter by uuid; a station gone from the new list drops out. A
+hit answered after a country change is dropped. The playing dot carries a halo at `r + 3` in the dot
+colour (D4); MT's line reads "No station locations for {name}" from the countries list.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

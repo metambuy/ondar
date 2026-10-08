@@ -3,9 +3,9 @@
 // control and the placeholder for the expanded pane, and reports Escape to Rust. It decides none
 // of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
 // a click on the control is a report, answered by the next `panel:layout`.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { onPanelLayout, panel, stations } from "../api";
-import type { PanelLayout, PanelView, Station } from "../api";
+import type { Country, MapHit, PanelLayout, PanelView, Station } from "../api";
 import { measureMode, measureParam, report, reportBlocks } from "../measure";
 import About from "./About";
 import CountryControl from "./CountryControl";
@@ -32,6 +32,11 @@ export default function Panel() {
   // and reported to Rust, because every later layout event carries the pane too
   // (`/code-review` C1, 2026-09-18: without the report, Expand after Back re-asserted About).
   const [view, setView] = useState<PanelView>("transport");
+  // The pane on screen, for the Esc listener (registered once): in About, Esc hides (D8).
+  const viewRef = useRef<PanelView>("transport");
+  useLayoutEffect(() => {
+    viewRef.current = view;
+  }, [view]);
   // The window's own height, as the webview sees it — view state, read on `resize`.
   const [windowHeight, setWindowHeight] = useState(window.innerHeight);
   // The newest generation applied, so an older layout arriving late is ignored (below).
@@ -43,6 +48,19 @@ export default function Panel() {
   // remembers the choice). The measurement harness may name a country.
   const [country, setCountry] = useState(measureParam("cc") ?? "PT");
   const [mine, setMine] = useState(false);
+  // The countries' names, from the control's list (MT's line and the map's label name the
+  // country); empty until the list answers, and then the code stands in.
+  const [names, setNames] = useState<Map<string, string>>(new Map());
+  const onCountries = useCallback((items: Country[]) => setNames(new Map(items.map((c) => [c.code, c.name]))), []);
+  // The map dot whose stations the list is narrowed to (M4c, decision 3): view state from
+  // `map_hit`'s answer. Cleared by the chip, Esc, a country change and ★ on. Mirrored in a ref
+  // for the Esc listener, which is registered once and would otherwise read the mount's `null`.
+  const [dotFilter, setDotFilterState] = useState<MapHit | null>(null);
+  const dotFilterRef = useRef<MapHit | null>(null);
+  const setDotFilter = useCallback((f: MapHit | null) => {
+    dotFilterRef.current = f;
+    setDotFilterState(f);
+  }, []);
   const source = useMemo<ListSource>(
     () => (mine ? { kind: "mine" } : { kind: "country", cc: country }),
     [mine, country],
@@ -175,15 +193,19 @@ export default function Panel() {
     // is handled: left to its default it continues as `cancelOperation:` up the responder
     // chain, which is what beeps (M2c Step 0, item 1: the beep was audible, and louder after an
     // in-panel click). Whether this silences it is checked by ear at acceptance, both phases.
+    // M4c: with a dot filter set on the transport pane, Esc clears it instead and Rust is not
+    // told; the next Esc hides. In About it always hides (D8). Both read through refs: this
+    // listener is registered once, and its closure holds the mount's values.
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        void panel.escape();
+        if (viewRef.current !== "about" && dotFilterRef.current !== null) setDotFilter(null);
+        else void panel.escape();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [setDotFilter]);
 
   const expanded = layout?.state === "expanded";
   // The expanded pane is shown while there is room for it: Rust says expanded, or the window is
@@ -208,10 +230,15 @@ export default function Panel() {
           onSelect={(cc) => {
             setCountry(cc);
             setMine(false);
+            setDotFilter(null);
           }}
           mine={mine}
-          onToggleMine={() => setMine((m) => !m)}
+          onToggleMine={() => {
+            if (!mine) setDotFilter(null);
+            setMine(!mine);
+          }}
           showGeneration={showGeneration}
+          onCountries={onCountries}
         />
         {listMounted && (
           <StationList
@@ -221,6 +248,8 @@ export default function Panel() {
             storeGeneration={storeGeneration}
             playingUuid={playing?.uuid ?? null}
             onPlay={setPlaying}
+            filter={dotFilter}
+            onClearFilter={() => setDotFilter(null)}
             measureRep={mountRep}
           />
         )}
@@ -252,9 +281,20 @@ export default function Panel() {
 
       {/* The map band (M4b): mounted only while the layout has a band and the transport pane is
           up, at the rect Rust laid out; it shows the selected country (★ keeps the last one).
-          Mounting is what returns it to the fit after a collapse (Rust's `map_select`). */}
+          Mounting is what returns it to the fit after a collapse (Rust's `map_select`). A dot
+          click narrows the list to the dot's stations; with ★ on it returns the list to the
+          country the map shows, which is where the dot's stations are. */}
       {showExpandedPane && view === "transport" && layout?.band != null && (
-        <MapPane band={layout.band} country={country} />
+        <MapPane
+          band={layout.band}
+          country={country}
+          countryName={names.get(country) ?? country}
+          playingUuid={playing?.uuid ?? null}
+          onHit={(hit) => {
+            setMine(false);
+            setDotFilter(hit);
+          }}
+        />
       )}
     </main>
   );

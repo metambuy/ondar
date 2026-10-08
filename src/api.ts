@@ -130,7 +130,8 @@ export const onMetadata = (cb: (m: IcyMetadata) => void): Promise<UnlistenFn> =>
 // SQLite cache; a list carries its provenance (`source`, `age_secs`, `refreshing`), and an
 // expired list is served at once while Rust refreshes it — `onStationsUpdated` says how that
 // refresh ended: `landed` (ask again) or `failed` (the expired list stays; stop showing
-// "refreshing"). The page never fetches, filters or ranks anything itself.
+// "refreshing"). The page never fetches or ranks anything itself, and filters only by a map dot's
+// uuids (`map.hit`'s answer, M4c) — never by a rule of its own.
 export const stations = {
   listCountries: () => invoke<ListedCountries>("list_countries"),
   listStations: (countryCode: string) => invoke<ListedStations>("list_stations", { countryCode }),

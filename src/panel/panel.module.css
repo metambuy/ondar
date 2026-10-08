@@ -158,6 +158,25 @@
   outline: var(--hairline) solid var(--color-accent);
 }
 
+/* The dot filter's chip above the list (M4c, decision 3): a small plate, not a push button; the
+   focus ring as a row's. */
+.chip {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  margin: 0;
+  padding: var(--chip-padding);
+  border-radius: var(--chip-radius);
+  background: var(--chip-bg);
+  color: var(--chip-fg);
+  font: var(--text-subheadline);
+  cursor: default;
+}
+
+.chip:focus-visible {
+  outline: var(--hairline) solid var(--color-accent);
+}
+
 /* One line, ellipsis at the end: Now Playing's name and title lines keep their height. */
 .nowrapClamp {
   overflow: hidden;
@@ -239,6 +258,41 @@
 .insetLabel {
   font: var(--text-map-label);
   fill: var(--map-label);
+}
+
+/* The station dots (M4c): the artifact's markers, a fill with a 1 pt ring; the playing dot's
+   halo a second ring in the fill colour, outside it (D4). The halo and the label take no pointer,
+   so the hover's enter and leave are the dot's own. */
+.dots circle {
+  fill: var(--map-dot);
+  stroke: var(--map-dot-ring);
+  stroke-width: var(--map-dot-ring-width);
+}
+
+.dots .halo {
+  fill: none;
+  stroke: var(--map-dot);
+  stroke-width: var(--map-dot-ring-width);
+  pointer-events: none;
+}
+
+/* The hover label (decision 7): the inset label's style, beside the dot. */
+.dotLabel {
+  font: var(--text-map-label);
+  fill: var(--map-label);
+  pointer-events: none;
+}
+
+/* MT (decision 5): "No station locations for …", one line on the platter in the inset label's
+   style, at the bottom-left corner (the controls hold the bottom-right). */
+.mapNote {
+  position: absolute;
+  left: var(--space-2);
+  bottom: var(--space-2);
+  margin: 0;
+  font: var(--text-map-label);
+  color: var(--map-label);
+  pointer-events: none;
 }
 
 /* "No map for this country" / "Map unavailable": one line on the platter. */

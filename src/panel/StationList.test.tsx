@@ -4,7 +4,7 @@
 // test's comment states what it pins and what it would have to see to fail.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ListedStations, Station, StationsUpdated } from "../api";
+import type { ListedStations, MapHit, Station, StationsUpdated } from "../api";
 import StationList from "./StationList";
 import type { ListSource } from "./source";
 
@@ -109,13 +109,24 @@ const offline = { code: "stations", message: "radio-browser unreachable after 3 
 const emit = (u: StationsUpdated) => act(async () => mock.stationsListeners.forEach((cb) => cb(u)));
 const emitRecents = () => act(async () => mock.recentsListeners.forEach((cb) => cb()));
 const emitState = (kind: string) => act(async () => mock.stateListeners.forEach((cb) => cb({ kind })));
-const list = (source: ListSource, showGeneration = 0, storeGeneration = 0, playingUuid: string | null = null) => (
+let cleared = 0;
+const list = (
+  source: ListSource,
+  showGeneration = 0,
+  storeGeneration = 0,
+  playingUuid: string | null = null,
+  filter: MapHit | null = null,
+) => (
   <StationList
     source={source}
     showGeneration={showGeneration}
     storeGeneration={storeGeneration}
     onPlay={() => {}}
     playingUuid={playingUuid}
+    filter={filter}
+    onClearFilter={() => {
+      cleared += 1;
+    }}
   />
 );
 
@@ -126,6 +137,7 @@ afterEach(() => {
   mock.recentsListeners.length = 0;
   mock.stateListeners.length = 0;
   mock.plays.length = 0;
+  cleared = 0;
 });
 
 describe("StationList", () => {
@@ -311,5 +323,76 @@ describe("StationList", () => {
     } finally {
       stringify.mockRestore();
     }
+  });
+  // ---- M4c k+4: the dot filter (decision 3) ----
+
+  const rowNames = () =>
+    screen
+      .queryAllByRole("button")
+      .filter((b) => b.getAttribute("aria-label")?.startsWith("Play "))
+      .map((b) => b.getAttribute("aria-label")!.slice("Play ".length));
+  const chip = () => screen.queryByRole("button", { name: "Show all stations" });
+
+  // 13. A filter shows its stations only, in the list's order — not the hit's: `map_hit` answers
+  //     list order, but the page must not depend on it. Fails if the filter is ignored, or if the
+  //     rows follow the filter's order.
+  it("13. the filtered list shows the filter's rows in list order", async () => {
+    const filter: MapHit = { uuids: ["PT-D", "PT-B"], n: 2, place: "" };
+    render(list(country("PT"), 0, 0, null, filter));
+    await resolve(requests()[0], listed("PT", ["A", "B", "C", "D"]));
+    expect(rowNames()).toEqual(["B", "D"]);
+  });
+
+  // 14. The chip's text: "✕ {n} station(s)", "· {place}" appended when the place is non-empty;
+  //     n is the dot's count. No chip without a filter. Fails on the plural for one, a dangling
+  //     "·" with no place, or a chip with no filter.
+  it("14. the chip's text for n = 1 and 3, with and without a place; none without a filter", async () => {
+    const cases: [MapHit, string][] = [
+      [{ uuids: ["PT-A"], n: 1, place: "" }, "✕ 1 station"],
+      [{ uuids: ["PT-A"], n: 1, place: "Lisboa" }, "✕ 1 station · Lisboa"],
+      [{ uuids: ["PT-A", "PT-B", "PT-C"], n: 3, place: "" }, "✕ 3 stations"],
+      [{ uuids: ["PT-A", "PT-B", "PT-C"], n: 3, place: "Porto" }, "✕ 3 stations · Porto"],
+    ];
+    const view = render(list(country("PT")));
+    await resolve(requests()[0], listed("PT", ["A", "B", "C"]));
+    expect(chip()).toBeNull();
+    for (const [filter, text] of cases) {
+      view.rerender(list(country("PT"), 0, 0, null, filter));
+      expect(chip()!.textContent).toBe(text);
+    }
+  });
+
+  // 15. The chip is a button (keyboard-reachable, labelled) that asks `Panel` to clear the
+  //     filter; with the filter gone every row is back. Fails if the chip is not a button or
+  //     reports nothing.
+  it("15. the chip clears the filter", async () => {
+    const filter: MapHit = { uuids: ["PT-B"], n: 1, place: "" };
+    const view = render(list(country("PT"), 0, 0, null, filter));
+    await resolve(requests()[0], listed("PT", ["A", "B", "C"]));
+    expect(chip()!.tagName).toBe("BUTTON");
+    fireEvent.click(chip()!);
+    expect(cleared).toBe(1);
+    view.rerender(list(country("PT")));
+    expect(rowNames()).toEqual(["A", "B", "C"]);
+  });
+
+  // 16. A `landed` reload keeps the filter by uuid: the reloaded list is filtered again, a uuid
+  //     gone from it drops out, and when none is left the list's empty text shows under the
+  //     chip. Fails if the filtered rows are kept from the first list (a stale row survives the
+  //     reload), or if the empty text needs the whole list empty.
+  it("16. a landed reload keeps the filter and drops a vanished uuid", async () => {
+    const filter: MapHit = { uuids: ["PT-B", "PT-C"], n: 2, place: "" };
+    render(list(country("PT"), 0, 0, null, filter));
+    await resolve(requests()[0], listed("PT", ["A", "B", "C"]));
+    expect(rowNames()).toEqual(["B", "C"]);
+    await emit({ country_code: "PT", outcome: "landed" });
+    await resolve(requests()[1], listed("PT", ["A", "C", "E"]));
+    expect(rowNames()).toEqual(["C"]);
+    expect(chip()!.textContent).toBe("✕ 2 stations");
+    await emit({ country_code: "PT", outcome: "landed" });
+    await resolve(requests()[2], listed("PT", ["A", "E"]));
+    expect(rowNames()).toEqual([]);
+    expect(chip()).not.toBeNull();
+    expect(screen.getByText("No stations for PT after filtering.")).toBeTruthy();
   });
 });

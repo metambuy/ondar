@@ -25,9 +25,15 @@
 // resumes (M3b commit 5, F6 review F2): a `play` call is a vote in radio-browser's click
 // counter, sent by Rust on the session's first `Playing`; a replay is stop, then the row. The
 // recent is recorded by Rust at the same moment — the page reports nothing.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+//
+// **The dot filter** (M4c, decision 3): a click on a map dot hands `Panel` the dot's stations
+// (`map_hit`, uuids), and the list shows only those rows, in the list's order, under a chip that
+// clears it. The filter is `Panel`'s view state, not this component's, and is never touched by a
+// reload: a `landed` re-request is filtered again by uuid, and a station gone from the new list
+// drops out. Rust ranked the rows; the page only hides the ones not under the dot.
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { audio, onRecentsUpdated, onState, onStationsUpdated, stations } from "../api";
-import type { PlaybackState, Station } from "../api";
+import type { MapHit, PlaybackState, Station } from "../api";
 import {
   measureMode,
   measureParam,
@@ -38,6 +44,7 @@ import {
   sampleFrames,
 } from "../measure";
 import type { MountMarks } from "../measure";
+import { dotText } from "./dots";
 import styles from "./panel.module.css";
 import { describeError, provenance } from "./provenance";
 import { sourceKey } from "./source";
@@ -57,6 +64,10 @@ type Props = {
   onPlay: (s: Station) => void;
   /** The station Now Playing names (`Panel`'s `playing`), so its row does not replay it. */
   playingUuid: string | null;
+  /** The map dot's stations the list is narrowed to (`Panel`'s, from `map_hit`), or none. */
+  filter: MapHit | null;
+  /** The chip was pressed: `Panel` clears the filter. */
+  onClearFilter: () => void;
   /** The measurement harness's mount repetition (`?measure=perf&m=mount`); `Panel` keys on it. */
   measureRep?: number;
 };
@@ -93,6 +104,8 @@ function StationList({
   storeGeneration,
   onPlay,
   playingUuid,
+  filter,
+  onClearFilter,
   measureRep = 0,
 }: Props) {
   const [list, setList] = useState<Shown | null>(null);
@@ -202,7 +215,9 @@ function StationList({
 
   const shown = list !== null && list.key === key ? list : null;
   const rows = perfRows();
-  const items = shown === null ? [] : rows === null ? shown.items : shown.items.slice(0, rows);
+  const filterSet = useMemo(() => (filter === null ? null : new Set(filter.uuids)), [filter]);
+  const all = shown === null ? [] : rows === null ? shown.items : shown.items.slice(0, rows);
+  const items = filterSet === null ? all : all.filter((s) => filterSet.has(s.uuid));
 
   // The harness's mount marks: the commit that rendered the rows (layout done, not painted)
   // and the first frame after it — a hidden webview runs no rAF, so this needs the panel shown.
@@ -269,8 +284,17 @@ function StationList({
         {status}
         {cue}
       </p>
+      {/* The filter's chip: its only clear control besides Esc, so a button (keyboard-reachable,
+          labelled). The count is the dot's, as the hover label reads. */}
+      {filter !== null && (
+        <div className={styles.row}>
+          <button type="button" className={styles.chip} aria-label="Show all stations" onClick={onClearFilter}>
+            {`✕ ${dotText(filter.n, filter.place)}`}
+          </button>
+        </div>
+      )}
       <ul ref={listRef} className={styles.list} data-measure="list_viewport">
-        {shown && shown.items.length === 0 && (
+        {shown && (shown.items.length === 0 || (filterSet !== null && items.length === 0)) && (
           <li className={styles.muted}>
             {source.kind === "country"
               ? `No stations for ${source.cc} after filtering.`
