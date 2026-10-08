@@ -10,10 +10,49 @@ countrycode is rewritten to PT so the fixture stays one country (such rows are a
 lastcheckok == 0, which the tests account for). Rows already among the first
 50 are not added twice; the extras are appended in this order after the 50. countries.json,
 stations-MT.json and the search-*.json files are byte-for-byte copies.
+
+    python3 scripts/fixture-slice.py --geo <CC> <census file> <fixtures dir>
+
+M4c (plan § 5, A4): stations-<CC>-geo.json = the rows of one census list that survive
+ondar-stations' `filter::rank` (cap 750) **and** carry a position, as served (census order, the
+rows unchanged). The rank is re-implemented here; the Rust test
+`the_geo_slices_normalise_to_their_row_counts` checks the slice against the real one.
 """
 import json, shutil, sys
 from collections import Counter
 from pathlib import Path
+
+def geo_slice(cc, census, dst):
+    rows = json.load(open(census))
+    # filter::rank: drop !lastcheckok and an empty url; dedupe on (folded trimmed name, url),
+    # the first row kept unless a later one has more votes; sort votes desc, known bitrate
+    # first, click trend desc, uuid; cap 750. normalise trims name and url_resolved.
+    best = {}
+    for r in rows:
+        url = (r.get("url_resolved") or "").strip()
+        if r.get("lastcheckok") != 1 or not url:
+            continue
+        key = (r["name"].strip().lower(), url)
+        if key not in best or best[key]["votes"] < r["votes"]:
+            best[key] = r
+    ranked = sorted(best.values(), key=lambda r: (-r["votes"], (r.get("bitrate") or 0) == 0,
+                                                  -r["clicktrend"], r["stationuuid"]))[:750]
+    def geo(r):
+        lat, lng = r.get("geo_lat"), r.get("geo_long")
+        return lat is not None and lng is not None and not (lat == 0 and lng == 0)
+    keep = {r["stationuuid"] for r in ranked if geo(r)}
+    out = [r for r in rows if r["stationuuid"] in keep and r is best.get(
+        (r["name"].strip().lower(), (r.get("url_resolved") or "").strip()))]
+    assert len(out) == len(keep), "a uuid served twice"
+    assert all(r["countrycode"].upper() == cc for r in out), "a row of another country"
+    name = f"stations-{cc}-geo.json"
+    json.dump(out, open(Path(dst) / name, "w"), ensure_ascii=False, separators=(",", ":"))
+    print(f"{name}: {len(out)} rows ({len(rows)} served, {len(ranked)} ranked), "
+          f"{(Path(dst) / name).stat().st_size} B")
+
+if sys.argv[1] == "--geo":
+    geo_slice(sys.argv[2], Path(sys.argv[3]), sys.argv[4])
+    sys.exit(0)
 
 src, dst = Path(sys.argv[1]), Path(sys.argv[2])
 dst.mkdir(parents=True, exist_ok=True)

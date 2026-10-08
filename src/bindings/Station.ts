@@ -41,6 +41,12 @@ votes: number, click_count: number, click_trend: number,
  */
 geo: [number, number] | null, 
 /**
+ * radio-browser's `state`, trimmed: a free-text region (`Lisboa`, `New Mexico`), often
+ * empty (29 of PT-60's 56 rows). Added in M4c for the map's hover; a station stored before
+ * cache v3 (a favourite, a recent) has none and reads back as `""` by the serde default.
+ */
+state: string, 
+/**
  * `lastcheckok == 1`. With `hidebroken=true` on the request this is always true; kept so a
  * list from any other source can be filtered the same way.
  */

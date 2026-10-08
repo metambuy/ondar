@@ -82,6 +82,7 @@ mod tests {
             click_count: 0,
             click_trend: trend,
             geo: None,
+            state: String::new(),
             last_check_ok: true,
         }
     }

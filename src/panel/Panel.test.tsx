@@ -22,6 +22,7 @@ const orbital: Station = {
   click_count: 0,
   click_trend: 0,
   geo: null,
+  state: "",
   last_check_ok: true,
 };
 

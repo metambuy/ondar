@@ -1989,7 +1989,9 @@ the decisions Martín took at the plan review (2026-09-21):
   announced as `landed`, which made the page fetch it again on every event (review finding 3,
   2026-09-22).
 - **Cache** (rusqlite, `bundled`): hand-rolled `PRAGMA user_version` migrations (decision 1 —
-  one table set, no dependency); TTL 24 h for a list, 7 d for countries, from radio-browser's
+  one table set, no dependency; **v3**, M4c 2026-10-08, expires every stored list with
+  `fetched_at = 0` so `Station.state` arrives with the refresh, and deletes nothing — favourites
+  and recents read `state` as `""`, its serde default); TTL 24 h for a list, 7 d for countries, from radio-browser's
   own recheck cadence; an expired list is never dropped — it is served at once as `cached` with
   `refreshing: true` while a refresh runs (**stale-while-revalidate**, F5), and with no age
   ceiling when the network is down (G3). `stations:updated { country_code, outcome }` tells the page
