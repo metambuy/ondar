@@ -211,7 +211,14 @@ export default function MapPane({ band, country, countryName, playingUuid, onHit
   // them on a landed refresh. Pull once, at the view the pane has; never re-select (that would
   // return to the fit).
   useEffect(() => {
-    const unlisten = onMapChanged(() => loop.current?.wake());
+    // The harness's positive control for the dots-painted mark (`?measure=map&dotsdelay=<ms>`,
+    // debug builds): the wake is held that long, so the dots reach the screen later and the mark
+    // must move by it. Inert outside the harness.
+    const hold = measureMode() === "map" ? Number(measureParam("dotsdelay") ?? "0") : 0;
+    const unlisten = onMapChanged(() => {
+      if (hold > 0) setTimeout(() => loop.current?.wake(), hold);
+      else loop.current?.wake();
+    });
     return () => {
       unlisten.then((un) => un());
     };
@@ -313,7 +320,10 @@ export default function MapPane({ band, country, countryName, playingUuid, onHit
   );
 
   // The harness's marks per drawn reply: invoke → commit (this effect runs after the render that
-  // used the reply committed), then the first two animation frames.
+  // used the reply committed), then the first two animation frames. M4c's acceptance: the reply's
+  // dot count and view, so a summary finds the first frame after a select that drew dots (the
+  // dots-painted mark: the select → that frame's second animation frame) and reads the view a
+  // regather kept.
   const seq = reply?.seq;
   useEffect(() => {
     if (measureMode() !== "map" || seq === undefined) return;
@@ -322,6 +332,8 @@ export default function MapPane({ band, country, countryName, playingUuid, onHit
     const commitAt = performance.now();
     const vertices = reply?.frame?.stats.vertices ?? 0;
     const status = reply?.status;
+    const dots = reply?.frame?.dots.length ?? 0;
+    const view = reply?.view ?? null;
     requestAnimationFrame((t1) => {
       requestAnimationFrame((t2) => {
         report("frame", {
@@ -334,6 +346,10 @@ export default function MapPane({ band, country, countryName, playingUuid, onHit
           raf2_ms: t2 - t1,
           vertices,
           status,
+          dots,
+          cx: view?.centre[0],
+          cy: view?.centre[1],
+          scale: view?.scale,
         });
       });
     });
