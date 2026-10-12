@@ -7,3 +7,6 @@
   rect disabled is compared against it (`world::input_tests::corner_table_at_161_matches_step0`,
   `#[ignore]`, needs the NE inputs). IN and US framed on partial land there (`missing_blobs` 11 and 48
   at the fit, the `fit` lines' 7th field) and are excluded from the comparison.
+  The four labels M4b commit 4b (`2e9ec11`) renamed in `insets.tsv` are renamed here too (M4c,
+  2026-10-08: Canary Islands → Canaries, French Guiana → Fr. Guiana, Guadeloupe & Martinique →
+  Antilles, Andaman & Nicobar → Andamans); the test looks lines up by label. No figure changed.

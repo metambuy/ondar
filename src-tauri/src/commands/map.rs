@@ -1,24 +1,60 @@
 //! The map commands (M4b commit 6): thin. `map_select` reports the page's country; `map_pull`
 //! hands the page's accumulated inputs to the session and answers with the frame as JSON (Step 0's
 //! measured path: 14 ms invoke → commit for RU at the real pane) or `null` when nothing changed.
-//! The band comes from the layout Rust last emitted, never from the page.
+//! The band comes from the layout Rust last emitted, never from the page. `map_hit` tests a click
+//! against the dots of the newest frame (M4c).
 
 use std::time::Instant;
 
 use tauri::State;
 
 use crate::error::OndarError;
-use crate::map::{self, MapInputs, MapReply, MapSessionState, MapState, Step};
+use crate::map::{self, Cause, MapHit, MapInputs, MapReply, MapSessionState, MapState, Step};
 use crate::panel::PanelState;
 
 /// The page's selected country changed (or the map pane mounted): the session returns to the
-/// fit and the next pull frames. One log line per call — `map select code=… lookup=…` — so a
-/// normal run (no measure mode) shows the map following the dropdown (acceptance review A2).
+/// fit and the next pull frames, with no dots. One log line per call — `map select code=…
+/// lookup=…` — so a normal run (no measure mode) shows the map following the dropdown (acceptance
+/// review A2). The country's stations are read, gathered and installed by a task spawned here and
+/// never awaited (S3: no station work in front of the first pull; this command is not `async`, so
+/// it cannot wait on it); the task logs `map dots …` and emits `map:changed` when they land.
 #[tauri::command]
-pub fn map_select(state: State<'_, MapState>, session: State<'_, MapSessionState>, code: String) {
+pub fn map_select(
+    app: tauri::AppHandle,
+    state: State<'_, MapState>,
+    session: State<'_, MapSessionState>,
+    code: String,
+) {
+    let t0 = Instant::now();
     let store = state.0.get().and_then(|s| s.as_ref());
-    let lookup = session.0.lock().unwrap().select(store, &code);
+    let (lookup, ticket) = {
+        let mut s = session.0.lock().unwrap();
+        let lookup = s.select(store, &code);
+        (lookup, s.ticket_for(&code))
+    };
     log::info!("map select code={code} lookup={lookup}");
+    if let Some(t) = ticket {
+        map::spawn_gather(app, t, Cause::Select, t0);
+    }
+}
+
+/// A click on the map at `pt` (pane points): the nearest dot of the newest frame within its
+/// radius + 2 pt, or `None`. Never plays (M4c decision 3: a click filters the list). One log line:
+/// `map hit pt=… dot=<i> n=… place=…` or `map hit pt=… miss`.
+#[tauri::command]
+pub fn map_hit(session: State<'_, MapSessionState>, pt: [f32; 2]) -> Option<MapHit> {
+    let hit = session.0.lock().unwrap().hit(pt);
+    match &hit {
+        Some((i, h)) => log::info!(
+            "map hit pt={:.1},{:.1} dot={i} n={} place={:?}",
+            pt[0],
+            pt[1],
+            h.n,
+            h.place
+        ),
+        None => log::info!("map hit pt={:.1},{:.1} miss", pt[0], pt[1]),
+    }
+    hit.map(|(_, h)| h)
 }
 
 /// One pull per animation frame while the page has input pending (or a band / country change):
@@ -48,19 +84,24 @@ pub async fn map_pull(
             pane,
             view,
             band,
+            dots,
         } => {
             let shared = state.0.clone();
             let computed = tauri::async_runtime::spawn_blocking(move || {
                 let t_f0 = Instant::now();
                 let store = shared.get().and_then(|s| s.as_ref())?;
-                let reply = map::frame_reply(store, seq, country, &pane, view, band);
+                let reply = map::frame_reply(store, seq, country, &pane, view, band, &dots);
                 Some((reply, t_f0, Instant::now()))
             })
             .await
             .ok()
             .flatten();
             match computed {
-                Some((r, t_f0, t_f1)) => (Some(r), Some((t_f0, t_f1))),
+                Some((r, t_f0, t_f1)) => {
+                    let framed = r.frame.as_ref().map_or(&[][..], |f| &f.dots);
+                    session.0.lock().unwrap().framed(r.seq, framed);
+                    (Some(r), Some((t_f0, t_f1)))
+                }
                 None => (None, None),
             }
         }

@@ -6,14 +6,25 @@
 // pane points already, and a reply is drawn only if its sequence number is newer than the frame
 // on screen, so a late reply cannot overwrite a newer one. A theme change recolours by CSS alone
 // and pulls nothing.
+//
+// M4c: the frame carries the country's station dots (Rust gathers, locates and projects them).
+// The pane draws them, marks the one holding the playing station, labels the one under the
+// pointer, and turns a click into `map.hit`, whose answer goes to `Panel` as the list's filter.
+// The map never plays. Dots are not keyboard-reachable (decision 6): the list is the route.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { map } from "../api";
-import type { Frame, MapBand, MapInputs, MapReply, Shape } from "../api";
+import { map, onMapChanged } from "../api";
+import type { Dot, Frame, MapBand, MapHit, MapInputs, MapReply, MapStatus, Shape } from "../api";
 import { measureMode, measureParam, report, sampleFrames } from "../measure";
+import { dotText } from "./dots";
 import styles from "./panel.module.css";
 
 /** The click/drag threshold in points (decision F, recorded for M4c's dots). */
 export const DRAG_THRESHOLD_PT = 4;
+
+/** The playing dot's halo: a ring this many points outside the dot (D4). */
+const HALO_GAP_PT = 3;
+/** The hover label's gap from the dot's edge, in points. */
+export const LABEL_GAP_PT = 4;
 
 /** A path's `d` for a shape: every ring closed, the fill rule even-odd (holes). */
 export function pathOf(shape: Shape): string {
@@ -25,6 +36,26 @@ export function pathOf(shape: Shape): string {
     d += "Z";
   }
   return d;
+}
+
+/** The line a status puts on the platter, or none. Exhaustive: a status Rust adds that this
+ *  switch does not name fails typecheck at the `never` arm (M4b's review, latent 14). */
+function statusMessage(status: MapStatus): string | null {
+  switch (status) {
+    case "frame":
+      return null;
+    case "no_map":
+      return "No map for this country";
+    case "unavailable":
+      return "Map unavailable";
+    case "no_band":
+      // the band is Rust's: with none, the page draws nothing
+      return null;
+    default: {
+      const unknown: never = status;
+      return unknown;
+    }
+  }
 }
 
 function lineOf(line: [number, number][]): string {
@@ -48,6 +79,12 @@ type Props = {
   band: MapBand;
   /** The selected country's code; a change returns the view to its fit (Rust's `map_select`). */
   country: string;
+  /** Its name, from the countries list (`Panel`): the SVG's label and MT's line. */
+  countryName: string;
+  /** The station Now Playing names: the dot holding it gets the halo. */
+  playingUuid: string | null;
+  /** A click landed on a dot: its stations, for `Panel`'s list filter. A miss calls nothing. */
+  onHit: (hit: MapHit) => void;
 };
 
 /// The pull loop (the page's half of decision D): input accumulated since the last pull, one pull
@@ -134,8 +171,11 @@ function makeLoop(
   };
 }
 
-export default function MapPane({ band, country }: Props) {
+export default function MapPane({ band, country, countryName, playingUuid, onHit }: Props) {
   const [reply, setReply] = useState<MapReply | null>(null);
+  // The dot under the pointer, by index in the frame it was entered on: a newer frame drops it
+  // (the dot may have moved or gone). View state.
+  const [hover, setHover] = useState<{ seq: number; i: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   // the harness's marks: the drawn reply's invoke round trip and when it arrived
   const invokeMs = useRef<{
@@ -161,9 +201,28 @@ export default function MapPane({ band, country }: Props) {
 
   // A country change (and the mount: a collapse and re-expand) returns to the fit — Rust's
   // `select` — and pulls.
+  const countryRef = useRef(country);
   useEffect(() => {
+    countryRef.current = country;
     void map.select(country).then(() => loop.current?.wake());
   }, [country]);
+
+  // `map:changed`: Rust installed the selection's dots (after its first frame) or regathered
+  // them on a landed refresh. Pull once, at the view the pane has; never re-select (that would
+  // return to the fit).
+  useEffect(() => {
+    // The harness's positive control for the dots-painted mark (`?measure=map&dotsdelay=<ms>`,
+    // debug builds): the wake is held that long, so the dots reach the screen later and the mark
+    // must move by it. Inert outside the harness.
+    const hold = measureMode() === "map" ? Number(measureParam("dotsdelay") ?? "0") : 0;
+    const unlisten = onMapChanged(() => {
+      if (hold > 0) setTimeout(() => loop.current?.wake(), hold);
+      else loop.current?.wake();
+    });
+    return () => {
+      unlisten.then((un) => un());
+    };
+  }, []);
 
   // A band change is Rust's to notice (the session compares the layout's band); the page only
   // needs to pull once so the fit at the new band arrives.
@@ -227,7 +286,21 @@ export default function MapPane({ band, country }: Props) {
       i.pan_pt[1] -= dy;
     });
   };
-  const onPointerUp = () => {
+  // A release with no pan is a click (M4c, decision 3): Rust tests it against the dots on screen
+  // (`map.hit`, svg-local points — the viewBox is the band's size, so CSS px are pane points) and
+  // the page filters the list to the answer. A reply that lands after a country change is the old
+  // country's and is dropped.
+  const onPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    const d = drag.current;
+    drag.current = null;
+    if (d === null || d.panning) return;
+    const box = e.currentTarget.getBoundingClientRect();
+    const at = countryRef.current;
+    void map.hit([e.clientX - box.left, e.clientY - box.top]).then((hit) => {
+      if (hit !== null && countryRef.current === at) onHit(hit);
+    });
+  };
+  const onPointerCancel = () => {
     drag.current = null;
   };
 
@@ -247,7 +320,10 @@ export default function MapPane({ band, country }: Props) {
   );
 
   // The harness's marks per drawn reply: invoke → commit (this effect runs after the render that
-  // used the reply committed), then the first two animation frames.
+  // used the reply committed), then the first two animation frames. M4c's acceptance: the reply's
+  // dot count and view, so a summary finds the first frame after a select that drew dots (the
+  // dots-painted mark: the select → that frame's second animation frame) and reads the view a
+  // regather kept.
   const seq = reply?.seq;
   useEffect(() => {
     if (measureMode() !== "map" || seq === undefined) return;
@@ -256,6 +332,8 @@ export default function MapPane({ band, country }: Props) {
     const commitAt = performance.now();
     const vertices = reply?.frame?.stats.vertices ?? 0;
     const status = reply?.status;
+    const dots = reply?.frame?.dots.length ?? 0;
+    const view = reply?.view ?? null;
     requestAnimationFrame((t1) => {
       requestAnimationFrame((t2) => {
         report("frame", {
@@ -268,6 +346,10 @@ export default function MapPane({ band, country }: Props) {
           raf2_ms: t2 - t1,
           vertices,
           status,
+          dots,
+          cx: view?.centre[0],
+          cy: view?.centre[1],
+          scale: view?.scale,
         });
       });
     });
@@ -346,12 +428,36 @@ export default function MapPane({ band, country }: Props) {
   }, [push, zoom]);
 
   const frame: Frame | null = reply?.status === "frame" ? (reply.frame ?? null) : null;
-  const message =
-    reply?.status === "no_map"
-      ? "No map for this country"
-      : reply?.status === "unavailable"
-        ? "Map unavailable"
-        : null;
+  const message = reply ? statusMessage(reply.status) : null;
+  // MT (decision 5): stations, none of them located.
+  const noLocations = frame !== null && frame.stats.stations_total > 0 && frame.stats.stations_located === 0;
+  const hovered: Dot | null =
+    frame !== null && hover !== null && hover.seq === reply?.seq ? (frame.dots[hover.i] ?? null) : null;
+  // The hover label (decision 7, amended at k+4b: the inset-label style read 1.13 to 3.91 against
+  // the map, under WCAG's 4.5) is HTML on the controls' plate over the SVG. Beside the dot on the
+  // side toward the pane's centre, `LABEL_GAP_PT` from its edge, its `max-width` ending at the
+  // pane's edge (a long place ends in an ellipsis); centred on the dot vertically, by the label's
+  // own box (line height plus padding), and clamped into the pane. Placement only, set on the
+  // element before paint: the words are Rust's count and place.
+  const tipRef = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    if (el === null || hovered === null) return;
+    const gap = hovered.r + LABEL_GAP_PT;
+    if (hovered.x <= band.width / 2) {
+      const left = hovered.x + gap;
+      el.style.left = `${left}px`;
+      el.style.right = "";
+      el.style.maxWidth = `${Math.max(0, band.width - left)}px`;
+    } else {
+      const edge = hovered.x - gap;
+      el.style.left = "";
+      el.style.right = `${band.width - edge}px`;
+      el.style.maxWidth = `${Math.max(0, edge)}px`;
+    }
+    const h = el.offsetHeight;
+    el.style.top = `${Math.min(Math.max(hovered.y - h / 2, 0), band.height - h)}px`;
+  }, [hovered, band]);
 
   return (
     <div className={styles.platter} data-measure="map_band" data-seq={reply?.seq ?? -1}>
@@ -360,11 +466,11 @@ export default function MapPane({ band, country }: Props) {
         className={styles.map}
         viewBox={`0 0 ${band.width} ${band.height}`}
         role="img"
-        aria-label={`Map of ${country}`}
+        aria-label={`Map of ${countryName}`}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={onPointerCancel}
       >
         {/* Three layers, one flat fill each (A1, 2026-10-06): neighbours, the land with its
             hairline edge on the same path, subdivisions above it; then the insets. No filter —
@@ -408,10 +514,36 @@ export default function MapPane({ band, country }: Props) {
                 );
               })}
             </g>
+            {/* The dots (M4c), above the insets: Rust's centres and radii, larger first, so a
+                small dot is never under a large one. No text on the map but the hover label.
+                Not focusable and hidden from assistive tech (decision 6: the list reaches every
+                station); the SVG stays one image. */}
+            <g className={styles.dots} aria-hidden="true">
+              {frame.dots.map((d, i) => (
+                <g key={i}>
+                  <circle
+                    cx={d.x}
+                    cy={d.y}
+                    r={d.r}
+                    onPointerEnter={() => setHover({ seq: reply?.seq ?? -1, i })}
+                    onPointerLeave={() => setHover(null)}
+                  />
+                  {playingUuid !== null && d.uuids.includes(playingUuid) && (
+                    <circle className={styles.halo} cx={d.x} cy={d.y} r={d.r + HALO_GAP_PT} />
+                  )}
+                </g>
+              ))}
+            </g>
           </>
         )}
       </svg>
       {message !== null && <p className={styles.mapMessage}>{message}</p>}
+      {noLocations && <p className={`${styles.mapPlate} ${styles.mapNote}`}>No station locations for {countryName}</p>}
+      {hovered !== null && (
+        <p ref={tipRef} className={`${styles.mapPlate} ${styles.mapTip}`} aria-hidden="true">
+          {dotText(hovered.n, hovered.place)}
+        </p>
+      )}
       {/* C1: the `− fit +` row in the band's reserved bottom-right corner, native buttons placed
           at the rect Rust reserved (CSS variables from the layout), keyboard-reachable. */}
       <div className={styles.controls} role="group" aria-label="Zoom">

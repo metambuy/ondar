@@ -77,6 +77,8 @@ struct RawStation {
     geo_lat: Option<f64>,
     #[serde(default)]
     geo_long: Option<f64>,
+    #[serde(default)]
+    state: String,
 }
 
 /// Station rows → stations. This maps and flags; it drops nothing — dropping (broken, empty
@@ -107,6 +109,7 @@ fn station(r: RawStation) -> Station {
             (Some(lat), Some(lng)) if !(lat == 0.0 && lng == 0.0) => Some((lat, lng)),
             _ => None,
         },
+        state: r.state.trim().to_string(),
         last_check_ok: r.lastcheckok == 1,
     }
 }
@@ -147,6 +150,10 @@ mod tests {
     const COUNTRIES: &[u8] = include_bytes!("../fixtures/countries.json");
     const PT60: &[u8] = include_bytes!("../fixtures/stations-PT-60.json");
     const MT: &[u8] = include_bytes!("../fixtures/stations-MT.json");
+    const PT_GEO: &[u8] = include_bytes!("../fixtures/stations-PT-geo.json");
+    const US_GEO: &[u8] = include_bytes!("../fixtures/stations-US-geo.json");
+    const BR_GEO: &[u8] = include_bytes!("../fixtures/stations-BR-geo.json");
+    const RU_GEO: &[u8] = include_bytes!("../fixtures/stations-RU-geo.json");
 
     #[test]
     fn parses_p2_fixture_to_240_countries() {
@@ -207,6 +214,46 @@ mod tests {
         assert_eq!(ss[0].geo, None, "geo_lat null → None");
     }
 
+    /// `state` is carried and trimmed: PT-60 serves `Lisboa` 7 times and `"Lisboa "` once, so
+    /// 8 after the trim; 29 rows have none and stay empty; no value keeps edge whitespace. Fails
+    /// if the field is not read (0 `Lisboa`, 56 empty), or not trimmed (7, and one untrimmed).
+    #[test]
+    fn state_is_carried_and_trimmed() {
+        let ss = stations(PT60).expect("parses");
+        assert_eq!(ss.iter().filter(|s| s.state == "Lisboa").count(), 8);
+        assert_eq!(ss.iter().filter(|s| s.state.is_empty()).count(), 29);
+        assert!(ss.iter().all(|s| s.state.trim() == s.state));
+    }
+
+    /// M4c's four geo slices (`fixtures/stations-{PT,US,BR,RU}-geo.json`, PROVENANCE.md) are
+    /// what the map tests draw from: each is exactly the census list's rows that survive
+    /// `filter::rank` and carry `geo`. So each normalises to its row count (PT 68, US 169,
+    /// BR 220, RU 50, the Step 0 seed's figures), every row has a position and its country's
+    /// code, and `rank` over the slice drops nothing. Fails on a slice cut without the rank
+    /// (PT 79: the served 371 carry 79 positions, `rank` keeps 68) or with a row of no
+    /// position, and if the geo rule or `rank`'s drops change.
+    #[test]
+    fn the_geo_slices_normalise_to_their_row_counts() {
+        for (cc, json, rows) in [
+            ("PT", PT_GEO, 68),
+            ("US", US_GEO, 169),
+            ("BR", BR_GEO, 220),
+            ("RU", RU_GEO, 50),
+        ] {
+            let ss = stations(json).expect("parses");
+            assert_eq!(ss.len(), rows, "{cc} rows");
+            assert!(
+                ss.iter().all(|s| s.geo.is_some() && s.country_code == cc),
+                "{cc}"
+            );
+            assert_eq!(
+                crate::filter::rank(ss, crate::filter::CAP).len(),
+                rows,
+                "{cc}: rank drops nothing"
+            );
+        }
+    }
+
     #[test]
     fn codec_strings_map_and_video_is_flagged() {
         assert_eq!(codec("MP3"), (Codec::Mp3, false));
@@ -241,6 +288,7 @@ mod tests {
                 clicktrend: 0,
                 geo_lat: lat,
                 geo_long: lng,
+                state: String::new(),
             })
         };
         assert_eq!(mk(Some(0.0), Some(0.0)).geo, None);

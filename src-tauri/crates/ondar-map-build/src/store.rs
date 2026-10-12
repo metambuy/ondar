@@ -75,6 +75,8 @@ pub struct BlobOut {
     /// The chosen rings' open vertex count before quantisation (VW's, RDP's or the hybrid's).
     pub vertices_chosen: usize,
     pub fallbacks: usize,
+    /// Rings the hybrid's RDP retry landed (`Pick::RdpRetry`), at t/2, t/4 and t/8.
+    pub retries: [usize; 3],
     /// The fallen-back ring with the most VW vertices: (its RDP count, VW count, input count).
     pub largest_fallback: (usize, usize, usize),
     /// Rings whose quanta left fewer than three distinct vertices, stored empty (M4b commit 3).
@@ -112,7 +114,15 @@ fn simplify_one(
     b.vertices_rdp += h.rdp;
     let chosen = match how {
         Simplifier::Hybrid => {
-            b.fallbacks += usize::from(h.pick == simplify::Pick::Vw);
+            match h.pick {
+                simplify::Pick::Vw => b.fallbacks += 1,
+                simplify::Pick::RdpRetry(i) => {
+                    if let Some(n) = b.retries.get_mut(usize::from(i).saturating_sub(1)) {
+                        *n += 1;
+                    }
+                }
+                simplify::Pick::Rdp => {}
+            }
             h.chosen
         }
         Simplifier::Vw => simplify::tune(line, closed, t),
@@ -156,11 +166,13 @@ pub struct Built {
     pub blobs: Vec<BlobOut>,
     pub subs: Vec<SubPlan>,
     pub p2: Vec<P2>,
-    /// P4: RU's land at 24 km/pt: (input vertices, per-ring VW, RDP at the same tolerance).
-    /// P4: RU's land at 24 km/pt — (input, per-ring VW, RDP, stored) open vertices.
+    /// The level P4 reads: RU's own top level, the one its fit draws its land at (4, 24 km/pt).
+    pub p4_level: usize,
+    /// P4: RU's land at `p4_level` — (input, per-ring VW, RDP, stored) open vertices.
     pub p4: (usize, usize, usize, usize),
-    /// RU's blob at 24 km/pt: rings that fell back, and the largest of them (RDP, VW, input).
-    pub p4_fallback: (usize, (usize, usize, usize)),
+    /// RU's blob at `p4_level`: rings that fell back, the largest of them (RDP, VW, input), and
+    /// the rings the RDP retry landed at t/2, t/4, t/8.
+    pub p4_fallback: (usize, (usize, usize, usize), [usize; 3]),
     pub simplifier: Simplifier,
     pub seconds: f64,
     /// The band heights the coverage is built for (M4b commit 3).
@@ -407,8 +419,8 @@ pub fn build(
     let mut need = vec![[false; LADDER.len()]; nu];
     let mut exact = vec![[false; LADDER.len()]; nu];
     let mut own_need = vec![[false; LADDER.len()]; nu];
-    // which (plan, level) each unit's rings were found in, for P2
-    let mut drawn_by: Vec<Vec<(usize, usize)>> = vec![Vec::new(); nu];
+    // which (plan, view level, stored level) each unit's rings were found in, for P2
+    let mut drawn_by: Vec<Vec<(usize, usize, usize)>> = vec![Vec::new(); nu];
     for (pi, p) in plans.iter().enumerate() {
         let l = p.laea();
         for k in 0..=top_level(p) {
@@ -419,8 +431,12 @@ pub fn build(
             let per_band: Vec<(f64, f64, f64)> = bands_using(p, k)
                 .map(|h| index::ground_cap(&l, reach_at(p, k, h)))
                 .collect();
-            let tol = index::tolerance_km(LADDER[k], LAND_TOL_PT);
             for (u, g) in geoms.iter().enumerate() {
+                // a view at level k draws its own units at k and its neighbours one rung coarser
+                // (M4c, lever (c)): the level, and its tolerance, the frame's index tests at
+                let own = p.units.contains(&u);
+                let ku = if own { k } else { rules::neighbour_level(k) };
+                let tol = index::tolerance_km(LADDER[ku], LAND_TOL_PT);
                 let meets = |cap: (f64, f64, f64)| {
                     index::cap_meets(&world_cap(g), cap, tol)
                         && g.rings().any(|r| index::cap_meets(&r.cap, cap, tol))
@@ -428,15 +444,15 @@ pub fn build(
                 if !meets(rc) {
                     continue;
                 }
-                need[u][k] = true;
+                need[u][ku] = true;
                 if per_band.iter().any(|&cap| meets(cap)) {
-                    exact[u][k] = true;
+                    exact[u][ku] = true;
                 }
-                if p.units.contains(&u) {
-                    own_need[u][k] = true;
+                if own {
+                    own_need[u][ku] = true;
                 }
                 if p.units.first() != Some(&u) {
-                    drawn_by[u].push((pi, k));
+                    drawn_by[u].push((pi, k, ku));
                 }
             }
         }
@@ -488,10 +504,10 @@ pub fn build(
                 *slot = (q, at());
             }
         };
-        for &(pi, k) in &drawn_by[u] {
+        for &(pi, kv, k) in &drawn_by[u] {
             let p = &plans[pi];
             let fl = p.laea();
-            let Some(rect) = reach(p, k) else {
+            let Some(rect) = reach(p, kv) else {
                 continue;
             };
             for (ri, r) in g.rings().enumerate() {
@@ -568,6 +584,7 @@ pub fn build(
             vertices_rdp: 0,
             vertices_chosen: 0,
             fallbacks: 0,
+            retries: [0; 3],
             largest_fallback: (0, 0, 0),
             collapsed: 0,
         };
@@ -647,13 +664,13 @@ pub fn build(
         }
     }
 
-    // P4: RU's land at 24 km/pt
+    // P4: RU's land at the level its fit draws it at, the top of its own levels (24 km/pt; the
+    // neighbours' rung above it is not RU's land at any view)
+    let ru_plan = plans.iter().find(|p| p.code == "RU");
+    let p4_level = ru_plan.map_or(rules::OWN_TOP_LEVEL, top_level);
     let p4 = {
-        let ru = plans
-            .iter()
-            .find(|p| p.code == "RU")
-            .and_then(|p| p.units.first().copied());
-        let k = LADDER.len() - 1;
+        let ru = ru_plan.and_then(|p| p.units.first().copied());
+        let k = p4_level;
         let blob = blobs.iter().find(|b| Some(b.owner) == ru && b.level == k);
         blob.map_or((0, 0, 0, 0), |b| {
             (
@@ -666,14 +683,13 @@ pub fn build(
     };
 
     let p4_fallback = {
-        let ru = plans
-            .iter()
-            .find(|p| p.code == "RU")
-            .and_then(|p| p.units.first().copied());
+        let ru = ru_plan.and_then(|p| p.units.first().copied());
         blobs
             .iter()
-            .find(|b| Some(b.owner) == ru && b.level == LADDER.len() - 1)
-            .map_or((0, (0, 0, 0)), |b| (b.fallbacks, b.largest_fallback))
+            .find(|b| Some(b.owner) == ru && b.level == p4_level)
+            .map_or((0, (0, 0, 0), [0; 3]), |b| {
+                (b.fallbacks, b.largest_fallback, b.retries)
+            })
     };
 
     // subdivisions
@@ -707,6 +723,7 @@ pub fn build(
             vertices_rdp: 0,
             vertices_chosen: 0,
             fallbacks: 0,
+            retries: [0; 3],
             largest_fallback: (0, 0, 0),
             collapsed: 0,
         };
@@ -817,6 +834,7 @@ pub fn build(
         blobs,
         subs,
         p2,
+        p4_level,
         p4,
         p4_fallback,
         simplifier: how,
@@ -886,9 +904,12 @@ mod tests {
     /// everywhere — at 400 km the floor band's fit would be 4.0 and level 1 needed anyway, M4b
     /// commit 3) lists an inset group whose scale needs level 1 — nothing else asks for AA's unit
     /// at level 1 — and a `-99` unit sits just past the disc around AA's level-0 reach, along its
-    /// diagonal, by half the level's tolerance — nothing else asks for it. Fails with the inset rule dropped or the cap tolerance ignored (both are invisible on
-    /// the real data: other countries' reaches store those blobs, and the disc around a reach is
-    /// wider than the tolerance everywhere a ring happens to lie).
+    /// diagonal, by 0.75 of the tolerance of the level a neighbour of a level-0 view is drawn at
+    /// (level 1, M4c's rung) — nothing else asks for it — so it is stored at level 1 alone. Fails
+    /// with the inset rule dropped, the cap tolerance ignored or taken at the view's level (half
+    /// the rung's: the neighbour is not stored), or the neighbour stored at the view's level (all
+    /// invisible on the real data: other countries' reaches store those blobs, and the disc
+    /// around a reach is wider than the tolerance everywhere a ring happens to lie).
     #[test]
     fn coverage_stores_the_inset_level_and_the_tolerance_band() {
         use crate::world::tests::{square, unit};
@@ -919,10 +940,10 @@ mod tests {
         let p0 = probe(&w0);
         let l = p0.laea();
         let g = index::ground_cap(&l, reach(&p0, 0).unwrap());
-        let tol = index::tolerance_km(LADDER[0], LAND_TOL_PT);
+        let tol = index::tolerance_km(LADDER[rules::neighbour_level(0)], LAND_TOL_PT);
         let side = 1.0;
         let r_cap = side / 2.0 * 2f64.sqrt() * 1.001 + 0.01 + 0.01;
-        let dist = g.2 + r_cap + tol / 2.0;
+        let dist = g.2 + r_cap + 0.75 * tol;
         // along the bearing 45° from the reach's centre (g is centred on the bbox's centre)
         let ang = dist / R_AUTHALIC_KM;
         let (lat, lon) = (
@@ -960,8 +981,11 @@ mod tests {
                 .any(|x| x.owner == u && x.level == k && x.layer == Layer::Land)
         };
         assert!(has(0, 0) && has(0, 1), "the inset's level");
-        assert!(has(1, 0), "the neighbour in the tolerance band");
-        assert!(!has(1, 1) && !has(0, 2));
+        assert!(
+            has(1, 1),
+            "the neighbour in the tolerance band, at the rung"
+        );
+        assert!(!has(1, 0) && !has(1, 2) && !has(0, 2));
     }
 
     /// A unit is the main unit of one country at most (review 2, second pass): the frame
@@ -1009,10 +1033,10 @@ mod tests {
     /// to 166 × 1.538 = 255.4 km; at the 140 pt floor the usable height is 100 pt, the fit 4.0
     /// km/pt (top level 1, the 3 km/pt level) and the level-0 reach 164 × 4 + 6 = 662 km. A 1 km
     /// `-99` neighbour 400 km east of AA's centre is inside the floor band's reach at levels 0
-    /// and 1 and outside the golden pane's, so it is stored at both — and AA itself at level 1,
-    /// which only the bands up to 173 pt use. Fails with the reach taken at the golden
-    /// pane alone (the neighbour is not stored, nor AA above level 0) and with the top level from
-    /// the golden fit. The bound adds nothing here (one neighbour on the x axis, inside the
+    /// and 1 and outside the golden pane's, so it is stored one rung coarser than each (M4c), at
+    /// 1 and 2 — and AA itself at level 1, which only the bands up to 173 pt use, and never at 2.
+    /// Fails with the reach taken at the golden pane alone (the neighbour is not stored, nor AA
+    /// above level 0), with the top level from the golden fit, or with own land on the rung. The bound adds nothing here (one neighbour on the x axis, inside the
     /// floor's own reach), so the file keeps every blob and `exact_stored` is false.
     #[test]
     fn coverage_covers_the_shortest_band() {
@@ -1054,11 +1078,11 @@ mod tests {
                 .any(|x| x.owner == u && x.level == k && x.layer == Layer::Land)
         };
         assert!(
-            has(1, 0) && has(1, 1),
+            has(1, 1) && has(1, 2),
             "the neighbour inside the floor band's reach"
         );
         assert!(has(0, 0) && has(0, 1), "AA at the shorter bands' level");
-        assert!(!has(0, 2) && !has(1, 2));
+        assert!(!has(0, 2) && !has(1, 0) && !has(1, 3));
         assert_eq!(b.bands, (BAND_FLOOR, BAND_MAX));
         assert!(!b.bound_added.exact_stored);
         assert_eq!(b.bound_added.blobs, 0, "{:?}", b.bound_added);

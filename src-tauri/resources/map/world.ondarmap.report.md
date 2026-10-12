@@ -1,13 +1,13 @@
 # world.ondarmap — build report
 
-Built by `ondar-map-build` at `2e9ec11c59876a188b7a78b5ae4b720153ba943a` (working tree with changes) from Natural Earth 10m v5.1.2 (the 12 pinned inputs below). Format v2, Deflate per blob.
+Built by `ondar-map-build` at `18028fcd0ff882db5cf8480daedade8e10bc527f` (working tree with changes) from Natural Earth 10m v5.1.2 (the 12 pinned inputs below). Format v3, Deflate per blob.
 
 | | |
 |---|---|
-| resource | 2852927 B (2.853 MB) |
-| SHA-256 | `e003f07ec34b4099179fad126ccaf4e63e3c7c34b3ab46b4a931376dc6023f97` |
-| units / countries / blobs | 267 / 248 / 1381 |
-| build time | 19.6 s total (store 5.4 s, 14 threads) — the ~10 min budget |
+| resource | 2865839 B (2.866 MB) |
+| SHA-256 | `acab65175723170273544b925be0262bccc8dc3ab3bbff4936747d94e0a70373` |
+| units / countries / blobs | 267 / 248 / 1634 |
+| build time | 20.6 s total (store 6.2 s, 14 threads) — the ~10 min budget |
 
 ## Bytes, vertices and bounds per layer and level
 
@@ -15,16 +15,17 @@ Bounds are the exact measure (every original vertex to the simplified line), poi
 
 | layer | level km/pt | blobs | vertices in | vertices out | raw B | deflated B | max bound pt | + codec |
 |---|---|---|---|---|---|---|---|---|
-| Land | 1.5 | 267 | 547394 | 324789 | 1352140 | 871122 | 0.2500 | 0.2854 |
-| Land | 3 | 267 | 547394 | 254797 | 1072160 | 639798 | 0.2500 | 0.2853 |
-| Land | 6 | 267 | 547394 | 216305 | 918144 | 486268 | 0.2500 | 0.2854 |
-| Land | 12 | 267 | 547394 | 170981 | 736628 | 350049 | 0.2500 | 0.2854 |
-| Land | 24 | 267 | 547394 | 131628 | 578744 | 242338 | 0.2500 | 0.2854 |
+| Land | 1.5 | 253 | 546269 | 317022 | 1320656 | 855983 | 0.2500 | 0.2854 |
+| Land | 3 | 267 | 547394 | 235495 | 994952 | 609238 | 0.2500 | 0.2853 |
+| Land | 6 | 267 | 547394 | 181506 | 778948 | 437570 | 0.2500 | 0.2854 |
+| Land | 12 | 267 | 547394 | 144000 | 628704 | 316696 | 0.2500 | 0.2854 |
+| Land | 24 | 267 | 547394 | 116158 | 516864 | 225791 | 0.2500 | 0.2854 |
+| Land | 48 | 267 | 547394 | 86020 | 395816 | 149868 | 0.2500 | 0.2854 |
 | Subdivisions | 6 | 18 | 133691 | 15021 | 71352 | 45638 | 0.5000 | 0.5353 |
 | Subdivisions | 12 | 17 | 131536 | 8863 | 46176 | 27940 | 0.4998 | 0.5352 |
 | Subdivisions | 24 | 11 | 112444 | 4141 | 24084 | 13543 | 0.4998 | 0.5352 |
 
-Total blob bytes: 4799428 B raw (4.799 MB), 2676696 B deflated per blob (2.677 MB). Neighbour-only blobs (a unit at a level only other countries' frames need): 541944 B raw, 297110 B deflated = 11.1 % of the deflated total. Max bound: land 0.2500 pt, subdivisions 0.5000 pt (spec 0.25 / 0.5).
+Total blob bytes: 4777552 B raw (4.778 MB), 2682267 B deflated per blob (2.682 MB). Neighbour-only blobs (a unit at a level only other countries' frames need): 887584 B raw, 429734 B deflated = 16.0 % of the deflated total. Max bound: land 0.2500 pt, subdivisions 0.5000 pt (spec 0.25 / 0.5).
 
 ## Coverage
 
@@ -32,15 +33,16 @@ D6 (decided 2026-10-01): the view stays inside the fit rectangle (the pane at th
 
 | level km/pt | units stored (of 267) |
 |---|---|
-| 1.5 | 267 |
+| 1.5 | 253 |
 | 3 | 267 |
 | 6 | 267 |
 | 12 | 267 |
 | 24 | 267 |
+| 48 | 267 |
 
-**The bound against the exact union** (the union of the bands' reaches is not a rectangle): the bounding rectangle asks for 0 land blob(s) no single band's reach asks for, 0 B deflated of 2589575 B (0.00 %). The rule: over 5 % and the exact union is stored instead — not applied, the bound's blobs are stored.
+**The bound against the exact union** (the union of the bands' reaches is not a rectangle): the bounding rectangle asks for 0 land blob(s) no single band's reach asks for, 0 B deflated of 2595146 B (0.00 %). The rule: over 5 % and the exact union is stored instead — not applied, the bound's blobs are stored.
 
-**Collapsed rings** (fewer than three distinct quanta at the level; stored empty, no frame can draw them): 286. Kept as empty rings rather than dropped (the commit 4 STOP's decision 7): the loader requires a land blob's ring count to equal its unit's, part by part (`Corrupt { owner }`), because the ring index — the caps in the units table — addresses a blob's rings by position without decoding them; dropping a ring from one level's blob would need a per-blob ring map, and the slot costs 8 B in the ring table (2288 B raw here, before deflate). By level 1.5 / 3 / 6 / 12 / 24: 2 / 5 / 17 / 72 / 190. By unit (counts at each level): AIA 0/0/0/0/3, ATF 0/0/0/1/2, ATG 0/0/0/0/1, BHS 0/0/0/1/3, BJN 0/0/0/1/1, BRA 0/0/0/0/1, CHL 0/0/0/0/1, CHN 0/0/0/1/1, COK 0/0/0/0/1, COL 0/0/1/1/1, CSI 0/1/1/1/1, ECU 0/0/0/1/1, ESP 0/1/3/2/4, FRA 0/0/0/0/1, FSM 0/0/0/0/1, GAB 0/0/0/0/1, GBR 0/0/0/0/1, IDN 0/0/0/0/2, IND 0/0/0/0/1, IOT 0/0/0/0/2, ITA 0/1/0/1/1, JPN 1/1/3/5/9, KIR 0/0/0/0/1, KOR 0/0/0/1/1, MDV 1/0/4/40/109, MEX 0/0/0/1/1, MHL 0/0/0/1/2, NCL 0/0/0/0/1, PGA 0/0/0/2/3, PHL 0/0/0/1/4, PNG 0/0/0/0/1, PRT 0/0/0/1/1, PYF 0/0/0/1/2, SCR 0/0/0/1/1, SER 0/0/0/1/1, SYC 0/0/0/0/4, TUV 0/0/0/0/1, UMI 0/0/1/1/3, USA 0/0/1/1/7, VAT 0/1/1/1/1, VEN 0/0/2/4/6
+**Collapsed rings** (fewer than three distinct quanta at the level; stored empty, no frame can draw them): 600. Kept as empty rings rather than dropped (the commit 4 STOP's decision 7): the loader requires a land blob's ring count to equal its unit's, part by part (`Corrupt { owner }`), because the ring index — the caps in the units table — addresses a blob's rings by position without decoding them; dropping a ring from one level's blob would need a per-blob ring map, and the slot costs 8 B in the ring table (4800 B raw here, before deflate). By level 1.5 / 3 / 6 / 12 / 24 / 48: 2 / 5 / 17 / 72 / 190 / 314. By unit (counts at each level): AIA 0/0/0/0/3/3, ASM 0/0/0/0/0/1, ATF 0/0/0/1/2/2, ATG 0/0/0/0/1/1, AUS 0/0/0/0/0/1, BHR 0/0/0/0/0/1, BHS 0/0/0/1/3/5, BJN 0/0/0/1/1/1, BRA 0/0/0/0/1/0, CAN 0/0/0/0/0/1, CHL 0/0/0/0/1/1, CHN 0/0/0/1/1/7, COK 0/0/0/0/1/4, COL 0/0/1/1/1/1, CSI 0/1/1/1/1/1, DEU 0/0/0/0/0/2, ECU 0/0/0/1/1/2, EGY 0/0/0/0/0/1, ESB 0/0/0/0/0/1, ESP 0/1/3/2/4/5, FRA 0/0/0/0/1/0, FSM 0/0/0/0/1/7, GAB 0/0/0/0/1/1, GBR 0/0/0/0/1/2, GGY 0/0/0/0/0/1, GRC 0/0/0/0/0/1, GRL 0/0/0/0/0/1, HND 0/0/0/0/0/1, IDN 0/0/0/0/2/2, IND 0/0/0/0/1/5, IOT 0/0/0/0/2/7, ITA 0/1/0/1/1/2, JPN 1/1/3/5/9/12, KIR 0/0/0/0/1/2, KOR 0/0/0/1/1/1, MDV 1/0/4/40/109/145, MEX 0/0/0/1/1/2, MHL 0/0/0/1/2/7, NCL 0/0/0/0/1/1, NZL 0/0/0/0/0/1, PCN 0/0/0/0/0/2, PGA 0/0/0/2/3/10, PHL 0/0/0/1/4/5, PNG 0/0/0/0/1/2, PRT 0/0/0/1/1/1, PYF 0/0/0/1/2/8, SCR 0/0/0/1/1/1, SER 0/0/0/1/1/1, SLB 0/0/0/0/0/1, SWE 0/0/0/0/0/1, SYC 0/0/0/0/4/13, TCA 0/0/0/0/0/1, THA 0/0/0/0/0/1, TUV 0/0/0/0/1/3, UMI 0/0/1/1/3/5, USA 0/0/1/1/7/9, VAT 0/1/1/1/1/1, VCT 0/0/0/0/0/1, VEN 0/0/2/4/6/6
 
 **Subdivision candidates at the shortest band** (flagged off at the golden fit, fit at 140 above 8 km/pt; the flag is decided at the golden fit — an observation, not a rule the build applies): AF (10.09 at 140), AO (15.13 at 140), BO (14.73 at 140), BW (10.18 at 140), CF (9.73 at 140), CG (9.71 at 140), CM (12.69 at 140), CO (18.56 at 140), DE (8.68 at 140), DZ (20.23 at 140), EG (10.86 at 140), ES (9.70 at 140), ET (12.77 at 140), FI (11.37 at 140), FR (10.56 at 140), GB (12.14 at 140), GY (8.20 at 140), IQ (9.21 at 140), IR (16.43 at 140), IT (12.89 at 140), KE (10.79 at 140), LA (9.54 at 140), LY (15.16 at 140), MA (16.00 at 140), MG (15.17 at 140), ML (16.50 at 140), MR (13.96 at 140), MV (8.67 at 140), MW (8.62 at 140), MZ (18.18 at 140), NA (13.25 at 140), NE (13.13 at 140), NG (10.69 at 140), NO (14.36 at 140), NZ (20.54 at 140), OM (10.81 at 140), PE (20.38 at 140), PF (10.23 at 140), PG (11.47 at 140), PH (18.28 at 140), PK (14.98 at 140), PY (9.24 at 140), SA (17.61 at 140), SD (14.97 at 140), SE (15.16 at 140), SO (15.22 at 140), SS (9.71 at 140), TD (17.77 at 140), TH (16.47 at 140), TM (8.47 at 140), TZ (11.93 at 140), UZ (9.44 at 140), VE (12.85 at 140), VN (16.44 at 140), ZA (14.10 at 140), ZM (10.96 at 140).
 
@@ -87,26 +89,27 @@ The corner table — each box alone after the controls, with its own gaps, at TL
 **The stacking rule** (commit 4b, decision 1): a box whose golden rect abuts another's row or column at the same corner keeps the golden gap to that box's near edge as it shrinks (Hawaii beside Alaska, Madeira under the Azores). First band each inset is drawn at: EC Galápagos 140, ES Canaries 140, FR Fr. Guiana 140, FR Antilles 140, FR Réunion 140, IN Andamans 140, MY Sabah & Sarawak 140, NO Svalbard 140, PF Marquesas 140, PT Azores 140, PT Madeira 140, US Alaska 140, US Hawaii 274, YE Socotra 140.
 
 
-The ship gate (an inset in `MAY_DROP_AT_178`, ["Hawaii"], may be dropped at 178 — decision 1, case (c)): 0 inset(s) dropped at 178 or 300; 0 label(s) wider than their box.
+The ship gate (an inset in `MAY_DROP_AT_178`, [("US", "Hawaii")], may be dropped at 178 — decision 1, case (c)): 0 inset(s) dropped at 178 or 300; 0 label(s) wider than their box.
 
 ## P4 — the simplifier
 
-Stored: **Hybrid**. The hybrid (decided 2026-10-01): per ring and level, RDP at the level's tolerance, kept if simple (no self-intersection, ≥ 3 distinct vertices, non-zero area) and its exact measure is within the bound; else that ring's per-ring VW. No repair. The rule: ship the hybrid if every bound holds and the build stays under ~10 min, else VW.
+Stored: **Hybrid**. The hybrid (decided 2026-10-01): per ring and level, RDP at the level's tolerance, kept if simple (no self-intersection, ≥ 3 distinct vertices, non-zero area) and its exact measure is within the bound; else RDP again at t/2, t/4, t/8, the first simple result within the bound kept iff it has fewer vertices than the ring's per-ring VW (the retry, M4c); else that VW. No repair. The rule: ship the hybrid if every bound holds and the build stays under ~10 min, else VW.
 
-RU land at 24 km/pt (open rings, RU's frame LAEA, after the seam stitch): **36503 in; per-ring VW 13664, RDP 3904, stored 12883** (commit 4 measured VW 13 664, RDP 3 904; Q2b one ε per country 16 667 against RDP 4 128). In that blob 15 ring(s) fell back to VW; the largest has 24183 vertices in, RDP 2023 (not simple, or over the bound), VW 11114.
+RU land at level 4, 24 km/pt, the level its fit draws it at (open rings, RU's frame LAEA, after the seam stitch): **36503 in; per-ring VW 13664, RDP 3904, stored 12882** (M4a commit 4 measured VW 13 664, RDP 3 904; Q2b one ε per country 16 667 against RDP 4 128). In that blob the retry landed 1 / 0 / 0 ring(s) at t/2, t/4, t/8 and 14 ring(s) fell back to VW; the largest has 24183 vertices in, RDP 2023 (not simple, or over the bound), VW 11114.
 
 Open vertices before quantisation, summed over the stored blobs:
 
-| layer | level km/pt | rings | per-ring VW | RDP | stored | stored / RDP | rings that fell back to VW |
-|---|---|---|---|---|---|---|---|
-| Land | 1.5 | 4327 | 450653 | 310744 | 324830 | 1.045 | 16 |
-| Land | 3 | 4327 | 380946 | 214671 | 254922 | 1.188 | 43 |
-| Land | 6 | 4327 | 304144 | 136502 | 216730 | 1.588 | 97 |
-| Land | 12 | 4327 | 218342 | 85542 | 172104 | 2.012 | 181 |
-| Land | 24 | 4327 | 156441 | 62425 | 135733 | 2.174 | 344 |
-| Subdivisions | 6 | 933 | 20795 | 15003 | 15003 | 1.000 | 0 |
-| Subdivisions | 12 | 888 | 12264 | 8853 | 8853 | 1.000 | 0 |
-| Subdivisions | 24 | 623 | 5411 | 4158 | 4158 | 1.000 | 0 |
+| layer | level km/pt | rings | per-ring VW | RDP | stored | stored / RDP | rings the retry landed, t/2 / t/4 / t/8 | rings that fell back to VW |
+|---|---|---|---|---|---|---|---|---|
+| Land | 1.5 | 4297 | 449902 | 310144 | 317061 | 1.022 | 6 / 2 / 0 | 8 |
+| Land | 3 | 4327 | 380946 | 214671 | 235619 | 1.098 | 22 / 3 / 0 | 18 |
+| Land | 6 | 4327 | 304144 | 136502 | 181931 | 1.333 | 42 / 12 / 0 | 43 |
+| Land | 12 | 4327 | 218342 | 85542 | 145121 | 1.696 | 56 / 20 / 1 | 104 |
+| Land | 24 | 4327 | 156441 | 62425 | 120262 | 1.927 | 45 / 19 / 3 | 277 |
+| Land | 48 | 4327 | 99509 | 67900 | 102120 | 1.504 | 34 / 10 / 4 | 396 |
+| Subdivisions | 6 | 933 | 20795 | 15003 | 15003 | 1.000 | 0 / 0 / 0 | 0 |
+| Subdivisions | 12 | 888 | 12264 | 8853 | 8853 | 1.000 | 0 / 0 / 0 | 0 |
+| Subdivisions | 24 | 623 | 5411 | 4158 | 4158 | 1.000 | 0 / 0 / 0 | 0 |
 
 ## P2 — neighbours drawn in another projection
 
@@ -114,11 +117,12 @@ Per level, the largest stretch of a displacement between a ring's storage LAEA a
 
 | level km/pt | max ratio | worst displacement pt | where |
 |---|---|---|---|
-| 1.5 | 1.4982 | 0.4254 | GIN ring 0 in RU |
-| 3 | 1.4994 | 0.4260 | GIN ring 0 in RU |
-| 6 | 1.5018 | 0.4274 | LBR ring 0 in RU |
+| 1.5 | 1.0556 | 0.2937 | IOA ring 1 in AU |
+| 3 | 1.4982 | 0.4257 | GIN ring 0 in RU |
+| 6 | 1.4994 | 0.4267 | LBR ring 0 in RU |
 | 12 | 1.5018 | 0.4280 | LBR ring 0 in RU |
-| 24 | 1.5242 | 0.4295 | LBR ring 0 in RU |
+| 24 | 1.5018 | 0.4231 | LBR ring 0 in RU |
+| 48 | 1.5242 | 0.4322 | LBR ring 0 in RU |
 
 ## R9 — the seam
 

@@ -12,7 +12,7 @@
 // otherwise loop fetch → fail → event → fetch).
 import { useEffect, useState } from "react";
 import { onCountriesUpdated, stations } from "../api";
-import type { ListedCountries } from "../api";
+import type { Country, ListedCountries } from "../api";
 import styles from "./panel.module.css";
 import { describeError, provenance } from "./provenance";
 
@@ -26,9 +26,11 @@ type Props = {
   onToggleMine: () => void;
   /** Bumped by `Panel` on every effective show; a change re-requests the list. */
   showGeneration: number;
+  /** The list landed: `Panel` takes the names (the map names the country). Stable identity. */
+  onCountries: (items: Country[]) => void;
 };
 
-export default function CountryControl({ country, onSelect, mine, onToggleMine, showGeneration }: Props) {
+export default function CountryControl({ country, onSelect, mine, onToggleMine, showGeneration, onCountries }: Props) {
   const [countries, setCountries] = useState<ListedCountries | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,6 +42,7 @@ export default function CountryControl({ country, onSelect, mine, onToggleMine, 
           if (cancelled) return;
           setCountries(c);
           setError(null);
+          onCountries(c.items);
         },
         (e) => {
           if (!cancelled) setError(describeError(e));
@@ -54,7 +57,7 @@ export default function CountryControl({ country, onSelect, mine, onToggleMine, 
       cancelled = true;
       unlisten.then((un) => un());
     };
-  }, [showGeneration]);
+  }, [showGeneration, onCountries]);
 
   // While the countries are loading, or when they could not be had, the select shows the
   // selection alone (its code, no count — `PT (0)` read as an empty country at acceptance

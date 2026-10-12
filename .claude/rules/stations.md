@@ -13,7 +13,8 @@ paths:
   already playing and resumes a paused one, so a double click is not two votes.
 - **The DB thread never awaits the network.** Fetches run on the service's own 2-worker runtime,
   coalesced per country; stale-while-revalidate. Every fetch ends with exactly one event, and
-  `landed` means the cache write succeeded, not only the fetch.
+  `landed` means the cache write succeeded, not only the fetch. `cached_stations(cc)` (the map's
+  read, M4c) answers the stored list, expired or not, or `None`, and never starts a fetch.
 - **The client:** same-host retries under a 200 s budget; an explicit `limit=` on every list; the
   truncation guard; an empty countries answer is an error.
 - **The cache** (rusqlite, bundled): `user_version` migrations, idempotent; expired lists are kept

@@ -7,8 +7,13 @@ use crate::format::Corner;
 /// The zoom-in limit and the initial scale's floor (S1), km/pt.
 pub const FLOOR_KM_PER_PT: f64 = 1.5;
 
-/// The global ladder (R4): 1.5 · 2^k km/pt up to the coarsest fit (RU, 28.01 km/pt).
-pub const LADDER: [f64; 5] = [1.5, 3.0, 6.0, 12.0, 24.0];
+/// The global ladder (R4): 1.5 · 2^k km/pt up to the coarsest fit (RU, 28.01 km/pt), and one rung
+/// above it, 48 km/pt, which only neighbours use (M4c, the neighbours' rung).
+pub const LADDER: [f64; 6] = [1.5, 3.0, 6.0, 12.0, 24.0, 48.0];
+
+/// The coarsest level a view's own land, its insets and its subdivisions use: 24 km/pt, the top
+/// before the neighbours' rung (M4c S2: own land and insets stay capped at level 4).
+pub const OWN_TOP_LEVEL: usize = 4;
 
 /// Subdivisions are drawn for a flagged country when the view is coarser than this (S7), km/pt.
 pub const SUBDIVISIONS_ABOVE_KM_PER_PT: f64 = 8.0;
@@ -21,6 +26,15 @@ pub const BAND_PADDING_PT: f64 = 20.0;
 /// points: coverage is built for every integer height between them.
 pub const BAND_FLOOR: u32 = 140;
 pub const BAND_MAX: u32 = 300;
+
+/// Band height `h`'s index in a per-band table (`h − BAND_FLOOR`), or `None` outside
+/// `BAND_FLOOR..=BAND_MAX` (M4b's review, latent 6: the tool's six sites subtracted unchecked).
+pub fn band_index(h: u32) -> Option<usize> {
+    if h > BAND_MAX {
+        return None;
+    }
+    usize::try_from(h.checked_sub(BAND_FLOOR)?).ok()
+}
 
 /// The map pane, points; `padding` on every side is kept clear at the fit.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,14 +102,21 @@ pub fn initial_scale(fit: f64) -> f64 {
     fit.max(FLOOR_KM_PER_PT)
 }
 
-/// The level a view at `scale` km/pt uses: the coarsest ladder level at or below it, so a level's
-/// tolerance in km is never more than its tolerance in points at the view. A scale below the
-/// floor uses level 0.
+/// The level a view at `scale` km/pt uses for its own land, insets and subdivisions: the coarsest
+/// ladder level at or below it, no coarser than `OWN_TOP_LEVEL`, so a level's tolerance in km is
+/// never more than its tolerance in points at the view. A scale below the floor uses level 0.
 pub fn level_for(scale: f64) -> usize {
     LADDER
         .iter()
+        .take(OWN_TOP_LEVEL + 1)
         .rposition(|&l| l <= scale * (1.0 + 1e-12))
         .unwrap_or(0)
+}
+
+/// The level a view at level `k` draws its neighbours at: one rung coarser (M4c, lever (c)). The
+/// ladder doubles, so level `k + 1`'s 0.25 pt bound is ≤ 0.5 pt at any scale level `k` serves.
+pub fn neighbour_level(k: usize) -> usize {
+    (k + 1).min(LADDER.len() - 1)
 }
 
 /// The zoom controls' row, `− fit +` (Z1, C1; review P5): its size, points…
@@ -324,6 +345,26 @@ pub fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> boo
     on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)
 }
 
+/// A ring's edges, the closing one included (a closed ring, first == last, adds a zero-length
+/// edge: no effect on `in_ring` or a distance).
+pub fn ring_edges(r: &[[f64; 2]]) -> impl Iterator<Item = ([f64; 2], [f64; 2])> + '_ {
+    r.iter()
+        .copied()
+        .zip(r.iter().copied().cycle().skip(1))
+        .take(r.len())
+}
+
+/// Whether `p` is inside the ring `r`, open or closed, by the even-odd rule (a horizontal edge
+/// never crosses). One ring only: a part's holes are each tested and the parities combined by
+/// the caller (`gather::Locator`). S6's clearance (`rect_ring_distance`) and M4c's `locate` share
+/// it.
+pub fn in_ring([px, py]: [f64; 2], r: &[[f64; 2]]) -> bool {
+    ring_edges(r).fold(false, |odd, ([ax, ay], [bx, by])| {
+        let crosses = (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax);
+        odd != crosses
+    })
+}
+
 /// The distance (same units) from a rectangle `[x0, y0, x1, y1]` to a ring — open or closed
 /// (first == last); 0 if they meet or one holds the other (even-odd). S6's clearance: the build
 /// tool's check at the golden pane and the frame's `inset_clearance` share this one function.
@@ -337,20 +378,9 @@ pub fn rect_ring_distance(
         return 0.0;
     }
     // every edge, the closing one included (a closed ring adds a zero-length edge: no effect)
-    let edges = || {
-        r.iter()
-            .copied()
-            .zip(r.iter().copied().cycle().skip(1))
-            .take(r.len())
-    };
-    let in_ring = |[px, py]: [f64; 2]| {
-        edges().fold(false, |odd, ([ax, ay], [bx, by])| {
-            let crosses = (ay > py) != (by > py) && px < ax + (py - ay) / (by - ay) * (bx - ax);
-            odd != crosses
-        })
-    };
+    let edges = || ring_edges(&r);
     let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-    if corners.iter().any(|&c| in_ring(c)) {
+    if corners.iter().any(|&c| in_ring(c, &r)) {
         return 0.0;
     }
     let sides: Vec<([f64; 2], [f64; 2])> = corners
@@ -395,6 +425,17 @@ mod tests {
             padding: 20.0,
         };
         assert_eq!(fit_scale(1.0, 1.0, &none), None);
+    }
+
+    /// A per-band table's index: the floor is 0, the top 160, and a height outside the range has
+    /// none. Fails if the subtraction goes unchecked (139 underflows: a panic in a debug build,
+    /// a wrapped index in release) or the top is not bounded (301 → 161, past the table).
+    #[test]
+    fn band_index_is_bounded_at_both_ends() {
+        assert_eq!(band_index(BAND_FLOOR - 1), None);
+        assert_eq!(band_index(BAND_FLOOR), Some(0));
+        assert_eq!(band_index(BAND_MAX), Some(160));
+        assert_eq!(band_index(BAND_MAX + 1), None);
     }
 
     /// The band at 300 is the golden pane; at the floor its usable area is 288 × 100, so a
@@ -713,12 +754,19 @@ mod tests {
         assert_eq!(label_inner_width([0.0, 0.0, 60.0, 44.0]), 52.0);
     }
 
-    /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6. Fails on
-    /// `<` for `≤`.
+    /// The coarsest level at or below the scale: RU's 28.01 → 24, 12.0 → 12, 11.99 → 6; never
+    /// the neighbours' rung: Alaska's inset at 51.13 and any scale past 48 → 24 (M4c S2). The
+    /// neighbours take the next rung, 24's → 48 and 48's stays. Fails on `<` for `≤`, or with the
+    /// own levels uncapped (51.13 → 48).
     #[test]
     fn level_is_the_coarsest_at_or_below() {
         let at = |s: f64| LADDER[level_for(s)];
         assert_eq!(at(28.0107), 24.0);
+        assert_eq!(at(51.13), 24.0);
+        assert_eq!(at(48.0), 24.0);
+        assert_eq!(LADDER[neighbour_level(level_for(28.0107))], 48.0);
+        assert_eq!(LADDER[neighbour_level(level_for(12.0))], 24.0);
+        assert_eq!(neighbour_level(LADDER.len() - 1), LADDER.len() - 1);
         assert_eq!(at(12.0), 12.0);
         assert_eq!(at(11.99), 6.0);
         assert_eq!(at(15.9485), 12.0);

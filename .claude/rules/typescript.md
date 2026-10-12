@@ -15,7 +15,10 @@ paths:
 - CSS modules, no framework. **Every colour and size literal lives in `src/styles/tokens.css`**, light
   and dark together; `pnpm lint` fails on one elsewhere and on an inline `style={{`
   (`scripts/check-tokens.sh`, over `src/**/*.{css,ts,tsx}` and `panel.html`).
-- Every interactive element is keyboard-reachable and labelled.
+- Every interactive element is keyboard-reachable and labelled. **One exception (decision 6, M4c):**
+  the map's station dots carry no `tabIndex` and their layer is `aria-hidden`; the list reaches
+  every station, and the dot filter's chip and Esc clear what a dot click set (ONDAR.md, "Decision
+  6's exception").
 - The panel's height, the map band's rect and the controls' rect come from Rust's `PanelLayout`;
   the page never measures or computes them.
 - `measure.ts` and the `?measure=` drivers are debug-only and must stay inert otherwise; the

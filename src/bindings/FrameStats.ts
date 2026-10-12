@@ -15,4 +15,22 @@ missing_blobs: number,
  * order (review 2, finding 4; review 3, finding 2). 0 at every band but those the tool's
  * tables name.
  */
-insets_dropped: number, };
+insets_dropped: number, 
+/**
+ * Located dots not drawn at this view (decision 4): at the fit, a dot in an inset whose box
+ * is not drawn (US at 178: Honolulu), or a dot in the main projection under a drawn box.
+ */
+dots_hidden: number, 
+/**
+ * Stations more than 25 km outside every part of the country (R6), never drawn.
+ */
+dots_outside: number, 
+/**
+ * Stations in the located dots; with `stations_total > 0` and this 0 the page says the
+ * country has no station locations (MT).
+ */
+stations_located: number, 
+/**
+ * The country's stations, with coordinates or not.
+ */
+stations_total: number, };

@@ -111,6 +111,11 @@ const MIGRATIONS: &[&str] = &[
     // (the shell has only the id the page handed to `play`); the primary key is `(cc, uuid)`,
     // so without this the lookup on the play path is a scan of every cached list.
     "CREATE INDEX IF NOT EXISTS stations_uuid ON stations (uuid);",
+    // v3 — M4c (D3). `Station.state` is new and lists stored before it carry none, so every
+    // stored list is **expired, never deleted**: served at once as `Cached` with a refresh, and
+    // `state` arrives with the refresh. Favourites and recents keep their rows and read `state`
+    // as `""` (its serde default). Runs once: `user_version` 3 skips it.
+    "UPDATE station_lists SET fetched_at = 0;",
 ];
 
 impl Cache {
@@ -364,6 +369,7 @@ pub(crate) mod tests {
             click_count: 0,
             click_trend: 0,
             geo: None,
+            state: String::new(),
             last_check_ok: true,
         }
     }
@@ -597,7 +603,7 @@ pub(crate) mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, MIGRATIONS.len() as u32);
         let indexed: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'stations_uuid'",
@@ -610,7 +616,7 @@ pub(crate) mod tests {
         let again: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(again, 2, "idempotent");
+        assert_eq!(again, MIGRATIONS.len() as u32, "idempotent");
 
         let mut cache = Cache::with_connection(conn, clock).unwrap();
         cache.put_stations("DE", &[st("u1", 5)], 344, T0).unwrap();
@@ -620,5 +626,73 @@ pub(crate) mod tests {
             "found under DE without knowing the country"
         );
         assert_eq!(cache.station_by_uuid("nope").unwrap(), None);
+    }
+
+    /// M4c (D3, the chat's amendment 4): v3 **expires** every stored list (`fetched_at = 0`) and
+    /// deletes nothing. A v2 database holding a list and a favourite written before `state`
+    /// existed (their JSON has no `state` key) migrates to 3: the list is still served, expired,
+    /// with its rows in rank order; the stations and the favourite read back with `state == ""`.
+    /// A second `migrate` changes nothing: a list stored after v3 keeps its `fetched_at`.
+    /// Fails if the step is missing (version 2, the list fresh), deletes lists or rows (`None`,
+    /// fewer items), reruns on a v3 database (the later list's `fetched_at` back to 0), or if
+    /// `Station.state` loses its serde default (the old JSON no longer parses).
+    #[test]
+    fn migration_v3_expires_stored_lists_and_keeps_favourites() {
+        let (clock, _) = fake_clock(T0);
+        let mut conn = Connection::open_in_memory().unwrap();
+        let tx = conn.transaction().unwrap();
+        tx.execute_batch(MIGRATIONS[0]).unwrap();
+        tx.execute_batch(MIGRATIONS[1]).unwrap();
+        tx.pragma_update(None, "user_version", 2u32).unwrap();
+        tx.commit().unwrap();
+        // A station as v2 stored it: today's JSON with the `state` key removed.
+        let v2_json = |s: &Station| {
+            let mut v = serde_json::to_value(s).unwrap();
+            assert!(v.as_object_mut().unwrap().remove("state").is_some());
+            v.to_string()
+        };
+        let fetched = T0 - 3600;
+        for (rank, uuid) in ["a", "b"].iter().enumerate() {
+            let s = st(uuid, 10 - rank as i64);
+            conn.execute(
+                "INSERT INTO stations (uuid, cc, rank, name, url, votes, station_json) VALUES (?1, 'PT', ?2, ?3, ?4, ?5, ?6)",
+                params![s.uuid, rank as i64, s.name, s.url, s.votes, v2_json(&s)],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO station_lists (cc, fetched_at, source_rows, kept_rows) VALUES ('PT', ?1, 2, 2)",
+            [fetched],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO favourites (uuid, added_at, station_json) VALUES ('f', ?1, ?2)",
+            params![fetched, v2_json(&st("f", 1))],
+        )
+        .unwrap();
+
+        let mut cache = Cache::with_connection(conn, clock).unwrap();
+        assert_eq!(cache.schema_version().unwrap(), 3);
+        let pt = cache.stations("PT").unwrap().expect("the list is kept");
+        assert_eq!(pt.fetched_at, 0);
+        assert!(pt.expired && pt.age_secs >= TTL_STATIONS as u64);
+        assert_eq!(
+            pt.items.iter().map(|s| s.uuid.as_str()).collect::<Vec<_>>(),
+            ["a", "b"],
+            "rows intact, rank order"
+        );
+        assert!(pt.items.iter().all(|s| s.state.is_empty()));
+        let favs = crate::store::list_favourites(&cache).unwrap();
+        assert_eq!(
+            favs.iter()
+                .map(|s| (s.uuid.as_str(), s.state.as_str()))
+                .collect::<Vec<_>>(),
+            [("f", "")]
+        );
+
+        cache.put_stations("ES", &[st("e", 1)], 1, T0).unwrap();
+        migrate(&mut cache.conn).unwrap();
+        assert_eq!(cache.schema_version().unwrap(), 3, "idempotent");
+        assert_eq!(cache.stations("ES").unwrap().unwrap().fetched_at, T0);
     }
 }

@@ -116,9 +116,10 @@ fn loader_never_panics_on_the_resource() {
 /// D6's views at their extremes: for every country, at each pane `heights_for` gives it, and
 /// every level it can show there, the views at the level's finest and coarsest scale with the
 /// view in each corner of the fit rectangle and at its centre, each clipped with the 2 pt
-/// margin. Every ring whose cap (grown by the level's tolerance) meets such a clip rectangle
-/// must have its blob stored — the land at that level, the subdivisions above 8 km/pt for a
-/// flagged country — and every inset's units at the inset's level. The cap test is the frame
+/// margin. Every ring whose cap (grown by the tolerance of the level it is drawn at) meets such
+/// a clip rectangle must have its blob stored — the country's own land at the view's level, a
+/// neighbour's one rung coarser (M4c), the subdivisions above 8 km/pt for a flagged country —
+/// and every inset's units at the inset's level. The cap test is the frame
 /// index's own (`index::ground_cap`, `index::cap_meets`). Returns the views enumerated.
 fn coverage_matches_clamp_at(
     s: &Store,
@@ -161,8 +162,10 @@ fn coverage_matches_clamp_at(
                         views += 1;
                         let clip = [cx - hw - m, cy - hh - m, cx + hw + m, cy + hh + m];
                         let g = index::ground_cap(&l, clip);
-                        let tol = index::tolerance_km(level, LAND_TOL_PT);
                         for (u, unit) in s.units.iter().enumerate() {
+                            let own = c.units.contains(&(u as u16));
+                            let ku = if own { k } else { rules::neighbour_level(k) };
+                            let tol = index::tolerance_km(LADDER[ku], LAND_TOL_PT);
                             if !index::cap_meets(&unit.cap, g, tol) {
                                 continue;
                             }
@@ -173,8 +176,8 @@ fn coverage_matches_clamp_at(
                                 .any(|r| index::cap_meets(r, g, tol));
                             if hit {
                                 assert!(
-                                    s.blob(u as u16, k as u8, Layer::Land).is_some(),
-                                    "{} at 328 × {h}: unit {} at level {k} (scale {scale:.3}) is not stored",
+                                    s.blob(u as u16, ku as u8, Layer::Land).is_some(),
+                                    "{} at 328 × {h}: unit {} at level {ku} (view level {k}, scale {scale:.3}) is not stored",
                                     c.name,
                                     String::from_utf8_lossy(&unit.a3)
                                 );
