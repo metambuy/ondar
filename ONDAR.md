@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
+*Last updated: 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
+the k+4c record, M4c's measurement rules, instrument instance nineteen). Previously 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
 controls' plate, with the contrast figures). Previously 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
 exception, in "M4c: Step 0 and its decisions"). Previously 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
 and the chat's decisions S1–S4 — see "M4c: Step 0 and its decisions"; round 2's ring figure
@@ -1176,6 +1177,127 @@ Ink 7.49 / 13.28 / 11.97 (the chat's figures, recomputed by `mapContrast.test.ts
   in an ellipsis on one line.
 - **MT's line** keeps its bottom-left corner.
 - **Inset labels are unchanged.** They are names, and Martín judges them in the captures.
+
+### M4c: built and measured (2026-10-12)
+
+**What shipped** (branch `m4c`, `fa9b97e..545088c`, each commit pushed alone, CI green):
+- **The commits:**
+  - `eecef2d`: docs.
+  - `18028fc`: housekeeping.
+  - `0e8ca3d`: the resource rebuilt — (c) the neighbours' rung, own land and insets capped at
+    level 4, (b) the RDP retry; format v3, 2 865 839 B.
+  - `fd7c9e1`: the corner fixture's labels.
+  - `105e4bf`: `Station.state`, cache v3 expiring lists, the four geo slices.
+  - `d42c700`: `gather`, the locator, R6 per dot, `frame_dots`.
+  - `fb00ef5`: `cached_stations`, the spawned gather, `map:changed`, `map_hit`.
+  - `935737c`: the page.
+  - `f220084`: decision 7 amended.
+  - `545088c`: the harness's dots mark.
+- **No dependency changed**: `Cargo.toml`, `Cargo.lock`, `package.json` and `pnpm-lock.yaml` are as
+  at `29f1582`. Versions as in "Verified versions".
+
+**The decisions as built:**
+- **Gathering (Q4's rule, in Rust, on the ground).** The densest point takes its neighbours within
+  10 km; ties go to the lowest id; the dot sits at the unit-vector centroid. Radius
+  `min(6, 2.5 + 0.6·ln n)` pt; no numbers on the map. Coordinates from radio-browser's `geo` only.
+- **The locator reads the country's own land at level 2, else the highest stored level below it**
+  (PT reads 0), decoded once per select (`gather.rs`, `LOCATE_LEVEL`). S3's "finest stored level ≤ 2"
+  was the wrong word for this.
+- **R6 per dot:** a dot more than 25 km outside every part of its country is not drawn and counts in
+  `dots_outside` (PT's two Brazilian stations and the Zürich one).
+- **The station work is off the land's path:** `map_select` frames at once; the read, gather and
+  locate run in a spawned task that installs under the session lock only for the current selection
+  and the newest ticket, then emits `map:changed`. A landed refresh of the selected country does the
+  same. The dots follow the land one pull later: progressive rendering. The bar is the land's frame.
+- **Decision 3:** a dot click filters the list, never plays. `map_hit` answers the nearest dot within
+  `r + 2` pt. The list keeps its order under the chip "✕ n station(s) · place". The filter survives a
+  reload by uuid and clears on the chip, Esc, a country change and ★ on. A dot clicked under ★ turns
+  ★ off; a hit answered after a country change is dropped.
+- **Decision 4:** a dot under a drawn inset box at the fit is hidden and counted (`dots_hidden`); a
+  dropped box's dots likewise (US at 178: Honolulu).
+- **Decision 5:** MT's line "No station locations for {name}".
+- **Decision 6, the keyboard exception:** dots carry no `tabIndex` and their layer is `aria-hidden`;
+  there is no keyboard route to a dot and no hover on touch. The reason: up to 124 dots a country
+  (BR's slice), while the list reaches every station. The chip is a button, and Esc clears the
+  filter.
+- **Decision 7, amended:** hover shows "n station(s) · place" (the majority `state`). It and MT's
+  line sit on the controls' plate in 11/14 type; the contrast figures are in "Decision 7 amended",
+  above. The playing dot carries a halo at `r + 3` (D4).
+- **The Esc rule:** with a filter set on the transport pane, Esc clears it and Rust is not told; the
+  next Esc hides. In About, Esc hides (D8). The page reads both through refs.
+
+**Measured** (`_handover/m4c-acceptance.md`, logs in `_handover/m4c-accept/`). The instrument:
+S1's optimised debug bundle at `545088c` (sha256 `2f1d5ac0…`), hands-free, `HOME` redirected to a
+seeded scratch cache. **Setup:** the built-in XDR display (ProMotion, up to 120 Hz), 300 at
+(360, 720), 178 by the harness's height knob at (360, 598), on battery (2026-10-09; the dots row at 178
+on 2026-10-12, mains at its start).
+
+| row | figure (p90 ms unless stated) | bar | result |
+|---|---|---|---|
+| the bar: a country change to the land painted, 60 runs, RU / US / PT / AQ, two passes | 300: **66 / 48 / 32 / 32** and **71 / 42 / 29 / 32**; 178: 62 / 48 / 31 / 44 and 49 / 44 / 32 / 31 | ≤ 100; RU 300 ≤ 90 | pass |
+| select → dots painted, 60 runs, RU / US / BR / PT | 300: 60 / 48 / 60 / 49; 178: 60 / 59 / 59 / 47 | ≤ 150 | pass |
+| the mark's positive control | a 300 ms hold moves the medians from 44–57 to 331–340 | moves | pass |
+| the heavy case with dots (RU, one `+`, wheel) | 56.6 / 56.5 cycles/s at 300 / 178, 0 dropped | ≥ 50, ≤ 5 % | pass |
+| `frame_bench --band` | RU fit 300: neighbours 23 388, land 12 769, subdivisions 1 541 = 37 698 (51 797 at M4b's file) | layer sum asserted | pass |
+| `band_sweep --views` | 0 missing at every fit and over D6's views; dropped Hawaii 140–273 and Svalbard 225–257 only; drawn clearance ≥ 11.98 pt; source ≥ 12 by construction (`world.rs:212`) | 0 / 0; ≥ 11.7 | pass |
+| the resource | 2 865 839 B; `golden-fit.tsv` and `golden-insets.tsv` untouched since `c4fdf13` | < 4.55 MB | pass |
+| dot counts, by test | `the_geo_slices_gather_to_the_recorded_dots`: PT 31 / US 48 / BR 124 / RU 10 groups, PT's 3 outside. `an_inset_s_dots_follow_its_box_honolulu`. `a_dot_under_a_drawn_box_at_the_fit_is_hidden_and_counted`. MapPane 17 (MT) | as recorded | pass |
+| an expired list landing (a scratch copy, the refresh held at a local proxy) | the frames before and after `map dots cause=landed` share `cx`, `cy`, `scale`; dots 26 → 25, located 167 → 169 | the view kept | pass |
+| the real app, logged | `map hit` on clicks; chip and filtered list; halo; hover plate; no fetch after 18 cached selects; every play a row click | | pass |
+| captures | PT, US, BR, RU × 178 / 300 × Sand / Ink, plus chip, halo and hover (`_handover/m4c-screens/`) | Martín's judgement | good |
+| installed size, `du -sk` | `Ondar.app` **10 804 KiB** (M4b 10 744: +60); `strings`: `measure[` 0, `ONDAR_MEASURE` 0 | recorded; 0 | pass |
+
+Tests **443 + 50**. **The levers' row** (`0e8ca3d`, 60 runs, M4b's file → the rebuild, one session,
+`_handover/m4c-levers/`): RU at 300 83 / 96 → **80 / 81**, US 61 / 67 → 60 / 64, PT 29 / 33 → 30 / 32,
+AQ 30 / 34 → 30 / 32 (md / p90). RU's invoke + commit median went 51 → 43, so S1 kept (c) + (b).
+**k+3's row** (the spawned gather, `fb00ef5`, interleaved B / A / B / A): RU 300 p90 81 → 85 and
+82 → 84, accepted by the chat.
+`raw` was not built: the final row read RU at 300 at 71 p90, under S2's 90.
+
+### M4c: the dots pull's ordering, measured; a page fix rejected (k+4c, 2026-10-09)
+
+**What k+4 changed.** Since k+4 (`935737c`) a select draws two frames: the land, then the dots after
+`map:changed`. When the gather finishes fast, the dots pull is answered before the land's second
+animation frame.
+
+**The pairs.** Two candidates were built and set against k+3's code:
+- B, a page fix (hold `map:changed` until the land's second animation frame; MapPane test 23, 5 of 5
+  mutants killed);
+- the Rust-side alternative (start the gather after the first frame). It was rejected unmeasured: it
+  delays `map:changed` by only the gather's 2–6 ms.
+
+F = `fb00ef5` (k+3), A = `545088c`, B = the fix; one session, 20 runs each, RU at 300, select → land
+painted, md / p90 ms:
+
+| cycle | F | A | B |
+|---|---|---|---|
+| a real country change (`cc=RU,PT`; RU's land rebuilt) | 63 / 75 | 45 / 58, 47 / 63 | 61 / 65, 60 / 64 |
+| the same country re-selected (`cc=RU`; the land's DOM unchanged, commit ~4 ms) | 29 / 29, 27 / 28 | 45 / 46, 41 / 45 | 26 / 28, 27 / 44 |
+
+B raised select → dots painted from 58 / 78 to 111 / 115 (RU) and from 45 / 49 to 81 / 82 (PT).
+
+**What the pairs show:**
+- **The +18 ms is seen only when re-selecting the same country.** That is the case my first paired
+  check ran (A 46/47 against F 28/32; A with the dots wake held 1 s, 27/44). The bar does not run
+  that case.
+- **On a real change, A paints the land ~15 ms sooner than F.** B matches F (rAF1 3–4 ms in A,
+  13–14 in F and B). An observation; the mechanism is untested.
+- **The fix is rejected**, kept as `_handover/m4c-k4c/k4c-fix.patch`. It made the real cycle slower
+  and the dots ~50 ms later.
+
+### M4c: measurement rules
+
+- **A paired check runs the bar's own cycle**, a real country change, and the prompt that orders it
+  states the cycle. A re-select of one country skips React's DOM update and measures a different
+  path. M4b's A3 found the same with Step 0's probe.
+- **Only same-session figures compare.** The same code on a real country change: `fb00ef5` read
+  RU 300 78 / 85 at k+3 (2026-10-08) and 63 / 75 on 2026-10-09. `545088c`'s RU 300 select → commit, every run a real
+  change: 44 / 48 and 29 / 39 in the morning's two bar passes (one session), 25 / 34 and 26 / 39 in the
+  afternoon's `cc=RU,PT` pairs. (The chat's draft paired
+  78/85 with 28/32, which compares the real cycle with the same-country one.)
+- **Every row records the display, its refresh rate and the power source** (`system_profiler
+  SPDisplaysDataType`, `NSScreen.maximumFramesPerSecond`, `pmset -g batt`). k+3 recorded none, so its
+  difference from 2026-10-09 cannot be attributed.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -3318,15 +3440,15 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    IPC + the SVG renderer with pan and zoom; **M4c** stations, gathering, hit-testing. Drawn map
    decided 2026-09-24 (`m4-design/DIRECTION.md`); Step 0 measured 2026-09-30. Record the
    installed bundle size at M4a. **M4a merged 2026-10-02** (`f7a3fd8`, `m4a-done`); **M4b merged
-   2026-10-07** (`29f1582`, `m4b-done`); **M4c begun 2026-10-07** on branch `m4c` — see "M4c: Step 0
-   and its decisions".
+   2026-10-07** (`29f1582`, `m4b-done`); **M4c built and accepted 2026-10-12** on branch `m4c`
+   (`fa9b97e..`; review and merge pending) — see "M4c: built and measured".
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure eighteen times by the numbering below — twenty-one
+result.** This project has now hit the same failure nineteen times by the numbering below — twenty-two
 counting the three M2a instances recorded between the fourth and the fifth without a number — in
 as many unrelated tools, and each time the instrument was wrong rather than the thing being
 measured. The three below are the archetypes; the rest are enumerated after them.
@@ -3474,6 +3596,15 @@ arrived, so the gap was a 32 KiB block's fill time: 8.2 s at 32 kbit/s, read as 
 tests all ran at 128 KiB/s, where a block takes 0.25 s, so none could show it. G1 stamps arrival
 on the download task (`on_progress`). **The rule earned: check a clock for what it measures, at
 the rates where the difference shows.**
+
+**Nineteenth, 2026-10-09 (M4c acceptance): a paired check that ran a cycle the bar doesn't run.**
+The check of the bar's RU at 300 against k+3's binary selected RU again and again (`cc=RU`). Every
+select after the first left React's DOM unchanged (commit ~4 ms), so the dots pull's arrival before the
+land's paint showed as +18 ms (46/47 against 28/32). A page fix was built against it, with a test,
+mutants and a measurement. On the bar's own cycle (a real country change) the fix was ~15 ms slower,
+and the code it fixed was the fastest of the three (k+4c, "M4c: the dots pull's ordering"). The same
+instrument flaw as M4b's A3: Step 0's back-to-back re-select of one country. **The rule earned: a check
+of a bar runs the bar's cycle, and the prompt that orders it names the cycle.**
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 
