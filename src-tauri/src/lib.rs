@@ -4,6 +4,7 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+mod log_sink;
 mod map;
 // The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
 #[cfg(debug_assertions)]
@@ -86,18 +87,17 @@ pub fn run() {
     // installs a `LogTracer` itself (its default `tracing-log` feature), which is what lets
     // `ondar_audio`'s own `log::` call sites still show up here too — one `RUST_LOG` drives
     // both. Same default filter `env_logger` used, so behaviour when `RUST_LOG` is unset is
-    // unchanged.
+    // unchanged. Two sinks, stderr and the daily file (`log_sink`), behind that filter and the
+    // rate limit. The context is generated once, here, for the identifier the log dir is keyed
+    // on (`eu.ondar.radio`, or `.dev` under `pnpm tauri:dev`), and handed to `build` below.
     use tracing_subscriber::EnvFilter;
-    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let context = tauri::generate_context!();
+    let log_dir = log_sink::dir(&context.config().identifier);
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,ondar_audio=debug"));
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_filter(filter)
-                .with_filter(log_rate_limit::RateLimit::new()),
-        )
-        .init();
+    log_sink::subscriber(log_dir.as_deref(), filter).init();
+    log_sink::startup(log_dir.as_deref());
 
     let user_agent = format!("Ondar/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent.clone());
@@ -129,6 +129,17 @@ pub fn run() {
         // (tauri 2.11.5 `app.rs:2588-2598`).
         .on_menu_event(tray::on_menu_event)
         .setup(move |app| {
+            // The log dir was derived before the app existed (`log_sink::dir`); Tauri's own
+            // answer must match it, or the file is not where a tester is told to look.
+            match app.path().app_log_dir() {
+                Ok(tauri_dir) if Some(&tauri_dir) != log_dir.as_ref() => log::warn!(
+                    "log dir {:?} differs from Tauri's app_log_dir {}",
+                    log_dir,
+                    tauri_dir.display()
+                ),
+                Ok(_) => {}
+                Err(e) => log::warn!("app_log_dir unresolved: {e}"),
+            }
             // The station directory lives under the identifier-keyed data directory —
             // `~/Library/Application Support/eu.ondar.radio/` for the bundle, `….dev/` for
             // `pnpm tauri:dev` (its own file, so dev and bundle never share a cache). Its
@@ -256,7 +267,7 @@ pub fn run() {
             #[cfg(debug_assertions)]
             measure::measure_report,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Ondar");
 
     // `.run(callback)` rather than `.run(context)`: `RunEvent::Reopen` is the only way to see

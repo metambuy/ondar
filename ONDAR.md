@@ -1333,6 +1333,15 @@ a CI release workflow.
 **Exit:** two testers open it without a Gatekeeper warning and play a station; one receives 0.1.1
 through the prompt; a log file arrives. BUILD_PLAN.md, "M6-lite (before M5)".
 
+**Log file (commit 2, 2026-10-12).** A daily file, `ondar.<UTC date>.log`, in the app log dir:
+`/Users/mv/Library/Logs/eu.ondar.radio.dev` under `pnpm tauri:dev`, as the binary printed in its
+startup line (`Ondar 0.1.0 starting; log dir …`); `~/Library/Logs/eu.ondar.radio` for the bundle (derived,
+not yet observed). `tracing-appender` 0.2.5, synchronous, seven files kept, pruned at startup; the same
+`EnvFilter` and `RateLimit` as stderr, which stays. The path is derived before the app exists, the way
+Tauri 2.11.5 derives `app_log_dir()`, and `setup` warns if Tauri's answer differs. A dir that cannot be
+created leaves stderr only, with a warning. **The log holds station names and stream URLs, with no
+redaction**; a tester sends it knowingly.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:

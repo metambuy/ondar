@@ -52,6 +52,10 @@ log = "0.4"
 # directly because implementing a tracing Filter needs `Event`/`Subscriber` by name.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The file sink (M6-lite): a daily rolling file in the app log dir, pruned to seven files, so a
+# Finder launch (which discards stderr) still leaves a log a tester can send. Neither std nor
+# tracing-subscriber rotates or prunes files.
+tracing-appender = "0.2.5"
 
 [profile.release]
 codegen-units = 1
