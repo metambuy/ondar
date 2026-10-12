@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
+*Last updated: 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
+Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
 the k+4c record, M4c's measurement rules, instrument instance nineteen). Previously 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
 controls' plate, with the contrast figures). Previously 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
 exception, in "M4c: Step 0 and its decisions"). Previously 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
@@ -86,7 +87,8 @@ popover, never a separate window):
 - Pan and zoom inside the frame: the fit is the initial view and the zoom-out limit, 1.5 km/pt
   the zoom-in limit; for large countries (Russia, USA, Brazil) the subdivisions give the fit
   view its scale, and zooming in brings the coastline detail the resource carries per level.
-- Station markers on the map; click a marker to play
+- Station dots on the map; a dot click filters the station list to that dot's stations, with a
+  chip that clears it, and never plays (decision 3, M4c)
 - Equalizer panel (toggle between map and EQ, or EQ as a second expanded pane)
 
 ## Aesthetic
@@ -126,7 +128,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. Since M2a the centred position is clamped into the work area (`NSScreen.visibleFrame`) of the display under the icon. See "M2a: the tray path, measured". |
 | Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; confirmed by eye 2026-09-16 over a bright, busy backdrop (Martín).** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
 | Map rendering | **Inline SVG in the webview, drawing exactly the paths Rust sends** | Projection (spherical LAEA, authalic radius), framing, insets, level choice, clipping, station gathering and hit-testing all run in Rust (`ondar-map`); the webview is a renderer. Leaflet and the tile pyramid are gone (2026-09-24/30). |
-| Map data | **Natural Earth 10m admin 0 + admin 1, tag v5.1.2, pinned by SHA-256**, built at build time into one bundled resource (a global scale ladder 1.5/3/6/12/24 km/pt, each unit once per level, simplified to a measured ≤ 0.25 pt) | Public domain, offline, no API key. Credited in About anyway. Station coordinates are radio-browser's `geo` only (decision M2, 2026-09-30); no city set in M4. |
+| Map data | **Natural Earth 10m admin 0 + admin 1, tag v5.1.2, pinned by SHA-256**, built at build time into one bundled resource (a global scale ladder of six rungs, 1.5/3/6/12/24/48 km/pt (48 since M4c, neighbours only), each unit once per level, simplified to a measured ≤ 0.25 pt) | Public domain, offline, no API key. Credited in About anyway. Station coordinates are radio-browser's `geo` only (decision M2, 2026-09-30); no city set in M4. |
 | Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
@@ -1307,6 +1309,29 @@ B raised select → dots painted from 58 / 78 to 111 / 115 (RU) and from 45 / 49
 - **Every row records the display, its refresh rate and the power source** (`system_profiler
   SPDisplaysDataType`, `NSScreen.maximumFramesPerSecond`, `pmset -g batt`). k+3 recorded none, so its
   difference from 2026-10-09 cannot be attributed.
+
+### M6-lite before M5: the plan change (decided 2026-10-12)
+
+**Martín's decision, 2026-10-12, on a fellow coder's advice: ship a thin slice end to end before going
+deep.** A signed, notarised build of `main` goes to 3–5 testers (colleagues and friends, Apple Silicon
+MacBooks 2023 or later, current macOS) before M5; **the testers rank M5**, whose items are split by
+that feedback. M6 is cut in two: M6-lite now, the rest after M5.
+
+**In (M6-lite):**
+- Developer ID signing and notarisation, **locally first** (no CI release workflow); secrets never
+  committed, logged or pasted.
+- A bundle metadata check (`tauri.conf.json`).
+- A file log sink, so a tester can send a log.
+- `tauri-plugin-updater` with the feed on CrabNebula Cloud: check on launch, with a prompt in the
+  popover.
+- A tester note in English, Spanish and Portuguese, naming the known gaps.
+- **No crash reporting and no telemetry.**
+
+**Out, to full M6:** the universal binary (M6-lite ships aarch64 only), DMG art, README screenshots,
+a CI release workflow.
+
+**Exit:** two testers open it without a Gatekeeper warning and play a station; one receives 0.1.1
+through the prompt; a log file arrives. BUILD_PLAN.md, "M6-lite (before M5)".
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -3451,13 +3476,14 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    installed bundle size at M4a. **M4a merged 2026-10-02** (`f7a3fd8`, `m4a-done`); **M4b merged
    2026-10-07** (`29f1582`, `m4b-done`); **M4c merged 2026-10-12**
    (`d431568`, `m4c-done`) — see "M4c: built and measured". **M4 complete.**
+   **M6-lite comes next, before M5** (decided 2026-10-12) — see "M6-lite before M5".
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure nineteen times by the numbering below — twenty-two
+result.** This project has now hit the same failure twenty times by the numbering below — twenty-three
 counting the three M2a instances recorded between the fourth and the fifth without a number — in
 as many unrelated tools, and each time the instrument was wrong rather than the thing being
 measured. The three below are the archetypes; the rest are enumerated after them.
@@ -3614,6 +3640,17 @@ mutants and a measurement. On the bar's own cycle (a real country change) the fi
 and the code it fixed was the fastest of the three (k+4c, "M4c: the dots pull's ordering"). The same
 instrument flaw as M4b's A3: Step 0's back-to-back re-select of one country. **The rule earned: a check
 of a bar runs the bar's cycle, and the prompt that orders it names the cycle.**
+
+**Twentieth, 2026-10-08 (M4c S4): a probe placed where the event could not reach it.** Step 0's hover
+probe logged no `enter` line, which could have read as "a non-activating panel gets no hover". Its disc
+sat under the land paths, so `pointerenter` never reached it: the silence was the probe's, not the
+platform's. Moved above the land, with S4's positive control (the panel key, Terminal frontmost), it
+logged 6 `enter … key=true`, and the real case 3 ("M4c: Step 0 and its decisions", S4's result).
+Numbered rather than declined: the instrument was wrong, it reported a plausible empty answer with no
+error, and only the instrument's check found it; that the chat had recorded it as inconclusive rather
+than a no is the principle working, not a reason to leave it out (fifteen to seventeen were also caught
+before a wrong conclusion, and are numbered). **The rule earned: a probe whose silence would be the result gets a positive control that must
+make it speak, run on the probe as placed.**
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 
