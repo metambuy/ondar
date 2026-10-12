@@ -231,7 +231,7 @@ from a bundled resource. The satellite map was reversed 2026-09-24 and the rever
 
 **4c — Stations** (brief `m4c-brief.md`; plan `m4c-plan.md`; Step 0 2026-10-07,
 `_handover/m4c-step0-report.md`, decisions S1–S4 in ONDAR.md "M4c: Step 0 and its decisions") —
-**built and accepted 2026-10-12** on `m4c` (ONDAR.md "M4c: built and measured"); review and merge pending
+**done, merged 2026-10-12** (`d431568`, tagged `m4c-done`; ONDAR.md "M4c: built and measured")
 
 - [x] The bar's levers first, every deciding row 60 runs: the neighbours one rung coarser (own land
       and insets capped at level 4) and RU's ring RDP retry in one rebuild; one path per layer

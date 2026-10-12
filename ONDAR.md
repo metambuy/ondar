@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
+*Last updated: 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
 the k+4c record, M4c's measurement rules, instrument instance nineteen). Previously 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
 controls' plate, with the contrast figures). Previously 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
 exception, in "M4c: Step 0 and its decisions"). Previously 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
@@ -1253,6 +1253,15 @@ AQ 30 / 34 → 30 / 32 (md / p90). RU's invoke + commit median went 51 → 43, s
 **k+3's row** (the spawned gather, `fb00ef5`, interleaved B / A / B / A): RU 300 p90 81 → 85 and
 82 → 84, accepted by the chat.
 `raw` was not built: the final row read RU at 300 at 71 p90, under S2's 90.
+
+**Reviewed and merged (2026-10-12).**
+- **The review:** an OCR run (`glm-5.2:cloud` via local Ollama, the exact range `fa9b97e..7b9c166`,
+  complete, 37 of 37) gave 2 findings, triaged as 0 crash, 0 behaviour and 2 latent:
+  - silent `try_state` returns that cannot be reached;
+  - `map.hit` without a rejection handler, where a rejection equals a miss.
+
+  The triage is `_handover/m4c-ocr-triage-2026-10-12.md`. The merge criterion held with no fix round.
+- **Merged `d431568`, tagged `m4c-done`**, CI green on main (run 38232317777).
 
 ### M4c: the dots pull's ordering, measured; a page fix rejected (k+4c, 2026-10-09)
 
@@ -3440,8 +3449,8 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    IPC + the SVG renderer with pan and zoom; **M4c** stations, gathering, hit-testing. Drawn map
    decided 2026-09-24 (`m4-design/DIRECTION.md`); Step 0 measured 2026-09-30. Record the
    installed bundle size at M4a. **M4a merged 2026-10-02** (`f7a3fd8`, `m4a-done`); **M4b merged
-   2026-10-07** (`29f1582`, `m4b-done`); **M4c built and accepted 2026-10-12** on branch `m4c`
-   (`fa9b97e..`; review and merge pending) — see "M4c: built and measured".
+   2026-10-07** (`29f1582`, `m4b-done`); **M4c merged 2026-10-12**
+   (`d431568`, `m4c-done`) — see "M4c: built and measured". **M4 complete.**
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
