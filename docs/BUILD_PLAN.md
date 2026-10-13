@@ -305,8 +305,10 @@ music; CPU stays low (single digits) while playing; the tray icon animates while
 M5, whose items they rank. Decided 2026-10-12 (ONDAR.md, "M6-lite before M5").
 
 - [ ] Developer ID signing and **notarisation**, locally first (secrets never committed or logged)
+      — signing done 2026-10-13; notarisation submitted, pending Apple's first-submission hold
+      (ONDAR.md, "Signing and notarisation")
 - [ ] Bundle metadata check (`tauri.conf.json`)
-- [ ] A file log sink
+- [x] A file log sink (`7cb845d`; release path observed 2026-10-13)
 - [ ] `tauri-plugin-updater`, the feed on CrabNebula Cloud: check on launch, a prompt in the popover
 - [ ] A tester note in EN / ES / PT, with the known gaps
 - [x] Crash reporting and telemetry: **none** (decided 2026-10-12)

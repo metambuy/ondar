@@ -57,6 +57,8 @@ in ONDAR.md under the section named.
     transitions around it. Buffering supervision lives on the engine thread, never the decode loop.
 14. **The per-sample DSP path** (`ring.rs`, `eq.rs`) has no allocation, lock, log or panic shape
     outside `#[cfg(test)]`.
+15. **No `log::` / `tracing::` call site in the Source chain the audio callback pulls** (ring
+    consumer, EQ adapter, converter): both log sinks (stderr and the daily file) write synchronously.
 
 **Testing this crate.** The session tests run real sockets on 127.0.0.1 and read every state off
 the event stream, in order, never a sample; `ONDAR_TEST_POLL_DELAY_MS`, `ONDAR_TEST_SERVER_DELAY_MS`,

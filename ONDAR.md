@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
+*Last updated: 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
+Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
 the k+4c record, M4c's measurement rules, instrument instance nineteen). Previously 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
 controls' plate, with the contrast figures). Previously 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
@@ -1335,12 +1336,58 @@ through the prompt; a log file arrives. BUILD_PLAN.md, "M6-lite (before M5)".
 
 **Log file (commit 2, 2026-10-12).** A daily file, `ondar.<UTC date>.log`, in the app log dir:
 `/Users/mv/Library/Logs/eu.ondar.radio.dev` under `pnpm tauri:dev`, as the binary printed in its
-startup line (`Ondar 0.1.0 starting; log dir …`); `~/Library/Logs/eu.ondar.radio` for the bundle (derived,
-not yet observed). `tracing-appender` 0.2.5, synchronous, seven files kept, pruned at startup; the same
+startup line (`Ondar 0.1.0 starting; log dir …`); `/Users/mv/Library/Logs/eu.ondar.radio/ondar.2026-10-13.log`
+for the bundle, **observed 2026-10-13** on the `open`ed release `.app` (the dir did not exist before launch;
+its own startup line names it). `tracing-appender` 0.2.5, synchronous, seven files kept, pruned at startup; the same
 `EnvFilter` and `RateLimit` as stderr, which stays. The path is derived before the app exists, the way
 Tauri 2.11.5 derives `app_log_dir()`, and `setup` warns if Tauri's answer differs. A dir that cannot be
 created leaves stderr only, with a warning. **The log holds station names and stream URLs, with no
 redaction**; a tester sends it knowingly.
+
+**Signing and notarisation (Step 0, 2026-10-13).** Records: `_handover/m6lite/{step0.md,build-1.log,checks.out}`.
+
+- **The build command**, from the repo root, the env sourced inside the command and nowhere else:
+  `set -a; . ~/.config/ondar/notary.env; set +a; pnpm tauri build --bundles app,dmg`. The file
+  `~/.config/ondar/notary.env` (mode 600, outside the repo, never read or printed by a session) holds
+  the names the bundler reads: `APPLE_SIGNING_IDENTITY` (the CLI prefers it over
+  `bundle.macOS.signingIdentity`, so **`tauri.conf.json` carries no identity**), `APPLE_ID`,
+  `APPLE_PASSWORD`, `APPLE_TEAM_ID` (all three or the Apple-ID route is a hard error); also
+  `TAURI_SIGNING_PRIVATE_KEY` (the updater, commit 4) and `CN_API_KEY` (Cloud). The API-key route the
+  bundler also accepts: `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`.
+- **Spike 0 (read, CLI 2.11.4 = `tauri-bundler` 2.9.4 + `tauri-macos-sign`):** the bundler signs the
+  `.app` inside out (`codesign --force -s <identity>`, `--options runtime` for executables since
+  `hardenedRuntime` defaults to true, `--entitlements` only when configured, so none here), zips it
+  with `ditto`, submits the zip with `notarytool submit --wait`, and on `Accepted` staples **the
+  `.app`**. The `.dmg` is built from that `.app` and **signed but never notarised or stapled** by the
+  bundler; Gatekeeper on a `.dmg` open fetches the ticket online. Whether the DMG gets its own
+  `notarytool submit` + `stapler staple` is the chat's decision once the ticket exists.
+- **Spike 1 (notarisation with `macOSPrivateApi` and `tauri-nspanel`, no entitlements, hardened
+  runtime default): OPEN, submitted, pending Apple.** Signing succeeded (compile 57.94 s). Submission
+  `62d5a7e0-a2f9-4d05-80de-bffb79c0f613`, created 2026-10-13T08:37:01Z, still `In Progress` when the
+  chat cancelled the wait at 2 h 04 min: Apple holds a new team's first submission 24–72 h (DTS,
+  forum thread 838628). The bundler aborted there, so **no DMG was built** and the `.app` is signed
+  but unstapled. Not a failure. The build log holds no credential (`xxxx-` 0, `@icloud` 0).
+- **Spike 2, on the signed unstapled `.app`, by exit status:** `codesign --verify --deep --strict
+  --verbose=2` → 0, "satisfies its Designated Requirement"; `codesign -d --entitlements -` → 0, no
+  entitlements embedded; `codesign -dvv` → 0: `Identifier=eu.ondar.radio`, `flags=0x10000(runtime)`,
+  `Authority=Developer ID Application: Martin Vieira (M9FD2R9U85)` → Developer ID CA → Apple Root CA,
+  `TeamIdentifier=M9FD2R9U85`, secure timestamp 2026-10-13 10:36:57. **Pending the ticket:** `spctl
+  -a -t exec`, `stapler validate` on the `.app`; `spctl -a -t open --context context:primary-signature`,
+  `stapler validate` and the SHA-256 on the `.dmg`.
+- **Spike 3, the bundle as a tester sees it** (`open` of the `.app`, not `tauri dev`):
+  `lsappinfo info -only ApplicationType Ondar` → `UIElement`; no Dock icon; the tray icon appears; a
+  click opens the popover without taking focus from the frontmost app (log: `panel show reason=toggle`,
+  `panel placed … gap_below_icon=6`); a station plays (`play station_id=… bitrate_kbps=Some(320)`,
+  first byte 0.375 s after open, radio-browser `click` 200); the log file appears at the path above;
+  quit by its own PID. **Installed size 10 880 KiB** (M4c: 10 804; +76, the file sink).
+- **Finding, for the chat:** the bundler hands the Apple-ID credentials to `notarytool` on its argv
+  (`--apple-id`, `--password`, `--team-id`), visible to `ps` on this Mac for as long as a submission
+  waits. The API-key route passes a key path instead. Nothing was written anywhere.
+- **Observed in the release log, not acted on:** ANSI escapes inside span fields (the dev file was
+  recorded as "no ANSI"), `stream_download` DEBUG lines and a rate-limit WARN per second while
+  playing. The `EnvFilter` default wants a look before testers send logs.
+- **Rule written** (`.claude/rules/audio.md` 15): no `log::`/`tracing::` call site in the Source chain
+  the audio callback pulls (ring consumer, EQ adapter, converter); both sinks write synchronously.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
