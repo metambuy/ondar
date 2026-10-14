@@ -50,7 +50,14 @@ never plays. The page narrows the list to the hit's uuids (`Panel`'s `dotFilter`
 one filter the page applies, to rows Rust ranked. **Esc** clears that filter if one is set (transport
 pane), otherwise calls `panel_escape`; `panel_escape` itself is unchanged.
 
+**Updater** (`commands/updater.rs`): `update_install`, `async`, no arguments. Rust holds the update
+its launch check found; a success never answers (the app restarts), a failure is
+`{ code: "updater", message }` (no update pending, or the plugin's download, signature or install
+error, logged at ERROR). The page never checks the feed, compares versions or restarts.
+
 **Events:** `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`,
 `stations:updated` and `countries:updated` (`outcome` `landed` → re-request; `failed` → keep the
 list, clear `refreshing`, do **not** re-request), `recents:updated`, `panel:layout` (a
-`PanelLayout`; the page mirrors it and computes none of it), `map:changed` (no payload: pull).
+`PanelLayout`; the page mirrors it and computes none of it), `map:changed` (no payload: pull),
+`update:available` (an `UpdateAvailable { version, notes }`, only when the launch check found a
+newer version; the page shows the line and reports the click).

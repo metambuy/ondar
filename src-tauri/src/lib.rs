@@ -11,6 +11,7 @@ mod map;
 mod measure;
 mod panel;
 mod tray;
+mod updater;
 
 use std::thread;
 
@@ -52,6 +53,10 @@ pub mod events {
     /// The selected country's dots were installed (M4c): after a `map_select`, or after a refresh
     /// of its list landed. No payload: the page pulls, and the frame comes at the view it has.
     pub const MAP_CHANGED: &str = "map:changed";
+    /// The launch's one update check found a newer version (M6-lite commit 4b). Payload
+    /// `UpdateAvailable { version, notes }`; the page shows the line and, on a click, calls
+    /// `update_install`. Never emitted when the check fails or finds nothing.
+    pub const UPDATE_AVAILABLE: &str = "update:available";
 }
 
 /// Payload of `stations:updated`.
@@ -125,6 +130,9 @@ pub fn run() {
         // Manages the panel store `PanelBuilder::build()` registers into; without it the
         // builder's internal `to_panel` panics on missing state.
         .plugin(tauri_nspanel::init())
+        // The in-app update (commit 4b): the plugin reads `plugins.updater` from the config; the
+        // check and the install are Rust's (`updater.rs`), so no capability names it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Tray menu items. Listeners run in the event loop, on the main thread
         // (tauri 2.11.5 `app.rs:2588-2598`).
         .on_menu_event(tray::on_menu_event)
@@ -203,6 +211,7 @@ pub fn run() {
             tray::setup(app)?;
             #[cfg(debug_assertions)]
             measure::setup(app.handle());
+            updater::setup(app.handle());
 
             let handle = app.handle().clone();
             thread::Builder::new()
@@ -264,6 +273,7 @@ pub fn run() {
             commands::stations::add_favourite,
             commands::stations::remove_favourite,
             commands::stations::list_recents,
+            commands::updater::update_install,
             #[cfg(debug_assertions)]
             measure::measure_report,
         ])
@@ -290,6 +300,43 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// Pins the updater's configuration (M6-lite commit 4b) by executing the rules it stands for:
+    /// the bundler makes the updater artefact (`Ondar.app.tar.gz` + `.sig`), the feed is exactly
+    /// one https endpoint on CrabNebula Cloud that carries the three variables the plugin
+    /// replaces, and the pubkey is a minisign public key (its base64 opens with
+    /// `untrusted comment:`, which is `dW50cnVzdGVkIGNvbW1lbnQ6`). Fails on a second or an http
+    /// endpoint, a dropped variable, a key pasted in the wrong format, or the artefact flag off.
+    #[test]
+    fn updater_config_names_one_https_feed_and_a_minisign_key() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        assert_eq!(
+            conf["bundle"]["createUpdaterArtifacts"],
+            serde_json::Value::Bool(true),
+            "the bundler must produce the updater artefact"
+        );
+        let updater = &conf["plugins"]["updater"];
+        let endpoints = updater["endpoints"]
+            .as_array()
+            .expect("plugins.updater.endpoints is an array");
+        assert_eq!(endpoints.len(), 1, "one feed: {endpoints:?}");
+        let url = endpoints[0].as_str().expect("the endpoint is a string");
+        assert!(
+            url.starts_with("https://cdn.crabnebula.app/update/"),
+            "the feed is CrabNebula Cloud over https: {url}"
+        );
+        for var in ["{{target}}", "{{arch}}", "{{current_version}}"] {
+            assert!(url.contains(var), "the endpoint must carry {var}: {url}");
+        }
+        let pubkey = updater["pubkey"]
+            .as_str()
+            .expect("plugins.updater.pubkey is a string");
+        assert!(
+            pubkey.starts_with("dW50cnVzdGVkIGNvbW1lbnQ6") && pubkey.len() > 100,
+            "the pubkey is the base64 of a minisign public key file: {pubkey:?}"
+        );
+    }
+
     /// `pnpm tauri:dev` merges `tauri.dev.conf.json` over `tauri.conf.json` so the dev instance
     /// gets its own identifier — its own single-instance socket, and from M3 its own data dir —
     /// and can run beside a bundled build (M2c Step 0, case (f): with one identifier the dev

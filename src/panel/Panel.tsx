@@ -15,6 +15,7 @@ import styles from "./panel.module.css";
 import type { ListSource } from "./source";
 import StationList from "./StationList";
 import Transport from "./Transport";
+import UpdateLine from "./UpdateLine";
 
 // The measurement harness's mount cycle (`?measure=perf&m=mount`): the list mounted fresh
 // every 3 s from +10 s, five times, so `StationList` reports its four marks per mount.
@@ -253,6 +254,9 @@ export default function Panel() {
             measureRep={mountRep}
           />
         )}
+        {/* The update line (M6-lite commit 4b): the last block of the transport body, above the
+            expand row; it renders nothing until Rust's launch check says a newer version exists. */}
+        <UpdateLine />
       </div>
       {view === "about" && (
         <About

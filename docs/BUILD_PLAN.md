@@ -310,6 +310,8 @@ M5, whose items they rank. Decided 2026-10-12 (ONDAR.md, "M6-lite before M5").
 - [ ] Bundle metadata check (`tauri.conf.json`)
 - [x] A file log sink (`7cb845d`; release path observed 2026-10-13)
 - [ ] `tauri-plugin-updater`, the feed on CrabNebula Cloud: check on launch, a prompt in the popover
+      — code in commit 4b (2026-10-14; tauri 2.12.3 in 4a); ticked when a tester sees the prompt
+      for 0.1.1 (ONDAR.md, "Updater")
 - [ ] A tester note in EN / ES / PT, with the known gaps
 - [x] Crash reporting and telemetry: **none** (decided 2026-10-12)
 

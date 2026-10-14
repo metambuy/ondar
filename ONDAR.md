@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-14 (M6-lite: spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-14, later (M6-lite: tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -1395,6 +1395,61 @@ redaction**; a tester sends it knowingly.
   rate-limit WARN per second while playing): all three fixed in commit 3b, see "Log file".
 - **Rule written** (`.claude/rules/audio.md` 15): no `log::`/`tracing::` call site in the Source chain
   the audio callback pulls (ring consumer, EQ adapter, converter); both sinks write synchronously.
+
+**Updater (commits 4a `433bee5` and 4b, 2026-10-14).** Plan and the chat's answers:
+`_handover/m6lite/commit4-plan.md`, OPEN.md 2026-10-14.
+
+- **Versions.** `tauri-plugin-updater` 2.13.3 (the current 2.x; 3.0.0-alpha.2 exists, not taken)
+  requires `tauri ^2.12`, so **4a bumped tauri 2.11.5 → 2.12.3** (`tauri-build` 2.7.2, wry 0.57.0,
+  tao 0.37.1, tray-icon 0.25.1; npm `@tauri-apps/api` 2.12.3, `cli` 2.12.2), pushed alone as the
+  check of the pinned `tauri-nspanel` rev against 2.12: green, panel still non-activating.
+  **`tauri-plugin-process` is not used:** the restart is tauri core's `AppHandle::restart`.
+- **Rust-only check, once per launch** (`updater.rs`): 5 s after `setup`, on the async runtime,
+  `updater_builder().build().check()`. Newer version → the `Update` is held in managed state and
+  **`update:available` `{ version, notes }`** goes to the page; nothing newer (204) → `info!`; any
+  failure → `warn!` and nothing on screen. **Debug builds skip the check unless
+  `ONDAR_UPDATE_CHECK=1`**, both paths logged: the dev loop never depends on the feed.
+- **The command `update_install`**: `download_and_install` (progress at `debug!` per MiB, the
+  signature verified against the pubkey), then `app.restart()`; on failure `error!` with the cause,
+  the update kept for a retry, and `{ code: "updater", message }` to the page. Called from the async
+  runtime, not the main thread, `restart` takes tauri 2.12.3's "separate thread" path
+  (`app.rs:606-629`): `request_exit(RESTART_EXIT_CODE)`, the run loop exits, `process::restart`
+  relaunches the bundle named by `Info.plist` and the old process exits 0. **Measured** with the
+  debug-only `ONDAR_MEASURE_RESTART=<secs>` driver (`measure.rs`), 2026-10-14, dev build: the call
+  from `tokio-rt-worker` at t = 8001 ms, tauri's `restart triggered from a separate thread` 0.3 ms
+  later, the relaunched process's startup line **19 ms** after the call; no hang, nothing in the tray
+  or panel teardown blocked it (`_handover/m6lite/tauri-dev-gate-4b-restart.log`).
+- **The check against the feed before any release exists** (`ONDAR_UPDATE_CHECK=1`, 2026-10-14):
+  `GET …/darwin-aarch64/0.1.0` answered a non-2xx; the plugin logs one ERROR line of its own
+  (`update endpoint did not respond with a successful status code`) and Ondar one WARN (`update
+  check failed: Could not fetch a valid release JSON from the remote`); nothing on screen. A tester's
+  log carries that pair once per launch until the first release is published (then 204 or JSON).
+- **No capability change.** `updater:default` would grant the *page* the plugin's own commands;
+  Ondar's page calls none of them (the one rule). The plugin is registered for its config only.
+- **The page** (`UpdateLine.tsx`, the last block of the transport body, above the expand row):
+  nothing until the event; then `Ondar 0.1.1 available · Update`; `Updating…` with the button
+  disabled while the call is pending; `Update failed, see log` with the button back on rejection.
+  Secondary label on the system material (`--color-label-secondary`, both appearances; the token
+  pinned by test, the look by eye in Sand and Ink at acceptance). Five behaviour tests + the token
+  test; the page checks, compares and persists nothing.
+- **Config** (`tauri.conf.json`, pinned by `updater_config_names_one_https_feed_and_a_minisign_key`):
+  `bundle.createUpdaterArtifacts: true`; `plugins.updater.endpoints` =
+  `https://cdn.crabnebula.app/update/metambuy/ondar/{{target}}-{{arch}}/{{current_version}}`
+  (`darwin-aarch64/0.1.0` at run time); `pubkey` = the one line of `~/.tauri/ondar.key.pub`
+  (minisign, public by design). The private key stays in `~/.tauri` and `notary.env`
+  (`TAURI_SIGNING_PRIVATE_KEY`, plus `_PASSWORD` if the key has one); the build command is
+  unchanged in form and now also writes `Ondar.app.tar.gz` + `.sig` beside the `.app`. **To verify
+  at the next build, not assumed:** that the tar.gz is made from the notarised, stapled `.app`
+  (bundler 2.9.4's order), and where in that order.
+- **The macOS mechanic** (plugin 2.13.3 `updater.rs:1390-1500`): the install path is the `.app`
+  ancestor of the running executable; the archive is extracted into a temp dir **on the same
+  volume**, the bundles are exchanged atomically (`renamex_np` `RENAME_SWAP`, APFS), else two renames
+  with a restore, and on `PermissionDenied` an AppleScript swap with admin privileges. So the app
+  must run from a writable, stable path: **`/Applications` (or `~/Applications`)**. From the mounted
+  DMG (read-only) or an unmoved `~/Downloads` copy (App Translocation: a read-only random mount) the
+  install fails → "Update failed, see log". The tester note says "drag to Applications first".
+- **Not in commit 4:** the build with this config, the Cloud upload (`cn`, `CN_API_KEY`), the 0.1.1
+  release that shows the prompt (BUILD_PLAN's exit criterion).
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

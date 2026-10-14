@@ -105,6 +105,8 @@ vi.mock("../api", () => {
     onStationsUpdated: listener,
     onCountriesUpdated: listener,
     onRecentsUpdated: listener,
+    onUpdateAvailable: listener,
+    updater: { install: () => Promise.resolve() },
   };
 });
 

@@ -35,6 +35,15 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "c9ec21
 # (3.0.0-alpha.0 exists and is not taken). No feature flags: `semver` would add the version to
 # the socket name, and Ondar wants one instance across versions.
 tauri-plugin-single-instance = "2.4.4"
+# The in-app update (M6-lite commit 4): on launch Rust checks the CrabNebula Cloud feed named in
+# `tauri.conf.json` (`plugins.updater`), verifies the minisign signature of `Ondar.app.tar.gz`
+# and swaps the bundle in place; the page only renders the prompt and reports the click. 2.13.3
+# is the current 2.x (3.0.0-alpha.2 exists, not taken) and needs tauri 2.12 (commit 4a). No
+# capability entry: the page never calls the plugin's own commands.
+tauri-plugin-updater = "2.13.3"
+# Already in the tree (tauri's async runtime is tokio); linked directly for `time::sleep`, the
+# delay before the update check runs on that runtime (`updater.rs`). No other feature.
+tokio = { version = "1", features = ["time"] }
 ondar-audio = { path = "crates/ondar-audio" }
 ondar-stations = { path = "crates/ondar-stations" }
 # The map resource's loader (M4a commit 7); the store waits in `MapState` for M4b's commands.

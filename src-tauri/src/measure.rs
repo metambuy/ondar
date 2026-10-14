@@ -82,6 +82,28 @@ fn t_ms() -> f64 {
 /// is asked for. Called from `setup` after the panel and the tray exist.
 pub fn setup<R: Runtime>(handle: &AppHandle<R>) {
     let _ = START.set(Instant::now());
+    // `ONDAR_MEASURE_RESTART=<secs>` (M6-lite commit 4b): `AppHandle::restart` from a task on the
+    // async runtime after that many seconds, the thread the updater's command restarts from, so
+    // the exit path and its duration are observed without an update. Needs no mode. The
+    // variable is rewritten before the call, so the relaunched process does not restart again.
+    if let Some(secs) = std::env::var("ONDAR_MEASURE_RESTART")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        let handle = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            // SAFETY: debug-only harness; no other thread reads the environment at this point
+            // of a run that was started for this measurement.
+            unsafe { std::env::set_var("ONDAR_MEASURE_RESTART", "done") };
+            log::info!(
+                "measure restart: AppHandle::restart from thread {:?} at t={:.0} ms",
+                thread::current().name(),
+                t_ms()
+            );
+            handle.restart();
+        });
+    }
     let Some(query) = mode() else {
         return;
     };
