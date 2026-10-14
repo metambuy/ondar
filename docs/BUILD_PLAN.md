@@ -304,9 +304,9 @@ music; CPU stays low (single digits) while playing; the tray icon animates while
 **Goal:** a thin slice end to end: a signed, notarised build of `main` in 3–5 testers' hands before
 M5, whose items they rank. Decided 2026-10-12 (ONDAR.md, "M6-lite before M5").
 
-- [ ] Developer ID signing and **notarisation**, locally first (secrets never committed or logged)
-      — signing done 2026-10-13; notarisation submitted, pending Apple's first-submission hold
-      (ONDAR.md, "Signing and notarisation")
+- [x] Developer ID signing and **notarisation**, locally first (secrets never committed or logged)
+      (local; second Mac pending) — signed 2026-10-13, notarisation accepted and the `.app` stapled
+      2026-10-14 (ONDAR.md, "Signing and notarisation")
 - [ ] Bundle metadata check (`tauri.conf.json`)
 - [x] A file log sink (`7cb845d`; release path observed 2026-10-13)
 - [ ] `tauri-plugin-updater`, the feed on CrabNebula Cloud: check on launch, a prompt in the popover

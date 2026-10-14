@@ -2,14 +2,50 @@
 //! discards stderr, so the file is what a tester sends. Both sit behind the same `EnvFilter` and
 //! the same `RateLimit`, so the file holds exactly what the terminal shows. No redaction: the
 //! log carries station names and stream URLs (ONDAR.md, "M6-lite before M5", "Log file").
+//!
+//! Two `tracing-subscriber` 0.3.23 mechanics shape the layout (commit 3b, both observed in the
+//! release log of 2026-10-13 and pinned by tests below):
+//!
+//! - **The `EnvFilter` is a global layer, not a per-layer filter.** A per-layer filter records
+//!   its verdict on an event in a thread-local (`FilterState`) between the event's `enabled`
+//!   pass and its dispatch; a span opened while the event's *field values* are evaluated runs
+//!   its own `enabled` pass and overwrites that verdict. `stream-download`'s `read` does exactly
+//!   that (a DEBUG event with an `#[instrument]`ed `stream_position()` as a field), so DEBUG
+//!   lines reached the file under `info`. A global layer answers `enabled` before the fields
+//!   exist, and the `RateLimit` behind it only ever counts events the filter admitted: as a
+//!   per-layer filter *after* the rate limit, the filter let the limiter count, and report at
+//!   WARN once a second, DEBUG and TRACE events it was about to discard anyway.
+//! - **The file layer has its own field-formatter type.** A span's fields are formatted once
+//!   per formatter type and stored on the span (`FormattedFields<N>`); two `fmt` layers that
+//!   share `N` share the slot, so stderr's coloured rendering was reused by the file.
 
 use std::path::{Path, PathBuf};
 
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::FormatFields;
+use tracing_subscriber::fmt::format::{DefaultFields, Writer};
 use tracing_subscriber::prelude::*;
 
 use crate::log_rate_limit::RateLimit;
+
+/// The file layer's field formatter: `DefaultFields`' output, under a type of its own so the
+/// file layer keeps its own `FormattedFields<PlainFields>` slot on every span and formats the
+/// span's fields itself, with the layer's `with_ansi(false)` honoured. Sharing `DefaultFields`
+/// with the stderr layer shares the slot, and whichever layer sees the span first (stderr) wins.
+struct PlainFields(DefaultFields);
+
+impl<'writer> FormatFields<'writer> for PlainFields {
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        writer: Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        self.0.format_fields(writer, fields)
+    }
+    // `add_fields` (a span's `record` after creation) keeps the trait's default, which appends
+    // through `format_fields` above.
+}
 
 /// Files kept, today's included; older ones are pruned when the appender opens at startup (and
 /// at each rollover). `tracing-appender` 0.2.5 deletes down to `KEEP - 1` before it creates the
@@ -31,20 +67,21 @@ pub fn dir(identifier: &str) -> Option<PathBuf> {
 /// The subscriber: stderr always, and the daily file in `dir` when the directory can be created
 /// and the file opened. A failure warns on stderr and leaves the file out; it never panics.
 /// The appender writes synchronously (no `non_blocking` worker), so a `panic = "abort"` or
-/// `process::exit` loses no buffered line.
+/// `process::exit` loses no buffered line. The `EnvFilter` is the global layer under the sinks
+/// and the `RateLimit` a per-layer filter on the pair; the module doc says why that order.
 pub fn subscriber(
     dir: Option<&Path>,
     filter: EnvFilter,
 ) -> impl tracing::Subscriber + Send + Sync + 'static {
     let file = dir.and_then(open);
-    tracing_subscriber::registry().with(
+    tracing_subscriber::registry().with(filter).with(
         tracing_subscriber::fmt::layer()
             .and_then(file.map(|f| {
                 tracing_subscriber::fmt::layer()
+                    .fmt_fields(PlainFields(DefaultFields::new()))
                     .with_ansi(false)
                     .with_writer(f)
             }))
-            .with_filter(filter)
             .with_filter(RateLimit::new()),
     )
 }
@@ -195,6 +232,73 @@ mod tests {
 
         let names = log_files(&dir);
         assert!(names.len() <= KEEP, "{} files kept: {names:?}", names.len());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Pins the file's span fields: an event inside a span that has a field lands in the file
+    /// with the span's fields and no ANSI escape. `tracing-subscriber` 0.3.23 formats a span's
+    /// fields once per field-formatter type `N` and stores them on the span
+    /// (`fmt_layer.rs:878`, `FormattedFields<N>`); two `fmt` layers that share `N` share that
+    /// slot, stderr fills it first, in colour, and the file layer reuses it, so `new{url=…}`
+    /// carried `\x1b[3m` in the release log (2026-10-13). Fails if the file layer goes back to
+    /// the default field formatter (same `N` as stderr).
+    #[test]
+    fn span_fields_in_the_file_carry_no_ansi_escapes() {
+        let root = scratch("span-ansi");
+        let dir = root.join("Logs");
+
+        let before = utc_today();
+        tracing::subscriber::with_default(subscriber(Some(&dir), EnvFilter::new("info")), || {
+            let span = tracing::info_span!("new", url = "http://example.invalid/s");
+            let _enter = span.enter();
+            tracing::warn!(target: "stream_download::http", "content length header missing");
+        });
+        let file = todays_file(&dir, [before, utc_today()]);
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("new{url=\"http://example.invalid/s\"}"),
+            "span fields missing from {}: {text:?}",
+            file.display()
+        );
+        assert!(
+            !text.contains('\u{1b}'),
+            "ANSI escapes in the file's span fields: {text:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Pins where the `EnvFilter` sits: an event the filter rejects is never written, even when
+    /// one of its field values opens a span the filter accepts. `stream-download` 0.24.4's
+    /// `read` does exactly that (`lib.rs:579`: a DEBUG event with
+    /// `self.output_reader.stream_position()?` as a field, which runs an `#[instrument]`ed INFO
+    /// `seek`, `storage/bounded.rs:237`). With the filter applied per layer
+    /// (`.with_filter(filter)`), the span's `enabled` pass overwrote the thread's per-layer
+    /// verdict on the event (`layer_filters/mod.rs`, `FilterState`), and the DEBUG line reached
+    /// both sinks (one in the release log, 2026-10-13). As a global layer the filter answers
+    /// before the fields are evaluated. Fails if the filter moves back onto the sink layer.
+    #[test]
+    fn a_rejected_event_with_a_span_in_its_fields_stays_out() {
+        let root = scratch("leak");
+        let dir = root.join("Logs");
+
+        let before = utc_today();
+        tracing::subscriber::with_default(subscriber(Some(&dir), EnvFilter::new("info")), || {
+            tracing::debug!(
+                target: "stream_download",
+                output_stream_position = tracing::info_span!("seek").in_scope(|| 7u64),
+                "reached requested position"
+            );
+            tracing::info!("still writing");
+        });
+        let file = todays_file(&dir, [before, utc_today()]);
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("still writing"), "sink dead: {text:?}");
+        assert!(
+            !text.contains("reached requested position"),
+            "a DEBUG event passed an `info` filter: {text:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

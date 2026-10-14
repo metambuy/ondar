@@ -1,6 +1,7 @@
 # Ondar — project document
 
-*Last updated: 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
+*Last updated: 2026-10-14 (M6-lite: spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
 the k+4c record, M4c's measurement rules, instrument instance nineteen). Previously 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
@@ -1343,6 +1344,8 @@ its own startup line names it). `tracing-appender` 0.2.5, synchronous, seven fil
 Tauri 2.11.5 derives `app_log_dir()`, and `setup` warns if Tauri's answer differs. A dir that cannot be
 created leaves stderr only, with a warning. **The log holds station names and stream URLs, with no
 redaction**; a tester sends it knowingly.
+- **Commit 3b, 2026-10-14, the file is plain text:** the file layer has its own field-formatter type (`PlainFields`), because `tracing-subscriber` 0.3.23 formats a span's fields once per formatter type and stores them on the span, so two `fmt` layers sharing `DefaultFields` shared stderr's coloured rendering (`new{url=…}` carried `\x1b[3m`); pinned by `span_fields_in_the_file_carry_no_ansi_escapes`.
+- **Commit 3b, the filter is a global layer, its string unchanged** (`info,ondar_audio=debug`): as a per-layer filter behind the `RateLimit` it (a) let the limiter count, and report at WARN once a second, DEBUG/TRACE `stream_download::source` events it then discarded (14 WARN lines in a 20 s play → 0), and (b) was bypassed when an event's field value opened a span (`stream-download`'s `read` logs `stream_position()`, an `#[instrument]`ed `seek`, as a DEBUG field), which is how `stream_download` DEBUG lines reached an `info` file (2 → 0); pinned by `a_rejected_event_with_a_span_in_its_fields_stays_out`. No `stream_download=info` directive was needed: `info` already said so. stderr loses nothing: same string, same events minus the two artefacts.
 
 **Signing and notarisation (Step 0, 2026-10-13).** Records: `_handover/m6lite/{step0.md,build-1.log,checks.out}`.
 
@@ -1362,7 +1365,10 @@ redaction**; a tester sends it knowingly.
   bundler; Gatekeeper on a `.dmg` open fetches the ticket online. Whether the DMG gets its own
   `notarytool submit` + `stapler staple` is the chat's decision once the ticket exists.
 - **Spike 1 (notarisation with `macOSPrivateApi` and `tauri-nspanel`, no entitlements, hardened
-  runtime default): OPEN, submitted, pending Apple.** Signing succeeded (compile 57.94 s). Submission
+  runtime default): ACCEPTED 2026-10-14**, submission `62d5a7e0-a2f9-4d05-80de-bffb79c0f613`, ~26 h after
+  submission (the first-submission hold). Stapled with `xcrun stapler staple -v` (exit 0) onto the
+  release `.app` and the kept copy `_handover/m6lite/Ondar-7cb845d-signed-unstapled.app` (its name is
+  historical). As recorded on 2026-10-13: Signing succeeded (compile 57.94 s). Submission
   `62d5a7e0-a2f9-4d05-80de-bffb79c0f613`, created 2026-10-13T08:37:01Z, still `In Progress` when the
   chat cancelled the wait at 2 h 04 min: Apple holds a new team's first submission 24–72 h (DTS,
   forum thread 838628). The bundler aborted there, so **no DMG was built** and the `.app` is signed
@@ -1371,9 +1377,11 @@ redaction**; a tester sends it knowingly.
   --verbose=2` → 0, "satisfies its Designated Requirement"; `codesign -d --entitlements -` → 0, no
   entitlements embedded; `codesign -dvv` → 0: `Identifier=eu.ondar.radio`, `flags=0x10000(runtime)`,
   `Authority=Developer ID Application: Martin Vieira (M9FD2R9U85)` → Developer ID CA → Apple Root CA,
-  `TeamIdentifier=M9FD2R9U85`, secure timestamp 2026-10-13 10:36:57. **Pending the ticket:** `spctl
-  -a -t exec`, `stapler validate` on the `.app`; `spctl -a -t open --context context:primary-signature`,
-  `stapler validate` and the SHA-256 on the `.dmg`.
+  `TeamIdentifier=M9FD2R9U85`, secure timestamp 2026-10-13 10:36:57. **Completed 2026-10-14 on the stapled `.app`:** `spctl
+  -a -t exec -vvv` → 0, `accepted`, `source=Notarized Developer ID`, `origin=Developer ID Application:
+  Martin Vieira (M9FD2R9U85)`; `xcrun stapler validate` → 0 (`checks.out`). **Spike 2 complete** for the
+  `.app`. Still pending: the `.dmg` (`spctl -a -t open --context context:primary-signature`, `stapler
+  validate`, SHA-256), since none was built; and the second-Mac open.
 - **Spike 3, the bundle as a tester sees it** (`open` of the `.app`, not `tauri dev`):
   `lsappinfo info -only ApplicationType Ondar` → `UIElement`; no Dock icon; the tray icon appears; a
   click opens the popover without taking focus from the frontmost app (log: `panel show reason=toggle`,
@@ -1383,9 +1391,8 @@ redaction**; a tester sends it knowingly.
 - **Finding, for the chat:** the bundler hands the Apple-ID credentials to `notarytool` on its argv
   (`--apple-id`, `--password`, `--team-id`), visible to `ps` on this Mac for as long as a submission
   waits. The API-key route passes a key path instead. Nothing was written anywhere.
-- **Observed in the release log, not acted on:** ANSI escapes inside span fields (the dev file was
-  recorded as "no ANSI"), `stream_download` DEBUG lines and a rate-limit WARN per second while
-  playing. The `EnvFilter` default wants a look before testers send logs.
+- **Observed in the release log** (ANSI escapes inside span fields, `stream_download` DEBUG lines, a
+  rate-limit WARN per second while playing): all three fixed in commit 3b, see "Log file".
 - **Rule written** (`.claude/rules/audio.md` 15): no `log::`/`tracing::` call site in the Source chain
   the audio callback pulls (ring consumer, EQ adapter, converter); both sinks write synchronously.
 
