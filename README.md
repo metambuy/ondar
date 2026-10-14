@@ -71,6 +71,7 @@ src-tauri/crates/ondar-map/
                          map core: projection, the resource format, framing, gathering; no Tauri, no network
 src-tauri/crates/ondar-map-build/
                          build-time tool, Natural Earth → src-tauri/resources/map/world.ondarmap; never in the app
+docs/testers/            the tester note for the M6-lite build, in English, Spanish and Portuguese
 ```
 
 ## M1 deviations
