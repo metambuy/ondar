@@ -306,14 +306,16 @@ M5, whose items they rank. Decided 2026-10-12 (ONDAR.md, "M6-lite before M5").
 
 - [x] Developer ID signing and **notarisation**, locally first (secrets never committed or logged)
       (local; second Mac pending) — signed 2026-10-13, notarisation accepted and the `.app` stapled
-      2026-10-14 (ONDAR.md, "Signing and notarisation")
+      2026-10-14; 0.1.0 released 2026-10-14 with the DMG notarised and stapled too (ONDAR.md,
+      "Signing and notarisation", "Release 0.1.0")
 - [ ] Bundle metadata check (`tauri.conf.json`)
 - [x] A file log sink (`7cb845d`; release path observed 2026-10-13)
 - [ ] `tauri-plugin-updater`, the feed on CrabNebula Cloud: check on launch, a prompt in the popover
-      — code in commit 4b (2026-10-14; tauri 2.12.3 in 4a); ticked when a tester sees the prompt
-      for 0.1.1 (ONDAR.md, "Updater")
+      — code in commit 4b (2026-10-14; tauri 2.12.3 in 4a); the 0.1.0 feed is live (0.0.9 → 200
+      with 0.1.0, 0.1.0 → 204); ticked when a tester sees the prompt for 0.1.1 (ONDAR.md, "Updater",
+      "Release 0.1.0")
 - [x] A tester note in EN / ES / PT, with the known gaps (`docs/testers/`, 2026-10-14; the download
-      link is filled at release)
+      link filled at the 0.1.0 release)
 - [x] Crash reporting and telemetry: **none** (decided 2026-10-12)
 
 **Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release

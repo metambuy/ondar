@@ -8,7 +8,7 @@ A Mac with Apple Silicon (M1 or later) running macOS 12 or newer. Intel Macs are
 
 ## Install
 
-1. Download Ondar from [DOWNLOAD LINK, filled at release].
+1. Download Ondar from https://cdn.crabnebula.app/download/metambuy/ondar/latest/platform/dmg-aarch64.
 2. Open the DMG and drag Ondar to Applications. Do this before the first launch; it matters for updates later.
 3. Open Ondar from Applications. There is no Dock icon and no window: look for the Ondar icon in the menu bar at the top right of the screen and click it. macOS should not show a security warning; if it does, stop and tell me, that is a bug on my side.
 

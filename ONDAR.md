@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-14, later (M6-lite: tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -1438,9 +1438,9 @@ redaction**; a tester sends it knowingly.
   (`darwin-aarch64/0.1.0` at run time); `pubkey` = the one line of `~/.tauri/ondar.key.pub`
   (minisign, public by design). The private key stays in `~/.tauri` and `notary.env`
   (`TAURI_SIGNING_PRIVATE_KEY`, plus `_PASSWORD` if the key has one); the build command is
-  unchanged in form and now also writes `Ondar.app.tar.gz` + `.sig` beside the `.app`. **To verify
-  at the next build, not assumed:** that the tar.gz is made from the notarised, stapled `.app`
-  (bundler 2.9.4's order), and where in that order.
+  unchanged in form and now also writes `Ondar.app.tar.gz` + `.sig` beside the `.app`. **Verified at
+  the 0.1.0 build (2026-10-14):** the tar.gz is made from the notarised, stapled `.app`; the order in
+  the log is `Stapling app...` → the DMG → `Ondar.app.tar.gz` (see "Release 0.1.0").
 - **The macOS mechanic** (plugin 2.13.3 `updater.rs:1390-1500`): the install path is the `.app`
   ancestor of the running executable; the archive is extracted into a temp dir **on the same
   volume**, the bundles are exchanged atomically (`renamex_np` `RENAME_SWAP`, APFS), else two renames
@@ -1450,6 +1450,49 @@ redaction**; a tester sends it knowingly.
   install fails → "Update failed, see log". The tester note says "drag to Applications first".
 - **Not in commit 4:** the build with this config, the Cloud upload (`cn`, `CN_API_KEY`), the 0.1.1
   release that shows the prompt (BUILD_PLAN's exit criterion).
+
+**Release 0.1.0 (2026-10-14).** Tag `v0.1.0` = `bd2795f` (commit 5). Records:
+`_handover/m6lite/{build-2.log,dmg-notarize.log,cn-release.log,feed-check.out,checks.out,release-0.1.0/}`.
+Every command that needed a credential sourced `~/.config/ondar/notary.env` inside its own shell; every
+log was grepped for `@icloud`, `AuthKey` and `cn_` afterwards: 0, 0, 0 each time.
+
+- **Build** (`pnpm tauri build --bundles app,dmg`): wall 157 s, compile 86 s, notarisation of the
+  `.app` **27 s** (`Notarizing` 13:40:08 → `Accepted` 13:40:35 UTC), submission
+  `d03b155a-50ad-4723-8ddf-7949f9137297` — no first-submission hold this time. Then `Stapling app...`
+  (13:40:35), the DMG built and signed (13:40:35–13:41:00), then `Ondar.app.tar.gz` + `.sig`
+  (13:41:00): **the updater artefact is made from the stapled `.app`**, confirmed by contents (the
+  `.app` extracted from the tar.gz: `stapler validate` 0, `codesign --verify --deep --strict` 0). The
+  updater key has no password (`No updater private key password provided, assuming an empty password`).
+- **The `.app`:** `codesign --verify --deep --strict` 0; `spctl -a -t exec` 0, `Notarized Developer
+  ID`; `stapler validate` 0.
+- **The DMG's own notarisation** (the bundler signs but never submits it, spike 0): `xcrun notarytool
+  submit --wait` with the API-key route, submission `a5de7953-0594-4c1a-9630-ba2df88a4fc8`, Accepted,
+  **31 s**; `xcrun stapler staple` 0; then `spctl -a -t open --context context:primary-signature` 0,
+  `accepted`, `Notarized Developer ID` (3, `Unnotarized`, before); `stapler validate` 0 (65 before).
+- **SHA-256.** `Ondar.app.tar.gz` (7 482 959 B) `325742f91d0107f1ce2eb23dedc1342933e547b664dd85da8665d37f6c6325da`;
+  `Ondar.app.tar.gz.sig` (420 B) `c5858532bf12607ac06b7981b77dd63f4d6a6f9cae5f404a81dfeb0d1e70a8e9`;
+  `Ondar_0.1.0_aarch64.dmg` stapled (7 739 364 B) `540d9759122926118f092f920f49f76fa417d48c3d49228f6908e6bd97a9a4ee`
+  (unstapled, 7 737 674 B: `4bfa2509fc78f89ec5a9d0e6da666d20c01952c9e653418bd46944069b6baf8d`, not shipped).
+- **CrabNebula Cloud** (`cn` 0.13.5, app `metambuy/ondar`, appId `01M4T33Z5DMV035ZS1FBTWWB6K`):
+  `cn release draft metambuy/ondar 0.1.0` → release **`01M4XF0DQR6APGTGZ0V2DKZEC2`**.
+  `cn release upload … --framework tauri` **fails non-interactively** (`The input device is not a
+  TTY`, exit 1, nothing uploaded), so the two documented explicit uploads were used:
+  `--file Ondar_0.1.0_aarch64.dmg --public-platform dmg-aarch64` (asset `01M4XF271X9KGA7ADYMKA6TH15`)
+  and `--file Ondar.app.tar.gz --update-platform darwin-aarch64 --signature Ondar.app.tar.gz.sig`
+  (asset `01M4XF2AG5V41HAKFJHEFRN2X1`). `cn release show` before publishing: the two assets, sizes
+  7 739 364 (the stapled DMG's size; the unstapled differs) and 7 482 959, the signature attached; the
+  API exposes no hash, so the hash check was by provenance (the uploaded files are the hash-verified
+  copies in `release-0.1.0/`) and then by download (below). `cn release publish metambuy/ondar <id>` →
+  `Published`, `pubDate` 2026-10-14T15:04:42Z. No channel.
+- **Feed check** (no secrets): `GET …/update/metambuy/ondar/darwin-aarch64/0.0.9` → **200**, JSON
+  `version "0.1.0"`, `url` under `cdn.crabnebula.app/asset/01M4XF2AG5V41HAKFJHEFRN2X1`, `format "app"`,
+  `pub_date` as above; `…/0.1.0` → **204**, empty body.
+- **Public download link:** `https://cdn.crabnebula.app/download/metambuy/ondar/latest/platform/dmg-aarch64`
+  → 302 to the asset → 200, `content-disposition: attachment; filename="Ondar_0.1.0_aarch64.dmg"`; the
+  downloaded file is 7 739 364 B with SHA-256 `540d9759…a4ee`, **the stapled DMG, byte for byte**. It is
+  now in the three tester notes (commit 6).
+- **Still pending:** spike 4, the friend's Mac (a Finder open with no Gatekeeper warning, a station
+  playing); 0.1.1 through the prompt (spike 5).
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

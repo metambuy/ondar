@@ -8,7 +8,7 @@ Um Mac com Apple Silicon (M1 ou posterior) com macOS 12 ou mais recente. Os Mac 
 
 ## Instalação
 
-1. Descarrega o Ondar a partir de [DOWNLOAD LINK, filled at release].
+1. Descarrega o Ondar a partir de https://cdn.crabnebula.app/download/metambuy/ondar/latest/platform/dmg-aarch64.
 2. Abre o DMG e arrasta o Ondar para Applications. Faz isto antes do primeiro arranque; é importante para as atualizações mais tarde.
 3. Abre o Ondar a partir de Applications. Não há ícone na Dock nem janela: procura o ícone do Ondar na barra de menus, no canto superior direito do ecrã, e clica nele. O macOS não deve mostrar nenhum aviso de segurança; se mostrar, para e diz-me, isso é um erro meu.
 
