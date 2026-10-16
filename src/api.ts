@@ -29,6 +29,7 @@ import type { MapReply } from "./bindings/MapReply";
 import type { MapStatus } from "./bindings/MapStatus";
 import type { Shape } from "./bindings/Shape";
 import type { View } from "./bindings/View";
+import type { UpdateAvailable } from "./bindings/UpdateAvailable";
 
 export type { EqBand, IcyMetadata, PanelHeight, PanelLayout, PanelView, PlaybackState, StreamInfo };
 export type {
@@ -56,6 +57,8 @@ export type {
   Shape,
   View,
 };
+
+export type { UpdateAvailable };
 
 export type OndarError = { code: string; message: string };
 
@@ -149,6 +152,17 @@ export const measure = {
   report: (kind: string, fields: string, tPage: number) =>
     invoke<void>("measure_report", { kind, fields, tPage }),
 };
+
+// The in-app update (M6-lite commit 4b). Rust checks the feed once, a few seconds after launch,
+// and emits `update:available` only when it found a newer version; the page renders one line
+// from the payload and reports a click with `install`. `install` never resolves on success (the
+// app restarts) and rejects `{ code: "updater", message }` on failure; the page shows "Update
+// failed, see log" and keeps the button. The page never checks, compares versions or restarts.
+export const updater = {
+  install: () => invoke<void>("update_install"),
+};
+export const onUpdateAvailable = (cb: (u: UpdateAvailable) => void): Promise<UnlistenFn> =>
+  listen<UpdateAvailable>("update:available", (e) => cb(e.payload));
 
 export const onStationsUpdated = (cb: (u: StationsUpdated) => void): Promise<UnlistenFn> =>
   listen<StationsUpdated>("stations:updated", (e) => cb(e.payload));

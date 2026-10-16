@@ -36,7 +36,8 @@ design is wrong: move it to Rust. `src/api.ts` is the **only** file that imports
 | M1 | Scaffold + audio engine | done, `m1-done` |
 | M2 | Tray + NSPanel popover | done, `m2a-done` … `m2d-done` |
 | M3 | Stations, cache, country/station UI | done, `m3a-done`, `m3b-done`, `defect-a-done`, `m3c-done`, `defect-b-done` |
-| M4 | The drawn map | M4a `m4a-done`, M4b `m4b-done` (2026-10-07); **M4c `m4c-done` (2026-10-12). **M4 complete**; M5 next** |
+| M4 | The drawn map | M4a `m4a-done`, M4b `m4b-done` (2026-10-07); **M4c `m4c-done` (2026-10-12). **M4 complete**; M6-lite next (before M5)** |
+| M6-lite | Signed, notarised build for testers | in progress on `m6lite` |
 | M5 | Spectrum + EQ UI, tray animation, polish | |
 | M6 | Signing, notarisation, DMG | |
 

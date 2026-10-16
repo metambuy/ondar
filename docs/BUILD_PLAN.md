@@ -29,7 +29,7 @@ at M2c), no tray.
 4. EQ sliders audibly change the sound; `cargo test -p ondar-audio` passes. *(Since M2c the
    bench is gone and the popover's dev transport carries no EQ sliders, so this criterion is
    **unexercisable by hand until M5** brings the EQ UI. The engine-side claim is held by
-   `eq::tests` (17) and `examples/eq_headroom_sweep.rs` in the meantime.)*
+   `eq::tests` and `examples/eq_headroom_sweep.rs` in the meantime.)*
 5. Switching stations silences the old station immediately.
 
 CI (fmt/clippy/test/typecheck in GitHub Actions) was not part of this milestone — a separate,
@@ -207,7 +207,7 @@ from a bundled resource. The satellite map was reversed 2026-09-24 and the rever
       bar re-derived at the acceptance review (a country change from idle to the painted frame
       ≤ 100 ms p90) and met, RU at 300 by 1 ms (ONDAR.md "M4b: built and measured"); `raw` parked
       at the top of M4c's brief
-- [x] The view in Rust (`MapSession`): inputs from the page (scroll, drag, `− fit +`) and from Rust
+- [x] The view in Rust (`map::Session`, held by `MapSessionState`): inputs from the page (scroll, drag, `− fit +`) and from Rust
       (a native pinch) accumulated, never dropped; one `map_pull` reply per animation frame, every
       frame with a sequence number; `clamp_view` in Rust — built (commit 6; no Rust-born input,
       the pinch having failed)
@@ -299,18 +299,42 @@ music; CPU stays low (single digits) while playing; the tray icon animates while
 
 ---
 
+## M6-lite (before M5)
+
+**Goal:** a thin slice end to end: a signed, notarised build of `main` in 3–5 testers' hands before
+M5, whose items they rank. Decided 2026-10-12 (ONDAR.md, "M6-lite before M5").
+
+- [x] Developer ID signing and **notarisation**, locally first (secrets never committed or logged)
+      (local; second Mac pending) — signed 2026-10-13, notarisation accepted and the `.app` stapled
+      2026-10-14; 0.1.0 released 2026-10-14 with the DMG notarised and stapled too (ONDAR.md,
+      "Signing and notarisation", "Release 0.1.0")
+- [ ] Bundle metadata check (`tauri.conf.json`)
+- [x] A file log sink (`7cb845d`; release path observed 2026-10-13)
+- [ ] `tauri-plugin-updater`, the feed on CrabNebula Cloud: check on launch, a prompt in the popover
+      — code in commit 4b (2026-10-14; tauri 2.12.3 in 4a); the 0.1.0 feed is live (0.0.9 → 200
+      with 0.1.0, 0.1.0 → 204); ticked when a tester sees the prompt for 0.1.1 (ONDAR.md, "Updater",
+      "Release 0.1.0")
+- [x] A tester note in EN / ES / PT, with the known gaps (`docs/testers/`, 2026-10-14; the download
+      link filled at the 0.1.0 release)
+- [x] Crash reporting and telemetry: **none** (decided 2026-10-12)
+
+**Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release
+workflow.
+
+**Exit:** two testers open it without a Gatekeeper warning and play a station; one receives 0.1.1
+through the prompt; a log file arrives.
+
+---
+
 ## M6 — Signing, notarisation, DMG
 
-**Goal:** ship it.
+**Goal:** ship it. What M6-lite leaves.
 
 - [x] App icon set — landed early (`90236fd`, 2026-09-13), generated from
       `src-tauri/icons/ondar-icon-master.svg`; see ONDAR.md, "The app icon and tray glyphs"
-- [ ] DMG background, `tauri.conf.json` bundle metadata (replace the placeholder bundle
-      identifier — see open questions)
-- [ ] Apple Developer ID signing + **notarisation** in CI (`APPLE_*` secrets)
+- [ ] DMG background art
+- [ ] Signing and notarisation in a CI release workflow (`APPLE_*` secrets)
 - [ ] Universal binary (aarch64 + x86_64)
-- [ ] `tauri-plugin-updater` with a signed update feed
-- [ ] Crash/error reporting decision (opt-in or none — no silent telemetry)
 - [ ] README with screenshots, credits (Natural Earth, radio-browser.info), licence
 
 **Exit:** a notarised DMG that a stranger can open on a clean Mac without Gatekeeper warnings.

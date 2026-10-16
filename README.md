@@ -2,13 +2,13 @@
 
 macOS menu bar radio player. Tauri v2 + Rust core. See `ONDAR.md` for the project document.
 
-## Status: M2 and M3 done (defect B merged 2026-09-30, `defect-b-done`). M4 split M4a/M4b/M4c; **M4a merged** (`m4a-done`): geodata and the `ondar-map` crate, no UI. **M4b in progress** on branch `m4b`: IPC and the SVG renderer with pan and zoom.
+## Status: M1 to M4 done, `m4c-done`
 
 M1 (scaffold + audio engine) and M2 (tray + NSPanel popover, merged 2026-09-21 at `m2d-done`) are
 done. M2d added the two height states: an Expand/Collapse control in
 the popover, the expanded height capped to the display the tray icon is on (598 pt on a 640 pt
 display, 720 pt where it fits), resized and repositioned in one frame change after the page has
-committed the new layout. The expanded pane is a placeholder until M4/M5. The M1 bench window retired at M2c into the popover;
+committed the new layout. The M1 bench window retired at M2c into the popover;
 since M3b the popover is the product's collapsed view: Now Playing (name, the live ICY title,
 flag · codec · bitrate), the transport row (play/pause, stop, ★ favourite, volume), the country
 select with a ★ toggle beside it for favourites and recents, and the station list — eight rows
@@ -67,6 +67,11 @@ src-tauri/crates/ondar-audio/
   types.rs               IPC types (ts-rs exported)
 src-tauri/crates/ondar-stations/
                          radio-browser client, normalise/rank, SQLite cache + favourites/recents store
+src-tauri/crates/ondar-map/
+                         map core: projection, the resource format, framing, gathering; no Tauri, no network
+src-tauri/crates/ondar-map-build/
+                         build-time tool, Natural Earth → src-tauri/resources/map/world.ondarmap; never in the app
+docs/testers/            the tester note for the M6-lite build, in English, Spanish and Portuguese
 ```
 
 ## M1 deviations

@@ -1,6 +1,9 @@
 # Ondar — project document
 
-*Last updated: 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
+*Last updated: 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
+Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
+Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
 the k+4c record, M4c's measurement rules, instrument instance nineteen). Previously 2026-10-08, later (M4c k+4b: decision 7 amended, the hover label and MT's line on the
 controls' plate, with the contrast figures). Previously 2026-10-08 (M4c k+4, the page: S4's result — hover exists — and decision 6's keyboard
 exception, in "M4c: Step 0 and its decisions"). Previously 2026-10-07, later (M4c begins on branch `m4c`: M4b's merge recorded, Step 0 measured
@@ -86,7 +89,8 @@ popover, never a separate window):
 - Pan and zoom inside the frame: the fit is the initial view and the zoom-out limit, 1.5 km/pt
   the zoom-in limit; for large countries (Russia, USA, Brazil) the subdivisions give the fit
   view its scale, and zooming in brings the coastline detail the resource carries per level.
-- Station markers on the map; click a marker to play
+- Station dots on the map; a dot click filters the station list to that dot's stations, with a
+  chip that clears it, and never plays (decision 3, M4c)
 - Equalizer panel (toggle between map and EQ, or EQ as a second expanded pane)
 
 ## Aesthetic
@@ -126,7 +130,7 @@ a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
 | Popover positioning | **Tauri `TrayIconEvent::Click { rect }`** — decided 2026-09-12, `tauri-plugin-positioner` **not needed** | `rect.position` is already the top-left corner in top-left-origin physical pixels, matching Tauri's own convention: no flip, no conversion. Since M2a the centred position is clamped into the work area (`NSScreen.visibleFrame`) of the display under the icon. See "M2a: the tray path, measured". |
 | Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; confirmed by eye 2026-09-16 over a bright, busy backdrop (Martín).** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
 | Map rendering | **Inline SVG in the webview, drawing exactly the paths Rust sends** | Projection (spherical LAEA, authalic radius), framing, insets, level choice, clipping, station gathering and hit-testing all run in Rust (`ondar-map`); the webview is a renderer. Leaflet and the tile pyramid are gone (2026-09-24/30). |
-| Map data | **Natural Earth 10m admin 0 + admin 1, tag v5.1.2, pinned by SHA-256**, built at build time into one bundled resource (a global scale ladder 1.5/3/6/12/24 km/pt, each unit once per level, simplified to a measured ≤ 0.25 pt) | Public domain, offline, no API key. Credited in About anyway. Station coordinates are radio-browser's `geo` only (decision M2, 2026-09-30); no city set in M4. |
+| Map data | **Natural Earth 10m admin 0 + admin 1, tag v5.1.2, pinned by SHA-256**, built at build time into one bundled resource (a global scale ladder of six rungs, 1.5/3/6/12/24/48 km/pt (48 since M4c, neighbours only), each unit once per level, simplified to a measured ≤ 0.25 pt) | Public domain, offline, no API key. Credited in About anyway. Station coordinates are radio-browser's `geo` only (decision M2, 2026-09-30); no city set in M4. |
 | Audio | **Rust**: `stream-download` → `IcyReader` → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
@@ -1307,6 +1311,188 @@ B raised select → dots painted from 58 / 78 to 111 / 115 (RU) and from 45 / 49
 - **Every row records the display, its refresh rate and the power source** (`system_profiler
   SPDisplaysDataType`, `NSScreen.maximumFramesPerSecond`, `pmset -g batt`). k+3 recorded none, so its
   difference from 2026-10-09 cannot be attributed.
+
+### M6-lite before M5: the plan change (decided 2026-10-12)
+
+**Martín's decision, 2026-10-12, on a fellow coder's advice: ship a thin slice end to end before going
+deep.** A signed, notarised build of `main` goes to 3–5 testers (colleagues and friends, Apple Silicon
+MacBooks 2023 or later, current macOS) before M5; **the testers rank M5**, whose items are split by
+that feedback. M6 is cut in two: M6-lite now, the rest after M5.
+
+**In (M6-lite):**
+- Developer ID signing and notarisation, **locally first** (no CI release workflow); secrets never
+  committed, logged or pasted.
+- A bundle metadata check (`tauri.conf.json`).
+- A file log sink, so a tester can send a log.
+- `tauri-plugin-updater` with the feed on CrabNebula Cloud: check on launch, with a prompt in the
+  popover.
+- A tester note in English, Spanish and Portuguese, naming the known gaps.
+- **No crash reporting and no telemetry.**
+
+**Out, to full M6:** the universal binary (M6-lite ships aarch64 only), DMG art, README screenshots,
+a CI release workflow.
+
+**Exit:** two testers open it without a Gatekeeper warning and play a station; one receives 0.1.1
+through the prompt; a log file arrives. BUILD_PLAN.md, "M6-lite (before M5)".
+
+**Log file (commit 2, 2026-10-12).** A daily file, `ondar.<UTC date>.log`, in the app log dir:
+`/Users/mv/Library/Logs/eu.ondar.radio.dev` under `pnpm tauri:dev`, as the binary printed in its
+startup line (`Ondar 0.1.0 starting; log dir …`); `/Users/mv/Library/Logs/eu.ondar.radio/ondar.2026-10-13.log`
+for the bundle, **observed 2026-10-13** on the `open`ed release `.app` (the dir did not exist before launch;
+its own startup line names it). `tracing-appender` 0.2.5, synchronous, seven files kept, pruned at startup; the same
+`EnvFilter` and `RateLimit` as stderr, which stays. The path is derived before the app exists, the way
+Tauri 2.11.5 derives `app_log_dir()`, and `setup` warns if Tauri's answer differs. A dir that cannot be
+created leaves stderr only, with a warning. **The log holds station names and stream URLs, with no
+redaction**; a tester sends it knowingly.
+- **Commit 3b, 2026-10-14, the file is plain text:** the file layer has its own field-formatter type (`PlainFields`), because `tracing-subscriber` 0.3.23 formats a span's fields once per formatter type and stores them on the span, so two `fmt` layers sharing `DefaultFields` shared stderr's coloured rendering (`new{url=…}` carried `\x1b[3m`); pinned by `span_fields_in_the_file_carry_no_ansi_escapes`.
+- **Commit 3b, the filter is a global layer, its string unchanged** (`info,ondar_audio=debug`): as a per-layer filter behind the `RateLimit` it (a) let the limiter count, and report at WARN once a second, DEBUG/TRACE `stream_download::source` events it then discarded (14 WARN lines in a 20 s play → 0), and (b) was bypassed when an event's field value opened a span (`stream-download`'s `read` logs `stream_position()`, an `#[instrument]`ed `seek`, as a DEBUG field), which is how `stream_download` DEBUG lines reached an `info` file (2 → 0); pinned by `a_rejected_event_with_a_span_in_its_fields_stays_out`. No `stream_download=info` directive was needed: `info` already said so. stderr loses nothing: same string, same events minus the two artefacts.
+
+**Signing and notarisation (Step 0, 2026-10-13).** Records: `_handover/m6lite/{step0.md,build-1.log,checks.out}`.
+
+- **The build command**, from the repo root, the env sourced inside the command and nowhere else:
+  `set -a; . ~/.config/ondar/notary.env; set +a; pnpm tauri build --bundles app,dmg`. The file
+  `~/.config/ondar/notary.env` (mode 600, outside the repo, never read or printed by a session) holds
+  the names the bundler reads: `APPLE_SIGNING_IDENTITY` (the CLI prefers it over
+  `bundle.macOS.signingIdentity`, so **`tauri.conf.json` carries no identity**), `APPLE_ID`,
+  `APPLE_PASSWORD`, `APPLE_TEAM_ID` (all three or the Apple-ID route is a hard error); also
+  `TAURI_SIGNING_PRIVATE_KEY` (the updater, commit 4) and `CN_API_KEY` (Cloud). The API-key route the
+  bundler also accepts: `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`.
+- **Spike 0 (read, CLI 2.11.4 = `tauri-bundler` 2.9.4 + `tauri-macos-sign`):** the bundler signs the
+  `.app` inside out (`codesign --force -s <identity>`, `--options runtime` for executables since
+  `hardenedRuntime` defaults to true, `--entitlements` only when configured, so none here), zips it
+  with `ditto`, submits the zip with `notarytool submit --wait`, and on `Accepted` staples **the
+  `.app`**. The `.dmg` is built from that `.app` and **signed but never notarised or stapled** by the
+  bundler; Gatekeeper on a `.dmg` open fetches the ticket online. Whether the DMG gets its own
+  `notarytool submit` + `stapler staple` is the chat's decision once the ticket exists.
+- **Spike 1 (notarisation with `macOSPrivateApi` and `tauri-nspanel`, no entitlements, hardened
+  runtime default): ACCEPTED 2026-10-14**, submission `62d5a7e0-a2f9-4d05-80de-bffb79c0f613`, ~26 h after
+  submission (the first-submission hold). Stapled with `xcrun stapler staple -v` (exit 0) onto the
+  release `.app` and the kept copy `_handover/m6lite/Ondar-7cb845d-signed-unstapled.app` (its name is
+  historical). As recorded on 2026-10-13: Signing succeeded (compile 57.94 s). Submission
+  `62d5a7e0-a2f9-4d05-80de-bffb79c0f613`, created 2026-10-13T08:37:01Z, still `In Progress` when the
+  chat cancelled the wait at 2 h 04 min: Apple holds a new team's first submission 24–72 h (DTS,
+  forum thread 838628). The bundler aborted there, so **no DMG was built** and the `.app` is signed
+  but unstapled. Not a failure. The build log holds no credential (`xxxx-` 0, `@icloud` 0).
+- **Spike 2, on the signed unstapled `.app`, by exit status:** `codesign --verify --deep --strict
+  --verbose=2` → 0, "satisfies its Designated Requirement"; `codesign -d --entitlements -` → 0, no
+  entitlements embedded; `codesign -dvv` → 0: `Identifier=eu.ondar.radio`, `flags=0x10000(runtime)`,
+  `Authority=Developer ID Application: Martin Vieira (M9FD2R9U85)` → Developer ID CA → Apple Root CA,
+  `TeamIdentifier=M9FD2R9U85`, secure timestamp 2026-10-13 10:36:57. **Completed 2026-10-14 on the stapled `.app`:** `spctl
+  -a -t exec -vvv` → 0, `accepted`, `source=Notarized Developer ID`, `origin=Developer ID Application:
+  Martin Vieira (M9FD2R9U85)`; `xcrun stapler validate` → 0 (`checks.out`). **Spike 2 complete** for the
+  `.app`. Still pending: the `.dmg` (`spctl -a -t open --context context:primary-signature`, `stapler
+  validate`, SHA-256), since none was built; and the second-Mac open.
+- **Spike 3, the bundle as a tester sees it** (`open` of the `.app`, not `tauri dev`):
+  `lsappinfo info -only ApplicationType Ondar` → `UIElement`; no Dock icon; the tray icon appears; a
+  click opens the popover without taking focus from the frontmost app (log: `panel show reason=toggle`,
+  `panel placed … gap_below_icon=6`); a station plays (`play station_id=… bitrate_kbps=Some(320)`,
+  first byte 0.375 s after open, radio-browser `click` 200); the log file appears at the path above;
+  quit by its own PID. **Installed size 10 880 KiB** (M4c: 10 804; +76, the file sink).
+- **Finding, for the chat:** the bundler hands the Apple-ID credentials to `notarytool` on its argv
+  (`--apple-id`, `--password`, `--team-id`), visible to `ps` on this Mac for as long as a submission
+  waits. The API-key route passes a key path instead. Nothing was written anywhere.
+- **Observed in the release log** (ANSI escapes inside span fields, `stream_download` DEBUG lines, a
+  rate-limit WARN per second while playing): all three fixed in commit 3b, see "Log file".
+- **Rule written** (`.claude/rules/audio.md` 15): no `log::`/`tracing::` call site in the Source chain
+  the audio callback pulls (ring consumer, EQ adapter, converter); both sinks write synchronously.
+
+**Updater (commits 4a `433bee5` and 4b, 2026-10-14).** Plan and the chat's answers:
+`_handover/m6lite/commit4-plan.md`, OPEN.md 2026-10-14.
+
+- **Versions.** `tauri-plugin-updater` 2.13.3 (the current 2.x; 3.0.0-alpha.2 exists, not taken)
+  requires `tauri ^2.12`, so **4a bumped tauri 2.11.5 → 2.12.3** (`tauri-build` 2.7.2, wry 0.57.0,
+  tao 0.37.1, tray-icon 0.25.1; npm `@tauri-apps/api` 2.12.3, `cli` 2.12.2), pushed alone as the
+  check of the pinned `tauri-nspanel` rev against 2.12: green, panel still non-activating.
+  **`tauri-plugin-process` is not used:** the restart is tauri core's `AppHandle::restart`.
+- **Rust-only check, once per launch** (`updater.rs`): 5 s after `setup`, on the async runtime,
+  `updater_builder().build().check()`. Newer version → the `Update` is held in managed state and
+  **`update:available` `{ version, notes }`** goes to the page; nothing newer (204) → `info!`; any
+  failure → `warn!` and nothing on screen. **Debug builds skip the check unless
+  `ONDAR_UPDATE_CHECK=1`**, both paths logged: the dev loop never depends on the feed.
+- **The command `update_install`**: `download_and_install` (progress at `debug!` per MiB, the
+  signature verified against the pubkey), then `app.restart()`; on failure `error!` with the cause,
+  the update kept for a retry, and `{ code: "updater", message }` to the page. Called from the async
+  runtime, not the main thread, `restart` takes tauri 2.12.3's "separate thread" path
+  (`app.rs:606-629`): `request_exit(RESTART_EXIT_CODE)`, the run loop exits, `process::restart`
+  relaunches the bundle named by `Info.plist` and the old process exits 0. **Measured** with the
+  debug-only `ONDAR_MEASURE_RESTART=<secs>` driver (`measure.rs`), 2026-10-14, dev build: the call
+  from `tokio-rt-worker` at t = 8001 ms, tauri's `restart triggered from a separate thread` 0.3 ms
+  later, the relaunched process's startup line **19 ms** after the call; no hang, nothing in the tray
+  or panel teardown blocked it (`_handover/m6lite/tauri-dev-gate-4b-restart.log`).
+- **The check against the feed before any release exists** (`ONDAR_UPDATE_CHECK=1`, 2026-10-14):
+  `GET …/darwin-aarch64/0.1.0` answered a non-2xx; the plugin logs one ERROR line of its own
+  (`update endpoint did not respond with a successful status code`) and Ondar one WARN (`update
+  check failed: Could not fetch a valid release JSON from the remote`); nothing on screen. A tester's
+  log carries that pair once per launch until the first release is published (then 204 or JSON).
+- **No capability change.** `updater:default` would grant the *page* the plugin's own commands;
+  Ondar's page calls none of them (the one rule). The plugin is registered for its config only.
+- **The page** (`UpdateLine.tsx`, the last block of the transport body, above the expand row):
+  nothing until the event; then `Ondar 0.1.1 available · Update`; `Updating…` with the button
+  disabled while the call is pending; `Update failed, see log` with the button back on rejection.
+  Secondary label on the system material (`--color-label-secondary`, both appearances; the token
+  pinned by test, the look by eye in Sand and Ink at acceptance). Five behaviour tests + the token
+  test; the page checks, compares and persists nothing.
+- **Config** (`tauri.conf.json`, pinned by `updater_config_names_one_https_feed_and_a_minisign_key`):
+  `bundle.createUpdaterArtifacts: true`; `plugins.updater.endpoints` =
+  `https://cdn.crabnebula.app/update/metambuy/ondar/{{target}}-{{arch}}/{{current_version}}`
+  (`darwin-aarch64/0.1.0` at run time); `pubkey` = the one line of `~/.tauri/ondar.key.pub`
+  (minisign, public by design). The private key stays in `~/.tauri` and `notary.env`
+  (`TAURI_SIGNING_PRIVATE_KEY`, plus `_PASSWORD` if the key has one); the build command is
+  unchanged in form and now also writes `Ondar.app.tar.gz` + `.sig` beside the `.app`. **Verified at
+  the 0.1.0 build (2026-10-14):** the tar.gz is made from the notarised, stapled `.app`; the order in
+  the log is `Stapling app...` → the DMG → `Ondar.app.tar.gz` (see "Release 0.1.0").
+- **The macOS mechanic** (plugin 2.13.3 `updater.rs:1390-1500`): the install path is the `.app`
+  ancestor of the running executable; the archive is extracted into a temp dir **on the same
+  volume**, the bundles are exchanged atomically (`renamex_np` `RENAME_SWAP`, APFS), else two renames
+  with a restore, and on `PermissionDenied` an AppleScript swap with admin privileges. So the app
+  must run from a writable, stable path: **`/Applications` (or `~/Applications`)**. From the mounted
+  DMG (read-only) or an unmoved `~/Downloads` copy (App Translocation: a read-only random mount) the
+  install fails → "Update failed, see log". The tester note says "drag to Applications first".
+- **Not in commit 4:** the build with this config, the Cloud upload (`cn`, `CN_API_KEY`), the 0.1.1
+  release that shows the prompt (BUILD_PLAN's exit criterion).
+
+**Release 0.1.0 (2026-10-14).** Tag `v0.1.0` = `bd2795f` (commit 5). Records:
+`_handover/m6lite/{build-2.log,dmg-notarize.log,cn-release.log,feed-check.out,checks.out,release-0.1.0/}`.
+Every command that needed a credential sourced `~/.config/ondar/notary.env` inside its own shell; every
+log was grepped for `@icloud`, `AuthKey` and `cn_` afterwards: 0, 0, 0 each time.
+
+- **Build** (`pnpm tauri build --bundles app,dmg`): wall 157 s, compile 86 s, notarisation of the
+  `.app` **27 s** (`Notarizing` 13:40:08 → `Accepted` 13:40:35 UTC), submission
+  `d03b155a-50ad-4723-8ddf-7949f9137297` — no first-submission hold this time. Then `Stapling app...`
+  (13:40:35), the DMG built and signed (13:40:35–13:41:00), then `Ondar.app.tar.gz` + `.sig`
+  (13:41:00): **the updater artefact is made from the stapled `.app`**, confirmed by contents (the
+  `.app` extracted from the tar.gz: `stapler validate` 0, `codesign --verify --deep --strict` 0). The
+  updater key has no password (`No updater private key password provided, assuming an empty password`).
+- **The `.app`:** `codesign --verify --deep --strict` 0; `spctl -a -t exec` 0, `Notarized Developer
+  ID`; `stapler validate` 0.
+- **The DMG's own notarisation** (the bundler signs but never submits it, spike 0): `xcrun notarytool
+  submit --wait` with the API-key route, submission `a5de7953-0594-4c1a-9630-ba2df88a4fc8`, Accepted,
+  **31 s**; `xcrun stapler staple` 0; then `spctl -a -t open --context context:primary-signature` 0,
+  `accepted`, `Notarized Developer ID` (3, `Unnotarized`, before); `stapler validate` 0 (65 before).
+- **SHA-256.** `Ondar.app.tar.gz` (7 482 959 B) `325742f91d0107f1ce2eb23dedc1342933e547b664dd85da8665d37f6c6325da`;
+  `Ondar.app.tar.gz.sig` (420 B) `c5858532bf12607ac06b7981b77dd63f4d6a6f9cae5f404a81dfeb0d1e70a8e9`;
+  `Ondar_0.1.0_aarch64.dmg` stapled (7 739 364 B) `540d9759122926118f092f920f49f76fa417d48c3d49228f6908e6bd97a9a4ee`
+  (unstapled, 7 737 674 B: `4bfa2509fc78f89ec5a9d0e6da666d20c01952c9e653418bd46944069b6baf8d`, not shipped).
+- **CrabNebula Cloud** (`cn` 0.13.5, app `metambuy/ondar`, appId `01M4T33Z5DMV035ZS1FBTWWB6K`):
+  `cn release draft metambuy/ondar 0.1.0` → release **`01M4XF0DQR6APGTGZ0V2DKZEC2`**.
+  `cn release upload … --framework tauri` **fails non-interactively** (`The input device is not a
+  TTY`, exit 1, nothing uploaded), so the two documented explicit uploads were used:
+  `--file Ondar_0.1.0_aarch64.dmg --public-platform dmg-aarch64` (asset `01M4XF271X9KGA7ADYMKA6TH15`)
+  and `--file Ondar.app.tar.gz --update-platform darwin-aarch64 --signature Ondar.app.tar.gz.sig`
+  (asset `01M4XF2AG5V41HAKFJHEFRN2X1`). `cn release show` before publishing: the two assets, sizes
+  7 739 364 (the stapled DMG's size; the unstapled differs) and 7 482 959, the signature attached; the
+  API exposes no hash, so the hash check was by provenance (the uploaded files are the hash-verified
+  copies in `release-0.1.0/`) and then by download (below). `cn release publish metambuy/ondar <id>` →
+  `Published`, `pubDate` 2026-10-14T15:04:42Z. No channel.
+- **Feed check** (no secrets): `GET …/update/metambuy/ondar/darwin-aarch64/0.0.9` → **200**, JSON
+  `version "0.1.0"`, `url` under `cdn.crabnebula.app/asset/01M4XF2AG5V41HAKFJHEFRN2X1`, `format "app"`,
+  `pub_date` as above; `…/0.1.0` → **204**, empty body.
+- **Public download link:** `https://cdn.crabnebula.app/download/metambuy/ondar/latest/platform/dmg-aarch64`
+  → 302 to the asset → 200, `content-disposition: attachment; filename="Ondar_0.1.0_aarch64.dmg"`; the
+  downloaded file is 7 739 364 B with SHA-256 `540d9759…a4ee`, **the stapled DMG, byte for byte**. It is
+  now in the three tester notes (commit 6).
+- **Still pending:** spike 4, the friend's Mac (a Finder open with no Gatekeeper warning, a station
+  playing); 0.1.1 through the prompt (spike 5).
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -3451,13 +3637,14 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    installed bundle size at M4a. **M4a merged 2026-10-02** (`f7a3fd8`, `m4a-done`); **M4b merged
    2026-10-07** (`29f1582`, `m4b-done`); **M4c merged 2026-10-12**
    (`d431568`, `m4c-done`) — see "M4c: built and measured". **M4 complete.**
+   **M6-lite comes next, before M5** (decided 2026-10-12) — see "M6-lite before M5".
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure nineteen times by the numbering below — twenty-two
+result.** This project has now hit the same failure twenty times by the numbering below — twenty-three
 counting the three M2a instances recorded between the fourth and the fifth without a number — in
 as many unrelated tools, and each time the instrument was wrong rather than the thing being
 measured. The three below are the archetypes; the rest are enumerated after them.
@@ -3614,6 +3801,17 @@ mutants and a measurement. On the bar's own cycle (a real country change) the fi
 and the code it fixed was the fastest of the three (k+4c, "M4c: the dots pull's ordering"). The same
 instrument flaw as M4b's A3: Step 0's back-to-back re-select of one country. **The rule earned: a check
 of a bar runs the bar's cycle, and the prompt that orders it names the cycle.**
+
+**Twentieth, 2026-10-08 (M4c S4): a probe placed where the event could not reach it.** Step 0's hover
+probe logged no `enter` line, which could have read as "a non-activating panel gets no hover". Its disc
+sat under the land paths, so `pointerenter` never reached it: the silence was the probe's, not the
+platform's. Moved above the land, with S4's positive control (the panel key, Terminal frontmost), it
+logged 6 `enter … key=true`, and the real case 3 ("M4c: Step 0 and its decisions", S4's result).
+Numbered rather than declined: the instrument was wrong, it reported a plausible empty answer with no
+error, and only the instrument's check found it; that the chat had recorded it as inconclusive rather
+than a no is the principle working, not a reason to leave it out (fifteen to seventeen were also caught
+before a wrong conclusion, and are numbered). **The rule earned: a probe whose silence would be the result gets a positive control that must
+make it speak, run on the probe as placed.**
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 

@@ -4,12 +4,14 @@
 mod commands;
 mod error;
 mod log_rate_limit;
+mod log_sink;
 mod map;
 // The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
 #[cfg(debug_assertions)]
 mod measure;
 mod panel;
 mod tray;
+mod updater;
 
 use std::thread;
 
@@ -51,6 +53,10 @@ pub mod events {
     /// The selected country's dots were installed (M4c): after a `map_select`, or after a refresh
     /// of its list landed. No payload: the page pulls, and the frame comes at the view it has.
     pub const MAP_CHANGED: &str = "map:changed";
+    /// The launch's one update check found a newer version (M6-lite commit 4b). Payload
+    /// `UpdateAvailable { version, notes }`; the page shows the line and, on a click, calls
+    /// `update_install`. Never emitted when the check fails or finds nothing.
+    pub const UPDATE_AVAILABLE: &str = "update:available";
 }
 
 /// Payload of `stations:updated`.
@@ -86,18 +92,17 @@ pub fn run() {
     // installs a `LogTracer` itself (its default `tracing-log` feature), which is what lets
     // `ondar_audio`'s own `log::` call sites still show up here too — one `RUST_LOG` drives
     // both. Same default filter `env_logger` used, so behaviour when `RUST_LOG` is unset is
-    // unchanged.
+    // unchanged. Two sinks, stderr and the daily file (`log_sink`), behind that filter and the
+    // rate limit. The context is generated once, here, for the identifier the log dir is keyed
+    // on (`eu.ondar.radio`, or `.dev` under `pnpm tauri:dev`), and handed to `build` below.
     use tracing_subscriber::EnvFilter;
-    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let context = tauri::generate_context!();
+    let log_dir = log_sink::dir(&context.config().identifier);
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,ondar_audio=debug"));
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_filter(filter)
-                .with_filter(log_rate_limit::RateLimit::new()),
-        )
-        .init();
+    log_sink::subscriber(log_dir.as_deref(), filter).init();
+    log_sink::startup(log_dir.as_deref());
 
     let user_agent = format!("Ondar/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent.clone());
@@ -125,10 +130,24 @@ pub fn run() {
         // Manages the panel store `PanelBuilder::build()` registers into; without it the
         // builder's internal `to_panel` panics on missing state.
         .plugin(tauri_nspanel::init())
+        // The in-app update (commit 4b): the plugin reads `plugins.updater` from the config; the
+        // check and the install are Rust's (`updater.rs`), so no capability names it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Tray menu items. Listeners run in the event loop, on the main thread
         // (tauri 2.11.5 `app.rs:2588-2598`).
         .on_menu_event(tray::on_menu_event)
         .setup(move |app| {
+            // The log dir was derived before the app existed (`log_sink::dir`); Tauri's own
+            // answer must match it, or the file is not where a tester is told to look.
+            match app.path().app_log_dir() {
+                Ok(tauri_dir) if Some(&tauri_dir) != log_dir.as_ref() => log::warn!(
+                    "log dir {:?} differs from Tauri's app_log_dir {}",
+                    log_dir,
+                    tauri_dir.display()
+                ),
+                Ok(_) => {}
+                Err(e) => log::warn!("app_log_dir unresolved: {e}"),
+            }
             // The station directory lives under the identifier-keyed data directory —
             // `~/Library/Application Support/eu.ondar.radio/` for the bundle, `….dev/` for
             // `pnpm tauri:dev` (its own file, so dev and bundle never share a cache). Its
@@ -192,6 +211,7 @@ pub fn run() {
             tray::setup(app)?;
             #[cfg(debug_assertions)]
             measure::setup(app.handle());
+            updater::setup(app.handle());
 
             let handle = app.handle().clone();
             thread::Builder::new()
@@ -253,10 +273,11 @@ pub fn run() {
             commands::stations::add_favourite,
             commands::stations::remove_favourite,
             commands::stations::list_recents,
+            commands::updater::update_install,
             #[cfg(debug_assertions)]
             measure::measure_report,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Ondar");
 
     // `.run(callback)` rather than `.run(context)`: `RunEvent::Reopen` is the only way to see
@@ -279,6 +300,43 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    /// Pins the updater's configuration (M6-lite commit 4b) by executing the rules it stands for:
+    /// the bundler makes the updater artefact (`Ondar.app.tar.gz` + `.sig`), the feed is exactly
+    /// one https endpoint on CrabNebula Cloud that carries the three variables the plugin
+    /// replaces, and the pubkey is a minisign public key (its base64 opens with
+    /// `untrusted comment:`, which is `dW50cnVzdGVkIGNvbW1lbnQ6`). Fails on a second or an http
+    /// endpoint, a dropped variable, a key pasted in the wrong format, or the artefact flag off.
+    #[test]
+    fn updater_config_names_one_https_feed_and_a_minisign_key() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        assert_eq!(
+            conf["bundle"]["createUpdaterArtifacts"],
+            serde_json::Value::Bool(true),
+            "the bundler must produce the updater artefact"
+        );
+        let updater = &conf["plugins"]["updater"];
+        let endpoints = updater["endpoints"]
+            .as_array()
+            .expect("plugins.updater.endpoints is an array");
+        assert_eq!(endpoints.len(), 1, "one feed: {endpoints:?}");
+        let url = endpoints[0].as_str().expect("the endpoint is a string");
+        assert!(
+            url.starts_with("https://cdn.crabnebula.app/update/"),
+            "the feed is CrabNebula Cloud over https: {url}"
+        );
+        for var in ["{{target}}", "{{arch}}", "{{current_version}}"] {
+            assert!(url.contains(var), "the endpoint must carry {var}: {url}");
+        }
+        let pubkey = updater["pubkey"]
+            .as_str()
+            .expect("plugins.updater.pubkey is a string");
+        assert!(
+            pubkey.starts_with("dW50cnVzdGVkIGNvbW1lbnQ6") && pubkey.len() > 100,
+            "the pubkey is the base64 of a minisign public key file: {pubkey:?}"
+        );
+    }
+
     /// `pnpm tauri:dev` merges `tauri.dev.conf.json` over `tauri.conf.json` so the dev instance
     /// gets its own identifier — its own single-instance socket, and from M3 its own data dir —
     /// and can run beside a bundled build (M2c Step 0, case (f): with one identifier the dev

@@ -13,7 +13,7 @@ paths:
 - **Four sites sit outside both exemptions, by decision** (ONDAR.md, "M3a: the station directory,
   built" and the defect B review): `stream.rs::build_client`'s `.build().expect(..)`,
   `bounded_storage()`'s `NonZeroUsize::new(BUFFER_BYTES).expect(..)` (a non-zero const),
-  `ondar-stations`' `ReqwestTransport::new`, and `lib.rs`'s `.build(generate_context!()).expect(..)`,
+  `ondar-stations`' `ReqwestTransport::new`, and `lib.rs`'s `.build(context).expect(..)` (the context from `generate_context!()`),
   which runs once at startup before a command or the audio thread exists. Describe a new one the
   same way or handle the error. Clippy does not enforce the rule (`clippy.toml` sets only `msrv`);
   source-scan tests do, each with its own scope: `hls/` refuses the six panic shapes, `adts.rs`
