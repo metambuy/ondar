@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -3638,6 +3638,8 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    2026-10-07** (`29f1582`, `m4b-done`); **M4c merged 2026-10-12**
    (`d431568`, `m4c-done`) — see "M4c: built and measured". **M4 complete.**
    **M6-lite comes next, before M5** (decided 2026-10-12) — see "M6-lite before M5".
+   **M6-lite released 2026-10-14** (v0.1.0, Cloud release `01M4XF0DQR6APGTGZ0V2DKZEC2`); exit
+   pending testers. Merged 2026-10-16 (`cb6610f`); no tag until the exit — see "Release 0.1.0".
 5. **M5 — Spectrum + EQ UI, tray animation, polish.**
 6. **M6 — Signing, notarisation, DMG.**
 

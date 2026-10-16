@@ -304,6 +304,9 @@ music; CPU stays low (single digits) while playing; the tray icon animates while
 **Goal:** a thin slice end to end: a signed, notarised build of `main` in 3–5 testers' hands before
 M5, whose items they rank. Decided 2026-10-12 (ONDAR.md, "M6-lite before M5").
 
+**M6-lite released 2026-10-14** (v0.1.0, Cloud release `01M4XF0DQR6APGTGZ0V2DKZEC2`); exit pending
+testers. Merged to `main` 2026-10-16; the tag `m6lite-done` waits for the exit below.
+
 - [x] Developer ID signing and **notarisation**, locally first (secrets never committed or logged)
       (local; second Mac pending) — signed 2026-10-13, notarisation accepted and the `.app` stapled
       2026-10-14; 0.1.0 released 2026-10-14 with the DMG notarised and stapled too (ONDAR.md,

@@ -2,10 +2,11 @@
 
 macOS menu bar radio player. Tauri v2 + Rust core. See `ONDAR.md` for the project document.
 
-## Status: M1 to M4 done, `m4c-done`
+## Status: M1 to M4 done (`m4c-done`); 0.1.0 released to testers
 
-M1 (scaffold + audio engine) and M2 (tray + NSPanel popover, merged 2026-09-21 at `m2d-done`) are
-done. M2d added the two height states: an Expand/Collapse control in
+M1 (scaffold + audio engine), M2 (tray + NSPanel popover, merged 2026-09-21 at `m2d-done`), M3
+(stations, `defect-b-done`) and M4 (the drawn map, `m4c-done`) are done. 0.1.0, signed and
+notarised with the in-app updater, was released to testers on 2026-10-14 (`docs/testers/`). M2d added the two height states: an Expand/Collapse control in
 the popover, the expanded height capped to the display the tray icon is on (598 pt on a 640 pt
 display, 720 pt where it fits), resized and repositioned in one frame change after the page has
 committed the new layout. The M1 bench window retired at M2c into the popover;
