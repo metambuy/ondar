@@ -132,6 +132,10 @@ The principles behind these: ONDAR.md, "Principle: …" sections.
   with one `gh run watch --exit-status` on the run for the sha captured at push time; green → the
   next commit; red or no run → stop and report the run URL. `gh auth status` first in a session.
 - **Decisions go to ONDAR.md**, not only the chat.
+- **Buy before build.** Before a new module, Step 0 names the crates and OS facilities checked,
+  each with name, version, what it covers, what it misses against our use, and why not, written
+  before the first line of code. "Learning value beats speed" is a decision invoked by name in
+  that entry, never the default. Reasons expire: date them (ONDAR.md, "Buy before build").
 - **Verify before applying.** A block you are handed, a documented approach, a crate's API
   (docs.rs or the source): check it against the code first, and if it is wrong, stop and say so.
   Decline to write a justification you cannot stand behind.

@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -3917,6 +3917,38 @@ transform's slope, the arithmetic, and the intent of the test, none of which a f
 comparison sees. Every test above would have passed that audit throughout. This gap is recorded
 rather than assumed closed.
 
+## Buy before build (rule adopted 2026-10-16)
+
+Before a new module, Step 0 names the crates and OS facilities checked (name, version, covers,
+misses against our use, why not), written before the first line of code. "Learning value beats
+speed" (see "Why it exists") is a decision invoked by name in that entry, never the default. Date
+the reason: two of the three recorded crate defects below were fixed upstream within a month of
+each other, and nothing in the tree noticed.
+
+The audit of the hand-written modules against what a crate or macOS already provides, read-only on
+`45e9772`: `_handover/audit/buy-before-build-2026-10-16.md` (the per-module paragraphs, the sources
+read, and the smaller items). Its verdicts:
+
+| Module | Candidate (version 2026-10-16) | What a swap would drop | Verdict |
+|---|---|---|---|
+| HLS media-playlist parser | `m3u8-rs` 6.0.1, `hls_m3u8` 0.7.0 | the refresh planner, D1, the terminal refusals, `NotHls`; m3u8-rs #80 (comma in `EXTINF`) still open | keep |
+| `AdtsReader` | Symphonia's ADTS reader: 0.5.5 locked via rodio 0.22.2; rodio 0.23.0 still pins 0.5.5; **0.6.1 syncs `FFF9`, reads the CRC, checks a second header** | the 16 KiB realign-or-pass-through (never refuses), three chained headers; the false-MP3-marker probe order unverified on 0.6 | **partial, post-M5**: when rodio ships on Symphonia 0.6, replay the S4 census bodies, then shrink or drop |
+| `IcyReader` | `icy-metadata` 0.6.0 | lossy titles, the S2 boundary test; adds `http`, `tracing`, `urlencoding` | keep (the buy at M1; no defect to fix now) |
+| `ClockedReader` / `Arrivals` | none; consumes `stream-download`'s `on_progress` (the buy) | defect B's bound | keep |
+| `RateLimit` | `tracing-throttle` 0.4.4; `EnvFilter` | the one-target key (signatures pass every distinct line), the first line as evidence | keep |
+| LAEA | `proj4rs` 0.2.1 (2026-10-09) — **the Q5 defect is fixed**: 0.2.0's `laea.rs:318` k' on the first term only, now `y * (…)`, diffed | the no-geometry-crate, no-panic-shape runtime; `None` at the antipode; the helpers either way | keep; `laea.rs:1-2`'s reason is dated, rewrite it in M5's first commit |
+| Simplification | `geo` 0.33.1 `Simplify`/`SimplifyVwPreserve` — already bought | `tune` to the measured ≤ 0.25 pt, `exact`, the O(n) `is_simple`, the hybrid (P4) | keep |
+| Station gathering | `geo` `Dbscan`/`KMeans`, `supercluster` 3.0.8, `petal-clustering` 0.14.0 | Q4's rule (non-transitive 10 km, densest first, lowest uuid), `tests/dots.rs`'s pinned counts; `geo` is refused in the runtime crate | keep |
+| EQ soft clip | none for one function (`fundsp` 0.23.0 is a graph; AudioUnit sits outside rodio) | the measured curve and its closed-form inverse; one divide in the callback | keep |
+| SRV + fallbacks | `hickory-resolver` 0.26.3 — already bought; no RFC 2782 helper in it | the measured `de1`, `all.api` | keep |
+| Panel placement | `tauri-plugin-positioner` 2.4.0 | the mixed-scale fix (649 pt off, measured) | keep |
+| Map resource format | `postcard` 1.1.3 / `bincode` 3.0.0 (tables), `zstd` 0.14.2 (blobs) | the bounded no-panic loader; zstd is a C build for 2.7 MB read once | partial (tables), only with a v4 format, post-M5 |
+| Client retry, cache migrations, `clip.rs` | `backon` 1.6.0 / `reqwest-retry` 0.9.1; `rusqlite_migration` 2.6.0; geo `BooleanOps` | under the bar or recorded (the budget rule; decision 1; no polygon-boolean crate in the runtime) | keep |
+
+Not duplications, for a later touch: `client.rs::qenc` re-does `RequestBuilder::query` (12 lines);
+`filter.rs::fold` has no Unicode normalisation; `srv.rs` drops the SRV `port`. **No replacement
+starts during the feedback window.**
+
 ## How to work in this project
 
 - **Plan before code.** For anything larger than a bug fix, produce a short plan and wait for
@@ -3927,6 +3959,8 @@ rather than assumed closed.
 - **Verify claims.** Community Tauri crates move fast — check the current version and API
   against docs.rs/GitHub before writing code against them, and say so if reality differs
   from this document. Update "Verified versions" when you do.
+- **Buy before build.** Step 0 names the crates and OS facilities checked before the first line
+  of a new module; see "Buy before build" (2026-10-16).
 - **Keep this document current.** When a decision is made or reversed, update the relevant
   section here rather than burying it in a chat.
 - **Playback acceptance reads speed from a measured ratio, and plays one station past its head
