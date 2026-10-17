@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish = false
 description = "The drawn map for Ondar: spherical LAEA, the bundled resource's format and loader, framing. No Tauri dependency, no network dependency."
 
+[lints]
+workspace = true
+
 [dependencies]
 # Inflate per blob (D1) and the blobs' CRC32 (`flate2::Crc`). Already in the tree (1.1.10, via
 # ondar-audio and png); no new dependency.

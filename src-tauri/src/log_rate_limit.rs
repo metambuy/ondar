@@ -85,7 +85,10 @@ impl<S: Subscriber> Filter<S> for RateLimit {
         // The lock is released before the report is emitted: that emit re-enters the
         // subscriber, and holding the lock across it would deadlock against this same method.
         let (allow, report) = {
-            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut st = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             st.admit(Instant::now())
         };
         if let Some(n) = report {

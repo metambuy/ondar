@@ -46,7 +46,13 @@ pub fn hex32(s: &str) -> Option<[u8; 32]> {
 }
 
 pub fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    use std::fmt::Write as _;
+    b.iter()
+        .fold(String::with_capacity(b.len() * 2), |mut s, x| {
+            // writing to a String cannot fail; the Result is the trait's, not an outcome
+            let _ = write!(s, "{x:02x}");
+            s
+        })
 }
 
 /// Reads `path` and checks it against `pin`: its bytes, or why it is refused.

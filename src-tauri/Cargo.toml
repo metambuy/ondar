@@ -7,12 +7,47 @@ edition = "2024"
 rust-version = "1.91"
 license = "MIT"
 
+# The rules the compiler holds (2026-10-17, "enforce, don't document"; ONDAR.md "Repo tooling").
+# Every member crate opts in with `[lints] workspace = true`; a crate differs only through a
+# crate-root `#![allow]`, a site through `#[allow(lint, reason = "…")]`. The allow-list below is
+# noise for this codebase, one reason each; everything else in `pedantic` is fixed in code.
+[workspace.lints.rust]
+# Allowed, not warned: CI's `-D warnings` would deny it (verified: only `--force-warn` keeps a
+# warning, and Cargo's table cannot say that). Each crate flips to `#![deny(missing_docs)]` in the
+# commit that documents it (docs/BUILD_PLAN.md, M5).
+missing_docs = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# nearly every pure fn; `#[must_use]` on getters buys nothing here
+must_use_candidate = "allow"
+# one error type per crate, documented where it is defined; a per-fn section repeats it
+missing_errors_doc = "allow"
+# a panic that can happen is a defect to fix, not a section to write (.claude/rules/rust.md)
+missing_panics_doc = "allow"
+# the session loop, the HLS task and app setup are sequences; splitting them for a count hides the order
+too_many_lines = "allow"
+# LAEA, clipping and orientation maths use the letters of the formulas they implement
+many_single_char_names = "allow"
+
 [package]
 name = "ondar"
 version = "0.1.0"
 description = "Ondar — macOS menu bar radio player"
 edition.workspace = true
 rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [lib]
 name = "ondar_lib"

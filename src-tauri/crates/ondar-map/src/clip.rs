@@ -97,34 +97,32 @@ pub fn clip_ring(ring: &[[f64; 2]], window: &Rect) -> Vec<[f64; 2]> {
 }
 
 /// Clips a polyline to `window`, as the pieces that lie inside it (each at least two vertices).
+#[allow(
+    clippy::float_cmp,
+    reason = "a clipped endpoint equal to the input vertex is the same point, not a near one"
+)]
 pub fn clip_polyline(line: &[[f64; 2]], window: &Rect) -> Vec<Vec<[f64; 2]>> {
     let mut pieces = Vec::new();
     let mut cur: Vec<[f64; 2]> = Vec::new();
     for w in line.windows(2) {
-        let [a, b] = match *w {
-            [a, b] => [a, b],
-            _ => continue,
-        };
-        match liang_barsky(a, b, window) {
-            Some((p, q)) => {
-                if cur.last() != Some(&p) {
-                    if cur.len() >= 2 {
-                        pieces.push(std::mem::take(&mut cur));
-                    }
-                    cur.clear();
-                    cur.push(p);
-                }
-                cur.push(q);
-                if q != b {
-                    pieces.push(std::mem::take(&mut cur));
-                }
-            }
-            None => {
+        let &[a, b] = w else { continue };
+        if let Some((p, q)) = liang_barsky(a, b, window) {
+            if cur.last() != Some(&p) {
                 if cur.len() >= 2 {
                     pieces.push(std::mem::take(&mut cur));
                 }
                 cur.clear();
+                cur.push(p);
             }
+            cur.push(q);
+            if q != b {
+                pieces.push(std::mem::take(&mut cur));
+            }
+        } else {
+            if cur.len() >= 2 {
+                pieces.push(std::mem::take(&mut cur));
+            }
+            cur.clear();
         }
     }
     if cur.len() >= 2 {
@@ -134,6 +132,10 @@ pub fn clip_polyline(line: &[[f64; 2]], window: &Rect) -> Vec<Vec<[f64; 2]>> {
 }
 
 /// The part of segment `a`–`b` inside `window`, if any.
+#[allow(
+    clippy::float_cmp,
+    reason = "t == 0 and t == 1 are the untouched endpoints by construction"
+)]
 fn liang_barsky(a: [f64; 2], b: [f64; 2], window: &Rect) -> Option<([f64; 2], [f64; 2])> {
     let ([ax, ay], [bx, by]) = (a, b);
     let [x0, y0, x1, y1] = *window;

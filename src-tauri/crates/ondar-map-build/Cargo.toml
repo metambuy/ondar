@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish = false
 description = "Build-time tool: Natural Earth 10m → src-tauri/resources/map/world.ondarmap (M4a). Never part of the app."
 
+[lints]
+workspace = true
+
 [dependencies]
 # The format writer, the LAEA, the codec and the frame rules: one code path with the app.
 ondar-map = { path = "../ondar-map" }

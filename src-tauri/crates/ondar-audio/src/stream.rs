@@ -215,13 +215,20 @@ pub struct OpenedStream {
 /// sites `.claude/rules/rust.md` records). The `expect` is the documented site: `BUFFER_BYTES` is a
 /// non-zero `const`, so it cannot fire.
 pub(crate) fn bounded_storage() -> BoundedStorageProvider<MemoryStorageProvider> {
-    BoundedStorageProvider::new(
-        MemoryStorageProvider,
-        NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer"),
-    )
+    // Evaluated at compile time: a zero `BUFFER_BYTES` fails the build, never the app.
+    #[allow(
+        clippy::expect_used,
+        reason = "const-evaluated; a zero constant is a compile error"
+    )]
+    const BUFFER: NonZeroUsize = NonZeroUsize::new(BUFFER_BYTES).expect("non-zero buffer");
+    BoundedStorageProvider::new(MemoryStorageProvider, BUFFER)
 }
 
 /// Build the one HTTP client the engine uses for its lifetime.
+#[allow(
+    clippy::expect_used,
+    reason = "static configuration; cannot fail at runtime (rust.md's recorded site)"
+)]
 pub fn build_client(user_agent: &str) -> reqwest::Client {
     client_builder(user_agent)
         .build()

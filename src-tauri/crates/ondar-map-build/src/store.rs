@@ -7,8 +7,8 @@
 //!
 //! Coverage (the clamp turned into blobs): a view of country C at scale s uses the coarsest
 //! level ≤ s; its centre is clamped into C's fit rectangle and s into [1.5, fit], so a view at
-//! level k reaches at most (W/2 + 2) × s_max(k) beyond the fit rectangle (+2 pt: the clip
-//! margin), s_max(k) = min(L_{k+1}, max(fit, 1.5)). **The fit, the fit rectangle and so the
+//! level k reaches at most (W/2 + 2) × `s_max(k)` beyond the fit rectangle (+2 pt: the clip
+//! margin), `s_max(k)` = min(L_{k+1}, max(fit, 1.5)). **The fit, the fit rectangle and so the
 //! reach are the band's** (M4b commit 3): the app shows the map at 328 × h for every integer h
 //! in `BAND_FLOOR..=BAND_MAX`, and a shorter band has a coarser fit and a wider reach in km. A
 //! unit is stored at k when a ring's cap meets the bounding rectangle of the reaches over every
@@ -21,6 +21,7 @@
 use crate::borders;
 use crate::geom;
 use crate::simplify;
+use crate::sync::lock;
 use crate::world::{CountryPlan, GroupRole, World};
 use geo::{Coord, Polygon};
 use ondar_map::format::{self, BlobIn, Cap, Layer};
@@ -260,7 +261,7 @@ fn quantise_ring(ring: &[Coord<f64>], level: f64) -> Vec<[i32; 2]> {
 pub(crate) fn job<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     let next = AtomicUsize::new(0);
     let out: Mutex<Vec<(usize, T)>> = Mutex::new(Vec::with_capacity(n));
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
     std::thread::scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {
@@ -270,12 +271,15 @@ pub(crate) fn job<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
                         break;
                     }
                     let r = f(i);
-                    out.lock().unwrap().push((i, r));
+                    lock(&out).push((i, r));
                 }
             });
         }
     });
-    let mut v = out.into_inner().unwrap();
+    // the scoped workers have all joined; a poisoned one has already propagated its panic
+    let mut v = out
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     v.sort_by_key(|(i, _)| *i);
     v.into_iter().map(|(_, r)| r).collect()
 }
@@ -298,7 +302,7 @@ fn sub_plan(ci: usize, p: &CountryPlan, world: &World, admin1: &[crate::ne::Admi
             .flat_map(|a| a.parts.iter().cloned())
             .collect();
         let polys = if a3s.contains(&"ATA") {
-            crate::seam::strip_polar(polys).0
+            crate::seam::strip_polar(&polys).0
         } else {
             polys
         };
@@ -327,6 +331,9 @@ fn sub_plan(ci: usize, p: &CountryPlan, world: &World, admin1: &[crate::ne::Admi
         lines,
     }
 }
+
+/// P2's per (unit, ring, level) stretch table; see the comment at its construction in `build`.
+type Stretch = Vec<Vec<[(f64, String); LADDER.len()]>>;
 
 pub fn build(
     world: &World,
@@ -490,7 +497,6 @@ pub fn build(
     // LAEA and a projection that draws the ring, over its vertices inside that projection's
     // reach: k'(c_storage) × k'(c_drawing) (LAEA's scale factors are k' and 1/k'). An inset
     // draws at its own scale, so its stretch is also × level / inset scale.
-    type Stretch = Vec<Vec<[(f64, String); LADDER.len()]>>;
     let stretch: Stretch = job(nu, |u| {
         let g = &geoms[u];
         let gl = Laea::new(g.lat0, g.lon0);
@@ -933,7 +939,7 @@ mod tests {
                 "AA",
                 vec![square(0.0, 0.0, 150.0), inset_part.clone()],
             )],
-            vec![],
+            &[],
             &[],
         )
         .unwrap();
@@ -957,7 +963,7 @@ mod tests {
                 unit("AAA", "AA", vec![square(0.0, 0.0, 150.0), inset_part]),
                 nb,
             ],
-            vec![],
+            &[],
             &[],
         )
         .unwrap();
@@ -998,7 +1004,7 @@ mod tests {
         use crate::world::tests::{square, unit};
         let w = World::new(
             vec![unit("AAA", "AA", vec![square(0.0, 0.0, 400.0)])],
-            vec![],
+            &[],
             &[],
         )
         .unwrap();
@@ -1046,7 +1052,7 @@ mod tests {
         let dlon = 400.0 / (R_AUTHALIC_KM * std::f64::consts::PI / 180.0);
         let mut nb = unit("BBB", "--", vec![square(0.0, dlon, 1.0)]);
         nb.code = None;
-        let w = World::new(vec![aa, nb], vec![], &[]).unwrap();
+        let w = World::new(vec![aa, nb], &[], &[]).unwrap();
         let p = crate::world::plan_country("AA", &[0], &w, None, &[], false).unwrap();
         assert_eq!(index::top_level(p.fit), 0, "golden: {}", p.fit);
         assert!(
@@ -1118,7 +1124,7 @@ mod tests {
             "AA",
             vec![square(0.0, 0.0, 400.0), square(0.0, 3.0, 0.02), reef],
         );
-        let w = World::new(vec![aa], vec![], &[]).unwrap();
+        let w = World::new(vec![aa], &[], &[]).unwrap();
         let p = crate::world::plan_country("AA", &[0], &w, None, &[], false).unwrap();
         let pins = format::Pins {
             tool_git: "0".repeat(40),
@@ -1206,7 +1212,7 @@ mod tests {
         };
         let aa = || unit("AAA", "AA", vec![rect(0.0, 0.0, 600.0, 300.0, 0.0)]);
         // AA planned alone: the discs, then the neighbour between them
-        let w0 = World::new(vec![aa()], vec![], &[]).unwrap();
+        let w0 = World::new(vec![aa()], &[], &[]).unwrap();
         let p0 = crate::world::plan_country("AA", &[0], &w0, None, &[], false).unwrap();
         assert!((fit_at(&p0, BAND_FLOOR) - 3.0).abs() < 1e-9);
         assert!((p0.fit - 600.0 / 288.0).abs() < 1e-9);
@@ -1224,12 +1230,12 @@ mod tests {
             r_band > 540.0 && r_band < 560.0 && r_bound > 590.0,
             "{r_band} {r_bound}"
         );
-        let d = (r_band + r_bound) / 2.0;
+        let d = f64::midpoint(r_band, r_bound);
         let theta = bound[3].atan2(bound[2]);
         let (nx, ny) = (d * theta.cos(), d * theta.sin());
         let mut nb = unit("BBB", "--", vec![rect(nx, ny, 1.0, 1.0, 0.0)]);
         nb.code = None;
-        let w = World::new(vec![aa(), nb], vec![], &[]).unwrap();
+        let w = World::new(vec![aa(), nb], &[], &[]).unwrap();
         let p = crate::world::plan_country("AA", &[0], &w, None, &[], false).unwrap();
         let pins = format::Pins {
             tool_git: "0".repeat(40),

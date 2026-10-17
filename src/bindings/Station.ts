@@ -14,7 +14,7 @@ name: string,
  */
 url: string, homepage: string, favicon: string, country_code: string, codec: Codec, 
 /**
- * The `codec` string as served (`MP3`, `AAC+`, `AAC,H.264`, `UNKNOWN`, `` …).
+ * The `codec` string as served (`MP3`, `AAC+`, `AAC,H.264`, `UNKNOWN`, the empty string …).
  */
 codec_raw: string, 
 /**

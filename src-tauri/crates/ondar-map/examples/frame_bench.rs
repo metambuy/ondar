@@ -1,11 +1,35 @@
 //! M4a § 7: the load and the frame timings, release build. 10 warm-ups + 100 runs per case,
 //! median / p90, the clock's overhead read first; each case run again in reverse order.
 //!
-//! cargo run -p ondar-map --example frame_bench --release [-- [--band H] [PATH]]
+//! cargo run -p ondar-map --example `frame_bench` --release [-- [--band H] [PATH]]
 //! PATH defaults to src-tauri/resources/map/world.ondarmap (the bundle's copy can be given).
 //! `--band H` frames at `Pane::band(H)` (default 300, `band(300) == GOLDEN`). Per case a `layers`
 //! line counts the frame's vertices and rings per layer (M4c Step 0 (a)); their sum is asserted
 //! equal to `stats.vertices`.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "an example prints its measurements and asserts by panicking"
+)]
 
 use ondar_map::format::Store;
 use ondar_map::frame::{Frame, Lookup, Shape, View};
@@ -24,7 +48,7 @@ fn stats<T>(mut f: impl FnMut() -> T) -> (f64, f64) {
         })
         .collect();
     v.sort_by(f64::total_cmp);
-    ((v[49] + v[50]) / 2.0, v[89])
+    (f64::midpoint(v[49], v[50]), v[89])
 }
 
 /// Vertices and rings of a list of shapes.

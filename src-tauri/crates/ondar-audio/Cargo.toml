@@ -5,6 +5,9 @@ description = "Ondar audio engine: HTTP stream → decode → EQ → output. No 
 edition.workspace = true
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # Playback + Symphonia decoders. `mp4` = AAC codec + ADTS demuxer (most AAC radio), `mp3`, `vorbis`, `flac`.
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "mp4", "vorbis", "flac", "wav"] }

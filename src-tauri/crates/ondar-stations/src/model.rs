@@ -60,7 +60,7 @@ pub struct Station {
     pub favicon: String,
     pub country_code: String,
     pub codec: Codec,
-    /// The `codec` string as served (`MP3`, `AAC+`, `AAC,H.264`, `UNKNOWN`, `` …).
+    /// The `codec` string as served (`MP3`, `AAC+`, `AAC,H.264`, `UNKNOWN`, the empty string …).
     pub codec_raw: String,
     /// `None` when radio-browser reports 0 — unknown, not broken (decided 2026-09-21).
     pub bitrate_kbps: Option<u32>,

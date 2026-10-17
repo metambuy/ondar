@@ -10,6 +10,30 @@
 //! `ONDAR_RETRY_TIMEOUT_SECS`, `ONDAR_PREFETCH_BYTES`. Set `RUST_LOG` (e.g.
 //! `stream_download=debug,ondar_audio=debug`) to see the underlying `stream-download`/engine
 //! logs alongside this binary's own event trace.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "an example prints its measurements and asserts by panicking"
+)]
 
 use std::env;
 use std::sync::atomic::Ordering;
@@ -55,7 +79,7 @@ fn main() {
                 match &ev {
                     EngineEvent::State(s) => println!("[{t:7.3}s] state    {s:?}"),
                     EngineEvent::Started { station_id } => {
-                        println!("[{t:7.3}s] started  station_id={station_id}")
+                        println!("[{t:7.3}s] started  station_id={station_id}");
                     }
                     EngineEvent::StreamInfo(i) => println!("[{t:7.3}s] stream   {i:?}"),
                     EngineEvent::Metadata(m) => println!("[{t:7.3}s] metadata {m:?}"),

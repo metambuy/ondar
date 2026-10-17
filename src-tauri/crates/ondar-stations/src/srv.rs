@@ -28,7 +28,7 @@ pub struct SrvRecord {
 /// Targets are returned without their trailing dot. Empty in → the fallback list.
 pub fn order(mut records: Vec<SrvRecord>) -> Vec<String> {
     if records.is_empty() {
-        return FALLBACK_HOSTS.iter().map(|h| h.to_string()).collect();
+        return FALLBACK_HOSTS.iter().map(ToString::to_string).collect();
     }
     records.sort_by(|a, b| {
         a.priority

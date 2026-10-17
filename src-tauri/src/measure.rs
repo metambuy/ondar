@@ -40,7 +40,7 @@ use crate::tray;
 static START: OnceLock<Instant> = OnceLock::new();
 
 /// The first show of a sequence, after launch: the tray exists by then, and the launcher's
-/// `.meta` capture (NSScreen dump, ~1.5 s) is over.
+/// `.meta` capture (`NSScreen` dump, ~1.5 s) is over.
 const SEQ_START: Duration = Duration::from_secs(8);
 /// Between a show and the hide that follows it, and between that hide and the next show.
 const SEQ_STEP: Duration = Duration::from_secs(1);
@@ -118,16 +118,19 @@ pub fn setup<R: Runtime>(handle: &AppHandle<R>) {
     };
     let cycles = match seq.as_str() {
         "show" => None,
-        s => match s.strip_prefix("shows:").and_then(|n| n.parse::<u32>().ok()) {
-            Some(n) => Some(n),
-            None => {
+        s => {
+            if let Some(n) = s.strip_prefix("shows:").and_then(|n| n.parse::<u32>().ok()) {
+                Some(n)
+            } else {
                 log::warn!("measure[{mode}] ONDAR_MEASURE_SEQ={seq:?} not understood; no sequence");
                 return;
             }
-        },
+        }
     };
     let handle = handle.clone();
-    thread::Builder::new()
+    // The OS refused a thread: the harness cannot run (.claude/rules/rust.md, the exemption).
+    #[allow(clippy::expect_used, reason = "thread spawn; the OS refused a thread")]
+    let _seq = thread::Builder::new()
         .name("ondar-measure-seq".into())
         .spawn(move || run_sequence(&handle, &mode, cycles))
         .expect("spawn measure sequence thread");
@@ -167,7 +170,7 @@ fn run_sequence<R: Runtime>(handle: &AppHandle<R>, mode: &str, cycles: Option<u3
 /// measurement can add a field without a Rust change; `t_page` is the page's `performance.now()`
 /// at the report.
 #[tauri::command]
-pub fn measure_report(kind: String, fields: String, t_page: f64) {
+pub fn measure_report(kind: &str, fields: &str, t_page: f64) {
     let mode = prefix();
     log::info!(
         "measure[{mode}] {kind} {fields} t_page_ms={t_page:.1} t_ms={:.1}",

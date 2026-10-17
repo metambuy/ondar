@@ -216,8 +216,7 @@ pub fn parse(text: &str, base: &Url) -> Result<Playlist, PlaylistError> {
                     let method = attrs
                         .iter()
                         .find(|(k, _)| *k == "METHOD")
-                        .map(|(_, v)| v.as_str())
-                        .unwrap_or("");
+                        .map_or("", |(_, v)| v.as_str());
                     if !method.eq_ignore_ascii_case("NONE") {
                         return Err(PlaylistError::Encrypted);
                     }
@@ -349,7 +348,7 @@ fn is_he_aac(c: &str) -> bool {
     let c = c.trim();
     has_prefix_ignore_case(c, b"mp4a.40.")
         && c.get(8..)
-            .is_some_and(|rest| matches!(rest.parse::<u32>(), Ok(5) | Ok(29)))
+            .is_some_and(|rest| matches!(rest.parse::<u32>(), Ok(5 | 29)))
 }
 
 fn kind(v: &Variant) -> Kind {
@@ -496,13 +495,11 @@ impl Planner {
         let segments: Vec<Segment> = media.segments[from..].to_vec();
         let next_seq = media
             .last_seq()
-            .map(|s| s.saturating_add(1))
-            .unwrap_or(media.media_sequence);
+            .map_or(media.media_sequence, |s| s.saturating_add(1));
         let then_wait = clamp_wait(
             segments
                 .last()
-                .map(|s| s.duration)
-                .unwrap_or(media.target_duration / 2),
+                .map_or(media.target_duration / 2, |s| s.duration),
         );
         let planner = Planner {
             target_duration: media.target_duration,
@@ -562,9 +559,8 @@ impl Planner {
         self.last_new_at = now;
         self.next_seq = segments
             .last()
-            .map(|s| s.seq.saturating_add(1))
-            .unwrap_or(self.next_seq);
-        let then_wait = clamp_wait(segments.last().map(|s| s.duration).unwrap_or(stall));
+            .map_or(self.next_seq, |s| s.seq.saturating_add(1));
+        let then_wait = clamp_wait(segments.last().map_or(stall, |s| s.duration));
         Step::Fetch {
             segments,
             skipped,
@@ -723,7 +719,7 @@ mod tests {
         Variant {
             uri: url(&format!("http://h/{bw}.m3u8")),
             bandwidth: Some(bw),
-            codecs: codecs.map(|c| c.iter().map(|s| s.to_string()).collect()),
+            codecs: codecs.map(|c| c.iter().map(ToString::to_string).collect()),
         }
     }
 

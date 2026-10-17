@@ -293,6 +293,11 @@ edges from earlier milestones get finished.
 - [ ] Sleep timer, and pause/resume on system sleep/wake and on audio device change
 - [ ] Empty, loading, offline and error states designed, not defaulted
 - [ ] Onboarding: first launch picks a country from the system locale and plays a top station
+- [ ] `missing_docs`: each crate M5 touches gets its public items documented and flips to
+      `#![deny(missing_docs)]` at its root in that commit (counts on 2026-10-17: `ondar-map` 144,
+      `ondar-audio` 109, `ondar-stations` 89, the shell 10, `ondar-map-build` 8). The workspace
+      table allows it until then, because CI's `-D warnings` would deny a warn (ONDAR.md, "The
+      rules are the compiler's")
 
 **Exit:** moving a slider changes the sound immediately and silently; the spectrum reacts to
 music; CPU stays low (single digits) while playing; the tray icon animates while playing.

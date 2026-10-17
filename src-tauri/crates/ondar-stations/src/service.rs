@@ -200,12 +200,12 @@ impl StationsService {
     /// `clicks_suppressed`: a measurement run must not vote (M3b F6 review, F1) — the shell
     /// passes whether its harness is active; the recent is still recorded.
     pub fn start(
-        db_path: PathBuf,
+        db_path: &Path,
         user_agent: &str,
         sink: EventSink,
         clicks_suppressed: bool,
     ) -> StationsHandle {
-        match open_or_recover(&db_path) {
+        match open_or_recover(db_path) {
             Ok(cache) => Self::start_with(
                 cache,
                 Arc::new(Client::production(user_agent)),
@@ -227,6 +227,10 @@ impl StationsService {
         clicks_suppressed: bool,
     ) -> StationsHandle {
         let (tx, rx) = mpsc::channel::<Msg>();
+        #[allow(
+            clippy::expect_used,
+            reason = "runtime construction at startup; the service cannot run without it"
+        )]
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -236,7 +240,12 @@ impl StationsService {
         let handle = StationsHandle {
             inner: Handle::Live(tx.clone()),
         };
-        thread::Builder::new()
+        // The OS refused a thread: the service cannot run (.claude/rules/rust.md, the exemption).
+        #[allow(
+            clippy::expect_used,
+            reason = "thread spawn at startup; the service cannot run without it"
+        )]
+        let _db = thread::Builder::new()
             .name("ondar-stations-db".into())
             .spawn(move || {
                 let mut svc = Service {
@@ -355,7 +364,7 @@ fn listed_countries(
 impl Service {
     fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::ListStations(cc, reply) => self.list_stations(cc, reply),
+            Msg::ListStations(cc, reply) => self.list_stations(&cc, reply),
             Msg::CachedStations(cc, reply) => {
                 let stored = self.cache.stations(&cc).map(|o| o.map(|s| s.items));
                 let _ = reply.send(stored.map_err(ServiceError::from));
@@ -411,7 +420,7 @@ impl Service {
                 Err(e) => log::warn!("started station_id={station_id}: recent not recorded: {e}"),
             },
             Ok(None) => {
-                log::info!("started station_id={station_id}: not a directory station; no recent")
+                log::info!("started station_id={station_id}: not a directory station; no recent");
             }
             Err(e) => log::warn!("started station_id={station_id}: lookup failed: {e}"),
         }
@@ -436,15 +445,15 @@ impl Service {
         });
     }
 
-    fn list_stations(&mut self, cc: String, reply: Reply<ListedStations>) {
-        match self.cache.stations(&cc) {
+    fn list_stations(&mut self, cc: &str, reply: Reply<ListedStations>) {
+        match self.cache.stations(cc) {
             Err(e) => {
                 let _ = reply.send(Err(e.into()));
             }
             Ok(Some(stored)) if !stored.expired => {
-                let refreshing = self.pending_stations.contains_key(&cc);
+                let refreshing = self.pending_stations.contains_key(cc);
                 let _ = reply.send(Ok(listed_stations(
-                    &cc,
+                    cc,
                     stored,
                     CacheSource::Cached,
                     refreshing,
@@ -452,10 +461,10 @@ impl Service {
             }
             Ok(Some(stored)) => {
                 // Expired: serve it now, refresh behind it (F5).
-                let _ = reply.send(Ok(listed_stations(&cc, stored, CacheSource::Cached, true)));
-                self.ensure_stations_fetch(&cc, None);
+                let _ = reply.send(Ok(listed_stations(cc, stored, CacheSource::Cached, true)));
+                self.ensure_stations_fetch(cc, None);
             }
-            Ok(None) => self.ensure_stations_fetch(&cc, Some(reply)),
+            Ok(None) => self.ensure_stations_fetch(cc, Some(reply)),
         }
     }
 
@@ -520,7 +529,7 @@ impl Service {
         };
         let outcome = finish(
             waiters,
-            stored.map(|s| listed_stations(&cc, s, CacheSource::Fresh, false)),
+            &stored.map(|s| listed_stations(&cc, s, CacheSource::Fresh, false)),
         );
         (self.sink)(Event::StationsUpdated {
             country_code: cc,
@@ -590,7 +599,7 @@ impl Service {
         };
         let outcome = finish(
             waiters,
-            stored.map(|s| listed_countries(s, CacheSource::Fresh, false)),
+            &stored.map(|s| listed_countries(s, CacheSource::Fresh, false)),
         );
         (self.sink)(Event::CountriesUpdated { outcome });
     }
@@ -603,7 +612,7 @@ impl Service {
 /// another full-country fetch, forever (`/code-review` finding 1). The reply is built from
 /// what was just written (`Stored::just_fetched`), so there is no re-read and no arm in which
 /// a waiter could be dropped without an answer.
-fn finish<T: Clone>(waiters: Vec<Reply<T>>, result: Result<T, ServiceError>) -> RefreshOutcome {
+fn finish<T: Clone>(waiters: Vec<Reply<T>>, result: &Result<T, ServiceError>) -> RefreshOutcome {
     let outcome = if result.is_ok() {
         RefreshOutcome::Landed
     } else {
@@ -1106,8 +1115,7 @@ mod tests {
     fn temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.subsec_nanos());
         let dir = std::env::temp_dir().join(format!(
             "ondar-stations-{tag}-{}-{nanos}",
             std::process::id()
@@ -1129,7 +1137,7 @@ mod tests {
         let db = dir.join("ondar.sqlite");
         std::fs::write(&db, [b"not a database\n".as_slice(); 300].concat()).unwrap();
         let (sink, _) = events();
-        let h = StationsService::start(db.clone(), "Ondar/test", sink, false);
+        let h = StationsService::start(&db, "Ondar/test", sink, false);
         block_on(async {
             let favs = within(2000, h.list_favourites()).await.unwrap();
             assert!(favs.is_empty(), "a fresh database");
@@ -1158,7 +1166,7 @@ mod tests {
         // or a call hangs (the 500 ms guard).
         let db = temp_dir("missing").join("no-such-dir").join("ondar.sqlite");
         let (sink, _) = events();
-        let h = StationsService::start(db, "Ondar/test", sink, false);
+        let h = StationsService::start(&db, "Ondar/test", sink, false);
         block_on(async {
             let err = within(500, h.list_favourites()).await.unwrap_err();
             assert!(matches!(err, ServiceError::Unavailable(_)), "{err:?}");

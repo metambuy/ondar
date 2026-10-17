@@ -213,7 +213,7 @@ impl<R: Read> AdtsReader<R> {
 /// tells the two apart by length). One parser with the HLS walk (review fixes F4, finding 9).
 fn candidate(b: &[u8], p: usize) -> Option<Header> {
     let h = b.get(p..p.checked_add(ADTS_HEADER_LEN)?)?.first_chunk()?;
-    parse_header(h).filter(Header::rate_known)
+    parse_header(*h).filter(Header::rate_known)
 }
 
 /// Three chained headers from `k`?
@@ -384,7 +384,7 @@ mod tests {
             match r.read(&mut buf) {
                 Ok(0) => return out,
                 Ok(n) => out.extend_from_slice(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => panic!("unexpected error: {e}"),
             }
         }
@@ -484,7 +484,7 @@ mod tests {
         let first = id3_end(HEAD_02);
         let mut ninth = first;
         for _ in 0..8 {
-            ninth += frame_length(HEAD_02[ninth..].first_chunk().expect("a header"));
+            ninth += frame_length(*HEAD_02[ninth..].first_chunk().expect("a header"));
         }
         for base in [first, ninth] {
             for off in 1..=6 {
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn t_b3_4_a_mid_frame_start_realigns_to_the_first_whole_header() {
         let first = id3_end(HEAD_02);
-        let second = first + frame_length(HEAD_02[first..].first_chunk().expect("a header"));
+        let second = first + frame_length(*HEAD_02[first..].first_chunk().expect("a header"));
         let mut body = HEAD_02[first + 100..].to_vec();
         body[10..14].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC4]);
         let want = normalise(&HEAD_02[second..]).bytes;

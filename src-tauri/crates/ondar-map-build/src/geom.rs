@@ -27,7 +27,7 @@ pub fn lonlat_centre<'a>(ps: impl IntoIterator<Item = &'a Polygon<f64>>) -> Opti
         }
     }
     let lon = lon_midpoint(&mut lons)?;
-    Some(((lo + hi) / 2.0, lon))
+    Some((f64::midpoint(lo, hi), lon))
 }
 
 pub fn project_ring(r: &LineString<f64>, l: &Laea) -> LineString<f64> {
@@ -86,7 +86,7 @@ pub fn cap<'a>(points: impl IntoIterator<Item = &'a Coord<f64>> + Clone) -> Opti
             (lo.min(c.y), hi.max(c.y))
         });
     let lon = lon_midpoint(&mut lons)?;
-    let lat = (lo + hi) / 2.0;
+    let lat = f64::midpoint(lo, hi);
     let r = points
         .into_iter()
         .map(|c| haversine_km(lon, lat, c.x, c.y))

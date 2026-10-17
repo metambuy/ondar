@@ -57,7 +57,7 @@ pub fn write(
         r,
         "| build time | {seconds:.1} s total (store {:.1} s, {} threads) — the ~10 min budget |",
         built.seconds,
-        std::thread::available_parallelism().map_or(1, |n| n.get())
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
     );
     let _ = writeln!(r);
 
@@ -186,7 +186,7 @@ pub fn write(
             // per unit, the count at each level: `MDV 1/0/4/45/112/0` reads as the Maldives' rings
             // collapsing at 1.5 / 3 / 6 / 12 / 24 / 48 km/pt
             let mut by_unit: std::collections::BTreeMap<String, [usize; LADDER.len()]> =
-                Default::default();
+                std::collections::BTreeMap::new();
             for &(u, k, _) in &built.collapsed {
                 if let Some(slot) = by_unit
                     .entry(String::from_utf8_lossy(&built.units[u].a3).into_owned())
@@ -203,12 +203,12 @@ pub fn write(
                 " By level {}: {}. By unit (counts at each level): {}",
                 LADDER
                     .iter()
-                    .map(|l| l.to_string())
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(" / "),
                 per_level
                     .iter()
-                    .map(|n| n.to_string())
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(" / "),
                 by_unit
@@ -216,7 +216,7 @@ pub fn write(
                     .map(|(a3, ns)| format!(
                         "{a3} {}",
                         ns.iter()
-                            .map(|n| n.to_string())
+                            .map(ToString::to_string)
                             .collect::<Vec<_>>()
                             .join("/")
                     ))
@@ -503,11 +503,10 @@ pub fn write(
             .subs
             .iter()
             .find(|s| inp.plans.get(s.country).map(|p| &p.code) == Some(&b.code))
-            .map(|s| match s.storage {
+            .map_or("-", |s| match s.storage {
                 SubStorage::Borders => "borders",
                 SubStorage::Polygons => "polygons",
-            })
-            .unwrap_or("-");
+            });
         let _ = writeln!(
             r,
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {} | {storage} |",

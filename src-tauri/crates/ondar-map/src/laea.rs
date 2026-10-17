@@ -81,6 +81,10 @@ impl Laea {
 }
 
 /// A longitude into [−180, 180].
+#[allow(
+    clippy::float_cmp,
+    reason = "-180.0 is the exact value rem_euclid returns at the seam"
+)]
 pub fn wrap_lon(lon: f64) -> f64 {
     if (-180.0..=180.0).contains(&lon) {
         return lon;
@@ -122,7 +126,7 @@ pub fn lon_interval(lons: &mut [f64]) -> Option<(f64, f64)> {
 /// The midpoint of `lon_interval`, in [−180, 180].
 pub fn lon_midpoint(lons: &mut [f64]) -> Option<f64> {
     let (w, e) = lon_interval(lons)?;
-    Some(wrap_lon((w + e) / 2.0))
+    Some(wrap_lon(f64::midpoint(w, e)))
 }
 
 #[cfg(test)]
@@ -223,7 +227,7 @@ mod tests {
         assert_eq!(lon_interval(&mut set), Some((-100.0, 200.0)));
         // Russia's shape: the bulk east of 20° and Chukotka west of −170°
         let mid = lon_midpoint(&mut [19.6, 60.0, 120.0, 179.9, -179.9, -169.0]).unwrap();
-        assert!((mid - (19.6 + 191.0) / 2.0).abs() < 1e-9, "{mid}");
+        assert!((mid - f64::midpoint(19.6, 191.0)).abs() < 1e-9, "{mid}");
         assert_eq!(lon_interval(&mut []), None);
     }
 

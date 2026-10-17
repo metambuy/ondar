@@ -58,7 +58,7 @@ pub fn list_recents(cache: &Cache) -> Result<Vec<Station>, CacheError> {
         .conn()
         .prepare("SELECT station_json FROM recents ORDER BY played_at DESC, rowid DESC LIMIT ?1")?;
     let rows = stmt
-        .query_map([RECENTS_CAP as i64], |r| r.get::<_, String>(0))?
+        .query_map([RECENTS_CAP], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows
         .iter()
@@ -79,7 +79,7 @@ pub fn record_played(cache: &Cache, station: &Station) -> Result<(), CacheError>
     )?;
     conn.execute(
         "DELETE FROM recents WHERE uuid NOT IN (SELECT uuid FROM recents ORDER BY played_at DESC, rowid DESC LIMIT ?1)",
-        [RECENTS_CAP as i64],
+        [RECENTS_CAP],
     )?;
     Ok(())
 }

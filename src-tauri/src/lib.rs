@@ -1,11 +1,40 @@
 //! Tauri shell for Ondar. Owns the audio engine and forwards its events to the webview.
 //! No business logic lives here or in the webview; see `crates/ondar-audio`.
+// Tests assert by panicking and print what they measured; the lib build still checks every
+// non-test line against the workspace table (src-tauri/Cargo.toml).
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::float_cmp,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::items_after_statements,
+        clippy::match_wildcard_for_single_variants,
+        clippy::match_wild_err_arm,
+        clippy::case_sensitive_file_extension_comparisons,
+        clippy::format_push_string,
+        clippy::manual_let_else,
+        clippy::similar_names,
+        clippy::unreadable_literal,
+        clippy::unnecessary_wraps,
+        clippy::format_collect,
+        clippy::default_trait_access
+    )
+)]
 
 mod commands;
 mod error;
 mod log_rate_limit;
 mod log_sink;
 mod map;
+mod sync;
 // The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
 #[cfg(debug_assertions)]
 mod measure;
@@ -107,6 +136,12 @@ pub fn run() {
     let user_agent = format!("Ondar/{}", env!("CARGO_PKG_VERSION"));
     let (engine, engine_events) = AudioEngine::start(user_agent.clone());
 
+    // Runs once at startup, before a command or the audio thread exists; the context comes from
+    // `generate_context!()` (.claude/rules/rust.md's recorded site).
+    #[allow(
+        clippy::expect_used,
+        reason = "startup; the app cannot run without the builder"
+    )]
     let app = tauri::Builder::default()
         // Registered first, as the plugin's own docs require: its setup is where a second
         // process notifies the first and exits, before anything else is built. The callback
@@ -192,7 +227,7 @@ pub fn run() {
                         log::warn!("cannot create {}: {e}", data_dir.display());
                     }
                     StationsService::start(
-                        data_dir.join("ondar.sqlite"),
+                        &data_dir.join("ondar.sqlite"),
                         &user_agent,
                         sink,
                         clicks_suppressed(),
@@ -214,7 +249,12 @@ pub fn run() {
             updater::setup(app.handle());
 
             let handle = app.handle().clone();
-            thread::Builder::new()
+            // The OS refused a thread: the app cannot run (.claude/rules/rust.md, the exemption).
+            #[allow(
+                clippy::expect_used,
+                reason = "thread spawn at startup; the app cannot run without it"
+            )]
+            let _events = thread::Builder::new()
                 .name("ondar-events".into())
                 .spawn(move || {
                     // The glyph currently shown; `tray::setup` starts on idle. State events are
@@ -302,7 +342,7 @@ pub fn run() {
 mod tests {
     /// Pins the updater's configuration (M6-lite commit 4b) by executing the rules it stands for:
     /// the bundler makes the updater artefact (`Ondar.app.tar.gz` + `.sig`), the feed is exactly
-    /// one https endpoint on CrabNebula Cloud that carries the three variables the plugin
+    /// one https endpoint on `CrabNebula` Cloud that carries the three variables the plugin
     /// replaces, and the pubkey is a minisign public key (its base64 opens with
     /// `untrusted comment:`, which is `dW50cnVzdGVkIGNvbW1lbnQ6`). Fails on a second or an http
     /// endpoint, a dropped variable, a key pasted in the wrong format, or the artefact flag off.
@@ -361,7 +401,7 @@ mod tests {
             "the dev identifier must be the real one plus `.dev`"
         );
         assert_eq!(
-            dev.as_object().map(|o| o.len()),
+            dev.as_object().map(serde_json::Map::len),
             Some(1),
             "the dev overlay carries the identifier and nothing else, so dev cannot silently \
              diverge from the real config"

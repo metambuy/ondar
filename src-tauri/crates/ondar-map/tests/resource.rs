@@ -3,6 +3,30 @@
 //! mangled, its coverage matches the clamp (D6) at every band (M4b commits 3 and 5), and its
 //! insets are drawn as I1 and C1 require at 178 and 300. `ONDAR_MAP_RESOURCE=<path>` runs them on
 //! another file — a local build, before it ships.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "a test asserts by panicking"
+)]
 
 use ondar_map::format::{Layer, Role, Store};
 use ondar_map::index::{self, CLIP_MARGIN_PT, LAND_TOL_PT, SUB_TOL_PT};
@@ -94,7 +118,7 @@ fn loader_never_panics_on_the_resource() {
     let mut out = Vec::new();
     for _ in 0..400 {
         let mut m = b.to_vec();
-        for _ in 0..1 + next() % 8 {
+        for _ in 0..=(next() % 8) {
             // most of the file is blob bytes behind a CRC; aim half the mutations at the tables
             let i = if next() % 2 == 0 {
                 (next() as usize) % 200_000.min(m.len())
@@ -135,7 +159,7 @@ fn coverage_matches_clamp_at(
             let top = rules::initial_scale(fit);
             // D6's fit rectangle, from its wording rather than `index::fit_rect`: the pane at the
             // widest scale, centred on the frame bbox
-            let (bcx, bcy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            let (bcx, bcy) = (f64::midpoint(x0, x1), f64::midpoint(y0, y1));
             let (fw, fh) = (pane.width / 2.0 * top, pane.height / 2.0 * top);
             let [fx0, fy0, fx1, fy1] = [bcx - fw, bcy - fh, bcx + fw, bcy + fh];
             let l = Laea::new(c.lat0, c.lon0);
@@ -157,7 +181,7 @@ fn coverage_matches_clamp_at(
                         (cx1, cy0),
                         (cx0, cy1),
                         (cx1, cy1),
-                        ((cx0 + cx1) / 2.0, (cy0 + cy1) / 2.0),
+                        (f64::midpoint(cx0, cx1), f64::midpoint(cy0, cy1)),
                     ] {
                         views += 1;
                         let clip = [cx - hw - m, cy - hh - m, cx + hw + m, cy + hh + m];

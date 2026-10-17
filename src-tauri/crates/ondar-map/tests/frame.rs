@@ -1,6 +1,30 @@
 //! M4a § 5's frame tests, on the shipped resource: the golden table, Step 0 reproduced, the
 //! antimeridian, Antarctica, the insets' clearance, R7's lookup, subdivisions by scale, the clamp
 //! (D6) and the index's exactness.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "a test asserts by panicking"
+)]
 
 use ondar_map::format::{Layer, Role, Store};
 use ondar_map::frame::{Frame, Lookup, View};

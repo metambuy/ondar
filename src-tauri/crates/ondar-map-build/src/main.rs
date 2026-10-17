@@ -5,6 +5,39 @@
 //! cargo run -p ondar-map-build --release -- [--input DIR] [--tables DIR]
 //!     [--out FILE] [--report FILE] [--encoding deflate|raw] [--bench]
 //! ```
+// Tests assert by panicking and print what they measured; the lib build still checks every
+// non-test line against the workspace table (src-tauri/Cargo.toml).
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::float_cmp,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        clippy::print_stdout,
+        clippy::items_after_statements,
+        clippy::match_wildcard_for_single_variants,
+        clippy::match_wild_err_arm,
+        clippy::case_sensitive_file_extension_comparisons,
+        clippy::format_push_string,
+        clippy::manual_let_else,
+        clippy::similar_names,
+        clippy::unreadable_literal,
+        clippy::unnecessary_wraps,
+        clippy::format_collect,
+        clippy::default_trait_access
+    )
+)]
+// The same arithmetic as `ondar-map`, on the Natural Earth inputs.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "projection and geometry arithmetic by design"
+)]
+// A CLI, never in the app: stderr is its report channel.
+#![allow(clippy::print_stderr, reason = "a CLI; stderr is its report channel")]
 
 mod bench;
 mod borders;
@@ -15,6 +48,7 @@ mod report;
 mod seam;
 mod simplify;
 mod store;
+mod sync;
 mod tables;
 mod world;
 
@@ -121,10 +155,10 @@ pub fn load(input: &Path) -> Result<Inputs, String> {
     };
     let aliases = tables::aliases(tables::ALIASES_TSV)?;
     let wanted: Vec<&str> = aliases.iter().map(|a| a.gu_a3.as_str()).collect();
-    let admin0 = ne::admin0(layer("admin_0_countries")?)?;
-    let map_units = ne::map_units(layer("admin_0_map_units")?, &wanted)?;
-    let admin1 = ne::admin1(layer("admin_1_states_provinces")?)?;
-    let world = World::new(admin0, map_units, &aliases)?;
+    let admin0 = ne::admin0(&layer("admin_0_countries")?)?;
+    let map_units = ne::map_units(&layer("admin_0_map_units")?, &wanted)?;
+    let admin1 = ne::admin1(&layer("admin_1_states_provinces")?)?;
+    let world = World::new(admin0, &map_units, &aliases)?;
     if world.seam_edges_left > 0 {
         return Err(format!(
             "R9: {} seam edges left after stitching",
@@ -571,7 +605,7 @@ mod args_tests {
     use super::*;
 
     fn parse_strs(a: &[&str]) -> Result<Args, String> {
-        parse(a.iter().map(|s| s.to_string()))
+        parse(a.iter().map(ToString::to_string))
     }
 
     /// An `--allow-*` flag builds past the ship gate, for the tables at a STOP only: with `--out`
@@ -612,7 +646,7 @@ mod input_tests {
     /// override (2.326, the peninsula), AQ pole-centred, MM's subdivisions on at 8.008. Fails
     /// with AQ's pole centre removed.
     #[test]
-    #[ignore]
+    #[ignore = "needs the Natural Earth inputs (scripts/fetch-natural-earth.sh); local only"]
     fn step0_reproduced() {
         let fx = include_str!("../../ondar-map/fixtures/step0-fit.tsv");
         let mut n = 0;
@@ -648,7 +682,7 @@ mod input_tests {
 
     /// R9: the stitched units are AQ, RU and FJ, and no seam edge is left anywhere.
     #[test]
-    #[ignore]
+    #[ignore = "needs the Natural Earth inputs (scripts/fetch-natural-earth.sh); local only"]
     fn stitched_units() {
         let mut s: Vec<&str> = inputs()
             .world
@@ -656,7 +690,7 @@ mod input_tests {
             .iter()
             .map(|(a3, _)| a3.as_str())
             .collect();
-        s.sort();
+        s.sort_unstable();
         assert_eq!(s, ["ATA", "FJI", "RUS"]);
         assert_eq!(inputs().world.seam_edges_left, 0);
     }
@@ -665,7 +699,7 @@ mod input_tests {
     /// within 375 m of admin 0) passes for all 18; the farthest is under 80 m (79 m, US). Fails
     /// with the inside-land filter dropped.
     #[test]
-    #[ignore]
+    #[ignore = "needs the Natural Earth inputs (scripts/fetch-natural-earth.sh); local only"]
     fn the_edge_gate_for_the_18() {
         let i = inputs();
         let b: Vec<borders::CountryBorders> = i
@@ -676,7 +710,7 @@ mod input_tests {
             .collect();
         assert_eq!(b.len(), 18);
         assert!(b.iter().all(|x| x.census.thrice_or_more == 0));
-        assert!(b.iter().all(|x| x.passes()));
+        assert!(b.iter().all(super::borders::CountryBorders::passes));
         let inside = b.iter().map(|x| x.far_inside_worst_km).fold(0.0, f64::max);
         assert!(inside < 0.080, "{inside} km");
     }
@@ -689,7 +723,7 @@ mod input_tests {
     /// the input), and the largest scale within 0.02 of Step 0's bisected fraction — or 0 where
     /// that fraction is under the row's minimum, which Step 0 did not apply. All 33 agree.
     #[test]
-    #[ignore]
+    #[ignore = "needs the Natural Earth inputs (scripts/fetch-natural-earth.sh); local only"]
     fn corner_table_at_161_matches_step0() {
         let i = inputs();
         let t = include_str!("../fixtures/step0-corners-161.tsv");
@@ -759,7 +793,7 @@ mod input_tests {
     /// Determinism: two builds give the same bytes from the end of the header on, and every
     /// blob meets its spec.
     #[test]
-    #[ignore]
+    #[ignore = "needs the Natural Earth inputs (scripts/fetch-natural-earth.sh); local only"]
     fn two_builds_are_identical() {
         let i = inputs();
         let build = || {

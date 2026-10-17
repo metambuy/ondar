@@ -13,6 +13,12 @@
 //!   next frame-boundary check; the getters read a snapshot synchronously. Because gains
 //!   live on the handle rather than in the command stream, they are *not* ordered against
 //!   `play`/`stop` and survive a session change.
+// Tauri commands take `State` and `AppHandle` by value: the `#[tauri::command]` contract, not a
+// choice this module makes.
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command takes State and AppHandle by value"
+)]
 
 use tauri::State;
 

@@ -36,7 +36,7 @@ pub struct Stitch {
 }
 
 /// Antarctica: drop every vertex of the polar run from each ring that reaches the pole.
-pub fn strip_polar(parts: Vec<Polygon<f64>>) -> (Vec<Polygon<f64>>, Stitch) {
+pub fn strip_polar(parts: &[Polygon<f64>]) -> (Vec<Polygon<f64>>, Stitch) {
     let mut st = Stitch {
         parts_in: parts.len(),
         ..Stitch::default()
@@ -190,7 +190,7 @@ mod tests {
         ]);
         let aq = vec![Polygon::new(ring(&v), vec![])];
         assert!(seam_edges(&aq) > 0);
-        let (out, st) = strip_polar(aq);
+        let (out, st) = strip_polar(&aq);
         let r = &out[0].exterior().0;
         assert_eq!(seam_edges(&out), 0);
         assert!(r.iter().all(|c| c.y > -89.99 && !on_seam(c.x)));

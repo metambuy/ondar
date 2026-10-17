@@ -86,6 +86,8 @@ pub fn subscriber(
     )
 }
 
+// The logger is not up yet: these two lines are the only report an unopenable log dir gets.
+#[allow(clippy::print_stderr, reason = "the logger is not up yet")]
 fn open(dir: &Path) -> Option<RollingFileAppender> {
     if let Err(e) = std::fs::create_dir_all(dir) {
         eprintln!("ondar: no log file, cannot create {}: {e}", dir.display());
@@ -109,16 +111,17 @@ fn open(dir: &Path) -> Option<RollingFileAppender> {
 /// The first line of every launch, in both sinks: the version and where the file is. `tracing::`,
 /// not `log::`: it reaches a subscriber without the `LogTracer` bridge, so the test sees it.
 pub fn startup(dir: Option<&Path>) {
-    match dir {
-        Some(d) => tracing::info!(
+    if let Some(d) = dir {
+        tracing::info!(
             "Ondar {} starting; log dir {}",
             env!("CARGO_PKG_VERSION"),
             d.display()
-        ),
-        None => tracing::info!(
+        );
+    } else {
+        tracing::info!(
             "Ondar {} starting; no log dir (no home directory)",
             env!("CARGO_PKG_VERSION")
-        ),
+        );
     }
 }
 
@@ -170,12 +173,12 @@ mod tests {
 
     fn build_and_start(dir: &Path) {
         tracing::subscriber::with_default(subscriber(Some(dir), EnvFilter::new("info")), || {
-            startup(Some(dir))
+            startup(Some(dir));
         });
     }
 
     /// Today's file in `dir`, under either date read around the call (a run across midnight).
-    fn todays_file(dir: &Path, dates: [String; 2]) -> PathBuf {
+    fn todays_file(dir: &Path, dates: &[String; 2]) -> PathBuf {
         dates
             .iter()
             .map(|d| dir.join(format!("ondar.{d}.log")))
@@ -196,7 +199,7 @@ mod tests {
 
         let before = utc_today();
         build_and_start(&dir);
-        let file = todays_file(&dir, [before, utc_today()]);
+        let file = todays_file(&dir, &[before, utc_today()]);
 
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(
@@ -228,7 +231,7 @@ mod tests {
 
         let before = utc_today();
         build_and_start(&dir);
-        todays_file(&dir, [before, utc_today()]);
+        todays_file(&dir, &[before, utc_today()]);
 
         let names = log_files(&dir);
         assert!(names.len() <= KEEP, "{} files kept: {names:?}", names.len());
@@ -253,7 +256,7 @@ mod tests {
             let _enter = span.enter();
             tracing::warn!(target: "stream_download::http", "content length header missing");
         });
-        let file = todays_file(&dir, [before, utc_today()]);
+        let file = todays_file(&dir, &[before, utc_today()]);
 
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(
@@ -291,7 +294,7 @@ mod tests {
             );
             tracing::info!("still writing");
         });
-        let file = todays_file(&dir, [before, utc_today()]);
+        let file = todays_file(&dir, &[before, utc_today()]);
 
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("still writing"), "sink dead: {text:?}");

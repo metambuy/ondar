@@ -115,7 +115,10 @@ impl Bands {
         let hi = f64::from(self.h_max);
         // max then min, never `f64::clamp` (the crate's no-panic rule)
         let h = if h.is_finite() { h.max(lo).min(hi) } else { lo };
-        (h - lo) as usize
+        // `h` is clamped to `[lo, hi]` just above, so the difference is never negative
+        #[allow(clippy::cast_sign_loss, reason = "clamped to [lo, hi] above")]
+        let cell = (h - lo) as usize;
+        cell
     }
 }
 
@@ -477,6 +480,12 @@ fn read_cap(c: &mut Cursor) -> Option<Cap> {
     (cap.lon.is_finite() && cap.lat.is_finite() && cap.radius_km.is_finite()).then_some(cap)
 }
 
+// Outer `None`: the cursor ran out (a truncated table, propagated with `?`); inner `None`: the
+// two bytes were `--`, a part with no code. Two different absences, so two `Option`s.
+#[allow(
+    clippy::option_option,
+    reason = "outer: truncated input; inner: a part without a code"
+)]
 fn read_code(c: &mut Cursor) -> Option<Option<[u8; 2]>> {
     let code = c.array::<2>()?;
     if code == *b"--" {
@@ -1181,7 +1190,7 @@ pub(crate) mod tests {
             let mut oks = 0;
             for _ in 0..10_000 {
                 let mut m = bytes.clone();
-                for _ in 0..1 + rng.next() % 8 {
+                for _ in 0..=(rng.next() % 8) {
                     let i = (rng.next() as usize) % m.len();
                     m[i] = match rng.next() % 4 {
                         0 => 0,

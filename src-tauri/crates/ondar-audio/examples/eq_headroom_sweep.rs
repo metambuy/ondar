@@ -18,6 +18,30 @@
 //!
 //! Everything is measured over the settled tail — the second half of each signal — the same
 //! convention `eq.rs`'s `settled_rms` uses, so the biquads' startup transient is excluded.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "an example prints its measurements and asserts by panicking"
+)]
 
 use std::num::NonZero;
 use std::process::Command;

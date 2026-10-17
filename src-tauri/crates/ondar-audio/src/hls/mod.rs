@@ -143,27 +143,34 @@ impl SourceStream for HlsSource {
     type Params = ();
     type StreamCreationError = HlsSourceError;
 
-    async fn create(_params: ()) -> Result<Self, HlsSourceError> {
-        Err(HlsSourceError(
+    fn create(_params: ()) -> impl Future<Output = Result<Self, HlsSourceError>> + Send {
+        std::future::ready(Err(HlsSourceError(
             "an HlsSource is built by hls::open, not by create".to_string(),
-        ))
+        )))
     }
 
     fn content_length(&self) -> Option<u64> {
         None
     }
 
-    async fn seek_range(&mut self, _start: u64, _end: Option<u64>) -> std::io::Result<()> {
+    fn seek_range(
+        &mut self,
+        _start: u64,
+        _end: Option<u64>,
+    ) -> impl Future<Output = std::io::Result<()>> + Send {
         // Never called: `supports_seek` is false.
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
-    async fn reconnect(&mut self, _current_position: u64) -> std::io::Result<()> {
+    fn reconnect(
+        &mut self,
+        _current_position: u64,
+    ) -> impl Future<Output = std::io::Result<()>> + Send {
         // Reached only if `retry_timeout` elapses with no byte, which `retry_timeout_for` puts
         // above the task's longest legitimate silence. Nothing to reconnect: the task owns the
         // network. Returning Ok lets the download loop keep polling the channel, and lets
         // `on_reconnect` count the event (see `open`).
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
     fn supports_seek(&self) -> bool {
@@ -358,7 +365,7 @@ fn parse_fetched(
         &fetched.text.len().to_string(),
         started,
     );
-    parsed.map_err(playlist_refused)
+    parsed.map_err(|e| playlist_refused(&e))
 }
 
 /// The `kind=` a playlist request logs: what the body turned out to be when it parsed, and
@@ -372,7 +379,7 @@ fn logged_kind(expected: Kind, parsed: Option<&Playlist>) -> Kind {
     }
 }
 
-fn playlist_refused(e: PlaylistError) -> StreamError {
+fn playlist_refused(e: &PlaylistError) -> StreamError {
     // Every variant's Display is the message the page renders (plan §2.5).
     unsupported(e.to_string())
 }
@@ -629,7 +636,7 @@ pub(crate) async fn open(
         media.target_duration,
         media.media_sequence,
         media.last_seq().unwrap_or(media.media_sequence),
-        pending.first().map(|s| s.seq).unwrap_or(0)
+        pending.first().map_or(0, |s| s.seq)
     );
 
     // The first segment decides the container and the session's format. A 404/410 on it is
@@ -818,12 +825,12 @@ impl FetchTask {
                     if skipped > 0 {
                         log::warn!(
                             "hls gap skipped={skipped} next={}",
-                            segments.first().map(|s| s.seq).unwrap_or(0)
+                            segments.first().map_or(0, |s| s.seq)
                         );
                     }
                     let (a, b) = (
-                        segments.first().map(|s| s.seq).unwrap_or(0),
-                        segments.last().map(|s| s.seq).unwrap_or(0),
+                        segments.first().map_or(0, |s| s.seq),
+                        segments.last().map_or(0, |s| s.seq),
                     );
                     log::info!(
                         "hls refresh seq={a}..{b} new={} wait_ms={}",
@@ -851,8 +858,8 @@ impl FetchTask {
     /// Sleep unless the reader goes away first.
     async fn wait(&self, d: Duration) -> Result<(), ()> {
         tokio::select! {
-            _ = self.tx.closed() => Err(()),
-            _ = tokio::time::sleep(d) => Ok(()),
+            () = self.tx.closed() => Err(()),
+            () = tokio::time::sleep(d) => Ok(()),
         }
     }
 
@@ -860,7 +867,7 @@ impl FetchTask {
     /// decides the wait (D2: no session backoff for a transient reload failure).
     async fn reload(&self) -> Result<MediaPlaylist, ()> {
         let fetched = tokio::select! {
-            _ = self.tx.closed() => return Err(()),
+            () = self.tx.closed() => return Err(()),
             r = fetch_playlist(&self.client, &self.media_url, Kind::Media) => r,
         };
         match fetched {
@@ -898,7 +905,7 @@ impl FetchTask {
         let mut not_found_retries = 0u32;
         let bytes = loop {
             let fetched = tokio::select! {
-                _ = self.tx.closed() => return Err(Ended::Closed),
+                () = self.tx.closed() => return Err(Ended::Closed),
                 r = fetch_segment(&self.client, seg, self.target_duration, false) => r,
             };
             let failure = match fetched {
@@ -1166,7 +1173,7 @@ mod tests {
         assert_eq!(logged_kind(Kind::Media, Some(&master)), Kind::Master);
     }
 
-    /// Review finding 3: a `TARGETDURATION` at u64::MAX gives 60 s / 155 s, not a panic. Fails
+    /// Review finding 3: a `TARGETDURATION` at `u64::MAX` gives 60 s / 155 s, not a panic. Fails
     /// with `Duration * 2` on the raw value, as it was ("overflow when multiplying duration by
     /// scalar"). The timeouts are computed on the same bounded TD the planner uses, so the
     /// largest is 60 s + 90 s + 5 s.

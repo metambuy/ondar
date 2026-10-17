@@ -31,11 +31,7 @@ pub struct World {
 
 impl World {
     /// Admin 0 then the S4 map units (in `aliases.tsv` order), every unit on the seam stitched.
-    pub fn new(
-        admin0: Vec<Unit>,
-        map_units: Vec<Unit>,
-        aliases: &[Alias],
-    ) -> Result<World, String> {
+    pub fn new(admin0: Vec<Unit>, map_units: &[Unit], aliases: &[Alias]) -> Result<World, String> {
         let mut units = admin0;
         for a in aliases {
             let mu = map_units.iter().find(|u| u.a3 == a.gu_a3).ok_or(format!(
@@ -53,7 +49,7 @@ impl World {
         let mut stitched = Vec::new();
         for u in &mut units {
             if u.a3 == "ATA" {
-                let (parts, st) = seam::strip_polar(std::mem::take(&mut u.parts));
+                let (parts, st) = seam::strip_polar(&u.parts);
                 u.parts = parts;
                 stitched.push((u.a3.clone(), st));
             } else if seam::seam_edges(&u.parts) > 0 {
@@ -177,7 +173,10 @@ fn land_at(bbox: [f64; 4], land_km: &[Vec<[f64; 2]>], h: u32) -> Vec<Vec<[f64; 2
     let pane = Pane::band(h);
     let fit = rules::fit_scale(bbox[2] - bbox[0], bbox[3] - bbox[1], &pane).unwrap_or(1.0);
     let s0 = rules::initial_scale(fit);
-    let (cx, cy) = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0);
+    let (cx, cy) = (
+        f64::midpoint(bbox[0], bbox[2]),
+        f64::midpoint(bbox[1], bbox[3]),
+    );
     let clip_pt = index::clip_rect(&pane);
     land_km
         .iter()
@@ -227,6 +226,8 @@ fn largest_pct(
     if !(1.0..=100.0).contains(&lo) {
         return 0;
     }
+    // range-checked to 1..=100 just above
+    #[allow(clippy::cast_sign_loss, reason = "range-checked to 1..=100 above")]
     let lo = lo as u8;
     let ok = |pct: u8| {
         placeable(
@@ -484,8 +485,7 @@ impl CountryPlan {
         self.groups
             .iter()
             .find(|g| g.parts.contains(&part))
-            .map(|g| g.role)
-            .unwrap_or(GroupRole::Dropped)
+            .map_or(GroupRole::Dropped, |g| g.role)
     }
 }
 
@@ -677,7 +677,10 @@ pub fn plan_country(
     let pane = Pane::GOLDEN;
     let fit = rules::fit_scale(bbox[2] - bbox[0], bbox[3] - bbox[1], &pane)
         .ok_or(format!("{code}: no fit"))?;
-    let (cx, cy) = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0);
+    let (cx, cy) = (
+        f64::midpoint(bbox[0], bbox[2]),
+        f64::midpoint(bbox[1], bbox[3]),
+    );
     let (uw, uh) = pane.usable();
     let usable = [
         cx - uw / 2.0 * fit,
@@ -765,7 +768,7 @@ pub fn plan_country(
             anchor_km: d,
             lat0: ilat,
             lon0: ilon,
-            centre_km: [(ib[0] + ib[2]) / 2.0, (ib[1] + ib[3]) / 2.0],
+            centre_km: [f64::midpoint(ib[0], ib[2]), f64::midpoint(ib[1], ib[3])],
             size_km: [ib[2] - ib[0], ib[3] - ib[1]],
             scale,
             clearance_pt: f64::NAN,
@@ -991,7 +994,7 @@ pub(crate) mod tests {
                 "AA",
                 vec![rect_km(0.0, 0.0, w, h), square(0.0, 30.0, 30.0)],
             )],
-            vec![],
+            &[],
             &[],
         )
         .unwrap();
@@ -1010,7 +1013,7 @@ pub(crate) mod tests {
                 "AA",
                 vec![rect_km(0.0, 0.0, 600.0, 104.0), square(0.0, 30.0, 30.0)],
             )],
-            vec![],
+            &[],
             &[],
         )
         .unwrap();
@@ -1144,7 +1147,7 @@ pub(crate) mod tests {
                     square(0.0, 40.0, 30.0),
                 ],
             )],
-            vec![],
+            &[],
             &[],
         )
         .unwrap();
@@ -1232,7 +1235,7 @@ pub(crate) mod tests {
     }
 
     fn world_of(units: Vec<Unit>) -> World {
-        World::new(units, vec![], &[]).unwrap()
+        World::new(units, &[], &[]).unwrap()
     }
 
     /// The override's anchor picks its group over the largest part's (whose group then has to be

@@ -114,28 +114,25 @@ impl Iterator for RingSource {
         if self.finished {
             return None;
         }
-        match self.consumer.pop() {
-            Ok(s) => {
-                self.in_underrun = false;
-                Some(s)
+        if let Ok(s) = self.consumer.pop() {
+            self.in_underrun = false;
+            Some(s)
+        } else {
+            if self.consumer.is_abandoned() {
+                self.finished = true;
+                return None;
             }
-            Err(_) => {
-                if self.consumer.is_abandoned() {
-                    self.finished = true;
-                    return None;
-                }
-                if !self.in_underrun {
-                    self.in_underrun = true;
-                    self.stats.underruns.fetch_add(1, Ordering::Relaxed);
-                    // The decode thread only reports `fill` every 1024 samples and may be
-                    // blocked on a stalled network read for many seconds; stamping 0 here
-                    // (from the thread that just observed the ring is actually empty) stops
-                    // the engine's tick() from reading a stale high `fill` and immediately
-                    // "recovering" while nothing has actually changed.
-                    self.stats.fill.store(0, Ordering::Relaxed);
-                }
-                Some(0.0)
+            if !self.in_underrun {
+                self.in_underrun = true;
+                self.stats.underruns.fetch_add(1, Ordering::Relaxed);
+                // The decode thread only reports `fill` every 1024 samples and may be
+                // blocked on a stalled network read for many seconds; stamping 0 here
+                // (from the thread that just observed the ring is actually empty) stops
+                // the engine's tick() from reading a stale high `fill` and immediately
+                // "recovering" while nothing has actually changed.
+                self.stats.fill.store(0, Ordering::Relaxed);
             }
+            Some(0.0)
         }
     }
 }

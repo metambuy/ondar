@@ -102,6 +102,11 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
 /// The tray menu's items. About shows the popover under the icon with the About pane; the view
 /// itself is emitted by `panel::show_at` from the reason. Quit is predefined and never reaches
 /// here.
+// The callback shape `TrayIconBuilder::on_menu_event` takes: `MenuEvent` by value.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri's on_menu_event callback signature"
+)]
 pub fn on_menu_event<R: Runtime>(handle: &AppHandle<R>, event: MenuEvent) {
     if event.id().as_ref() != ABOUT_ID {
         return;

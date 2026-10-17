@@ -39,6 +39,7 @@ use crate::icy::IcyReader;
 use crate::reconnect::{Backoff, STABLE_AFTER};
 use crate::ring::{self, RingSource, RingStats};
 use crate::stream;
+use crate::sync::lock;
 use crate::types::{EngineEvent, ErrorCode, IcyMetadata, PlaybackState, ReconnectInfo, StreamInfo};
 
 /// How often the engine thread wakes up (absent a command) to run [`Engine::tick`].
@@ -79,9 +80,14 @@ impl AudioEngine {
             paused: Arc::new(AtomicBool::new(false)),
         };
         let engine_shared = shared.clone();
-        thread::Builder::new()
+        // The OS refused a thread: the app cannot run (.claude/rules/rust.md, the exemption).
+        #[allow(
+            clippy::expect_used,
+            reason = "thread spawn at startup; the app cannot run without it"
+        )]
+        let _engine = thread::Builder::new()
             .name("ondar-audio".into())
-            .spawn(move || Engine::new(engine_shared, user_agent).run(cmd_rx))
+            .spawn(move || Engine::new(engine_shared, &user_agent).run(&cmd_rx))
             .expect("spawn audio engine thread");
         (AudioEngine { tx: cmd_tx, shared }, ev_rx)
     }
@@ -92,7 +98,7 @@ impl AudioEngine {
     }
 
     pub fn state(&self) -> PlaybackState {
-        self.shared.state.lock().unwrap().clone()
+        lock(&self.shared.state).clone()
     }
 
     pub fn eq(&self) -> &EqGains {
@@ -137,7 +143,7 @@ impl Shared {
     /// session's decode thread carries the old generation and is dropped by [`Self::write_state`]
     /// however late it lands.
     fn begin_session(&self, station_id: String) -> u64 {
-        let mut session = self.session.lock().unwrap();
+        let mut session = lock(&self.session);
         session.generation += 1;
         session.station_id = Some(station_id);
         session.started = false;
@@ -148,7 +154,7 @@ impl Shared {
     /// successor begins (a stale `Playing` between `stop`'s cancel and its `Idle`). A generation
     /// that is already not the live one changes nothing.
     fn end_session(&self, generation: u64) {
-        let mut session = self.session.lock().unwrap();
+        let mut session = lock(&self.session);
         if session.generation == generation {
             session.generation += 1;
         }
@@ -167,12 +173,12 @@ impl Shared {
     /// entry into `Playing` after the first (an underrun's refill, a resume, a reconnect after
     /// playback) finds `started` set.
     fn write_state(&self, from: Option<u64>, s: PlaybackState) {
-        let mut session = self.session.lock().unwrap();
+        let mut session = lock(&self.session);
         if from.is_some_and(|generation| generation != session.generation) {
             return;
         }
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = lock(&self.state);
             if *guard == s {
                 return;
             }
@@ -188,7 +194,7 @@ impl Shared {
     }
 
     fn state(&self) -> PlaybackState {
-        self.state.lock().unwrap().clone()
+        lock(&self.state).clone()
     }
 
     /// A session event (`StreamInfo`, an ICY title, an internal `Reconnect`), sent only while
@@ -202,7 +208,7 @@ impl Shared {
     /// from the audio path (M5's spectrum) must not come through here — it would take the
     /// session lock from the audio callback, which never blocks.
     fn emit_from(&self, generation: u64, ev: EngineEvent) {
-        let session = self.session.lock().unwrap();
+        let session = lock(&self.session);
         if session.generation != generation {
             return;
         }
@@ -249,7 +255,7 @@ impl SessionCtx {
 
     fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
-        if let Some(token) = self.download.lock().unwrap().take() {
+        if let Some(token) = lock(&self.download).take() {
             token.cancel();
         }
         self.shared.end_session(self.generation);
@@ -278,7 +284,7 @@ impl SessionCtx {
     }
 
     fn ring_stats(&self) -> Option<Arc<RingStats>> {
-        self.ring.lock().unwrap().clone()
+        lock(&self.ring).clone()
     }
 }
 
@@ -368,7 +374,11 @@ struct Engine {
 }
 
 impl Engine {
-    fn new(shared: Shared, user_agent: String) -> Self {
+    fn new(shared: Shared, user_agent: &str) -> Self {
+        #[allow(
+            clippy::expect_used,
+            reason = "runtime construction at startup; the app cannot run without it"
+        )]
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("ondar-net")
@@ -377,7 +387,7 @@ impl Engine {
             .expect("tokio runtime");
         Self {
             shared,
-            client: stream::build_client(&user_agent),
+            client: stream::build_client(user_agent),
             rt,
             sink: None,
             player: None,
@@ -400,14 +410,14 @@ impl Engine {
         }
     }
 
-    fn run(mut self, rx: Receiver<AudioCommand>) {
+    fn run(mut self, rx: &Receiver<AudioCommand>) {
         loop {
             match rx.recv_timeout(TICK_INTERVAL) {
                 Ok(AudioCommand::Play {
                     url,
                     station_id,
                     bitrate_kbps,
-                }) => self.play(url, station_id, bitrate_kbps),
+                }) => self.play(&url, &station_id, bitrate_kbps),
                 Ok(AudioCommand::Pause) => self.pause(),
                 Ok(AudioCommand::Resume) => self.resume(),
                 Ok(AudioCommand::Stop) => self.stop(),
@@ -510,11 +520,12 @@ impl Engine {
         while self
             .underrun_ticks
             .front()
-            .is_some_and(|&t| self.tick_index - t >= UNDERRUN_WINDOW_TICKS as u64)
+            .is_some_and(|&t| self.tick_index - t >= u64::from(UNDERRUN_WINDOW_TICKS))
         {
             self.underrun_ticks.pop_front();
         }
-        let recent_underruns = self.underrun_ticks.len() as u32;
+        // saturates: more underruns than u32 holds is already the maximum alarm
+        let recent_underruns = u32::try_from(self.underrun_ticks.len()).unwrap_or(u32::MAX);
 
         let fill = stats.fill.load(Ordering::Relaxed);
         if is_refilled(fill, stats.capacity) && !new_underrun {
@@ -573,8 +584,6 @@ impl Engine {
             Some(Transition::ResumePaused) => {
                 session.set_state(PlaybackState::Paused);
             }
-            // Returned only while probing, which is handled above and returns.
-            Some(Transition::FailBuild(_)) => {}
             Some(Transition::FailSession) => {
                 log::warn!(
                     "watchdog: {} ticks buffering with no decode progress; failing the session",
@@ -585,16 +594,17 @@ impl Engine {
                 // would remove the token that `SessionCtx::cancel` needs — so a watchdog that
                 // failed to work would also have removed the user's Stop as an escape hatch.
                 // `CancellationToken::cancel` takes `&self`; there is no reason to remove it.
-                if let Some(t) = session.download.lock().unwrap().as_ref() {
+                if let Some(t) = lock(&session.download).as_ref() {
                     t.cancel();
                 }
                 // Give the recovery a full window before firing again.
                 self.ticks_since_progress = 0;
             }
-            None => {}
+            // `FailBuild` is returned only while probing, which is handled above and returns.
+            Some(Transition::FailBuild(_)) | None => {}
         }
         if outcome.reset_backoff {
-            session.backoff.lock().unwrap().reset();
+            lock(&session.backoff).reset();
         }
     }
 
@@ -612,7 +622,7 @@ impl Engine {
     /// Nothing inside blocks: the swap, and `CancellationToken::cancel`, which is synchronous.
     /// The log line waits until the lock is dropped.
     fn fail_build(session: &SessionCtx, word: u64, cause: BuildCause, inputs: &BuildInputs) {
-        let download = session.download.lock().unwrap();
+        let download = lock(&session.download);
         if !session.clock.bound(word, cause, inputs) {
             return;
         }
@@ -658,16 +668,16 @@ impl Engine {
         Ok((player, out))
     }
 
-    fn play(&mut self, url: String, station_id: String, bitrate_kbps: Option<u32>) {
+    fn play(&mut self, url: &str, station_id: &str, bitrate_kbps: Option<u32>) {
         self.cancel_session();
-        let generation = self.shared.begin_session(station_id.clone());
+        let generation = self.shared.begin_session(station_id.to_string());
         self.shared.paused.store(false, Ordering::Relaxed);
         if let Some(p) = &self.player {
             // Silence the previous station now, not when the new one has buffered.
             p.clear();
         }
 
-        let url = match stream::parse_url(&url) {
+        let url = match stream::parse_url(url) {
             Ok(u) => u,
             Err(e) => {
                 self.shared.set_state(PlaybackState::Error {
@@ -707,9 +717,14 @@ impl Engine {
         log::info!(
             "play station_id={station_id} bitrate_kbps={bitrate_kbps:?} prefetch_bytes={prefetch}"
         );
-        thread::Builder::new()
+        // The OS refused a thread: the app cannot run (.claude/rules/rust.md, the exemption).
+        #[allow(
+            clippy::expect_used,
+            reason = "thread spawn per play; the OS refused a thread"
+        )]
+        let _decode = thread::Builder::new()
             .name(format!("ondar-decode:{station_id}"))
-            .spawn(move || run_session(ctx, url, client, handle, player, prefetch, output))
+            .spawn(move || run_session(&ctx, &url, &client, &handle, &player, prefetch, output))
             .expect("spawn decode thread");
     }
 
@@ -765,11 +780,11 @@ type BoxedReader = Box<dyn ReadSeek + Send + Sync + 'static>;
 
 /// Body of a decode thread: connect → probe → decode into the ring, reconnecting on drop.
 fn run_session(
-    ctx: SessionCtx,
-    url: reqwest::Url,
-    client: reqwest::Client,
-    rt: tokio::runtime::Handle,
-    player: Arc<Player>,
+    ctx: &SessionCtx,
+    url: &reqwest::Url,
+    client: &reqwest::Client,
+    rt: &tokio::runtime::Handle,
+    player: &Arc<Player>,
     prefetch_bytes: u64,
     output: OutputFormat,
 ) {
@@ -795,7 +810,7 @@ fn run_session(
         // land before `begin_build`, are kept, and no earlier open's stamp is in it.
         let arrivals = Arc::new(Arrivals::new());
         let opened = match rt.block_on(stream::open(
-            &client,
+            client,
             url.clone(),
             ctx.reconnect_count.clone(),
             arrivals.clone(),
@@ -805,7 +820,7 @@ fn run_session(
             Err(e) => {
                 log::warn!("connect failed: {}", e.message);
                 if !retry_or_fail(
-                    &ctx,
+                    ctx,
                     e.code,
                     e.message,
                     e.terminal && !opened_once,
@@ -817,7 +832,7 @@ fn run_session(
             }
         };
         opened_once = true;
-        *ctx.download.lock().unwrap() = Some(opened.reader.cancellation_token());
+        *lock(&ctx.download) = Some(opened.reader.cancellation_token());
         if ctx.cancelled() {
             opened.reader.cancel_download();
             return;
@@ -837,7 +852,7 @@ fn run_session(
         let icy = IcyReader::new(
             ClockedReader::new(opened.reader, ctx.clock.clone(), prefetch_bytes),
             opened.metaint,
-            title_sink(&ctx),
+            title_sink(ctx),
         );
         // The ADTS front end (defect B C4) sits **after** `IcyReader` — a metadata block can hold
         // `FF F9`, and inside the frames it would read as a sync loss — and applies to an HTTP
@@ -886,7 +901,7 @@ fn run_session(
             // The engine's `fail_build` line is the bound's one warning, with the figures it
             // decided on; this is the page's message, for the record (review 2, finding 5).
             log::info!("build bound: {message}");
-            if !retry_or_fail(&ctx, code, message, terminal, None) {
+            if !retry_or_fail(ctx, code, message, terminal, None) {
                 return;
             }
             continue;
@@ -899,7 +914,7 @@ fn run_session(
                     opened.content_type.as_deref().unwrap_or("no content-type")
                 );
                 if !retry_or_fail(
-                    &ctx,
+                    ctx,
                     ErrorCode::UnsupportedFormat,
                     message,
                     !produced_audio,
@@ -911,7 +926,7 @@ fn run_session(
             }
             Err(e) => {
                 log::warn!("decoder failed to open: {e}");
-                if !retry_or_fail(&ctx, ErrorCode::Decode, e.to_string(), false, None) {
+                if !retry_or_fail(ctx, ErrorCode::Decode, e.to_string(), false, None) {
                     return;
                 }
                 continue;
@@ -935,14 +950,14 @@ fn run_session(
         //    and flips `Buffering`/`Playing` in response, since it isn't at risk of blocking
         //    on the network the way this thread is.
         let (mut ring, source) = ring::ring(sample_rate, channels);
-        *ctx.ring.lock().unwrap() = Some(ring.stats.clone());
+        *lock(&ctx.ring) = Some(ring.stats.clone());
         let mut source = Some(source);
         let fill_target = ring.stats.capacity / 2;
         let mut samples_since_check: u32 = 0;
 
         loop {
             if ctx.cancelled() {
-                *ctx.ring.lock().unwrap() = None;
+                *lock(&ctx.ring) = None;
                 return;
             }
             let Some(sample) = decoder.next() else {
@@ -958,7 +973,7 @@ fn run_session(
                     Err(PushError::Full(v)) => {
                         pending = v;
                         if ctx.cancelled() {
-                            *ctx.ring.lock().unwrap() = None;
+                            *lock(&ctx.ring) = None;
                             return;
                         }
                         thread::sleep(Duration::from_millis(5));
@@ -993,14 +1008,14 @@ fn run_session(
 
         // Dropping the producer lets the RingSource drain and end, which empties the Player
         // queue; the reconnect path attaches a fresh source.
-        *ctx.ring.lock().unwrap() = None;
+        *lock(&ctx.ring) = None;
         drop(ring);
         if ctx.cancelled() {
             return;
         }
         log::warn!("stream ended or read failed; reconnecting");
         if !retry_or_fail(
-            &ctx,
+            ctx,
             ErrorCode::Network,
             "the stream ended unexpectedly".to_string(),
             false,
@@ -1146,27 +1161,24 @@ fn retry_or_fail(
         ctx.set_state(PlaybackState::Error { code, message });
         return false;
     }
-    let mut backoff = ctx.backoff.lock().unwrap();
-    match backoff.next() {
-        Some((attempt, delay)) => {
-            drop(backoff);
-            let delay = match retry_after {
-                Some(ra) => delay.max(ra.min(RETRY_AFTER_CAP)),
-                None => delay,
-            };
-            ctx.set_state(PlaybackState::Reconnecting { attempt });
-            ctx.sleep_cancellable(delay);
-            !ctx.cancelled()
-        }
-        None => {
-            let attempts = backoff.attempt();
-            drop(backoff);
-            ctx.set_state(PlaybackState::Error {
-                code,
-                message: format!("{message} (gave up after {attempts} attempts)"),
-            });
-            false
-        }
+    let mut backoff = lock(&ctx.backoff);
+    if let Some((attempt, delay)) = backoff.next() {
+        drop(backoff);
+        let delay = match retry_after {
+            Some(ra) => delay.max(ra.min(RETRY_AFTER_CAP)),
+            None => delay,
+        };
+        ctx.set_state(PlaybackState::Reconnecting { attempt });
+        ctx.sleep_cancellable(delay);
+        !ctx.cancelled()
+    } else {
+        let attempts = backoff.attempt();
+        drop(backoff);
+        ctx.set_state(PlaybackState::Error {
+            code,
+            message: format!("{message} (gave up after {attempts} attempts)"),
+        });
+        false
     }
 }
 
@@ -1205,17 +1217,18 @@ fn is_refilled(fill: usize, capacity: usize) -> bool {
 /// ample margin over a recovery that would have succeeded on its own.
 fn watchdog_ticks() -> u32 {
     let base = (stream::retry_timeout() * 3).max(Duration::from_secs(15));
-    (base.as_millis() / TICK_INTERVAL.as_millis()) as u32
+    // saturates: a watchdog longer than u32 ticks is one that never fires, which is the intent
+    u32::try_from(base.as_millis() / TICK_INTERVAL.as_millis()).unwrap_or(u32::MAX)
 }
 
 /// Progress bookkeeping for the watchdog. Separated from `Engine::tick` so it is testable
 /// without a `Player`.
 fn advance_progress(last_pushed: &mut u64, ticks_since_progress: &mut u32, pushed: u64) {
-    if pushed != *last_pushed {
+    if pushed == *last_pushed {
+        *ticks_since_progress = ticks_since_progress.saturating_add(1);
+    } else {
         *last_pushed = pushed;
         *ticks_since_progress = 0;
-    } else {
-        *ticks_since_progress = ticks_since_progress.saturating_add(1);
     }
 }
 
@@ -1476,7 +1489,7 @@ mod session_tests {
         held: Mutex<Option<PlaybackState>>,
         /// Every `Started` id seen while draining, in order.
         started: Mutex<Vec<String>>,
-        /// Every `StreamInfo` seen while draining, as (sample_rate, channels), in order.
+        /// Every `StreamInfo` seen while draining, as (`sample_rate`, channels), in order.
         infos: Mutex<Vec<(u32, u16)>>,
         /// Every ICY title seen while draining, in order.
         titles: Mutex<Vec<String>>,
@@ -1606,7 +1619,7 @@ mod session_tests {
             let clock = ctx.clock.clone();
             let pause = TICK_INTERVAL + extra.max(tick_delay());
             thread::spawn(move || {
-                let mut engine = Engine::new(session.shared.clone(), "Ondar/test".into());
+                let mut engine = Engine::new(session.shared.clone(), "Ondar/test");
                 engine.session = Some(session);
                 // (the build's seq, ticks that saw it probing with a first byte)
                 let mut probing: Option<(u64, u32)> = None;
@@ -1674,7 +1687,7 @@ mod session_tests {
         );
         thread::Builder::new()
             .name(decode_thread.clone())
-            .spawn(move || run_session(session, url, client, handle, player, prefetch, output))
+            .spawn(move || run_session(&session, &url, &client, &handle, &player, prefetch, output))
             .expect("spawn decode thread");
         Harness {
             ctx,
@@ -1780,7 +1793,7 @@ mod session_tests {
                 .push((info.sample_rate, info.channels)),
             EngineEvent::Reconnect(info) => h.reconnects.lock().unwrap().push(info.count),
             EngineEvent::Metadata(IcyMetadata { title: Some(t) }) => {
-                h.titles.lock().unwrap().push(t)
+                h.titles.lock().unwrap().push(t);
             }
             _ => {}
         }
@@ -2636,7 +2649,7 @@ mod session_tests {
         let (ev_tx, _ev_rx) = mpsc::channel();
         let mut ctx = test_ctx(ev_tx);
         ctx.clock = Arc::new(BuildClock::new(test_bounds(format)));
-        let mut engine = Engine::new(ctx.shared.clone(), "Ondar/test".into());
+        let mut engine = Engine::new(ctx.shared.clone(), "Ondar/test");
         engine.session = Some(ctx.clone());
         let first_byte = |ctx: &SessionCtx| {
             let mut r =
@@ -3159,7 +3172,7 @@ mod session_tests {
     #[test]
     fn t_b2b_a_mid_frame_fff9_start_with_a_false_mp3_marker_realigns() {
         let frames = frames_02();
-        let len1 = crate::hls::segment::frame_length(frames.first_chunk().expect("a header"));
+        let len1 = crate::hls::segment::frame_length(*frames.first_chunk().expect("a header"));
         let mut body = frames.repeat(REPEATS_02)[100..].to_vec();
         body[10..14].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC4]);
         let server = paced_server(vec![answer("audio/aac", body, 0, After::Hold)]);
@@ -3230,7 +3243,7 @@ mod session_tests {
     /// channels at `rate`, then the connection closes.
     fn tone_wav_response(rate: u32, channels: u16, hz: f32, secs: f32) -> Vec<u8> {
         let frames = (rate as f32 * secs) as u32;
-        let block = 2 * channels as u32;
+        let block = 2 * u32::from(channels);
         let data_len = frames * block;
         let mut w = Vec::new();
         w.extend_from_slice(
@@ -3333,7 +3346,7 @@ mod session_tests {
                 sample_rate: std::num::NonZero::new(mixer_rate).expect("rate"),
             };
             thread::spawn(move || {
-                run_session(session, url, client, handle, player, prefetch, output)
+                run_session(&session, &url, &client, &handle, &player, prefetch, output);
             });
             ctx
         };
@@ -3344,13 +3357,12 @@ mod session_tests {
         let wait_started = |station: &str| {
             let deadline = Instant::now() + GUARD;
             loop {
-                let ev = match ev_rx.try_recv() {
-                    Ok(ev) => Ok(ev),
-                    Err(_) => {
-                        poll_delay();
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        ev_rx.recv_timeout(left)
-                    }
+                let ev = if let Ok(ev) = ev_rx.try_recv() {
+                    Ok(ev)
+                } else {
+                    poll_delay();
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    ev_rx.recv_timeout(left)
                 };
                 match ev {
                     Ok(EngineEvent::Started { station_id }) if station_id == station => return,
@@ -3418,7 +3430,7 @@ mod session_tests {
             .windows(2)
             .filter(|p| p[0] < 0.0 && p[1] >= 0.0)
             .count();
-        rising as f64 * rate as f64 / window.len() as f64
+        rising as f64 * f64::from(rate) / window.len() as f64
     }
 
     /// Defect A. The second station's output tone over its source tone is the pulled-to-output
@@ -3563,7 +3575,7 @@ mod session_tests {
         (format!("http://{addr}"), paths)
     }
 
-    /// The offset after every leading ID3v2 tag (the test-side copy; the crate's own lives in
+    /// The offset after every leading `ID3v2` tag (the test-side copy; the crate's own lives in
     /// `hls::segment`, which this block must not name).
     fn test_id3_end(b: &[u8]) -> usize {
         let mut off = 0;
@@ -4412,10 +4424,10 @@ mod started_tests {
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 EngineEvent::StreamInfo(i) => {
-                    out.push(format!("info:{}", i.station_name.unwrap_or_default()))
+                    out.push(format!("info:{}", i.station_name.unwrap_or_default()));
                 }
                 EngineEvent::Metadata(m) => {
-                    out.push(format!("title:{}", m.title.unwrap_or_default()))
+                    out.push(format!("title:{}", m.title.unwrap_or_default()));
                 }
                 _ => {}
             }
@@ -4902,7 +4914,10 @@ mod tick_tests {
             decide(building(S(60), None, S(0), 0)),
             Some(Transition::FailBuild(BuildCause::NoBytes))
         );
-        assert_eq!(decide(building(S(60) - MS(1), None, S(0), 0)), None);
+        assert_eq!(
+            decide(building(S(60).checked_sub(MS(1)).unwrap(), None, S(0), 0)),
+            None
+        );
     }
 
     /// Before the first byte the format bound does not run, however long the build: the
@@ -4933,7 +4948,12 @@ mod tick_tests {
             Some(Transition::FailBuild(BuildCause::Format))
         );
         assert_eq!(
-            decide(building(S(50), Some(S(20) - MS(1)), MS(200), 0)),
+            decide(building(
+                S(50),
+                Some(S(20).checked_sub(MS(1)).unwrap()),
+                MS(200),
+                0
+            )),
             None
         );
     }
@@ -4947,7 +4967,12 @@ mod tick_tests {
             Some(Transition::FailBuild(BuildCause::Starved))
         );
         assert_eq!(
-            decide(building(S(20), Some(S(20)), S(5) - MS(1), 0)),
+            decide(building(
+                S(20),
+                Some(S(20)),
+                S(5).checked_sub(MS(1)).unwrap(),
+                0
+            )),
             Some(Transition::FailBuild(BuildCause::Format))
         );
     }

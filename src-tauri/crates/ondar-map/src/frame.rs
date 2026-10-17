@@ -201,7 +201,7 @@ impl Store {
     pub fn fit(&self, c: usize, pane: &Pane) -> Option<View> {
         let [x0, y0, x1, y1] = self.countries.get(c)?.bbox_km;
         Some(View {
-            centre: [(x0 + x1) / 2.0, (y0 + y1) / 2.0],
+            centre: [f64::midpoint(x0, x1), f64::midpoint(y0, y1)],
             scale: rules::initial_scale(self.fit_scale(c, pane)?),
         })
     }
@@ -420,12 +420,11 @@ impl Store {
                                 .inv(x, y)
                                 .and_then(|(lon, lat)| frame_l.fwd(lon, lat))
                         };
-                        match p {
-                            Some([x, y]) => pts.push(to_pt(x, y)),
-                            None => {
-                                ok = false;
-                                break;
-                            }
+                        if let Some([x, y]) = p {
+                            pts.push(to_pt(x, y));
+                        } else {
+                            ok = false;
+                            break;
                         }
                     }
                     if !ok {
@@ -452,35 +451,32 @@ impl Store {
         // subdivisions, above 8 km/pt for a flagged country (S7), in the frame's LAEA
         if ct.subdivisions && s > rules::SUBDIVISIONS_ABOVE_KM_PER_PT {
             let stol = index::tolerance_km(level, SUB_TOL_PT);
-            match self.blob(c16, k8, Layer::Subdivisions) {
-                Some(b) => {
-                    for (j, cap) in ct.sub_lines.iter().enumerate() {
-                        if use_index && !index::cap_meets(cap, ground, stol) {
-                            out.stats.rings_skipped += 1;
-                            continue;
-                        }
-                        out.stats.rings_considered += 1;
-                        if self.decode(b, j, &mut buf).is_none() {
-                            continue;
-                        }
-                        pts.clear();
-                        pts.extend(buf.iter().map(|&[x, y]| to_pt(x, y)));
-                        for piece in clip::clip_polyline(&pts, &clip_pt) {
-                            out.stats.vertices += piece.len();
-                            out.subdivisions
-                                .push(piece.iter().map(|&[x, y]| [round(x), round(y)]).collect());
-                        }
+            if let Some(b) = self.blob(c16, k8, Layer::Subdivisions) {
+                for (j, cap) in ct.sub_lines.iter().enumerate() {
+                    if use_index && !index::cap_meets(cap, ground, stol) {
+                        out.stats.rings_skipped += 1;
+                        continue;
+                    }
+                    out.stats.rings_considered += 1;
+                    if self.decode(b, j, &mut buf).is_none() {
+                        continue;
+                    }
+                    pts.clear();
+                    pts.extend(buf.iter().map(|&[x, y]| to_pt(x, y)));
+                    for piece in clip::clip_polyline(&pts, &clip_pt) {
+                        out.stats.vertices += piece.len();
+                        out.subdivisions
+                            .push(piece.iter().map(|&[x, y]| [round(x), round(y)]).collect());
                     }
                 }
+            } else {
                 // one missing blob if a line the index admits would be drawn, as for the land
                 // (review 2, finding 5)
-                None => {
-                    let admitted = ct
-                        .sub_lines
-                        .iter()
-                        .any(|cap| !use_index || index::cap_meets(cap, ground, stol));
-                    out.stats.missing_blobs += usize::from(admitted);
-                }
+                let admitted = ct
+                    .sub_lines
+                    .iter()
+                    .any(|cap| !use_index || index::cap_meets(cap, ground, stol));
+                out.stats.missing_blobs += usize::from(admitted);
             }
         }
 

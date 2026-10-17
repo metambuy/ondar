@@ -30,7 +30,7 @@
 //! Orderings: the word is Release/Acquire and publishes the build's reset stamps and its
 //! `Arrivals`; `first_byte_ms` is Release/Acquire; an `Arrivals`' `last_ms` is Release/Acquire
 //! and publishes its `max_gap_ms`, stored before it and loaded after it; the decided figures are
-//! stored before the engine's winning swap (AcqRel) and loaded after the decode thread's losing
+//! stored before the engine's winning swap (`AcqRel`) and loaded after the decode thread's losing
 //! one (Acquire); everything else is `Relaxed`. Any remaining staleness makes a gap longer,
 //! never shorter, so it errs towards `Network`, the non-terminal cause.
 
@@ -43,6 +43,7 @@ use stream_download::{StreamPhase, StreamState};
 use tokio_util::sync::CancellationToken;
 
 use crate::stream;
+use crate::sync::lock;
 
 /// The format bound's floor: how long a build may run on bytes that keep arriving, counted from
 /// the first byte the decoder received. 4× the healthy maximum measured in Step 0 (5.05 s,
@@ -364,7 +365,7 @@ impl BuildClock {
         self.reconnect_base
             .store(reconnect_count, Ordering::Relaxed);
         self.first_byte_ms.store(0, Ordering::Relaxed);
-        *self.arrivals.lock().unwrap() = Some(arrivals);
+        *lock(&self.arrivals) = Some(arrivals);
         let word = pack(
             seq_of(self.word.load(Ordering::Relaxed)).wrapping_add(1),
             phase::PROBING,
@@ -435,10 +436,7 @@ impl BuildClock {
         let first = self.first_byte_ms.load(Ordering::Acquire);
         let start = self.start_ms.load(Ordering::Relaxed);
         let base = self.reconnect_base.load(Ordering::Relaxed);
-        let longest_gap = self
-            .arrivals
-            .lock()
-            .unwrap()
+        let longest_gap = lock(&self.arrivals)
             .as_ref()
             .map_or(Duration::ZERO, |a| a.longest_gap());
         let now = self.now_ms();

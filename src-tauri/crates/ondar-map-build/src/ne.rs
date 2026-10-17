@@ -25,8 +25,9 @@ pub struct Admin1 {
 
 fn text(rec: &Record, field: &str) -> String {
     match rec.get(field) {
-        Some(FieldValue::Character(Some(s))) => s.trim_matches([' ', '\0']).to_string(),
-        Some(FieldValue::Memo(s)) => s.trim_matches([' ', '\0']).to_string(),
+        Some(FieldValue::Character(Some(s)) | FieldValue::Memo(s)) => {
+            s.trim_matches([' ', '\0']).to_string()
+        }
         _ => String::new(),
     }
 }
@@ -70,7 +71,7 @@ fn code_of(s: String) -> Option<String> {
     (s != "-99" && !s.is_empty()).then_some(s)
 }
 
-pub fn admin0(l: Layer) -> Result<Vec<Unit>, String> {
+pub fn admin0(l: &Layer) -> Result<Vec<Unit>, String> {
     Ok(records(l.shp, l.shx, l.dbf)?
         .into_iter()
         .map(|(parts, rec)| Unit {
@@ -84,7 +85,7 @@ pub fn admin0(l: Layer) -> Result<Vec<Unit>, String> {
 }
 
 /// The map units whose `GU_A3` is in `wanted`, in the file's order.
-pub fn map_units(l: Layer, wanted: &[&str]) -> Result<Vec<Unit>, String> {
+pub fn map_units(l: &Layer, wanted: &[&str]) -> Result<Vec<Unit>, String> {
     Ok(records(l.shp, l.shx, l.dbf)?
         .into_iter()
         .filter_map(|(parts, rec)| {
@@ -100,7 +101,7 @@ pub fn map_units(l: Layer, wanted: &[&str]) -> Result<Vec<Unit>, String> {
         .collect())
 }
 
-pub fn admin1(l: Layer) -> Result<Vec<Admin1>, String> {
+pub fn admin1(l: &Layer) -> Result<Vec<Admin1>, String> {
     Ok(records(l.shp, l.shx, l.dbf)?
         .into_iter()
         .map(|(parts, rec)| Admin1 {

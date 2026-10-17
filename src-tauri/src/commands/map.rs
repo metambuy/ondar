@@ -3,6 +3,12 @@
 //! measured path: 14 ms invoke → commit for RU at the real pane) or `null` when nothing changed.
 //! The band comes from the layout Rust last emitted, never from the page. `map_hit` tests a click
 //! against the dots of the newest frame (M4c).
+// Tauri commands take `State` and `AppHandle` by value: the `#[tauri::command]` contract, not a
+// choice this module makes.
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command takes State and AppHandle by value"
+)]
 
 use std::time::Instant;
 
@@ -11,6 +17,7 @@ use tauri::State;
 use crate::error::OndarError;
 use crate::map::{self, Cause, MapHit, MapInputs, MapReply, MapSessionState, MapState, Step};
 use crate::panel::PanelState;
+use crate::sync::lock;
 
 /// The page's selected country changed (or the map pane mounted): the session returns to the
 /// fit and the next pull frames, with no dots. One log line per call — `map select code=…
@@ -28,7 +35,7 @@ pub fn map_select(
     let t0 = Instant::now();
     let store = state.0.get().and_then(|s| s.as_ref());
     let (lookup, ticket) = {
-        let mut s = session.0.lock().unwrap();
+        let mut s = lock(&session.0);
         let lookup = s.select(store, &code);
         (lookup, s.ticket_for(&code))
     };
@@ -43,7 +50,7 @@ pub fn map_select(
 /// `map hit pt=… dot=<i> n=… place=…` or `map hit pt=… miss`.
 #[tauri::command]
 pub fn map_hit(session: State<'_, MapSessionState>, pt: [f32; 2]) -> Option<MapHit> {
-    let hit = session.0.lock().unwrap().hit(pt);
+    let hit = lock(&session.0).hit(pt);
     match &hit {
         Some((i, h)) => log::info!(
             "map hit pt={:.1},{:.1} dot={i} n={} place={:?}",
@@ -73,7 +80,7 @@ pub async fn map_pull(
     let band = panel.layout().band;
     let step = {
         let store = state.0.get().and_then(|s| s.as_ref());
-        session.0.lock().unwrap().pull(store, band, inputs)
+        lock(&session.0).pull(store, band, inputs)
     };
     let t_step = Instant::now();
     let (reply, frame_marks) = match step {
@@ -99,14 +106,14 @@ pub async fn map_pull(
             match computed {
                 Some((r, t_f0, t_f1)) => {
                     let framed = r.frame.as_ref().map_or(&[][..], |f| &f.dots);
-                    session.0.lock().unwrap().framed(r.seq, framed);
+                    lock(&session.0).framed(r.seq, framed);
                     (Some(r), Some((t_f0, t_f1)))
                 }
                 None => (None, None),
             }
         }
     };
-    decomposition::log(&reply, t_entry, t_step, frame_marks);
+    decomposition::log(reply.as_ref(), t_entry, t_step, frame_marks);
     Ok(reply)
 }
 
@@ -124,7 +131,7 @@ mod decomposition {
     use crate::map::MapReply;
 
     pub fn log(
-        reply: &Option<MapReply>,
+        reply: Option<&MapReply>,
         t_entry: Instant,
         t_step: Instant,
         frame: Option<(Instant, Instant)>,
@@ -137,7 +144,7 @@ mod decomposition {
         let t_ret = Instant::now();
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1e3;
         let t_s = Instant::now();
-        let bytes = serde_json::to_string(r).map(|s| s.len()).unwrap_or(0);
+        let bytes = serde_json::to_string(r).map_or(0, |s| s.len());
         let serialize_ms = ms(t_s, Instant::now());
         log::info!(
             "measure[map] pull seq={} step_ms={:.2} hop_in_ms={:.2} frame_ms={:.2} hop_out_ms={:.2} serialize_ms={:.2} bytes={} rust_ms={:.2}",

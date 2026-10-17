@@ -45,7 +45,7 @@ pub fn tolerance_km(level_km_per_pt: f64, tol_pt: f64) -> f64 {
 /// bbox `[min_x, min_y, max_x, max_y]`.
 pub fn fit_rect(bbox: [f64; 4], fit: f64, pane: &Pane) -> [f64; 4] {
     let [x0, y0, x1, y1] = bbox;
-    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let (cx, cy) = (f64::midpoint(x0, x1), f64::midpoint(y0, y1));
     let s = initial_scale(fit);
     let (hw, hh) = (pane.width / 2.0 * s, pane.height / 2.0 * s);
     [cx - hw, cy - hh, cx + hw, cy + hh]
@@ -77,7 +77,7 @@ pub fn reach(bbox: [f64; 4], fit: f64, pane: &Pane, k: usize) -> [f64; 4] {
 /// leaving the projection's disc is the whole sphere.
 pub fn ground_cap(l: &Laea, [x0, y0, x1, y1]: [f64; 4]) -> (f64, f64, f64) {
     let whole = std::f64::consts::PI * R_AUTHALIC_KM;
-    let Some((clon, clat)) = l.inv((x0 + x1) / 2.0, (y0 + y1) / 2.0) else {
+    let Some((clon, clat)) = l.inv(f64::midpoint(x0, x1), f64::midpoint(y0, y1)) else {
         return (0.0, 0.0, whole);
     };
     let mut r = 0f64;

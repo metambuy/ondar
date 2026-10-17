@@ -3,7 +3,7 @@
 //!
 //! Two traps in `tauri-nspanel` shape this file (verified against rev c9ec213, ONDAR.md):
 //! - `Panel::to_window()` is a *conversion back*: it removes the panel from the plugin store,
-//!   clears the delegate and resets the NSWindow's class to `TaoWindow`. It is never called
+//!   clears the delegate and resets the `NSWindow`'s class to `TaoWindow`. It is never called
 //!   here. The Tauri window is reached through `get_webview_window`, which touches neither.
 //! - `PanelBuilder::no_activate(true)` does not make the panel non-activating; it only swaps
 //!   the activation policy around window creation. That is the style mask's job.
@@ -11,6 +11,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::sync::lock;
 use serde::{Deserialize, Serialize};
 use tauri::{
     ActivationPolicy, App, AppHandle, Emitter, LogicalSize, Manager, Position, Rect, Runtime, Size,
@@ -137,7 +138,7 @@ pub const PANEL_CORNER_RADIUS: f64 = 8.0;
 /// Logical **points** between the bottom edge of the tray icon and the top edge of the panel.
 ///
 /// Points, not physical pixels. As pixels it was two different gaps: measured 2026-09-16, the
-/// panel sat 3 pt below the menu bar on the 2x built-in and 6 pt below it on the 1x BenQ, from the
+/// panel sat 3 pt below the menu bar on the 2x built-in and 6 pt below it on the 1x `BenQ`, from the
 /// same constant. A visual spacing has to be in the unit the eye works in.
 ///
 /// 6 pt is the gap the 1x display has been showing, and it is in the range macOS's own status item
@@ -304,7 +305,7 @@ pub enum HideReason {
     ResignKey,
     /// The page reported an Escape `keydown` (`commands::panel::panel_escape`). Escape reaches
     /// the webview's JS in both phases — before and after a click inside the panel — with the
-    /// WKWebView first responder from the moment the panel is shown (M2c Step 0, item 1).
+    /// `WKWebView` first responder from the moment the panel is shown (M2c Step 0, item 1).
     Esc,
     /// The tray icon was right-clicked, so the menu is about to open. Decided 2026-09-16: a
     /// menu over a live popover is not wanted, and opening the menu does not resign the panel's
@@ -361,7 +362,7 @@ pub struct PanelLayout {
     /// Whether this layout arrives on a show — the hidden panel's frame is **already** at
     /// `width`×`height` when the page receives it — or on a resize of the visible panel, whose
     /// frame changes only after the page commits. The page needs the difference: a hidden
-    /// WKWebView fires no `resize`, so on a show it takes `height` as the window's height rather
+    /// `WKWebView` fires no `resize`, so on a show it takes `height` as the window's height rather
     /// than its last `resize` reading (`/code-review` C2, 2026-09-18: a show shorter than the
     /// last visible height committed with the expanded pane in a collapsed popover's first frame).
     pub transition: PanelTransition,
@@ -449,9 +450,9 @@ struct Pending {
     requested_at: Instant,
 }
 
-/// Decision D3's bookkeeping, pure so the four transitions are unit-tested without AppKit:
+/// Decision D3's bookkeeping, pure so the four transitions are unit-tested without `AppKit`:
 /// a request supersedes any pending one; a completion applies only the generation that is
-/// pending, once; a hide cancels. The caller does the AppKit work on what `complete` returns.
+/// pending, once; a hide cancels. The caller does the `AppKit` work on what `complete` returns.
 #[derive(Debug, Default)]
 struct RoundTrip {
     generation: u32,
@@ -523,24 +524,24 @@ impl PanelState {
     /// The layout last emitted. `Mutex::lock().unwrap()`: poison propagation only (`.claude/rules/rust.md`'s
     /// exemption), here and below.
     pub fn layout(&self) -> PanelLayout {
-        self.inner.lock().unwrap().last
+        lock(&self.inner).last
     }
 
     /// The height a show of `view` lays out for (`show_height`).
     fn wanted_height_for(&self, view: PanelView) -> PanelHeight {
-        show_height(view, self.inner.lock().unwrap().chosen)
+        show_height(view, lock(&self.inner).chosen)
     }
 
     /// The height the user last chose with the control.
     fn chosen(&self) -> PanelHeight {
-        self.inner.lock().unwrap().chosen
+        lock(&self.inner).chosen
     }
 
     /// Why a resize request is refused before any layout is computed: `Some("view")` on the About
     /// pane, where there is no control and no resize (the page hides the button; this is the
     /// guard that does not depend on it).
     fn resize_refusal(&self) -> Option<&'static str> {
-        match self.inner.lock().unwrap().last.view {
+        match lock(&self.inner).last.view {
             PanelView::About => Some("view"),
             PanelView::Transport => None,
         }
@@ -555,7 +556,7 @@ impl PanelState {
         kind: LayoutKind,
         rect: Rect,
     ) -> PanelLayout {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = lock(&self.inner);
         let generation =
             inner
                 .round_trip
@@ -590,28 +591,26 @@ impl PanelState {
     /// generation — nothing is pending, no round trip — and return it for emitting, so the control
     /// disables (decision D4) instead of clicking into silent no-ops (`/code-review` C5).
     fn refresh_expandable(&self, expandable: bool) -> PanelLayout {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = lock(&self.inner);
         inner.last.expandable = expandable;
         inner.last
     }
 
     fn set_view(&self, view: PanelView) -> PanelView {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = lock(&self.inner);
         let before = inner.last.view;
         inner.last.view = view;
         before
     }
 
     fn complete(&self, generation: u32) -> Option<Pending> {
-        self.inner.lock().unwrap().round_trip.complete(generation)
+        lock(&self.inner).round_trip.complete(generation)
     }
 
     /// Whether `generation` is the one still pending. Read off the main thread by the fallback,
     /// so a fallback with nothing to do never hops to main.
     fn is_pending(&self, generation: u32) -> bool {
-        self.inner
-            .lock()
-            .unwrap()
+        lock(&self.inner)
             .round_trip
             .pending
             .as_ref()
@@ -619,7 +618,7 @@ impl PanelState {
     }
 
     fn cancel_pending(&self) -> bool {
-        self.inner.lock().unwrap().round_trip.cancel()
+        lock(&self.inner).round_trip.cancel()
     }
 
     /// A show is requested and not yet ordered in: the frame is set, the page has been told, the
@@ -627,7 +626,7 @@ impl PanelState {
     /// `toggle` asks this too (`/code-review` C3).
     fn show_pending(&self) -> bool {
         matches!(
-            self.inner.lock().unwrap().round_trip.pending,
+            lock(&self.inner).round_trip.pending,
             Some(Pending {
                 kind: LayoutKind::Show(_),
                 ..
@@ -649,7 +648,7 @@ pub enum ShowReason {
     /// the frontmost app (Step 0, item 3).
     About,
     /// `RunEvent::Reopen`: `open Ondar.app` or a Finder double-click against a running app.
-    /// LaunchServices starts no second process for those, so the single-instance plugin cannot
+    /// `LaunchServices` starts no second process for those, so the single-instance plugin cannot
     /// see them; they arrive as `applicationShouldHandleReopen:` (Step 0, item 5, cases (a)
     /// and (d) — the latter fires twice, the second show is the logged no-op).
     Reopen,
@@ -787,12 +786,12 @@ fn show_on_main<R: Runtime>(
 /// its fallback fired. Completes the visible change for that layout if — and only if — it is the
 /// one still pending; anything else is a logged no-op. Main thread, as everything here.
 ///
-/// "Commit" is React's DOM commit, not a paint: a hidden WKWebView runs no rendering updates
+/// "Commit" is React's DOM commit, not a paint: a hidden `WKWebView` runs no rendering updates
 /// (M2d Step 0 P3 — no `resize` report until shown, and `requestAnimationFrame` never fires), so
 /// the page reports from an effect. For a show that is sufficient — the first composite after
 /// `orderFrontRegardless` lays out and paints what is committed. For a visible resize it puts the
 /// state-dependent content in place before the frame changes; whether the newly exposed band is
-/// painted in the same frame depends on WebKit having rasterised the page's pre-laid-out overflow,
+/// painted in the same frame depends on `WebKit` having rasterised the page's pre-laid-out overflow,
 /// which is measured at acceptance, not assumed.
 pub fn layout_committed<R: Runtime>(handle: &AppHandle<R>, generation: u32) {
     let on_main = handle.clone();
@@ -859,7 +858,7 @@ fn arm_fallback<R: Runtime>(handle: &AppHandle<R>, generation: u32) {
         handle,
         "ondar-layout-fallback",
         LAYOUT_FALLBACK,
-        what,
+        &what,
         move |handle| {
             if !handle.state::<PanelState>().is_pending(generation) {
                 log::debug!(
@@ -879,7 +878,7 @@ fn after_delay_on_main<R, D, F>(
     handle: &AppHandle<R>,
     thread_name: &str,
     delay: Duration,
-    what: String,
+    what: &str,
     decide: D,
 ) where
     R: Runtime,
@@ -887,7 +886,7 @@ fn after_delay_on_main<R, D, F>(
     F: FnOnce(&AppHandle<R>) + Send + 'static,
 {
     let handle = handle.clone();
-    let what_for_thread = what.clone();
+    let what_for_thread = what.to_string();
     let spawned = std::thread::Builder::new()
         .name(thread_name.into())
         .spawn(move || {
@@ -988,7 +987,7 @@ fn top_left_rect(frame: foundation::NSRect, h0: f64) -> PointRect {
 /// the panel inside its *own* `screen().visibleFrame()` — read `true` on both of Step 0's forced
 /// failures (a 720 pt panel sitting on the wrong display entirely) and cannot catch displacement
 /// onto another display. The tray screen is the `NSScreen` whose frame contains the icon's
-/// centre, the same acceptor test `resolve_display` makes on Tauri's monitors, done here on AppKit's.
+/// centre, the same acceptor test `resolve_display` makes on Tauri's monitors, done here on `AppKit`'s.
 ///
 /// `gap_below_icon` is the sensitive readout for the D1 cap: 6 (`TRAY_GAP`) means `clamp_into` was
 /// idle; 0 means it fired, i.e. the panel did not fit below the icon. A log line, not an
@@ -1046,12 +1045,11 @@ fn log_tray_screen_check<R: Runtime>(panel: &PanelHandle<R>, rect: Rect) {
 /// shape for every site; the spike once logged one `window not found` for two different failure
 /// sites and the log could not say which had fired.
 fn panel_handle<R: Runtime>(handle: &AppHandle<R>, what: &str) -> Option<PanelHandle<R>> {
-    match handle.get_webview_panel(PANEL_LABEL) {
-        Ok(panel) => Some(panel),
-        Err(_) => {
-            log::warn!("panel {what}: panel not in the tauri-nspanel store");
-            None
-        }
+    if let Ok(panel) = handle.get_webview_panel(PANEL_LABEL) {
+        Some(panel)
+    } else {
+        log::warn!("panel {what}: panel not in the tauri-nspanel store");
+        None
     }
 }
 
@@ -1062,12 +1060,11 @@ fn panel_and_window<R: Runtime>(
     what: &str,
 ) -> Option<(PanelHandle<R>, WebviewWindow<R>)> {
     let panel = panel_handle(handle, what)?;
-    match handle.get_webview_window(PANEL_LABEL) {
-        Some(window) => Some((panel, window)),
-        None => {
-            log::warn!("panel {what}: panel has no tauri webview window");
-            None
-        }
+    if let Some(window) = handle.get_webview_window(PANEL_LABEL) {
+        Some((panel, window))
+    } else {
+        log::warn!("panel {what}: panel has no tauri webview window");
+        None
     }
 }
 
@@ -1226,7 +1223,7 @@ fn log_settled_occlusion<R: Runtime>(handle: &AppHandle<R>, panel: &PanelHandle<
         handle,
         "ondar-occlusion",
         OCCLUSION_SETTLE,
-        "occlusion read".into(),
+        "occlusion read",
         move |_| {
             Some(move |_: &AppHandle<R>| {
                 let ns = panel.as_panel();
@@ -1357,7 +1354,7 @@ fn place(
 /// **How point space is entered.** The rect does not carry its own scale, so it has to be
 /// recovered. This divides the icon's centre by each display's scale and keeps the displays whose
 /// point bounds then contain it. The alternative was to read the status item's own
-/// `NSWindow.screen()` through `tray-icon`'s internals: exact, but it needs a live AppKit window
+/// `NSWindow.screen()` through `tray-icon`'s internals: exact, but it needs a live `AppKit` window
 /// and the main thread, which would move this decision out of unit tests entirely, and the bounds
 /// test is needed for clamping anyway. `PointRect::contains` is half-open, so a display seam
 /// belongs to exactly one display.
@@ -1638,14 +1635,14 @@ fn layout_for<R: Runtime>(
 mod tests {
     use super::*;
 
-    /// The three displays as measured on 2026-09-16 with the menu bar on the BenQ, converted to
+    /// The three displays as measured on 2026-09-16 with the menu bar on the `BenQ`, converted to
     /// points by each monitor's own scale (`_handover/m2b-step0-logs/`):
-    ///   BenQ    Tauri (0,0) 1920x1080 scale 1, work_area (0,30) 1920x1050
-    ///   built-in      (486,2160) 3024x1964 scale 2, work_area (486,2224) 3024x1900
+    ///   `BenQ`    Tauri (0,0) 1920x1080 scale 1, `work_area` (0,30) 1920x1050
+    ///   built-in      (486,2160) 3024x1964 scale 2, `work_area` (486,2224) 3024x1900
     /// The built-in's 32 pt inset there is the **notch band**, not a menu bar — it did not host the
     /// menu bar in that arrangement. 2224 + 1900 = 2160 + 1964 reconciles exactly. (An earlier
     /// draft wrote 1898/949, which are the arrangement-2 figures: `/code-review` finding 4.)
-    ///   ANMITE        (3840,880) 1920x1280 scale 2, work_area = full frame
+    ///   ANMITE        (3840,880) 1920x1280 scale 2, `work_area` = full frame
     fn menubar_on_benq() -> Vec<Display> {
         vec![
             Display {
@@ -1667,7 +1664,7 @@ mod tests {
     }
 
     /// The built-in as measured on 2026-09-16 while it hosted the menu bar: Tauri (0,0) 3024x1964
-    /// scale 2, work_area (0,66) 3024x1898 — 33 pt of menu bar and notch band excluded.
+    /// scale 2, `work_area` (0,66) 3024x1898 — 33 pt of menu bar and notch band excluded.
     fn menubar_on_builtin() -> Vec<Display> {
         vec![Display {
             bounds: PointRect::new(0.0, 0.0, 1512.0, 982.0),
@@ -1706,7 +1703,7 @@ mod tests {
     }
 
     /// The ANMITE hosting the menu bar, as measured 2026-09-18 (M2d Step 0 P4, `run-02-p4.log:5,8`):
-    /// Tauri (0,0) 1920x1280 scale 2, work_area (0,60) 1920x1220 → (0,30) 960x610 pt.
+    /// Tauri (0,0) 1920x1280 scale 2, `work_area` (0,60) 1920x1220 → (0,30) 960x610 pt.
     fn menubar_on_anmite() -> Vec<Display> {
         vec![Display {
             bounds: PointRect::new(0.0, 0.0, 960.0, 640.0),
@@ -1762,7 +1759,7 @@ mod tests {
         );
     }
 
-    /// Measured with the menu bar on the 1x BenQ: rect (1286,0) 24x30 landed the panel at
+    /// Measured with the menu bar on the 1x `BenQ`: rect (1286,0) 24x30 landed the panel at
     /// points (1118,36) — `[1118,624 360x420]` in Cocoa, 1080 − (624+420) = 36.
     ///   x = 1286 + 24/2 − 360/2 = 1118    y = 0 + 30 + 6 = 36
     ///
@@ -1806,7 +1803,7 @@ mod tests {
 
     /// A non-zero, **negative** icon `y` — the case the M2a fixture could not reach, since a
     /// menu-bar display is always at the origin. Only a display whose bounds start above the origin
-    /// can host one, so this is the arrangement-2 BenQ (points (−243,−1080) 1920x1080, scale 1)
+    /// can host one, so this is the arrangement-2 `BenQ` (points (−243,−1080) 1920x1080, scale 1)
     /// pretending to host the icon.
     ///   y = −1080 + 30 + 6 = −1044, so a flipped icon-height term (−1080 − 30 − 6 = −1116) or a
     ///   flipped `tray.y` (1080 + 30 + 6 = 1116) both fail here.

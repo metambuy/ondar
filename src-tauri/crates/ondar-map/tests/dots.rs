@@ -6,6 +6,30 @@
 //! `the_geo_slices_normalise_to_their_row_counts` (ondar-stations) pins that every row of each
 //! slice normalises with its `geo` and survives the rank, in this order, so these `Point`s are
 //! the ones the shell builds from the cached list.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "a test asserts by panicking"
+)]
 
 use ondar_map::format::{Role, Store};
 use ondar_map::frame::{Frame, Lookup, View, dot_radius};
@@ -258,7 +282,7 @@ fn radius_formula() {
     let f = fit_frame("BR", 300, &g);
     for d in &f.dots {
         let want = (dot_radius(d.uuids.len()) * 100.0).round() / 100.0;
-        assert_eq!(f64::from(d.r), want as f32 as f64);
+        assert_eq!(f64::from(d.r), f64::from(want as f32));
         assert_eq!(d.n as usize, d.uuids.len());
     }
 }

@@ -4,10 +4,34 @@
 //! (`Store::gather_dots`, the three together, as `map_select`'s task will run it). S3's budget:
 //! each under 10 ms p90. Then the counts, and the fit frame's dot stats at 300 and 178.
 //!
-//! cargo run -p ondar-map --example dots_bench --release [-- PATH]
+//! cargo run -p ondar-map --example `dots_bench` --release [-- PATH]
 //! PATH defaults to src-tauri/resources/map/world.ondarmap. The slices are
 //! `crates/ondar-stations/fixtures/stations-{PT,US,BR,RU}-geo.json`, read as the normaliser reads
 //! them (`stationuuid`, `geo_lat` / `geo_long` with (0, 0) as none, `state` trimmed).
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "an example prints its measurements and asserts by panicking"
+)]
 
 use ondar_map::format::Store;
 use ondar_map::frame::Lookup;
@@ -27,7 +51,7 @@ fn stats<T>(mut f: impl FnMut() -> T) -> (f64, f64) {
         })
         .collect();
     v.sort_by(f64::total_cmp);
-    ((v[49] + v[50]) / 2.0, v[89])
+    (f64::midpoint(v[49], v[50]), v[89])
 }
 
 fn points(cc: &str) -> Vec<Point> {
@@ -60,7 +84,7 @@ fn main() {
     });
     let s = Store::load(&std::fs::read(&path).expect("resource")).expect("load");
     let (clock, _) = stats(Instant::now);
-    println!("resource {path}; clock overhead {:.6} ms", clock);
+    println!("resource {path}; clock overhead {clock:.6} ms");
     println!("stage md / p90 ms, 100 runs after 10 warm-ups");
     for cc in ["PT", "US", "BR", "RU"] {
         let Lookup::Country(c) = s.lookup(cc) else {

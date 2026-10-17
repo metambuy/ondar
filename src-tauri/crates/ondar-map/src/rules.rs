@@ -334,6 +334,10 @@ pub fn seg_dist([px, py]: [f64; 2], [ax, ay]: [f64; 2], [bx, by]: [f64; 2]) -> f
 
 /// Whether the segments `a`–`b` and `c`–`d` intersect; touching (an end on the other segment,
 /// collinear overlap) counts.
+#[allow(
+    clippy::float_cmp,
+    reason = "the orientations compared are exact -1, 0, 1 sentinels"
+)]
 pub fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
     let o = |[px, py]: [f64; 2], [qx, qy]: [f64; 2], [rx, ry]: [f64; 2]| {
         ((qx - px) * (ry - py) - (qy - py) * (rx - px)).signum()

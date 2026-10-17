@@ -44,12 +44,15 @@ impl UpdateState {
     fn take(&self) -> Option<Update> {
         self.pending
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
     }
 
     fn put(&self, update: Update) {
-        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(update);
     }
 }
 

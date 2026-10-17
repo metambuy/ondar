@@ -376,7 +376,7 @@ pub fn for_country(
         .collect();
     let mut polys: Vec<Polygon<f64>> = recs.iter().flat_map(|a| a.parts.iter().cloned()).collect();
     if a3s.contains(&"ATA") {
-        polys = crate::seam::strip_polar(polys).0;
+        polys = crate::seam::strip_polar(&polys).0;
     } else {
         polys = polys
             .iter()
@@ -415,7 +415,7 @@ pub fn for_country(
     let inside: Vec<f64> = far
         .iter()
         .filter(|(a, b, _)| {
-            let mid = geo::Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+            let mid = geo::Point::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
             land.iter().any(|p| geo::Contains::contains(*p, &mid))
         })
         .map(|&(_, _, d)| d)

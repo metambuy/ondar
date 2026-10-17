@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use crate::filter;
 use crate::model::{Country, Station};
 use crate::normalise::{self, ParseError};
+use crate::sync::lock;
+use std::fmt::Write as _;
 
 /// The limit sent with every station-list request. Measured to return the whole country
 /// (US 8 191 rows); a full page at this size is treated as truncation (rule 1).
@@ -39,6 +41,13 @@ pub const TRUNCATION_FACTOR: f64 = 0.5;
 /// stations went broken since is refused as truncated forever (Malta: `station_count` 3, one
 /// working station → `1 < 1.5`). The plan had claimed the rule "cannot fire under 2 000 by
 /// construction"; it could (`/code-review` finding 6, 2026-09-22).
+// A `const`: evaluated at compile time, 1000 / 1.5 = 666; the casts cannot see a runtime value.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "const-evaluated from two constants"
+)]
 pub const RULE3_MIN_EXPECTED: u32 = (SERVER_DEFAULT_LIMIT as f64 / TRUNCATION_FACTOR) as u32;
 /// Search page size (server-side search is for `search_stations` only, G1).
 pub const SEARCH_LIMIT: u32 = 50;
@@ -153,7 +162,8 @@ pub fn check_complete(
     }
     if let Some(e) = expected
         && e >= RULE3_MIN_EXPECTED
-        && (rows as f64) < (e as f64) * TRUNCATION_FACTOR
+        // a row count past u32 is not "far below" anything: the rule does not fire
+        && u32::try_from(rows).is_ok_and(|r| f64::from(r) < f64::from(e) * TRUNCATION_FACTOR)
     {
         return truncated("far below station_count");
     }
@@ -166,9 +176,12 @@ pub fn qenc(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            // writing to a String cannot fail; the Result is the trait's, not an outcome
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -238,6 +251,7 @@ impl Client {
     }
 
     /// The retry budget as a parameter, for the test that drives it with a fake clock.
+    #[must_use]
     pub fn with_budget(mut self, budget: Duration) -> Client {
         self.budget = budget;
         self
@@ -308,7 +322,7 @@ impl Client {
     /// 2). The guard never lives across the await, so the future stays `Send`.
     async fn host(&self, refresh: bool) -> String {
         let known = {
-            let current = self.current.lock().unwrap();
+            let current = lock(&self.current);
             if refresh || current.is_empty() {
                 None
             } else {
@@ -325,7 +339,7 @@ impl Client {
             hosts
         };
         let first = hosts[0].clone();
-        *self.current.lock().unwrap() = hosts;
+        *lock(&self.current) = hosts;
         first
     }
 
@@ -384,6 +398,10 @@ pub struct ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    #[allow(
+        clippy::expect_used,
+        reason = "static configuration; cannot fail at runtime (rust.md's recorded site)"
+    )]
     pub fn new(user_agent: &str) -> ReqwestTransport {
         let client = reqwest::Client::builder()
             .user_agent(user_agent)
@@ -477,7 +495,7 @@ pub(crate) mod fakes {
         pub fn new(list: &[&str]) -> Arc<FakeHosts> {
             Arc::new(FakeHosts {
                 calls: Mutex::new(0),
-                list: list.iter().map(|s| s.to_string()).collect(),
+                list: list.iter().map(ToString::to_string).collect(),
             })
         }
     }

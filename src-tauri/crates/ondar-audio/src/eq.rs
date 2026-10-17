@@ -18,6 +18,13 @@
 //! because the shaper is the last stage and nothing feeds back through it — a NaN arriving
 //! from upstream poisons the biquad state on its way in, which is a separate concern from
 //! anything the shaper does.
+// DSP arithmetic by design: a band index (0..10) to its `u8`, the sample rate to the `f32`
+// the biquad is designed in. The lints stay on in the rest of the crate.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "DSP arithmetic by design"
+)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -55,11 +62,11 @@ pub const SOFT_CLIP_THRESHOLD: f32 = 0.95;
 /// crossing it does not produce an edge.
 #[inline]
 pub fn soft_clip(x: f32) -> f32 {
+    const W: f32 = SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD;
     let a = x.abs();
     if a <= SOFT_CLIP_THRESHOLD {
         return x;
     }
-    const W: f32 = SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD;
     let s = (a - SOFT_CLIP_THRESHOLD) / W;
     // `1.0 - 1.0 / (1.0 + s)`, NOT `s / (1.0 + s)`. They are algebraically identical for every
     // finite `s`, but at `s = inf` the latter is `inf / inf` = NaN where this form gives
@@ -183,6 +190,10 @@ impl<S: Source> Equalizer<S> {
     }
 
     /// Recompute only the bands whose gain changed, keeping filter state (no click).
+    #[allow(
+        clippy::float_cmp,
+        reason = "the applied gain is the exact value we stored; a tolerance would miss a real change"
+    )]
     fn refresh_changed_gains(&mut self) {
         let fs = self.sample_rate.get() as f32;
         let gains = self.gains.snapshot();
@@ -350,15 +361,15 @@ mod tests {
     /// own — the only error left is the f32 quantization of `y`. Undefined at the ceiling,
     /// where the forward curve saturates; the tests assert `peak < SOFT_CLIP_CEILING` first.
     fn implied_pre_shaper(y: f32) -> f64 {
-        let t = SOFT_CLIP_THRESHOLD as f64;
+        let t = f64::from(SOFT_CLIP_THRESHOLD);
         // The f32 subtraction, then widened: the same `W` `soft_clip` itself uses.
-        let w = (SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD) as f64;
-        let a = y.abs() as f64;
+        let w = f64::from(SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD);
+        let a = f64::from(y.abs());
         if a <= t {
-            return y as f64;
+            return f64::from(y);
         }
         let u = (a - t) / w;
-        (t + w * (u / (1.0 - u))).copysign(y as f64)
+        (t + w * (u / (1.0 - u))).copysign(f64::from(y))
     }
 
     /// Settled-tail peak of `out`, asserted under the ceiling, then inverted and asserted within
@@ -391,17 +402,17 @@ mod tests {
         // the ulp for values in [0.5, 1) — scaled by the inverse slope `(1+s)^2`, which is how
         // far an output rounded by one step can move the implied input. Anything larger means
         // one of the two forms is wrong, not that f32 is imprecise.
-        let t = SOFT_CLIP_THRESHOLD as f64;
-        let w = (SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD) as f64;
-        let ulp = f32::EPSILON as f64 / 2.0;
+        let t = f64::from(SOFT_CLIP_THRESHOLD);
+        let w = f64::from(SOFT_CLIP_CEILING - SOFT_CLIP_THRESHOLD);
+        let ulp = f64::from(f32::EPSILON) / 2.0;
         for i in -160_000..=160_000 {
             let x = i as f32 * 1e-4;
             let back = implied_pre_shaper(soft_clip(x));
-            let err = (back - x as f64).abs();
+            let err = (back - f64::from(x)).abs();
             if x.abs() <= SOFT_CLIP_THRESHOLD {
-                assert_eq!(back, x as f64, "not the identity below the knee at {x}");
+                assert_eq!(back, f64::from(x), "not the identity below the knee at {x}");
             } else {
-                let s = (x.abs() as f64 - t) / w;
+                let s = (f64::from(x.abs()) - t) / w;
                 let step = ulp * (1.0 + s).powi(2);
                 assert!(
                     err <= step,

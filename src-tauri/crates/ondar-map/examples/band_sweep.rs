@@ -5,11 +5,35 @@
 //! `missing_blobs` over D6's extreme views (each level's finest and coarsest scale, the fit
 //! rectangle's four corners and centre), which is the slow half.
 //!
-//! cargo run -p ondar-map --example band_sweep --release [-- [--views] [PATH]]
+//! cargo run -p ondar-map --example `band_sweep` --release [-- [--views] [PATH]]
 //!
 //! Output: a summary, then one `band` line per height (`h  missing_fit  missing_views  views
 //! dropped  under_12  under_min  on_controls`) and one `inset` line per inset per height where
 //! it is dropped, under 12 pt, under the minimum or on the controls.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::items_after_statements,
+    clippy::match_wildcard_for_single_variants,
+    clippy::match_wild_err_arm,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::format_push_string,
+    clippy::manual_let_else,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::unnecessary_wraps,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    reason = "an example prints its measurements and asserts by panicking"
+)]
 
 use ondar_map::format::Store;
 use ondar_map::frame::View;
@@ -109,7 +133,7 @@ fn main() {
                 let [x0, y0, x1, y1] = c.bbox_km;
                 let fit_s = ((x1 - x0) / uw).max((y1 - y0) / uh);
                 let top = rules::initial_scale(fit_s);
-                let (bcx, bcy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+                let (bcx, bcy) = (f64::midpoint(x0, x1), f64::midpoint(y0, y1));
                 let (fw, fh) = (pane.width / 2.0 * top, pane.height / 2.0 * top);
                 let [fx0, fy0, fx1, fy1] = [bcx - fw, bcy - fh, bcx + fw, bcy + fh];
                 for (k, &level) in LADDER.iter().enumerate().take(rules::level_for(top) + 1) {
@@ -126,7 +150,7 @@ fn main() {
                             (cx1, cy0),
                             (cx0, cy1),
                             (cx1, cy1),
-                            ((cx0 + cx1) / 2.0, (cy0 + cy1) / 2.0),
+                            (f64::midpoint(cx0, cx1), f64::midpoint(cy0, cy1)),
                         ] {
                             n_views += 1;
                             let v = View {

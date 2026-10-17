@@ -348,6 +348,24 @@ TypeScript, stop — it belongs in Rust.
   (`edition = "2024"`, `max_width = 100` — rustfmt's own defaults, written down so a future
   toolchain change cannot silently restyle the tree) and `src-tauri/clippy.toml`
   (`msrv = "1.91"`, matching the workspace `rust-version`).
+- **The rules are the compiler's (2026-10-17, "enforce, don't document").** `[workspace.lints]`
+  in `src-tauri/Cargo.toml`, every crate `[lints] workspace = true`: `unwrap_used`, `expect_used`,
+  `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`, `print_stderr` and `pedantic` at
+  deny; `unsafe_op_in_unsafe_fn` deny. Measured before the change on rustc 1.98: 849 warnings on
+  non-test code, 2 941 with tests and examples. Five workspace allows, each a reason in the table
+  (`must_use_candidate`, `missing_errors_doc`, `missing_panics_doc`, `too_many_lines`,
+  `many_single_char_names`); `missing_docs` allowed, not warned, because CI's `-D warnings` would
+  deny it (verified: only `--force-warn` keeps a warning, and Cargo's table cannot say that), each
+  crate flipping to `#![deny(missing_docs)]` as M5 documents it (BUILD_PLAN). The cast lints are
+  allowed at the root of the two map crates and `eq.rs` (projection and DSP arithmetic by design);
+  35 sites carry a reasoned `#[allow]` (11 `expect_used`: the four recorded sites and seven thread
+  or runtime spawns; the rest casts, float equality on sentinels, Tauri's by-value command
+  arguments); everything else was fixed in code, `Mutex::lock().unwrap()` through one `sync::lock`
+  per crate. The only non-mechanical edits were the casts outside the allowance (each a named
+  error or saturating path, in the commit body) and the `manual_midpoint` rewrites; the map
+  goldens, `band_sweep --views` and the EQ tests were captured before and after and compared.
+  The source-scan tests stay: each refuses a shape clippy lacks (`unreachable!`, indexing,
+  `.clamp(`). ESLint fences the renderer boundary and `cargo deny` runs in CI (the next entries).
 
 ## Constraints and known tradeoffs
 

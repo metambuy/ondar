@@ -35,6 +35,7 @@ use tauri::{Emitter, Manager};
 use ts_rs::TS;
 
 use crate::panel::MapBand;
+use crate::sync::lock;
 
 /// The loaded store, set once by the loader thread; `None` inside if the load failed.
 #[derive(Clone, Default)]
@@ -332,8 +333,14 @@ impl Session {
     /// A frame was produced for `seq`: its dots become the ones `hit` tests, unless a newer
     /// frame (or a `select`) has already replaced them.
     pub fn framed(&mut self, seq: u32, dots: &[Dot]) {
-        // wrapping order: `seq` is newer iff it is ahead by less than half the range
-        if (seq.wrapping_sub(self.framed_dots.0) as i32) > 0 {
+        // wrapping order: `seq` is newer iff it is ahead by less than half the range; the
+        // reinterpretation of the difference as `i32` is the comparison (RFC 1982 serial numbers)
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "serial-number order: the wrap is the comparison"
+        )]
+        let newer = (seq.wrapping_sub(self.framed_dots.0) as i32) > 0;
+        if newer {
             self.framed_dots = (seq, dots.to_vec());
         }
     }
@@ -480,7 +487,7 @@ where
     };
     let t_gather = Instant::now();
     let (total, located, dots, outside) = (g.total, g.located, g.dots.len(), g.outside);
-    if !session.0.lock().unwrap().install(&ticket, g) {
+    if !lock(&session.0).install(&ticket, g) {
         log::info!("map dots code={code} cause={why} dropped=superseded");
         return false;
     }
@@ -528,7 +535,7 @@ pub fn on_landed(app: &tauri::AppHandle, cc: String) {
         let Some(session) = app.try_state::<MapSessionState>() else {
             return;
         };
-        let ticket = session.0.lock().unwrap().ticket_for(&cc);
+        let ticket = lock(&session.0).ticket_for(&cc);
         if let Some(t) = ticket {
             spawn_gather(app.clone(), t, Cause::Landed, t0);
         }
@@ -859,7 +866,7 @@ mod session_tests {
                 "{code} at {h} (scale {:.2}): no subdivision lines",
                 f.view.scale
             );
-            let pts: usize = f.subdivisions.iter().map(|l| l.len()).sum();
+            let pts: usize = f.subdivisions.iter().map(std::vec::Vec::len).sum();
             eprintln!(
                 "{code} at {h}: level {} subdivisions {} lines, {pts} points; land {} shapes",
                 f.level,
@@ -1070,7 +1077,7 @@ mod dots_tests {
             y: 50.0,
             r,
             n: u32::try_from(uuids.len()).unwrap(),
-            uuids: uuids.iter().map(|u| u.to_string()).collect(),
+            uuids: uuids.iter().map(ToString::to_string).collect(),
             place: "Lisboa".into(),
         }
     }

@@ -1,6 +1,6 @@
 //! Segment normalisation — the pure per-segment half of HLS (plan §2.4).
 //!
-//! An HLS audio segment arrives as one or more ID3v2 tags (timed metadata) followed by ADTS
+//! An HLS audio segment arrives as one or more `ID3v2` tags (timed metadata) followed by ADTS
 //! frames. Concatenated as sent, Step 0 (c) showed the decoder plays them without loss: its
 //! sync scan skips the tags. Two things it cannot do, and this module does:
 //!
@@ -40,7 +40,7 @@ const SAMPLE_RATES: [u32; 13] = [
 // ---------------------------------------------------------------------------------------------
 // ID3
 
-/// The offset of the first byte after every leading ID3v2 tag (zero when there is none). A
+/// The offset of the first byte after every leading `ID3v2` tag (zero when there is none). A
 /// tag is `ID3`, two version bytes, one flags byte and a 28-bit syncsafe size, plus a 10-byte
 /// footer when flag `0x10` is set. Tags are skipped in a loop: station 01 sends two per segment.
 pub fn id3_end(bytes: &[u8]) -> usize {
@@ -127,8 +127,8 @@ pub(crate) struct Header {
     pub sri: u8,
     pub channel_config: u8,
     /// 7, or 9 with a CRC.
-    pub header_len: usize,
-    /// The whole frame, header included; at least `header_len`.
+    pub len: usize,
+    /// The whole frame, header included; at least `len`.
     pub frame_len: usize,
 }
 
@@ -152,18 +152,18 @@ impl Header {
 /// The header in `h`, or `None` if it is not one: no sync with layer 0, or a `frame_length`
 /// below the header's own length. Takes exactly a header's bytes, so no caller can index past a
 /// short slice (the release profile is `panic = "abort"`).
-pub(crate) fn parse_header(h: &[u8; ADTS_HEADER_LEN]) -> Option<Header> {
-    if !is_adts_sync(h) {
+pub(crate) fn parse_header(h: [u8; ADTS_HEADER_LEN]) -> Option<Header> {
+    if !is_adts_sync(&h) {
         return None;
     }
     let protection_absent = h[1] & 0x01 == 1;
-    let header_len = if protection_absent {
+    let len = if protection_absent {
         ADTS_HEADER_LEN
     } else {
         ADTS_HEADER_LEN + ADTS_CRC_LEN
     };
     let frame_len = frame_length(h);
-    if frame_len < header_len {
+    if frame_len < len {
         return None;
     }
     Some(Header {
@@ -171,7 +171,7 @@ pub(crate) fn parse_header(h: &[u8; ADTS_HEADER_LEN]) -> Option<Header> {
         profile: h[2] >> 6,
         sri: (h[2] >> 2) & 0x0F,
         channel_config: ((h[2] & 0x01) << 2) | (h[3] >> 6),
-        header_len,
+        len,
         frame_len,
     })
 }
@@ -220,7 +220,7 @@ pub fn normalise_adts(b: &[u8]) -> Normalised {
             n.partial_dropped = rest.len();
             break;
         };
-        let Some(h) = parse_header(raw) else {
+        let Some(h) = parse_header(*raw) else {
             n.sync_lost = Some((i, rest.len()));
             break;
         };
@@ -243,7 +243,7 @@ pub fn normalise_adts(b: &[u8]) -> Normalised {
             n.crc_dropped += 1;
         }
         out.extend_from_slice(&header);
-        out.extend_from_slice(frame.get(h.header_len..).unwrap_or_default());
+        out.extend_from_slice(frame.get(h.len..).unwrap_or_default());
         n.frames += 1;
         i += h.frame_len;
     }
@@ -253,10 +253,15 @@ pub fn normalise_adts(b: &[u8]) -> Normalised {
 
 /// `frame_length`, 13 bits across bytes 3–5: the whole frame including the header. Takes a
 /// header's bytes exactly, so the precondition is the type (review fixes F4, finding 8).
-pub(crate) fn frame_length(h: &[u8; ADTS_HEADER_LEN]) -> usize {
+pub(crate) fn frame_length(h: [u8; ADTS_HEADER_LEN]) -> usize {
     ((h[3] as usize & 0x03) << 11) | ((h[4] as usize) << 3) | ((h[5] as usize) >> 5)
 }
 
+// Each operand is masked to its field before the cast, so the cast is the byte split itself.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "masked to the field's width before the cast"
+)]
 fn set_frame_length(h: &mut [u8; ADTS_HEADER_LEN], len: usize) {
     h[3] = (h[3] & !0x03) | ((len >> 11) & 0x03) as u8;
     h[4] = ((len >> 3) & 0xFF) as u8;
@@ -354,7 +359,7 @@ pub(crate) mod test_support {
         let len = header_len + payload;
         let mut h = vec![0u8; header_len];
         h[0] = 0xFF;
-        h[1] = 0xF0 | if id { 0x08 } else { 0 } | if crc { 0 } else { 1 };
+        h[1] = 0xF0 | if id { 0x08 } else { 0 } | u8::from(!crc);
         h[2] = (1 << 6) | (sri << 2) | (ch >> 2); // profile LC
         h[3] = ((ch & 0x03) << 6) | ((len >> 11) & 0x03) as u8;
         h[4] = ((len >> 3) & 0xFF) as u8;
@@ -513,10 +518,10 @@ mod tests {
             assert_eq!(n.bytes[i], 0xFF);
             assert_eq!(n.bytes[i + 1], raw[i + 1] & !0x08);
             assert_eq!(
-                &n.bytes[i + 2..i + frame_length(raw[i..].first_chunk().expect("a header"))],
-                &raw[i + 2..i + frame_length(raw[i..].first_chunk().expect("a header"))]
+                &n.bytes[i + 2..i + frame_length(*raw[i..].first_chunk().expect("a header"))],
+                &raw[i + 2..i + frame_length(*raw[i..].first_chunk().expect("a header"))]
             );
-            i += frame_length(raw[i..].first_chunk().expect("a header"));
+            i += frame_length(*raw[i..].first_chunk().expect("a header"));
             headers += 1;
         }
         assert_eq!(headers, 16);
@@ -552,7 +557,7 @@ mod tests {
         assert_eq!(n.crc_dropped, 1);
         assert_eq!(n.bytes.len(), 107);
         assert_eq!(n.bytes[1] & 0x01, 1, "protection_absent set");
-        assert_eq!(frame_length(n.bytes.first_chunk().expect("a header")), 107);
+        assert_eq!(frame_length(*n.bytes.first_chunk().expect("a header")), 107);
         assert_eq!(&n.bytes[7..], &[0x5A; 100][..]);
         assert_eq!(
             n.bytes[2], f[2],
@@ -756,8 +761,8 @@ mod tests {
         let n = normalise_adts(&f);
         assert_eq!((n.frames, n.sync_lost), (1, None));
         assert_eq!(n.format.map(|a| a.to_string()), Some("sri13/2".to_string()));
-        let h = parse_header(f.first_chunk().expect("a header")).expect("parsed");
+        let h = parse_header(*f.first_chunk().expect("a header")).expect("parsed");
         assert!(!h.rate_known());
-        assert_eq!((h.sri, h.frame_len, h.header_len), (13, 57, 7));
+        assert_eq!((h.sri, h.frame_len, h.len), (13, 57, 7));
     }
 }

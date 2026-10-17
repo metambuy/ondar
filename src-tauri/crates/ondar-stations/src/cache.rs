@@ -28,8 +28,8 @@ pub fn system_clock() -> Clock {
     Arc::new(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            // saturates at i64::MAX: a clock past the year 292 billion reads as "far future"
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
     })
 }
 
@@ -157,7 +157,8 @@ impl Cache {
         Stored {
             items,
             fetched_at,
-            age_secs: age as u64,
+            // a negative age (the clock went back) reads as 0, never as a huge number
+            age_secs: u64::try_from(age).unwrap_or(0),
             expired: age >= ttl,
         }
     }
@@ -257,7 +258,7 @@ impl Cache {
                 ins.execute(params![
                     s.uuid,
                     cc,
-                    rank as i64,
+                    rank,
                     s.name,
                     s.url,
                     s.votes,
@@ -268,7 +269,7 @@ impl Cache {
         tx.execute(
             "INSERT INTO station_lists (cc, fetched_at, source_rows, kept_rows) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(cc) DO UPDATE SET fetched_at = excluded.fetched_at, source_rows = excluded.source_rows, kept_rows = excluded.kept_rows",
-            params![cc, fetched_at, source_rows as i64, ranked.len() as i64],
+            params![cc, fetched_at, source_rows, ranked.len()],
         )?;
         tx.commit()?;
         Ok(())
@@ -303,7 +304,7 @@ impl Cache {
             "SELECT station_json FROM stations WHERE name LIKE ?1 ESCAPE '\\' ORDER BY votes DESC LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(params![like, limit as i64], |r| r.get::<_, String>(0))?
+            .query_map(params![like, limit], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows
             .iter()
@@ -331,7 +332,11 @@ pub fn migrate(conn: &mut Connection) -> Result<(), CacheError> {
     for (i, step) in MIGRATIONS.iter().enumerate().skip(current as usize) {
         let tx = conn.transaction()?;
         tx.execute_batch(step)?;
-        tx.pragma_update(None, "user_version", (i + 1) as u32)?;
+        // `MIGRATIONS.len()` is a handful; a count past u32 would be a corrupt table, and
+        // `try_from`'s error ends the migration as any other cache error does
+        let version = u32::try_from(i + 1)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
         log::info!("cache schema migrated to version {}", i + 1);
     }
