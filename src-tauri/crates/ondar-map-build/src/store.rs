@@ -1092,7 +1092,7 @@ mod tests {
         assert_eq!(b.bands, (BAND_FLOOR, BAND_MAX));
         assert!(!b.bound_added.exact_stored);
         assert_eq!(b.bound_added.blobs, 0, "{:?}", b.bound_added);
-        assert!(b.collapsed.is_empty());
+        assert_eq!(b.collapsed, [] as [(usize, usize, usize); 0]);
     }
 
     /// A ring whose quanta leave fewer than three distinct vertices is stored empty and counted
@@ -1157,7 +1157,7 @@ mod tests {
         assert_eq!(s.rings(blob)[1].vertices, 0);
         let mut out = vec![[1.0, 1.0]];
         assert_eq!(s.decode(blob, 1, &mut out), Some(()));
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [[f64; 2]; 0]);
         let f = s
             .frame(0, &Pane::GOLDEN, s.fit(0, &Pane::GOLDEN).unwrap())
             .unwrap();

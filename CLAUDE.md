@@ -96,7 +96,9 @@ examples. `ts-rs` writes the bindings during `cargo test`, so that run regenerat
 
 **Gates before any task is done**, each judged by its **exit status**, never by counting output
 lines: `cargo fmt`, the clippy line, `cargo test --workspace`, `pnpm typecheck`, `pnpm test`,
-`pnpm lint`, and `pnpm tauri:dev` launching with no console error.
+`pnpm lint`, and `pnpm tauri:dev` launching with no console error. The toolchain is pinned
+(`rust-toolchain.toml` at the root; `rustup` follows the file, CI names no version), so the gates
+here and in CI run the same compiler; a bump is its own commit (ONDAR.md, "Repo tooling").
 
 ## Test counts
 

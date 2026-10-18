@@ -300,7 +300,7 @@ mod tests {
         );
         let c = census(&[a, b]);
         assert_eq!((c.twice, c.seam), (0, 1));
-        assert!(c.lines.is_empty());
+        assert_eq!(c.lines, [] as [std::vec::Vec<geo::Coord>; 0]);
     }
 
     /// The rule: 375 m inside the land passes, 375.001 m fails, an edge found three times fails
@@ -324,7 +324,10 @@ mod tests {
         let admin0 = [(c0(0.0, 0.0), c0(100.0, 0.0))];
         let on = [(c0(10.0, 0.0), c0(20.0, 0.0005))];
         let off = [(c0(10.0, 0.0), c0(20.0, 0.002))];
-        assert!(gate(&on, &admin0, id, 0.001).0.is_empty());
+        assert_eq!(
+            gate(&on, &admin0, id, 0.001).0,
+            [] as [(geo::Coord, geo::Coord, f64); 0]
+        );
         let (far, worst) = gate(&off, &admin0, id, 0.001);
         assert_eq!(far.len(), 1);
         assert!((worst - 0.002).abs() < 1e-12);

@@ -53,7 +53,18 @@ jobs:
         with:
           node-version: 26
 
-      - uses: dtolnay/rust-toolchain@stable
+      # No `dtolnay/rust-toolchain@…` and no version here: that action installs exactly what the
+      # `@ref` or its `toolchain:` input names (its action.yml, read 2026-10-18; it has no mode
+      # that reads a toolchain file), which is how CI ran clippy 1.99.1 against a 1.98.0 dev
+      # machine and went red on a lint one of them could not see (run 39037686055). The one
+      # pin is `rust-toolchain.toml` at the repo root; `rustup toolchain install` with no
+      # argument installs the file's channel and components (rustup 1.29: "or by default the
+      # active toolchain"), so CI and the dev machine run the same compiler by construction.
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          cargo --version
 
       # The Cargo workspace is at src-tauri/, not the repo root.
       - uses: Swatinem/rust-cache@v2

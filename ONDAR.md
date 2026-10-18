@@ -348,6 +348,16 @@ TypeScript, stop — it belongs in Rust.
   (`edition = "2024"`, `max_width = 100` — rustfmt's own defaults, written down so a future
   toolchain change cannot silently restyle the tree) and `src-tauri/clippy.toml`
   (`msrv = "1.91"`, matching the workspace `rust-version`).
+- **The toolchain is pinned (2026-10-18): `rust-toolchain.toml` at the repo root**, `channel =
+  "1.99.1"`, `clippy` and `rustfmt`, profile minimal. The file sits at the root, not in
+  `src-tauri/`, because rustup resolves it by walking up from the current directory and `pnpm
+  tauri build` runs from the root. CI installs from it (`rustup toolchain install` with no
+  argument; `dtolnay/rust-toolchain` was dropped: it installs what its `@ref` names and has no
+  file-reading mode, per its action.yml). **The bump rule:** deliberately, at a milestone boundary,
+  in its own commit where the new lints are triaged. **The cause:** commit `944aec9` put
+  `pedantic` at deny; CI's floating `@stable` was clippy 1.99.1, the dev machine 1.98.0, and the
+  run went red on `assert_is_empty`, a 1.99 lint at 23 test sites (14 reported before the build stopped) none of the local gates could
+  see (run 39037686055). On 1.99.1, that lint was the only addition.
 - **The rules are the compiler's (2026-10-17, "enforce, don't document").** `[workspace.lints]`
   in `src-tauri/Cargo.toml`, every crate `[lints] workspace = true`: `unwrap_used`, `expect_used`,
   `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`, `print_stderr` and `pedantic` at

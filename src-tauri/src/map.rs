@@ -974,7 +974,7 @@ mod dots_tests {
             (st.stations_total, st.stations_located, st.dots_outside),
             (68, 65, 3)
         );
-        assert!(!f.dots.is_empty());
+        assert_ne!(f.dots, [] as [ondar_map::frame::Dot; 0]);
         assert_eq!(pull(&ses, MapInputs::default()), None);
         ses.0.lock().unwrap().select(Some(store()), "PT");
         let again = pull(&ses, MapInputs::default()).unwrap().frame.unwrap();

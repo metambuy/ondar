@@ -218,7 +218,7 @@ fn a_dot_under_a_drawn_box_at_the_fit_is_hidden_and_counted() {
         scale: fit.scale / 2.0,
     };
     let f = s.frame_dots(pt, &pane, zoomed, &g).unwrap();
-    assert!(f.insets.is_empty());
+    assert_eq!(f.insets, [] as [ondar_map::frame::Inset; 0]);
     assert_eq!((f.dots.len(), f.stats.dots_hidden), (1, 0));
     let d = &f.dots[0];
     assert!(

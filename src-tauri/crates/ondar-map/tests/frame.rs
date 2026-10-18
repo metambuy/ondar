@@ -311,18 +311,21 @@ fn insets_clear_12pt() {
     assert_eq!(n, 14);
     // insets at the fit view only (D7): zoomed in, none
     let pt = c("PT");
-    assert!(
+    assert_eq!(
         s.frame(pt, &P, at("PT", -9.1393, 38.7223, FLOOR_KM_PER_PT))
             .unwrap()
-            .insets
-            .is_empty()
+            .insets,
+        [] as [ondar_map::frame::Inset; 0]
     );
     let fit = s.fit(pt, &P).unwrap();
     let nudged = View {
         centre: fit.centre,
         scale: fit.scale * 0.999,
     };
-    assert!(s.frame(pt, &P, nudged).unwrap().insets.is_empty());
+    assert_eq!(
+        s.frame(pt, &P, nudged).unwrap().insets,
+        [] as [ondar_map::frame::Inset; 0]
+    );
 }
 
 /// An inset box at a pane is the golden box at the band's stored scale, anchored at its corner
@@ -469,7 +472,7 @@ fn an_alias_frame_omits_the_parents_copy() {
     let s = store();
     let re = c("RE");
     let f = s.frame(re, &P, s.fit(re, &P).unwrap()).unwrap();
-    assert!(!f.land.is_empty());
+    assert_ne!(f.land, [] as [ondar_map::frame::Shape; 0]);
     for r in f.neighbours.iter().flat_map(|sh| sh.rings.iter()) {
         let n = r.len() as f64;
         let mx = r.iter().map(|p| f64::from(p[0])).sum::<f64>() / n;
@@ -518,23 +521,23 @@ fn subdivisions_by_scale() {
         )
         .unwrap()
     };
-    assert!(!us(8.001).subdivisions.is_empty());
-    assert!(us(7.999).subdivisions.is_empty());
-    assert!(us(8.0).subdivisions.is_empty());
+    assert_ne!(us(8.001).subdivisions, [] as [std::vec::Vec<[f32; 2]>; 0]);
+    assert_eq!(us(7.999).subdivisions, [] as [std::vec::Vec<[f32; 2]>; 0]);
+    assert_eq!(us(8.0).subdivisions, [] as [std::vec::Vec<[f32; 2]>; 0]);
     let mm = c("MM");
-    assert!(
-        !s.frame(mm, &P, s.fit(mm, &P).unwrap())
+    assert_ne!(
+        s.frame(mm, &P, s.fit(mm, &P).unwrap())
             .unwrap()
-            .subdivisions
-            .is_empty()
+            .subdivisions,
+        [] as [std::vec::Vec<[f32; 2]>; 0]
     );
     let de = c("DE");
     assert!(!s.countries[de].subdivisions);
-    assert!(
+    assert_eq!(
         s.frame(de, &P, s.fit(de, &P).unwrap())
             .unwrap()
-            .subdivisions
-            .is_empty()
+            .subdivisions,
+        [] as [std::vec::Vec<[f32; 2]>; 0]
     );
     assert_eq!(us(12.0).level, 12.0);
     assert_eq!(us(11.99).level, 6.0);

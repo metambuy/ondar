@@ -1122,7 +1122,10 @@ pub(crate) mod tests {
         );
         let ok = row(Corner::TopLeft, [8.0, 8.0, 80.0, 60.0], "Azores");
         let (_, p) = bar_with_inset(600.0, 104.0, &ok);
-        assert!(ship_gate(std::slice::from_ref(&p)).wide_labels.is_empty());
+        assert_eq!(
+            ship_gate(std::slice::from_ref(&p)).wide_labels,
+            [] as [std::string::String; 0]
+        );
     }
 
     /// The stacking rule in the placement (M4b commit 4b, decision 1): on the 600 × 104 km bar, a
@@ -1205,7 +1208,10 @@ pub(crate) mod tests {
             vec!["AA Hawaii: dropped at 328 × 178".to_string()]
         );
         thick.code = "US".into();
-        assert!(ship_gate(std::slice::from_ref(&thick)).dropped.is_empty());
+        assert_eq!(
+            ship_gate(std::slice::from_ref(&thick)).dropped,
+            [] as [std::string::String; 0]
+        );
         // dropped at 300 as well: a box over the land everywhere
         let over = row(Corner::TopLeft, [150.0, 100.0, 80.0, 60.0], "Hawaii");
         let (_, mut p) = bar_with_inset(600.0, 104.0, &over);

@@ -1,0 +1,9 @@
+# The one Rust toolchain for this repo: the dev machine, `pnpm tauri build` from the root, and CI
+# (`rustup toolchain install` with no argument reads this file; ci.yml names no version). Bumped
+# deliberately, at a milestone boundary, in its own commit where the new lints are triaged
+# (ONDAR.md, "Repo tooling"). At the root, not src-tauri/, because rustup resolves the file by
+# walking up from the current directory, and the Tauri CLI runs cargo from here.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

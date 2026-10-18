@@ -240,11 +240,11 @@ mod tests {
     #[test]
     fn no_intersection_is_empty() {
         let far = [[20.0, 20.0], [30.0, 20.0], [30.0, 30.0]];
-        assert!(clip_ring(&far, &W).is_empty());
+        assert_eq!(clip_ring(&far, &W), [] as [[f64; 2]; 0]);
         // its bbox meets the window, the triangle does not
         let skew = [[11.0, -5.0], [15.0, -5.0], [15.0, 20.0]];
-        assert!(clip_ring(&skew, &W).is_empty());
-        assert!(clip_ring(&[], &W).is_empty());
+        assert_eq!(clip_ring(&skew, &W), [] as [[f64; 2]; 0]);
+        assert_eq!(clip_ring(&[], &W), [] as [[f64; 2]; 0]);
     }
 
     /// A ring containing the window → the window. Fails on an inverted inside test or a wrong
@@ -283,7 +283,10 @@ mod tests {
                 vec![[10.0, 8.0], [5.0, 8.0], [5.0, 9.0]],
             ]
         );
-        assert!(clip_polyline(&[[20.0, 20.0], [30.0, 30.0]], &W).is_empty());
+        assert_eq!(
+            clip_polyline(&[[20.0, 20.0], [30.0, 30.0]], &W),
+            [] as [std::vec::Vec<[f64; 2]>; 0]
+        );
         // a segment crossing the whole window
         assert_eq!(
             clip_polyline(&[[-5.0, 5.0], [15.0, 5.0]], &W),

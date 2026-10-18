@@ -722,7 +722,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(transport.calls(), 1, "the fetch started");
             let favs = within(100, h.list_favourites()).await.unwrap();
-            assert!(favs.is_empty());
+            assert_eq!(favs, [] as [crate::model::Station; 0]);
             transport.release();
             let us = within(2000, us).await.unwrap().unwrap();
             assert_eq!(us.source, CacheSource::Fresh);
@@ -780,7 +780,7 @@ mod tests {
         block_on(async {
             h.started("manual".into());
             let recents = within(1000, h.list_recents()).await.unwrap();
-            assert!(recents.is_empty());
+            assert_eq!(recents, [] as [crate::model::Station; 0]);
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert_eq!(transport.calls(), 0);
             assert!(log.lock().unwrap().is_empty());
@@ -804,7 +804,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(transport.calls(), 1, "the click started");
             let favs = within(100, h.list_favourites()).await.unwrap();
-            assert!(favs.is_empty());
+            assert_eq!(favs, [] as [crate::model::Station; 0]);
             transport.release();
         });
     }
