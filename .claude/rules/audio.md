@@ -59,6 +59,8 @@ in ONDAR.md under the section named.
     outside `#[cfg(test)]`.
 15. **No `log::` / `tracing::` call site in the Source chain the audio callback pulls** (ring
     consumer, EQ adapter, converter): both log sinks (stderr and the daily file) write synchronously.
+    Pinned by the source scan `callback_log_scan::the_callback_chain_has_no_log_call_site`
+    (`ondar-audio/src/lib.rs`): `ring.rs`, `eq.rs` and `engine.rs::output_chain` outside tests.
 
 **Testing this crate.** The session tests run real sockets on 127.0.0.1 and read every state off
 the event stream, in order, never a sample; `ONDAR_TEST_POLL_DELAY_MS`, `ONDAR_TEST_SERVER_DELAY_MS`,
