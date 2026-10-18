@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Ondar audio engine: HTTP stream → decode → EQ → output. No Tauri dependency."
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+publish = false
 
 [lints]
 workspace = true

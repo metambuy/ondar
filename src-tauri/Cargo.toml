@@ -45,6 +45,9 @@ version = "0.1.0"
 description = "Ondar — macOS menu bar radio player"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+# The app, never a crates.io package; `cargo deny` treats an unpublished crate as ours.
+publish = false
 
 [lints]
 workspace = true

@@ -3,6 +3,7 @@ name = "ondar-map-build"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 description = "Build-time tool: Natural Earth 10m → src-tauri/resources/map/world.ondarmap (M4a). Never part of the app."
 

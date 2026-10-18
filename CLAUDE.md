@@ -89,6 +89,7 @@ cd src-tauri
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo deny check      # advisories, licenses, bans, sources (deny.toml); `cargo install cargo-deny --locked`
 cargo test -p ondar-map-build --release -- --ignored   # needs the NE inputs; local only
 ```
 
@@ -98,8 +99,8 @@ the signal, so do not rename it. `clippy` without `--workspace` never lints the 
 examples. `ts-rs` writes the bindings during `cargo test`, so that run regenerates them.
 
 **Gates before any task is done**, each judged by its **exit status**, never by counting output
-lines: `cargo fmt`, the clippy line, `cargo test --workspace`, `pnpm typecheck`, `pnpm test`,
-`pnpm lint`, and `pnpm tauri:dev` launching with no console error. The toolchain is pinned
+lines: `cargo fmt`, the clippy line, `cargo test --workspace`, `cargo deny check`, `pnpm typecheck`,
+`pnpm test`, `pnpm lint`, and `pnpm tauri:dev` launching with no console error. The toolchain is pinned
 (`rust-toolchain.toml` at the root; `rustup` follows the file, CI names no version), so the gates
 here and in CI run the same compiler; a bump is its own commit (ONDAR.md, "Repo tooling").
 

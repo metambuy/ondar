@@ -375,7 +375,23 @@ TypeScript, stop — it belongs in Rust.
   error or saturating path, in the commit body) and the `manual_midpoint` rewrites; the map
   goldens, `band_sweep --views` and the EQ tests were captured before and after and compared.
   The source-scan tests stay: each refuses a shape clippy lacks (`unreachable!`, indexing,
-  `.clamp(`). ESLint fences the renderer boundary and `cargo deny` runs in CI (the next entries).
+  `.clamp(`). ESLint fences the renderer boundary (`eslint.config.js`, 2026-10-17: the network
+  and storage globals, `<audio>`/`<video>`/`new Audio()`, and any `@tauri-apps/*` import outside
+  `src/api.ts`; a violation file produced 7 errors, then was deleted).
+- **`cargo deny` is a gate (2026-10-18), locally and in CI** (`src-tauri/deny.toml`;
+  `EmbarkStudios/cargo-deny-action@v2` after `cargo fmt`). Advisories with `yanked = "deny"`;
+  licenses from the allow-list of the twelve the tree carried that day (MIT, Apache-2.0,
+  Apache-2.0 WITH LLVM-exception, BSD-2/3-Clause, ISC, Zlib, Unicode-3.0, MPL-2.0, CC0-1.0,
+  MIT-0, 0BSD), a new one added on purpose with the crate that brings it; bans with
+  `multiple-versions = "warn"`, the baseline ten duplicates all transitive through tauri and
+  reqwest (base64 ×3, getrandom ×3, syn, png, miniz_oxide, indexmap, hashbrown, cpufeatures,
+  core-foundation, bitflags; `window-vibrancy`, once thought a duplicate, is a single 0.8.1);
+  sources crates.io plus the pinned tauri-nspanel git. The first run failed on our own crates:
+  `ondar` and `ondar-audio` had no `license` and were not `publish = false`, so deny read them as
+  unlicensed third parties; every package now inherits the workspace MIT and is `publish = false`.
+  tauri-nspanel has no `license` field; deny reads its two LICENSE files as "Apache-2.0, MIT"
+  (a warning, not a failure); a `[[licenses.clarify]]` was not added because a wrong file hash
+  makes deny ignore the entry silently (probed), so it could not be trusted to apply.
 
 ## Constraints and known tradeoffs
 
