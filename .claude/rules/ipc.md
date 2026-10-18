@@ -10,7 +10,8 @@ paths:
 
 # The IPC contract
 
-`src/api.ts` wraps every command and event; nothing else imports `@tauri-apps/api`. Event names are
+`src/api.ts` wraps every command and event; nothing else imports `@tauri-apps/api` (ESLint's
+`no-restricted-imports` refuses it elsewhere, `eslint.config.js`). Event names are
 defined once, in `lib.rs::events`, and the shell's forwarder emits them (and hands a `Started`
 station id to the stations service). No boundary type is typed by hand in TS: ts-rs generates them.
 

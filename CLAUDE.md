@@ -28,6 +28,9 @@ network requests, decode or play audio, persist data, or hold domain state that 
 Every action is an `invoke()` of a Tauri command; every state change is a Tauri event from Rust.
 If a feature seems to need `fetch`, `<audio>`, `localStorage` or a polling `setInterval` in TS, the
 design is wrong: move it to Rust. `src/api.ts` is the **only** file that imports `@tauri-apps/api`.
+ESLint holds the line (`eslint.config.js`, the boundary block): `fetch`, `XMLHttpRequest`,
+`WebSocket`, `EventSource`, `localStorage`, `sessionStorage`, `indexedDB`, `<audio>`, `<video>`,
+`new Audio()` and any `@tauri-apps/*` import outside `src/api.ts` fail `pnpm lint`.
 
 ## Milestones
 
