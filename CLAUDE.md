@@ -41,7 +41,7 @@ ESLint holds the line (`eslint.config.js`, the boundary block): `fetch`, `XMLHtt
 | M3 | Stations, cache, country/station UI | done, `m3a-done`, `m3b-done`, `defect-a-done`, `m3c-done`, `defect-b-done` |
 | M4 | The drawn map | M4a `m4a-done`, M4b `m4b-done` (2026-10-07); **M4c `m4c-done` (2026-10-12). **M4 complete**; M6-lite next (before M5)** |
 | M6-lite | Signed, notarised build for testers | released 2026-10-14 (v0.1.0), merged 2026-10-16; exit pending testers, no tag yet |
-| M5 | Spectrum + EQ UI, tray animation, polish | |
+| M5 | Five phases (re-cut 2026-10-19): M5a list (cap + search), M5b one row per station, M5d audio UI, M5c map at zoom, M5e system integration and states | 0.1.1 first (23 Oct); then M5a |
 | M6 | Signing, notarisation, DMG | |
 
 One milestone per session. Do not start the next milestone's work early, and never leave one with

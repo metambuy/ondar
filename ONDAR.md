@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -115,9 +115,10 @@ distance on the ground into one dot per place, sized by count, with no numbers o
 full colour and size table is the "Ondar map style" artifact (v3). Decided 2026-09-24 after
 true-size mockups of satellite imagery and of drawn styles (m4-design/DIRECTION.md).
 
-The tray icon is a monochrome template image so macOS tints it correctly; it gets a subtle
-animated state when audio is playing. Note: there is no animated-template-image API; this is
-a small frame sequence swapped on a timer via `TrayIcon::set_icon`.
+The tray icon is a monochrome template image so macOS tints it correctly. The animated playing
+state once planned here (a frame sequence swapped on a timer via `TrayIcon::set_icon`, there being
+no animated-template-image API) is **parked, 2026-10-19**: neither animated nor redrawn until a
+tester notices the playing state — see "M5 re-cut (2026-10-19)".
 
 ## Decided stack (do not relitigate without saying why)
 
@@ -1355,6 +1356,68 @@ B raised select → dots painted from 58 / 78 to 111 / 115 (RU) and from 45 / 49
 - **Every row records the display, its refresh rate and the power source** (`system_profiler
   SPDisplaysDataType`, `NSScreen.maximumFramesPerSecond`, `pmset -g batt`). k+3 recorded none, so its
   difference from 2026-10-09 cannot be attributed.
+
+### M5 re-cut (2026-10-19)
+
+**Martín's decisions at the ranking session, 2026-10-19** (record:
+`_handover/m5-ranking-2026-10-19.md`, the chat's; inputs: the ledger's last five entries,
+BUILD_PLAN's M5, the France/Ink exhibit; two testers hold 0.1.0, no feedback yet, so Martín's list
+led). M5's eleven items are re-cut into **five phases**, each with its own branch, Step 0 (buy before
+build), the instrument defined before any bar, an exit, `/code-review` before the merge and the
+`missing_docs` flip per crate touched: **M5a the list (cap and search) → M5b one row per station →
+M5d audio UI → M5c the map at zoom → M5e system integration and states**. If only three fit before
+audio work: search, the cap, favourites. M5d before M5c because M1's EQ exit criterion 4 has been
+open since September and no tester has mentioned the map; the phases are independent and Martín
+may swap c and d. The six decisions:
+
+1. **D-search: local first, global on an explicit action.** Martín: across all countries if
+   possible. The box searches the selected country's full cached list as you type, with folded
+   matching ("rádio" = "radio"; `fold` needs Unicode normalisation, an audit by-product). A "Search
+   all countries" row (or Enter) runs radio-browser's search endpoint, debounced, the results in the
+   same list with the country flag; offline, that row is disabled with a state and local search
+   still works. Reason: a purely global box hits the server per keystroke (against our etiquette)
+   and is dead offline; a purely local box cannot answer "where is BBC" with France selected. Two
+   paths, each small, each with its own test. Unknown until measured: whether the server-side search
+   folds accents.
+2. **D-cap: lift it after measuring, not before.** "750 stations" against "France (3690)": any
+   search over the cached list searches a fifth of France, so the cap and search are one decision.
+   Code explains where 750 comes from (client `limit`, rank truncation, or the cache), then measures
+   the largest country's full list (USA, by radio-browser's count) on the current build — SQLite
+   size, fetch time, list render time, map gather time. The bar is set from the measurement, then
+   the cap goes. Lifting it blind risks the list and the gather for the biggest countries. In 0.1.1
+   the cap is explained, not lifted.
+3. **D-streams: one row per station; best stream = highest bitrate, codec tie-break; fail-over to
+   the next stream on error** (the reconnect path, a first-class feature already). Martín: pick the
+   best stream automatically. The exhibit's "duplicates" are distinct streams (France Info mp3 128k /
+   aac 192k; RFI Afrique 64k / RFI-Afrique 96k): a product rule, not data cleaning, and a change to
+   the list's data model, so not 0.1.1. The grouping key is measured first (Step 0): folded name
+   alone vs folded name + homepage host, on five countries' full lists — groups, groups that mix
+   homepages, max streams per group. Favourites keep storing a stream uuid, displayed by station;
+   migration test.
+4. **D-map: a phase of its own (M5c), not a 0.1.1 change, and not a shallower zoom limit** (it
+   would be reversed later; no churn). The inland is empty by design: coastlines and borders only,
+   France finer than 8 km/pt so no subdivisions. Martín: make it feel more like a map, rivers too.
+   Candidates, each measured in Step 0: admin-1 past a zoom threshold (first, whether the resource
+   carries admin-1 for countries finer than 8 km/pt at all; if not, a rebuild and the size growth);
+   Natural Earth 10m `rivers_lake_centerlines` and `lakes` (lines need a new record type: format v4,
+   where the audit's "map tables partial" also lands); persistent place labels from 10m
+   `populated_places` (public domain, independent of station records; the buy option for labels).
+   B5 (dots with no place name) is explained before any of this.
+5. **D-coordinates: parked.** Martín: a candidate for agent work later. When M5c opens, a read-only
+   agent task measures, of France's 3690, how many lack geo but carry a state/city field matching
+   `cities.js`. No reopening of M2 without that number.
+6. **D-tray: animation parked; the "animate vs redesign" item closes as "neither, until a tester
+   notices the playing state".** Martín: testers will not notice. Onboarding parked until a tester
+   reports the first launch as confusing.
+
+**0.1.1** is scoped for 23 October on branch `v0.1.1`, Martín at the Mac (BUILD_PLAN, the 0.1.1
+block under M6-lite): the ranking's items 1–5 — the version-pin test, the hover plate's place
+before count, the favourites star beside the country dropdown (a hypothesis to check with testers,
+not a diagnosed fix), `srv.rs`'s SRV port, B5 explained (fixed only if a one-liner) — plus the cap
+explained and any tester defect reported before the 23rd; nothing else. Released as 0.1.0 was,
+spike 5 on Martín's own 0.1.0 first, both testers asked explicitly for the log file, `/code-review
+main..v0.1.1` before the merge. The docs commit that records this re-cut also re-dates `laea.rs:1-2` (proj4rs 0.2.1,
+2026-10-09, fixes the Q5 defect — "Buy before build"), the one code file it touches, comment only.
 
 ### M6-lite before M5: the plan change (decided 2026-10-12)
 
@@ -3684,7 +3747,10 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    **M6-lite comes next, before M5** (decided 2026-10-12) — see "M6-lite before M5".
    **M6-lite released 2026-10-14** (v0.1.0, Cloud release `01M4XF0DQR6APGTGZ0V2DKZEC2`); exit
    pending testers. Merged 2026-10-16 (`cb6610f`); no tag until the exit — see "Release 0.1.0".
-5. **M5 — Spectrum + EQ UI, tray animation, polish.**
+5. **M5 — re-cut 2026-10-19 into five phases**, in order: M5a the list (cap + search), M5b one
+   row per station, M5d audio UI (EQ, presets, spectrum), M5c the map at zoom, M5e system
+   integration and states. Tray animation, onboarding and coordinate inference parked — see
+   "M5 re-cut (2026-10-19)" and BUILD_PLAN.
 6. **M6 — Signing, notarisation, DMG.**
 
 ## Principle: verify the instrument before trusting a surprising measurement

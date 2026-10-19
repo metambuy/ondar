@@ -1,5 +1,7 @@
-//! Spherical Lambert azimuthal equal-area, hand-written (M4a Step 0, Q5: `proj4rs` 0.2's
-//! spherical forward is wrong in y, `laea.rs:318` applies k' to the first term only).
+//! Spherical Lambert azimuthal equal-area, hand-written: the runtime map crate takes no geometry
+//! dependency and admits no panic shape (M4a Step 0, Q5). The original reason — `proj4rs` 0.2.0's
+//! spherical forward wrong in y, `laea.rs:318` applying k' to the first term only — expired with
+//! `proj4rs` 0.2.1 (2026-10-09), which fixes it; re-dated 2026-10-19 (buy-before-build audit).
 //!
 //! Snyder, USGS Professional Paper 1395 (1987): forward eqs. (24-2), (22-4), (22-5); inverse
 //! (20-18), (24-16), (20-14), (20-15), as used in its Appendix A worked example, pp. 332–333.

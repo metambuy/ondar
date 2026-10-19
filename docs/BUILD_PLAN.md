@@ -269,38 +269,156 @@ size is recorded in ONDAR.md — **met**:
 
 ---
 
-## M5 — Spectrum + EQ UI, tray animation, polish
+## M5 — the five phases (re-cut 2026-10-19)
 
-**Goal:** the EQ and spectrum are visible and usable, the tray feels alive, and the rough
-edges from earlier milestones get finished.
+**Goal:** the list finds any station and shows one row per station; the audio UI exists; the map
+feels like a map at zoom; the app behaves on the system. Re-cut 2026-10-19 at the ranking session
+(record `_handover/m5-ranking-2026-10-19.md`; decisions in ONDAR.md, "M5 re-cut (2026-10-19)").
+No tester evidence yet, so Martín's list led: if only three fit before audio work, search, the cap,
+favourites. Order: **M5a → M5b → M5d → M5c → M5e**; one phase per session. M5d before M5c because
+M1's EQ exit criterion 4 has been open since September, and no tester has mentioned the map;
+Martín may swap c and d, the phases are independent.
 
-- [ ] `audio::spectrum` — `rustfft` on the post-EQ buffer, ~30 Hz of log-binned magnitudes
-      emitted as `spectrum-tick`; **throttled and dropped if the UI lags**
-- [ ] UI: vertical EQ sliders, preset picker, spectrum strip in the collapsed view (the
-      biquad DSP and its unit tests already exist from M1 — this is the UI + presets)
-- [ ] Presets: Flat, Voice, Bass, Bright, Late Night; custom gains persisted per app (not per
-      station, unless decided otherwise)
+**Every phase:** Step 0 with the buy-before-build paragraph — the crates and OS facilities checked,
+each with name, version, what it covers, what it misses against our use, why not (ONDAR.md, "Buy
+before build"; "learning value beats speed" is invoked by name, never the default); the
+measurement instrument defined before any bar; an exit; its own branch; `/code-review` before the
+`--no-ff` merge; the `missing_docs` flip for each crate it touches — its public items documented
+and `#![deny(missing_docs)]` at the crate root in that commit (counts on 2026-10-17: `ondar-map`
+144, `ondar-audio` 109, `ondar-stations` 89, the shell 10, `ondar-map-build` 8; the workspace table
+allows it until then, because CI's `-D warnings` would deny a warn — ONDAR.md, "The rules are the
+compiler's"). Model Opus 5.5 unless the chat says why.
+
+### M5a — the list: cap and search
+
+"750 stations" against "France (3690)": any search over the cached list searches a fifth of
+France. **The cap and search are one decision** (D-cap, D-search).
+
+- **Step 0.** Where 750 comes from (client `limit`, rank truncation, or the cache). Buy before
+  build (name, version, covers, misses, why not): radio-browser `/json/stations/search` parameters
+  and whether it folds accents (measure "radio" vs "rádio" with `countrycode=FR`); Unicode folding
+  crates (`unicode-normalization` NFD + strip marks, `deunicode`, `icu_normalizer`) against
+  `filter.rs::fold`, which has no normalisation (audit by-product); list virtualisation — the plain
+  list measured first, `@tanstack/react-virtual` only if the measurement says so; the gather budget
+  at the largest country's full count. **Instrument:** list render time and map gather time versus
+  row count on the current build, USA (the largest by radio-browser's count) and France; with the
+  full list's SQLite size and fetch time. The bar is set from the measurement, then the cap goes.
+- [ ] Lift the cap, after the measurement, never blind.
+- [ ] Local search with folding ("rádio" = "radio"), debounced, over the selected country's full
+      cached list as you type.
+- [ ] "Search all countries" (a row, or Enter) via the API's search endpoint, debounced; results in
+      the same list with the country flag; offline, that row is disabled with a state and local
+      search still works.
+- [ ] Favourites: the star to the right of the country dropdown (0.1.1 ships it as a hypothesis;
+      M5a keeps or moves it on the testers' word).
+- [ ] `missing_docs` flip: `ondar-stations`.
+
+**Exit:** France selected, "rádio" and "radio" return the same stations from all 3690 within the
+measured bound; the largest country renders and gathers within its bar; "BBC" with France selected
+reaches BBC stations in one action; offline, the global row says so and local search still works.
+
+### M5b — one row per station
+
+The France list's "duplicates" are **distinct streams of one station** (France Info mp3 128k /
+aac 192k; RFI Afrique 64k / RFI-Afrique 96k): a product rule — one row per station, best stream
+chosen, fail-over to the next — not data cleaning. It changes the list's data model (D-streams).
+
+- **Step 0.** **The grouping-key measurement first:** folded name alone vs folded name + homepage
+  host, on five countries' full lists — how many groups, how many groups mix homepages (distinct
+  stations sharing a name), max streams per group. Buy before build (name, version, covers, misses,
+  why not): radio-browser fields that could carry a dedupe hint (`homepage`, `favicon`,
+  `languagecodes`); favourites' storage (a stream uuid today).
+- [ ] Group; best stream = highest bitrate, codec tie-break; fail-over to the next stream on
+      error, on the reconnect path (a first-class feature already).
+- [ ] Favourites keep storing a stream uuid, displayed by station; migration test.
+- [ ] `missing_docs` flip: `ondar-stations`.
+
+**Exit:** France Info appears once and plays aac 192k; a test double that kills that URL falls to
+mp3 128k with no user action; existing favourites survive (test); no group mixes homepages in the
+five-country sample, or the rule says what happens when one does.
+
+### M5d — audio UI
+
+The apprenticeship's showcase: a built feature nobody can use since M2c retired the bench.
+
+- **Step 0.** **The CPU instrument defined** (the carried item) before the "single digits" bar;
+  the spectrum's emit path through `Shared::emit_from` / `SessionCtx::emit` (**N1:** never
+  `emit_from` — it would take the session lock from the audio path, and the audio callback never
+  blocks; ONDAR.md, "Code review 2 and G1–G3"); **the 16 kHz band against the source's Nyquist
+  measured** (the EQ runs at the sink's rate, so its 0.45 fs bypass no longer disables that band on
+  a 22 050 station; ONDAR.md, the resampling side effects). Buy before build (name, version,
+  covers, misses, why not): `rustfft` vs `realfft` vs `microfft`.
+- [ ] `audio::spectrum` on the post-EQ buffer, ~30 Hz of log-binned magnitudes emitted as
+      `spectrum-tick`; **throttled and dropped when the UI lags**.
+- [ ] UI: vertical EQ sliders, preset picker, spectrum strip in the collapsed view (the biquad
+      DSP and its unit tests exist from M1 — this is the UI + presets).
+- [ ] Presets: Flat, Voice, Bass, Bright, Late Night; custom gains persisted per app, in Rust (not
+      per station, unless decided otherwise).
 - [x] EQ headroom fix — **done at M1** (`1e4d237`, 2026-09-11): a soft-clip stage *inside*
-      `Equalizer`, the last operation on every sample, so the bound cannot be bypassed by
-      assembling the graph differently. Not a separate adapter after it, and no makeup
-      attenuation. See ONDAR.md, "EQ output is bounded by a soft-clip stage"
-- [ ] Tray animation: a small frame sequence swapped on a timer via `TrayIcon::set_icon`
-      (there is no animated-template-image API)
-- [ ] Global keyboard shortcut to toggle the popover; `Space` play/pause when focused
-- [ ] Media key support and macOS **Now Playing** integration (`MPNowPlayingInfoCenter` via
-      `objc2`)
-- [ ] Launch at login (`tauri-plugin-autostart`)
-- [ ] Sleep timer, and pause/resume on system sleep/wake and on audio device change
-- [ ] Empty, loading, offline and error states designed, not defaulted
-- [ ] Onboarding: first launch picks a country from the system locale and plays a top station
-- [ ] `missing_docs`: each crate M5 touches gets its public items documented and flips to
-      `#![deny(missing_docs)]` at its root in that commit (counts on 2026-10-17: `ondar-map` 144,
-      `ondar-audio` 109, `ondar-stations` 89, the shell 10, `ondar-map-build` 8). The workspace
-      table allows it until then, because CI's `-D warnings` would deny a warn (ONDAR.md, "The
-      rules are the compiler's")
+      `Equalizer`, the last operation on every sample. See ONDAR.md, "EQ output is bounded by a
+      soft-clip stage".
+- [ ] **M1 exit criterion 4** exercised by hand once the sliders exist, and recorded.
+- [ ] `missing_docs` flip: `ondar-audio`.
 
 **Exit:** moving a slider changes the sound immediately and silently; the spectrum reacts to
-music; CPU stays low (single digits) while playing; the tray icon animates while playing.
+music; CPU within the bar set from the instrument.
+
+### M5c — the map at zoom
+
+The France/Ink exhibit (2026-10-19, `_handover/m6lite/zoom-france-ink-2026-10-19.png`): zoomed
+inland, a flat land tone with dots and nothing else. **Empty by design** — coastlines and borders
+only, and France is finer than 8 km/pt so no subdivisions. The fix is this phase, not a 0.1.1
+change, and **not a shallower zoom limit** (it would be reversed later; no churn). Martín: make it
+feel more like a map; rivers too (D-map).
+
+- **Step 0.** B5's explanation (dots with no place name: where the region label comes from and why
+  it is empty), if not done in 0.1.1. Whether the resource carries admin-1 for countries finer than
+  8 km/pt at all; if not, a rebuild and the size growth. Buy before build (name, version, covers,
+  misses, why not): Natural Earth 10m `rivers_lake_centerlines` and `lakes` (lines need a new record
+  type: format v4, where the audit's "map tables partial" also lands); Natural Earth 10m
+  `populated_places` for persistent place labels (public domain, independent of station records;
+  the buy option for labels) — each with its size per ladder level after simplification. **The
+  coordinate-inference measurement as a read-only agent task** (D-coordinates): of France's 3690,
+  how many lack geo but carry a state/city field matching `cities.js`. **Instrument:** resource size
+  and paint time per level (M4c's dots pass).
+- [ ] Admin-1 past a zoom threshold.
+- [ ] Water: rivers and lakes, in the style tokens, both themes.
+- [ ] Persistent place labels.
+- [ ] The B5 fix.
+- [ ] Format v4, if the lines need it.
+- [ ] `missing_docs` flip: `ondar-map` and `ondar-map-build`; `laea.rs:1-2` if not already done
+      (re-dated in the 2026-10-19 docs commit).
+
+**Exit:** France at 3 km/pt shows regions, the major rivers and the top-N place names; paint within
+M4c's bars; the resource's growth stated.
+
+### M5e — system integration and states
+
+- **Step 0.** Buy before build, named with versions (covers, misses, why not): `objc2`
+  `MPNowPlayingInfoCenter`; `tauri-plugin-global-shortcut`; `tauri-plugin-autostart`; sleep/wake and
+  device-change notifications (IOKit / CoreAudio). **The four states (empty, loading, offline,
+  error) designed before coded.** Instrument: the device-change path measured as defect A's was.
+- [ ] Global keyboard shortcut to toggle the popover; `Space` play/pause when focused.
+- [ ] Media keys and macOS **Now Playing** (`MPNowPlayingInfoCenter` via `objc2`).
+- [ ] Launch at login (`tauri-plugin-autostart`).
+- [ ] Sleep timer; pause/resume on system sleep/wake and on audio device change.
+- [ ] Empty, loading, offline and error states designed, not defaulted (honest states are a
+      feature — CLAUDE.md, known risk 3).
+- [ ] `missing_docs` flip: the shell.
+
+**Exit:** media keys and Now Playing work with the popover hidden; the popover toggles by shortcut;
+sleep pauses and wake resumes; device change does not stall (measured, the defect-A path); each
+state has a test.
+
+### Parked (2026-10-19)
+
+- **Tray animation** — neither animate nor redesign until a tester notices the playing state
+  (D-tray; Martín: testers will not notice).
+- **Onboarding** (first launch picks a country from the locale and plays a top station) — until a
+  tester reports the first launch as confusing.
+- **Coordinate inference** for the stations without `geo` (20.7 %, 2026-09-21; the `cities.js`
+  reservation) — measured in M5c's Step 0 as a read-only agent task, decided after; no reopening
+  of M2 without that number (D-coordinates).
 
 ---
 
@@ -325,6 +443,27 @@ testers. Merged to `main` 2026-10-16; the tag `m6lite-done` waits for the exit b
 - [x] A tester note in EN / ES / PT, with the known gaps (`docs/testers/`, 2026-10-14; the download
       link filled at the 0.1.0 release)
 - [x] Crash reporting and telemetry: **none** (decided 2026-10-12)
+
+**0.1.1** (branch `v0.1.1` from `main`, 23 October 2026, Martín at the Mac; scoped 2026-10-19 —
+`_handover/m5-ranking-2026-10-19.md`; ONDAR.md, "M5 re-cut (2026-10-19)"). The ranking's items 1–5
+plus any tester defect reported before the 23rd. Nothing else.
+
+- [ ] The version-pin test (the three version fields agree) — review finding, 0.1.1 regardless of
+      feedback
+- [ ] Hover plate: the place before the count (one component)
+- [ ] The favourites-list star to the right of the country dropdown — layout only; **a hypothesis
+      to check with testers, not a diagnosed fix**
+- [ ] `srv.rs` uses the SRV record's port (latent defect, small, testable)
+- [ ] B5 explained (where the region label comes from and why it is empty; read-only, feeds M5c);
+      fixed only if a one-liner
+- [ ] The 750 cap **explained** in this session, not lifted (M5a lifts it after the measurement)
+- [ ] Any tester defect
+- [ ] Release as 0.1.0's steps (ONDAR.md, "Release 0.1.0"): version bump, tag, build with the env
+      sourced in-command, the tar.gz-from-stapled-.app check, the DMG's own submit and staple, spike
+      2 on the DMG, `cn release draft/upload/publish`, feed check (0.1.0 → 200 with 0.1.1, 0.1.1 →
+      204). **Spike 5 on Martín's own 0.1.0 first** ("Ondar 0.1.1 available · Update", installs and
+      restarts); then the testers, both asked explicitly for the log file (the `m6lite-done` exit
+      needs one). `/code-review main..v0.1.1` before the merge
 
 **Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release
 workflow.
