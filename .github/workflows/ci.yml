@@ -79,15 +79,19 @@ jobs:
         run: cargo fmt --all --check
 
       # Advisories (RustSec, yanked), licenses (src-tauri/deny.toml's allow-list), bans
-      # (duplicate versions warn), sources (crates.io + the pinned tauri-nspanel git). The action
-      # brings its own cargo-deny binary; the Rust toolchain above is not involved. Locally the
-      # same check is `cargo deny check` from src-tauri/ (CLAUDE.md "Commands").
-      - name: cargo deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+      # (duplicate versions warn), sources (crates.io + the pinned tauri-nspanel git). The
+      # binary is cargo-deny's own release build, fetched by taiki-e/install-action (its
+      # TOOLS.md lists cargo-deny for macOS); pinned to the version the dev machine runs.
+      # Not `EmbarkStudios/cargo-deny-action`: a Docker container action, which GitHub
+      # refuses on a macOS runner (run 39132299485, 2026-10-18). The step below is the
+      # local gate's command, unchanged (CLAUDE.md "Commands").
+      - uses: taiki-e/install-action@v2
         with:
-          manifest-path: src-tauri/Cargo.toml
-          command: check
-          arguments: ""
+          tool: cargo-deny@0.20.2
+
+      - name: cargo deny
+        working-directory: src-tauri
+        run: cargo deny check
 
       # --workspace is load-bearing, as for cargo test below: without it clippy lints the
       # member crates' libraries only as the root's dependencies, and never their tests or

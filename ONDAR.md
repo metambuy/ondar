@@ -3690,7 +3690,7 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
 ## Principle: verify the instrument before trusting a surprising measurement
 
 When a measurement is surprising, **check the measuring tool before you start explaining the
-result.** This project has now hit the same failure twenty times by the numbering below — twenty-three
+result.** This project has now hit the same failure twenty-one times by the numbering below — twenty-four
 counting the three M2a instances recorded between the fourth and the fifth without a number — in
 as many unrelated tools, and each time the instrument was wrong rather than the thing being
 measured. The three below are the archetypes; the rest are enumerated after them.
@@ -3858,6 +3858,16 @@ error, and only the instrument's check found it; that the chat had recorded it a
 than a no is the principle working, not a reason to leave it out (fifteen to seventeen were also caught
 before a wrong conclusion, and are numbered). **The rule earned: a probe whose silence would be the result gets a positive control that must
 make it speak, run on the probe as placed.**
+
+**Twenty-first, 2026-10-18 (the lints, commit 1b): a count read off a build that had stopped.** CI's
+clippy on `944aec9` reported `assert_is_empty` at 14 sites and the handover carried the number
+into its report, its OPEN.md entry and the chat's order ("fix the 14"). The real count was 23.
+Clippy checks crate by crate and a crate's `-D` errors end the build, so the 14 were the first
+crate's sites only; the other nine, in `ondar-map` and `ondar-stations`, were never checked. The
+instrument degraded quietly: the log had the errors it had reached, not a note that it stopped
+counting. The fix was the scope check above — run the same lint on the same toolchain locally,
+where `--fix` iterates to a clean tree, and count there. The number in a tool's output is a count
+of what it reached, not of what exists, until the run is known to have completed.
 
 ## Principle candidate: mutation testing proves sensitivity only where a test can reach (2026-09-16)
 
