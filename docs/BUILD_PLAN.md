@@ -386,7 +386,7 @@ feel more like a map; rivers too (D-map).
 - [ ] Persistent place labels.
 - [ ] The B5 fix.
 - [ ] Format v4, if the lines need it.
-- [ ] `missing_docs` flip: `ondar-map` and `ondar-map-build`; `laea.rs:1-2` if not already done
+- [ ] `missing_docs` flip: `ondar-map` and `ondar-map-build`; `laea.rs:1-4` if not already done
       (re-dated in the 2026-10-19 docs commit).
 
 **Exit:** France at 3 km/pt shows regions, the major rivers and the top-N place names; paint within
@@ -445,8 +445,8 @@ testers. Merged to `main` 2026-10-16; the tag `m6lite-done` waits for the exit b
 - [x] Crash reporting and telemetry: **none** (decided 2026-10-12)
 
 **0.1.1** (branch `v0.1.1` from `main`, 23 October 2026, Martín at the Mac; scoped 2026-10-19 —
-`_handover/m5-ranking-2026-10-19.md`; ONDAR.md, "M5 re-cut (2026-10-19)"). The ranking's items 1–5
-plus any tester defect reported before the 23rd. Nothing else.
+`_handover/m5-ranking-2026-10-19.md`; ONDAR.md, "M5 re-cut (2026-10-19)"). The ranking's items 1–5,
+F1's instrument (added 2026-10-26), plus any tester defect reported before the 23rd. Nothing else.
 
 - [ ] The version-pin test (the three version fields agree) — review finding, 0.1.1 regardless of
       feedback
@@ -457,6 +457,9 @@ plus any tester defect reported before the 23rd. Nothing else.
 - [ ] B5 explained (where the region label comes from and why it is empty; read-only, feeds M5c);
       fixed only if a one-liner
 - [ ] The 750 cap **explained** in this session, not lifted (M5a lifts it after the measurement)
+- [ ] F1's instrument (`_handover/feedback/`): a play receipt log line if the shell logs nothing
+      at INFO on `play`; read-only on the engine channel and on sleep/device-change handling; the
+      fix is 0.1.2
 - [ ] Any tester defect
 - [ ] Release as 0.1.0's steps (ONDAR.md, "Release 0.1.0"): version bump, tag, build with the env
       sourced in-command, the tar.gz-from-stapled-.app check, the DMG's own submit and staple, spike
@@ -492,14 +495,12 @@ through the prompt; a log file arrives.
 
 Every milestone closes with the same ritual:
 
-1. From `src-tauri`: `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings &&
-   cargo test --workspace`. Plain `cargo test` (no `-p`/`--workspace`) only runs the root
-   `ondar` package's tests — `ondar-audio`'s tests (the ones that matter) need `--workspace` or
-   `-p ondar-audio`; see CLAUDE.md, "Traps".
-2. From the repo root: `pnpm typecheck && pnpm lint`
-3. A manual smoke pass against that milestone's exit criteria, with the app actually running
-4. Update `ONDAR.md` / `docs/` with anything learned that contradicts this plan
-5. Commit, and tag `m2-done`, `m3-done`, … following `m1-done`'s pattern
+1. Every gate in CLAUDE.md, "Gates before any task is done", each judged by its exit status; that
+   list is the only one, so this plan cannot drift from it. Bare `cargo test` runs the root package
+   only and skips every crate (CLAUDE.md, "Traps").
+2. A manual smoke pass against that milestone's exit criteria, with the app actually running
+3. Update `ONDAR.md` / `docs/` with anything learned that contradicts this plan
+4. Commit, and tag `m2-done`, `m3-done`, … following `m1-done`'s pattern
 
 ---
 

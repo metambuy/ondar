@@ -39,9 +39,9 @@ ESLint holds the line (`eslint.config.js`, the boundary block): `fetch`, `XMLHtt
 | M1 | Scaffold + audio engine | done, `m1-done` |
 | M2 | Tray + NSPanel popover | done, `m2a-done` … `m2d-done` |
 | M3 | Stations, cache, country/station UI | done, `m3a-done`, `m3b-done`, `defect-a-done`, `m3c-done`, `defect-b-done` |
-| M4 | The drawn map | M4a `m4a-done`, M4b `m4b-done` (2026-10-07); **M4c `m4c-done` (2026-10-12). **M4 complete**; M6-lite next (before M5)** |
+| M4 | The drawn map | done: M4a `m4a-done`, M4b `m4b-done` (2026-10-07), M4c `m4c-done` (2026-10-12). **M4 complete** |
 | M6-lite | Signed, notarised build for testers | released 2026-10-14 (v0.1.0), merged 2026-10-16; exit pending testers, no tag yet |
-| M5 | Five phases (re-cut 2026-10-19): M5a list (cap + search), M5b one row per station, M5d audio UI, M5c map at zoom, M5e system integration and states | 0.1.1 first (23 Oct); then M5a |
+| M5 | Five phases (re-cut 2026-10-19): M5a list (cap + search), M5b one row per station, M5d audio UI, M5c map at zoom, M5e system integration and states | 0.1.1 first (scoped 23 Oct, not started as of 2026-10-26); then M5a |
 | M6 | Signing, notarisation, DMG | |
 
 One milestone per session. Do not start the next milestone's work early, and never leave one with
@@ -63,7 +63,8 @@ failing checks. History: ONDAR.md's milestone sections and `git log --first-pare
 │   └── measure.ts          dev-only harness, inert unless loaded as `panel.html?measure=…`
 └── src-tauri/
     ├── src/                Tauri shell only, no domain logic: lib.rs (events), panel.rs, tray.rs,
-    │                       map.rs (view session), commands/, measure.rs (debug builds only)
+    │                       map.rs (view session), commands/, updater.rs, log_sink.rs,
+    │                       measure.rs (debug builds only)
     ├── resources/map/      world.ondarmap, committed; rebuilt only for a rule change
     ├── Info.plist · tauri.conf.json · tauri.dev.conf.json · capabilities/
     └── crates/
@@ -89,7 +90,7 @@ cd src-tauri
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo deny check      # advisories, licenses, bans, sources (deny.toml); `cargo install cargo-deny --locked`
+cargo deny check      # advisories, licenses, bans, sources (deny.toml); `cargo install cargo-deny --locked --version 0.20.2`
 cargo test -p ondar-map-build --release -- --ignored   # needs the NE inputs; local only
 ```
 

@@ -17,7 +17,9 @@ of the selected country's ranked list, scrolling. No EQ sliders until M5.
 
 ## Prerequisites (macOS, Apple Silicon)
 
-- Rust ≥ 1.91 via rustup (`rustup update stable`)
+- Rust via rustup: the toolchain is pinned by `rust-toolchain.toml` (1.99.1) and `rustup`
+  installs it from the file; no `rustup update`. The crates' MSRV is 1.91 (`rust-version`,
+  `clippy.toml`)
 - Node 26 (what CI pins and what this is developed against)
 - pnpm 12.3.4 — pinned in `package.json`'s `packageManager`, so CI and local installs
   cannot drift apart

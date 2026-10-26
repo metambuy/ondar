@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -89,6 +89,11 @@ popover, never a separate window):
 - Pan and zoom inside the frame: the fit is the initial view and the zoom-out limit, 1.5 km/pt
   the zoom-in limit; for large countries (Russia, USA, Brazil) the subdivisions give the fit
   view its scale, and zooming in brings the coastline detail the resource carries per level.
+  The view stays inside the fit rectangle (D6, 2026-10-01), so outlying territory is not
+  reachable by panning. Insets are drawn at the fit view only (D7); zoomed in, a country's own
+  outlying groups are drawn as land. An inset whose box leaves the pane, meets the controls'
+  rect or overlaps one already drawn is not drawn and is counted in `insets_dropped`; a box is
+  never moved onto the land. See "M4a: decisions during the build".
 - Station dots on the map; a dot click filters the station list to that dot's stations, with a
   chip that clears it, and never plays (decision 3, M4c)
 - Equalizer panel (toggle between map and EQ, or EQ as a second expanded pane)
@@ -124,7 +129,7 @@ tester notices the playing state — see "M5 re-cut (2026-10-19)".
 
 | Layer | Choice | Rationale / notes |
 |---|---|---|
-| Shell | **Tauri v2** (2.11.x) | The point of the exercise. `macos-private-api` (needed for transparency/vibrancy) and `tray-icon` **enabled at M2a** (2026-09-15, `36d50b8`), with `"macOSPrivateApi": true` in `tauri.conf.json` — tauri-build requires the key to match the feature. |
+| Shell | **Tauri v2** (2.12.3 since 2026-10-14; 2.11.5 before — see "Updater") | The point of the exercise. `macos-private-api` (needed for transparency/vibrancy) and `tray-icon` **enabled at M2a** (2026-09-15, `36d50b8`), with `"macOSPrivateApi": true` in `tauri.conf.json` — tauri-build requires the key to match the feature. |
 | Core language | **Rust** (edition 2024; MSRV 1.91 in `Cargo.toml`, matching `stream-download` 0.24.4's own declared requirement) | All logic: networking, cache, audio, DSP, tray, window |
 | UI | **Vite + React 18 + TypeScript** | Thin view layer only; keeps map work tractable |
 | Popover window | **`tauri-nspanel`** (git dep, branch `v2.1`, **pinned to a commit rev**) | Not on crates.io; no releases. `v2.1` API = `PanelBuilder` + `tauri_panel!` macro. Do not use the older `v2` branch (`to_panel()` API). Pinned `rev = c9ec213…` since M2a; see "Verified versions". |
@@ -137,6 +142,7 @@ tester notices the playing state — see "M5 re-cut (2026-10-19)".
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
 | Station API | **Rust** `reqwest` client for radio-browser.info; **`hickory-resolver`** for the SRV lookup | `reqwest` cannot do SRV; a resolver crate is required |
 | Cache | **SQLite** (`rusqlite`, bundled) | Offline country/station lists, favourites, recents |
+| Updater | **`tauri-plugin-updater`** 2.13.3 | Check on launch, prompt in the popover; no capability change, the page reaches only `update_install`. See "Updater". |
 | TS types | **`ts-rs`** | Stable. `tauri-specta` is still 2.0.0-rc.x (rc.25; docs.rs build failing) — revisit when it ships 2.0. |
 
 ### Verified versions (2026-09-08, from `Cargo.lock`)
@@ -156,8 +162,9 @@ not crates.io lookups):
 - `thiserror` — two majors present: `2.0.20` (used directly by `ondar`, `ondar-audio`, `tauri`,
   `rodio`, `stream-download`, `ts-rs`) and `1.0.69` (transitive, via `json-patch` ←
   `tauri-utils`). Not a problem — 1.x/2.x coexist fine — noted for completeness.
-- `window-vibrancy` 0.6.0 — **already in the tree, transitively, via `tauri` itself.** Nothing
-  in Ondar's own `Cargo.toml` depends on it yet. This list previously recorded `0.8.0` here,
+- `window-vibrancy` 0.6.0 **at that date** — transitively via `tauri`, nothing in Ondar's own
+  `Cargo.toml`; 0.8.1 since the tauri 2.12.3 bump (2026-10-14, `433bee5`); still one copy, still
+  not ours. This list previously recorded `0.8.0` here,
   from a crates.io lookup never checked against a lockfile. M2 does not add it — Tauri's
   `set_effects` wraps it; see the `tauri-nspanel` spike note below.
 - `tracing-subscriber` 0.3.23 (env-filter; replaces `env_logger` — its `init()` installs
@@ -280,7 +287,7 @@ before actually adding):
   removed on `RunEvent::Exit`. It covers a real second process only (`open -n`, the inner binary,
   a copy of the bundle at another path); `open Ondar.app` and a Finder double-click against the
   running app start no process and arrive as `RunEvent::Reopen`, wired in `lib.rs`.
-- Tauri CLI **2.11.4** (`@tauri-apps/cli`; the `tauri` crate is 2.11.5). `tauri dev --config
+- At the time, Tauri CLI **2.11.4** (`@tauri-apps/cli`; the `tauri` crate was 2.11.5). `tauri dev --config
   <file>` merges the file into the configuration `generate_context!` bakes in — tauri-codegen
   reads `TAURI_CONFIG` (`lib.rs:83-87`) and tauri-build reruns on it (`lib.rs:472`). The CLI
   source that sets `TAURI_CONFIG` is not readable here (npm ships a binary), so that link is
@@ -328,7 +335,7 @@ TypeScript, stop — it belongs in Rust.
   is a hard dependency; there is no Linux/Windows path to test). **It gates every *push*,
   verifying that push's head commit — not every commit**; see "CI verifies the head of each
   push, not every commit" below. It runs, in order:
-  `pnpm install --frozen-lockfile`; `cargo fmt --all --check`;
+  `pnpm install --frozen-lockfile`; `cargo fmt --all --check`; `cargo deny check`;
   `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`;
   `git diff --exit-code src/bindings` and `test -z "$(git status --porcelain src/bindings)"`;
   `pnpm typecheck`; `pnpm test`; `pnpm lint`; `cargo build`.
@@ -379,8 +386,11 @@ TypeScript, stop — it belongs in Rust.
   `.clamp(`). ESLint fences the renderer boundary (`eslint.config.js`, 2026-10-17: the network
   and storage globals, `<audio>`/`<video>`/`new Audio()`, and any `@tauri-apps/*` import outside
   `src/api.ts`; a violation file produced 7 errors, then was deleted).
-- **`cargo deny` is a gate (2026-10-18), locally and in CI** (`src-tauri/deny.toml`;
-  `EmbarkStudios/cargo-deny-action@v2` after `cargo fmt`). Advisories with `yanked = "deny"`;
+- **`cargo deny` is a gate (2026-10-18), locally and in CI** (`src-tauri/deny.toml`). In CI the
+  binary comes from `taiki-e/install-action@v2` (`tool: cargo-deny@0.20.2`, the version the dev
+  machine runs), then `cargo deny check` runs in `src-tauri/`, after `cargo fmt`.
+  `EmbarkStudios/cargo-deny-action@v2` cannot run there: it is a Docker container action, and
+  GitHub refuses those on a macOS runner (run 39132299485, `ebe9e62`). Advisories with `yanked = "deny"`;
   licenses from the allow-list of the twelve the tree carried that day (MIT, Apache-2.0,
   Apache-2.0 WITH LLVM-exception, BSD-2/3-Clause, ISC, Zlib, Unicode-3.0, MPL-2.0, CC0-1.0,
   MIT-0, 0BSD), a new one added on purpose with the crate that brings it; bans with
@@ -1288,7 +1298,7 @@ on 2026-10-12, mains at its start).
 | the mark's positive control | a 300 ms hold moves the medians from 44–57 to 331–340 | moves | pass |
 | the heavy case with dots (RU, one `+`, wheel) | 56.6 / 56.5 cycles/s at 300 / 178, 0 dropped | ≥ 50, ≤ 5 % | pass |
 | `frame_bench --band` | RU fit 300: neighbours 23 388, land 12 769, subdivisions 1 541 = 37 698 (51 797 at M4b's file) | layer sum asserted | pass |
-| `band_sweep --views` | 0 missing at every fit and over D6's views; dropped Hawaii 140–273 and Svalbard 225–257 only; drawn clearance ≥ 11.98 pt; source ≥ 12 by construction (`world.rs:212`) | 0 / 0; ≥ 11.7 | pass |
+| `band_sweep --views` | 0 missing at every fit and over D6's views; dropped Hawaii 140–273 and Svalbard 225–257 only; drawn clearance ≥ 11.98 pt; source ≥ 12 by construction (`world.rs`, `placeable`'s `clearance_of` check) | 0 / 0; ≥ 11.7 | pass |
 | the resource | 2 865 839 B; `golden-fit.tsv` and `golden-insets.tsv` untouched since `c4fdf13` | < 4.55 MB | pass |
 | dot counts, by test | `the_geo_slices_gather_to_the_recorded_dots`: PT 31 / US 48 / BR 124 / RU 10 groups, PT's 3 outside. `an_inset_s_dots_follow_its_box_honolulu`. `a_dot_under_a_drawn_box_at_the_fit_is_hidden_and_counted`. MapPane 17 (MT) | as recorded | pass |
 | an expired list landing (a scratch copy, the refresh held at a local proxy) | the frames before and after `map dots cause=landed` share `cx`, `cy`, `scale`; dots 26 → 25, located 167 → 169 | the view kept | pass |
@@ -1410,13 +1420,13 @@ may swap c and d. The six decisions:
    notices the playing state".** Martín: testers will not notice. Onboarding parked until a tester
    reports the first launch as confusing.
 
-**0.1.1** is scoped for 23 October on branch `v0.1.1`, Martín at the Mac (BUILD_PLAN, the 0.1.1
+**0.1.1** is scoped for 23 October; not started as of 2026-10-26 (F1, `_handover/feedback/`, adds one item: the play receipt log line). On branch `v0.1.1`, Martín at the Mac (BUILD_PLAN, the 0.1.1
 block under M6-lite): the ranking's items 1–5 — the version-pin test, the hover plate's place
 before count, the favourites star beside the country dropdown (a hypothesis to check with testers,
 not a diagnosed fix), `srv.rs`'s SRV port, B5 explained (fixed only if a one-liner) — plus the cap
 explained and any tester defect reported before the 23rd; nothing else. Released as 0.1.0 was,
 spike 5 on Martín's own 0.1.0 first, both testers asked explicitly for the log file, `/code-review
-main..v0.1.1` before the merge. The docs commit that records this re-cut also re-dates `laea.rs:1-2` (proj4rs 0.2.1,
+main..v0.1.1` before the merge. The docs commit that records this re-cut also re-dates `laea.rs:1-4` (proj4rs 0.2.1,
 2026-10-09, fixes the Q5 defect — "Buy before build"), the one code file it touches, comment only.
 
 ### M6-lite before M5: the plan change (decided 2026-10-12)
@@ -2129,7 +2139,7 @@ Branch `a-sample-rate` off `main` `f7af9dc`. Fix `ebb414f`. Records in `_handove
   bootstraps (`source/uniform.rs:49-68`). It bootstraps again only when its `Take { n: span }`
   runs out (`uniform.rs:77-88`).
 - The queue reports the current source's span (`queue.rs:151`). `Equalizer` forwards
-  `RingSource`'s span (`eq.rs:247`), and that is `None` (`ring.rs:144`): "this span never ends".
+  `RingSource`'s span (`Equalizer::current_span_len`), and that is `None` (`RingSource::current_span_len`): "this span never ends".
 - So the converter's last bootstrap happened a few milliseconds after the **first** station's
   source attached. It kept that station's rate **and channel count** for the life of the process.
   The device and the mixer were 48 000 and correct throughout.
@@ -2184,7 +2194,7 @@ and from M5 the spectrum, run at one rate forever: one set of biquad coefficient
   and M5's bin map varying per station.
 
 **Side effects, stated:**
-- **The EQ always runs at the sink's rate.** Its bypass above 0.45 fs (`eq.rs:125-128`) no
+- **The EQ always runs at the sink's rate.** Its bypass above 0.45 fs (`coefficients`, the `center_hz >= sample_rate * 0.45` guard) no
   longer disables the 16 kHz band on a 22 050 station. Linear interpolation leaves images above
   11 kHz, and a boost at 16 kHz would lift them. **Unreachable today:** no EQ UI ships until M5
   and every gain defaults to 0 dB, so no boost exists to lift anything. M5 owns the measurement
@@ -4056,7 +4066,7 @@ read, and the smaller items). Its verdicts:
 | `IcyReader` | `icy-metadata` 0.6.0 | lossy titles, the S2 boundary test; adds `http`, `tracing`, `urlencoding` | keep (the buy at M1; no defect to fix now) |
 | `ClockedReader` / `Arrivals` | none; consumes `stream-download`'s `on_progress` (the buy) | defect B's bound | keep |
 | `RateLimit` | `tracing-throttle` 0.4.4; `EnvFilter` | the one-target key (signatures pass every distinct line), the first line as evidence | keep |
-| LAEA | `proj4rs` 0.2.1 (2026-10-09) — **the Q5 defect is fixed**: 0.2.0's `laea.rs:318` k' on the first term only, now `y * (…)`, diffed | the no-geometry-crate, no-panic-shape runtime; `None` at the antipode; the helpers either way | keep; `laea.rs:1-2`'s reason is dated, rewrite it in M5's first commit |
+| LAEA | `proj4rs` 0.2.1 (2026-10-09) — **the Q5 defect is fixed**: 0.2.0's `laea.rs:318` k' on the first term only, now `y * (…)`, diffed | the no-geometry-crate, no-panic-shape runtime; `None` at the antipode; the helpers either way | keep; the reason was re-dated in `311afb4` (2026-10-19), `laea.rs:1-4` |
 | Simplification | `geo` 0.33.1 `Simplify`/`SimplifyVwPreserve` — already bought | `tune` to the measured ≤ 0.25 pt, `exact`, the O(n) `is_simple`, the hybrid (P4) | keep |
 | Station gathering | `geo` `Dbscan`/`KMeans`, `supercluster` 3.0.8, `petal-clustering` 0.14.0 | Q4's rule (non-transitive 10 km, densest first, lowest uuid), `tests/dots.rs`'s pinned counts; `geo` is refused in the runtime crate | keep |
 | EQ soft clip | none for one function (`fundsp` 0.23.0 is a graph; AudioUnit sits outside rodio) | the measured curve and its closed-form inverse; one divide in the callback | keep |

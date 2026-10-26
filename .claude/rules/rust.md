@@ -14,14 +14,16 @@ paths:
   `unwrap` in each crate), and `expect()` on thread spawn and tokio runtime construction (the OS
   refused a thread; the app cannot run). The decode thread spawns per `play`, not only at startup.
 - **Every exempt site carries `#[allow(clippy::expect_used, reason = "…")]`**, the reason being
-  the attribute: `rg 'allow\(clippy::expect_used' src-tauri` lists them (the thread and runtime
-  spawns, and the four outside both exemptions by decision, ONDAR.md "M3a: the station directory,
+  the attribute: `rg -U 'allow\(\s*clippy::expect_used' src-tauri` lists them; rustfmt wraps the
+  attribute, so the pattern spans lines. They are the thread and runtime spawns, and the four
+  outside both exemptions by decision (ONDAR.md "M3a: the station directory,
   built" and the defect B review: `stream.rs::build_client`, `bounded_storage()`'s const,
   `ReqwestTransport::new`, `lib.rs`'s `.build(context)`). Describe a new one the same way or
   handle the error. Tests, examples and the build tool may panic and print (crate-root
-  `cfg_attr(test, allow(…))`, a per-file `#![allow]`). Three source-scan tests refuse what clippy
+  `cfg_attr(test, allow(…))`, a per-file `#![allow]`). Four source-scan tests refuse what clippy
   cannot: `hls/` the six panic shapes (`unreachable!` included), `adts.rs` those and indexing,
-  the `ondar-map` crate those, indexing and `.clamp(`.
+  the `ondar-map` crate those, indexing and `.clamp(`, and `ondar-audio/src/lib.rs` the callback
+  chain's log call sites (audio.md 15).
 - **The release profile is `panic = "abort"`:** a panic anywhere ends the app.
 - **One shell error type**, `OndarError` (`thiserror`), serialised `{ code, message }` with a stable
   `code`. Engine failure reasons are `types::ErrorCode`, carried in `PlaybackState::Error`.
