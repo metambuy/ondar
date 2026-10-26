@@ -60,7 +60,18 @@ pub struct RingStats {
     /// while blocked, so a stalled network and a momentarily starved but healthy ring look
     /// identical through it.
     pub pushed: AtomicU64,
+    /// Monotonic count of calls the audio callback has made into [`RingSource::next`], real
+    /// samples and underrun silence alike, advanced by [`PULL_STRIDE`] once per that many calls
+    /// (F1 instrument 7d, 0.1.1). It means "the output device is pulling": it stops dead when the
+    /// callback stops — the output device lost — while the ring and the state stand still, which
+    /// nothing else here can see (an underrun needs a pull). The engine's tick reads it; nothing
+    /// in the callback logs or locks.
+    pub pulled: AtomicU64,
 }
+
+/// How many [`RingSource::next`] calls one advance of [`RingStats::pulled`] stands for: the
+/// decode side's 1024-sample cadence, so the callback pays one relaxed atomic per 1024 samples.
+pub const PULL_STRIDE: u32 = 1024;
 
 pub struct RingHandle {
     pub producer: Producer<f32>,
@@ -79,6 +90,8 @@ pub struct RingSource {
     /// Once the producer is gone and the ring is drained, the source ends so rodio can
     /// drop it and the `Player` queue can move on to a replacement.
     finished: bool,
+    /// Calls since `stats.pulled` last advanced; see [`PULL_STRIDE`].
+    pulls: u32,
 }
 
 pub fn ring(sample_rate: SampleRate, channels: ChannelCount) -> (RingHandle, RingSource) {
@@ -89,6 +102,7 @@ pub fn ring(sample_rate: SampleRate, channels: ChannelCount) -> (RingHandle, Rin
         fill: AtomicUsize::new(0),
         capacity,
         pushed: AtomicU64::new(0),
+        pulled: AtomicU64::new(0),
     });
     (
         RingHandle {
@@ -102,6 +116,7 @@ pub fn ring(sample_rate: SampleRate, channels: ChannelCount) -> (RingHandle, Rin
             channels,
             in_underrun: false,
             finished: false,
+            pulls: 0,
         },
     )
 }
@@ -113,6 +128,13 @@ impl Iterator for RingSource {
     fn next(&mut self) -> Option<f32> {
         if self.finished {
             return None;
+        }
+        self.pulls += 1;
+        if self.pulls == PULL_STRIDE {
+            self.pulls = 0;
+            self.stats
+                .pulled
+                .fetch_add(u64::from(PULL_STRIDE), Ordering::Relaxed);
         }
         if let Ok(s) = self.consumer.pop() {
             self.in_underrun = false;
@@ -184,6 +206,48 @@ mod tests {
         assert_eq!(src.next(), Some(0.25));
         assert_eq!(src.next(), Some(0.0));
         assert_eq!(h.stats.underruns.load(Ordering::Relaxed), 2);
+    }
+
+    /// F1 instrument 7d: `pulled` counts the callback's calls, samples and underrun silence
+    /// alike, one stride at a time, and stands still while nobody calls `next()` — a lost output
+    /// device. **Fails if** silence is not counted (a starved ring would read as a stalled
+    /// device), if the stride is not applied, or if pushes move it.
+    #[test]
+    fn pulled_counts_every_call_and_stands_still_without_a_consumer() {
+        let (mut h, mut src) = ring(NonZero::new(48_000).unwrap(), NonZero::new(1).unwrap());
+        for _ in 0..PULL_STRIDE / 2 {
+            h.producer.push(0.5).unwrap();
+        }
+        // Half the stride as samples, half as underrun silence: one advance.
+        for _ in 0..PULL_STRIDE {
+            src.next();
+        }
+        assert_eq!(h.stats.underruns.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            h.stats.pulled.load(Ordering::Relaxed),
+            u64::from(PULL_STRIDE)
+        );
+        // The device stops pulling: the producer fills the ring, `pulled` does not move.
+        for _ in 0..PULL_STRIDE * 4 {
+            h.producer.push(0.25).unwrap();
+        }
+        assert_eq!(
+            h.stats.pulled.load(Ordering::Relaxed),
+            u64::from(PULL_STRIDE)
+        );
+        // One call short of the next stride: still one advance.
+        for _ in 0..PULL_STRIDE - 1 {
+            src.next();
+        }
+        assert_eq!(
+            h.stats.pulled.load(Ordering::Relaxed),
+            u64::from(PULL_STRIDE)
+        );
+        src.next();
+        assert_eq!(
+            h.stats.pulled.load(Ordering::Relaxed),
+            2 * u64::from(PULL_STRIDE)
+        );
     }
 
     #[test]

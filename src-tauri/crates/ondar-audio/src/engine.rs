@@ -45,6 +45,15 @@ use crate::types::{EngineEvent, ErrorCode, IcyMetadata, PlaybackState, Reconnect
 /// How often the engine thread wakes up (absent a command) to run [`Engine::tick`].
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Ticks in `Playing` with the output pulling nothing before one WARN (F1 instrument 7d, 0.1.1):
+/// 5 s. A live callback advances `RingStats::pulled` every [`ring::PULL_STRIDE`] calls, 11–23 ms
+/// at 48–22.05 kHz stereo, so one frozen tick already means no callback; 5 s stands above the
+/// gaps of an output route change or `CoreAudio` restarting IO after wake (a process suspended by
+/// sleep runs no ticks at all), and well inside a listener's patience. Observed trigger: the
+/// output device lost (Bluetooth headphones disconnected, `_handover/feedback/`, F1 "Repro
+/// results"); cpal then stops the stream silently and the state stays `Playing`.
+const OUTPUT_STALL_TICKS: u32 = 50;
+
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
     /// `bitrate_kbps`: the station record's, for the prefetch (M3b commit 6); `None` when the
@@ -358,6 +367,15 @@ struct Engine {
     ticks_since_progress: u32,
     /// Cached at construction — see [`watchdog_ticks`].
     watchdog_ticks: u32,
+    /// `RingStats::pulled` as of the last tick, and how many consecutive ticks it has not
+    /// advanced (the output's progress, F1 instrument 7d; see [`output_stall`]).
+    last_pulled: u64,
+    ticks_since_pull: u32,
+    /// [`OUTPUT_STALL_TICKS`], on the engine so a test harness can shorten it.
+    output_stall_ticks: u32,
+    /// Whether the stall WARN has been written and not yet answered by progress; reset on a
+    /// new ring.
+    output_stall_warned: bool,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -403,6 +421,10 @@ impl Engine {
             last_pushed: 0,
             ticks_since_progress: 0,
             watchdog_ticks: watchdog_ticks(),
+            last_pulled: 0,
+            ticks_since_pull: 0,
+            output_stall_ticks: OUTPUT_STALL_TICKS,
+            output_stall_warned: false,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -510,6 +532,9 @@ impl Engine {
             self.last_pushed = stats.pushed.load(Ordering::Relaxed);
             self.ticks_since_progress = 0;
             self.underrun_ticks.clear();
+            self.last_pulled = stats.pulled.load(Ordering::Relaxed);
+            self.ticks_since_pull = 0;
+            self.output_stall_warned = false;
         }
         let new_underrun = current_underruns > self.last_underruns;
         self.last_underruns = current_underruns;
@@ -544,6 +569,12 @@ impl Engine {
             &mut self.ticks_since_progress,
             stats.pushed.load(Ordering::Relaxed),
         );
+        advance_progress(
+            &mut self.last_pulled,
+            &mut self.ticks_since_pull,
+            stats.pulled.load(Ordering::Relaxed),
+        );
+        self.report_output_stall(&current);
 
         let dwell = dwell_for_tick(
             &mut self.latched_dwell,
@@ -605,6 +636,40 @@ impl Engine {
         }
         if outcome.reset_backoff {
             lock(&session.backoff).reset();
+        }
+    }
+
+    /// F1 instrument 7d: one WARN when the state is `Playing` and the output has pulled nothing
+    /// for `output_stall_ticks`, then one INFO when it pulls again. Logged here, on the engine
+    /// thread, never in the callback chain (audio.md 14–15).
+    fn report_output_stall(&mut self, state: &PlaybackState) {
+        match output_stall(
+            state,
+            self.ticks_since_pull,
+            self.output_stall_ticks,
+            self.output_stall_warned,
+        ) {
+            StallAction::Warn => {
+                self.output_stall_warned = true;
+                let station = lock(&self.shared.session)
+                    .station_id
+                    .clone()
+                    .unwrap_or_default();
+                let format = self.output.map_or_else(
+                    || "output not opened here".to_string(),
+                    |o| format!("output {} Hz, {} ch", o.sample_rate, o.channels),
+                );
+                log::warn!(
+                    "output stalled: nothing pulled for {:.1} s while playing station_id={station} \
+                     ({format}); the output device may be gone",
+                    f64::from(self.output_stall_ticks) * TICK_INTERVAL.as_secs_f64()
+                );
+            }
+            StallAction::Resumed => {
+                self.output_stall_warned = false;
+                log::info!("output resumed: pulling again after the stall warning");
+            }
+            StallAction::None => {}
         }
     }
 
@@ -1244,6 +1309,39 @@ fn advance_progress(last_pushed: &mut u64, ticks_since_progress: &mut u32, pushe
     }
 }
 
+/// What [`Engine::report_output_stall`] writes this tick (F1 instrument 7d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallAction {
+    None,
+    /// The output has pulled nothing for `stall_ticks` while `Playing`: one WARN.
+    Warn,
+    /// After a WARN, the output pulls again: one INFO, and the latch clears.
+    Resumed,
+}
+
+/// The output-stall decision, pure. Only `Playing` can warn: `Paused` and `Buffering` pause the
+/// player, so the ring is not pulled by design; `Idle`, `Connecting` and `Reconnecting` have no
+/// ring attached or not yet pulled. Once warned, nothing more until the output pulls again
+/// (`ticks_since_pull` back to 0), whatever the state does meanwhile.
+fn output_stall(
+    state: &PlaybackState,
+    ticks_since_pull: u32,
+    stall_ticks: u32,
+    warned: bool,
+) -> StallAction {
+    if warned {
+        if ticks_since_pull == 0 {
+            StallAction::Resumed
+        } else {
+            StallAction::None
+        }
+    } else if *state == PlaybackState::Playing && ticks_since_pull >= stall_ticks {
+        StallAction::Warn
+    } else {
+        StallAction::None
+    }
+}
+
 /// How long a connection with this many recent underruns must dwell before resuming. Selected
 /// once, on entry to `Buffering`, and then latched — see [`dwell_for_tick`].
 fn select_dwell(recent_underruns: u32) -> u32 {
@@ -1508,6 +1606,11 @@ mod session_tests {
         /// The decode thread's name, unique per harness: the captured log lines are keyed by it
         /// ([`adts_lines`]).
         decode_thread: String,
+        /// The supervised engine's thread name, unique per harness, for its captured lines.
+        tick_thread: String,
+        /// Set: the harness's output stops pulling (the device lost, F1 test A); cleared, it
+        /// pulls again.
+        output_halted: Arc<AtomicBool>,
         /// Every `Reconnect` count seen while draining (stream-download's internal reconnects,
         /// emitted by `Engine::tick` — only a supervised harness has one), in order.
         reconnects: Mutex<Vec<u64>>,
@@ -1584,6 +1687,11 @@ mod session_tests {
         start_session_with(url, Some(extra), None, Some(test_bounds(TEST_FORMAT)))
     }
 
+    /// The supervised harness's output-stall threshold (F1 instrument 7d): 5 ticks, so the
+    /// device-loss test waits half a second, not production's 5 s. The other harness tests
+    /// keep their puller running, so it never fires there.
+    const TEST_OUTPUT_STALL_TICKS: u32 = 5;
+
     /// The defect B tests' format bound: 2 s. At [`PACE`] that is 256 KiB, a quarter of
     /// Symphonia's 1 MiB search, so the two cannot be confused.
     const TEST_FORMAT: Duration = Duration::from_secs(2);
@@ -1624,45 +1732,54 @@ mod session_tests {
         }
         let bound_seen: Arc<Mutex<Option<(Duration, u32)>>> = Arc::new(Mutex::new(None));
         let bound_gap: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
+        static SESSIONS: AtomicUsize = AtomicUsize::new(0);
+        let n = SESSIONS.fetch_add(1, Ordering::SeqCst);
+        let decode_thread = format!("ondar-decode:test-{n}");
+        let tick_thread = format!("ondar-tick:test-{n}");
+        let tick_name = tick_thread.clone();
         let supervisor = supervised.map(|extra| {
             let stop = Arc::new(AtomicBool::new(false));
             let (session, halt, seen) = (ctx.clone(), stop.clone(), bound_seen.clone());
             let gap_seen = bound_gap.clone();
             let clock = ctx.clock.clone();
             let pause = TICK_INTERVAL + extra.max(tick_delay());
-            thread::spawn(move || {
-                let mut engine = Engine::new(session.shared.clone(), "Ondar/test");
-                engine.session = Some(session);
-                // (the build's seq, ticks that saw it probing with a first byte)
-                let mut probing: Option<(u64, u32)> = None;
-                while !halt.load(Ordering::SeqCst) {
-                    let before = clock.word();
-                    let pre = clock.inputs(0);
-                    let first_byte = pre.since_first_byte.is_some();
-                    if build::phase_of(before) == build::phase::PROBING && first_byte {
-                        let seq = build::seq_of(before);
-                        match &mut probing {
-                            Some((s, n)) if *s == seq => *n += 1,
-                            _ => probing = Some((seq, 1)),
+            thread::Builder::new()
+                .name(tick_name)
+                .spawn(move || {
+                    let mut engine = Engine::new(session.shared.clone(), "Ondar/test");
+                    engine.session = Some(session);
+                    engine.output_stall_ticks = TEST_OUTPUT_STALL_TICKS;
+                    // (the build's seq, ticks that saw it probing with a first byte)
+                    let mut probing: Option<(u64, u32)> = None;
+                    while !halt.load(Ordering::SeqCst) {
+                        let before = clock.word();
+                        let pre = clock.inputs(0);
+                        let first_byte = pre.since_first_byte.is_some();
+                        if build::phase_of(before) == build::phase::PROBING && first_byte {
+                            let seq = build::seq_of(before);
+                            match &mut probing {
+                                Some((s, n)) if *s == seq => *n += 1,
+                                _ => probing = Some((seq, 1)),
+                            }
                         }
+                        engine.tick();
+                        let after = clock.word();
+                        let bounded = build::phase_of(before) == build::phase::PROBING
+                            && build::seq_of(after) == build::seq_of(before)
+                            && build::phase_of(after) >= build::phase::BOUND_FORMAT;
+                        if bounded {
+                            *gap_seen.lock().unwrap() = Some(pre.longest_gap);
+                        }
+                        if bounded
+                            && let Some(since) = clock.inputs(0).since_first_byte
+                            && let Some((_, n)) = probing.take()
+                        {
+                            *seen.lock().unwrap() = Some((since, n));
+                        }
+                        thread::sleep(pause);
                     }
-                    engine.tick();
-                    let after = clock.word();
-                    let bounded = build::phase_of(before) == build::phase::PROBING
-                        && build::seq_of(after) == build::seq_of(before)
-                        && build::phase_of(after) >= build::phase::BOUND_FORMAT;
-                    if bounded {
-                        *gap_seen.lock().unwrap() = Some(pre.longest_gap);
-                    }
-                    if bounded
-                        && let Some(since) = clock.inputs(0).since_first_byte
-                        && let Some((_, n)) = probing.take()
-                    {
-                        *seen.lock().unwrap() = Some((since, n));
-                    }
-                    thread::sleep(pause);
-                }
-            });
+                })
+                .expect("spawn tick thread");
             stop
         });
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1675,10 +1792,14 @@ mod session_tests {
             std::num::NonZero::new(44_100).expect("44100"),
         );
         let player = Arc::new(Player::connect_new(&mixer));
+        let output_halted = Arc::new(AtomicBool::new(false));
+        let halted = output_halted.clone();
         thread::spawn(move || {
             let mut out = mixer_out;
             loop {
-                for _ in out.by_ref().take(4410) {}
+                if !halted.load(Ordering::SeqCst) {
+                    for _ in out.by_ref().take(4410) {}
+                }
                 thread::sleep(Duration::from_millis(50));
             }
         });
@@ -1692,11 +1813,6 @@ mod session_tests {
             sample_rate: std::num::NonZero::new(44_100).expect("44100"),
         };
         capture_logs();
-        static SESSIONS: AtomicUsize = AtomicUsize::new(0);
-        let decode_thread = format!(
-            "ondar-decode:test-{}",
-            SESSIONS.fetch_add(1, Ordering::SeqCst)
-        );
         thread::Builder::new()
             .name(decode_thread.clone())
             .spawn(move || run_session(&session, &url, &client, &handle, &player, prefetch, output))
@@ -1709,6 +1825,8 @@ mod session_tests {
             infos: Mutex::new(Vec::new()),
             titles: Mutex::new(Vec::new()),
             decode_thread,
+            tick_thread,
+            output_halted,
             reconnects: Mutex::new(Vec::new()),
             supervisor,
             bound_seen,
@@ -1740,12 +1858,14 @@ mod session_tests {
         }
         fn log(&self, r: &log::Record) {
             let msg = r.args().to_string();
-            const KEPT: [&str; 5] = [
+            const KEPT: [&str; 7] = [
                 "adts front end",
                 "build",
                 "play received",
                 "stop received",
                 "play station_id=",
+                "output stalled",
+                "output resumed",
             ];
             if KEPT.iter().any(|p| msg.starts_with(p)) {
                 let name = thread::current().name().unwrap_or_default().to_string();
@@ -1852,6 +1972,77 @@ mod session_tests {
         let before = lines_containing("stop received", "").len();
         engine.stop();
         assert!(lines_containing("stop received", "").len() > before);
+    }
+
+    /// The kept `output stalled` / `output resumed` lines this harness's engine thread logged.
+    fn tick_lines(h: &Harness, prefix: &str) -> Vec<(log::Level, String)> {
+        CAPTURED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _, m)| *t == h.tick_thread && m.starts_with(prefix))
+            .map(|(_, level, m)| (*level, m.clone()))
+            .collect()
+    }
+
+    /// Wait up to `within` for `f` to hold, polling every 20 ms; the timeout is a hang guard.
+    fn eventually(within: Duration, f: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            if f() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        f()
+    }
+
+    /// F1 instrument 7d, the device-loss case (Martín's test A, 2026-10-26: Bluetooth
+    /// headphones disconnected while playing): the session reaches `Playing`, then the output
+    /// stops pulling while the state stays `Playing` — no underrun is counted, because an
+    /// underrun needs a pull. **What it pins:** exactly one `output stalled` WARN from the engine
+    /// thread, with the state still `Playing`; then, when the output pulls again, one `output
+    /// resumed` INFO. **Fails if** the engine stops watching `RingStats::pulled`, if the WARN is
+    /// gated on a state the device-loss case does not reach, or if the latch lets it repeat.
+    #[test]
+    fn a_lost_output_while_playing_logs_one_stall_warning_then_resumes() {
+        let server = paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(wav_response(10.0)),
+            bytes_per_sec: 0,
+            after: After::Close,
+        }]);
+        let h = start_session_supervised(&server.url);
+        let seen = states_until(&h, GUARD, |s| *s == PlaybackState::Playing);
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        h.output_halted.store(true, Ordering::SeqCst);
+        assert!(
+            eventually(Duration::from_secs(10), || !tick_lines(
+                &h,
+                "output stalled"
+            )
+            .is_empty()),
+            "no stall warning within 10 s of the output stopping"
+        );
+        assert_eq!(h.ctx.shared.state(), PlaybackState::Playing);
+        let warned = tick_lines(&h, "output stalled");
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert_eq!(warned[0].0, log::Level::Warn);
+        assert!(warned[0].1.contains("station_id=u1"), "{warned:?}");
+        // Several thresholds more, still halted: the latch holds it to one line.
+        thread::sleep(TICK_INTERVAL * TEST_OUTPUT_STALL_TICKS * 3);
+        assert_eq!(tick_lines(&h, "output stalled").len(), 1);
+        h.output_halted.store(false, Ordering::SeqCst);
+        assert!(
+            eventually(Duration::from_secs(10), || !tick_lines(
+                &h,
+                "output resumed"
+            )
+            .is_empty()),
+            "no resume line within 10 s of the output pulling again"
+        );
+        assert_eq!(tick_lines(&h, "output resumed")[0].0, log::Level::Info);
+        h.ctx.cancel();
     }
 
     /// Record one engine event: a state is returned, `Started` and `StreamInfo` are kept on
@@ -1998,6 +2189,8 @@ mod session_tests {
             infos: Mutex::new(Vec::new()),
             titles: Mutex::new(Vec::new()),
             decode_thread: String::new(),
+            tick_thread: String::new(),
+            output_halted: Arc::new(AtomicBool::new(false)),
             reconnects: Mutex::new(Vec::new()),
             supervisor: None,
             bound_seen: Arc::new(Mutex::new(None)),
@@ -4674,6 +4867,66 @@ mod tick_tests {
     const REFILLED: usize = 800;
     // Stand-in for watchdog_ticks(), which is 150 at the default retry_timeout.
     const WD: u32 = 150;
+
+    /// F1 instrument 7d: in `Playing`, the stall warning comes exactly at the threshold and not
+    /// one tick before. **Fails if** the comparison is off by one or the threshold is ignored.
+    #[test]
+    fn output_stall_warns_at_the_threshold_in_playing() {
+        let n = OUTPUT_STALL_TICKS;
+        assert_eq!(
+            output_stall(&PlaybackState::Playing, n - 1, n, false),
+            StallAction::None
+        );
+        assert_eq!(
+            output_stall(&PlaybackState::Playing, n, n, false),
+            StallAction::Warn
+        );
+    }
+
+    /// F1 instrument 7d: no state but `Playing` warns, even at ten times the threshold —
+    /// `Paused` and `Buffering` stop pulling the ring by design, the others have none pulled.
+    /// **Fails if** the gate admits any of them.
+    #[test]
+    fn output_stall_never_warns_outside_playing() {
+        let n = OUTPUT_STALL_TICKS;
+        for state in [
+            PlaybackState::Paused,
+            PlaybackState::Buffering,
+            PlaybackState::Idle,
+            PlaybackState::Connecting,
+            PlaybackState::Reconnecting { attempt: 1 },
+        ] {
+            assert_eq!(
+                output_stall(&state, n * 10, n, false),
+                StallAction::None,
+                "{state:?}"
+            );
+        }
+    }
+
+    /// F1 instrument 7d: warned, nothing more while the output stays stalled, whatever the
+    /// state; `Resumed` once it pulls again; then a new stall can warn. **Fails if** the latch
+    /// repeats the WARN, never clears, or reports a resume without progress.
+    #[test]
+    fn output_stall_warns_once_then_resumes_then_can_warn_again() {
+        let n = OUTPUT_STALL_TICKS;
+        assert_eq!(
+            output_stall(&PlaybackState::Playing, n + 1, n, true),
+            StallAction::None
+        );
+        assert_eq!(
+            output_stall(&PlaybackState::Paused, n * 3, n, true),
+            StallAction::None
+        );
+        assert_eq!(
+            output_stall(&PlaybackState::Playing, 0, n, true),
+            StallAction::Resumed
+        );
+        assert_eq!(
+            output_stall(&PlaybackState::Playing, n, n, false),
+            StallAction::Warn
+        );
+    }
 
     /// Baseline inputs: only `capacity` set. Each test overrides the two or three fields it
     /// actually cares about, which is the point of the struct.

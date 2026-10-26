@@ -1622,6 +1622,31 @@ log was grepped for `@icloud`, `AuthKey` and `cn_` afterwards: 0, 0, 0 each time
 - **Still pending:** spike 4, the friend's Mac (a Finder open with no Gatekeeper warning, a station
   playing); 0.1.1 through the prompt (spike 5).
 
+**0.1.1: F1's instruments (2026-10-26, branch `v0.1.1`).** F1, read: the engine thread wedges in
+rodio's `Player::clear()`, which waits without a timeout for the output to drain; the trigger,
+observed in Martín's repro, is the output device lost (Bluetooth headphones disconnected), after
+which cpal stops the stream silently and the state stays `Playing` (`_handover/v011-f1-reads-2026-10-26.md`,
+`_handover/feedback/`). The fix is 0.1.2. 0.1.1 makes the next occurrence readable in a tester's log:
+
+- **7a, receipt lines.** `play command station_id=…` in the shell's `play` command; `play received
+  station_id=…` and `stop received` as the first acts of `Engine::play` and `Engine::stop`, before the
+  `clear`. The existing `play station_id=… prefetch_bytes=…` means "past `clear`". A bad URL or a
+  device that will not open also ends without it, with an Error state that is emitted to the page and
+  not logged.
+- **7d, the output-stall WARN.** Step 0, buy before build: rodio's `Player::get_pos()` moves only while
+  the mixer pulls, but it also advances on the ring's underrun silence, returns to 0 on `clear`, and the
+  tick harness has no `Player`; `RingStats::pushed` is the decode side and `underruns` counts events,
+  and an underrun needs a pull. Neither sees a callback that stopped. **Built:** `RingStats::pulled`,
+  advanced by `ring::PULL_STRIDE` (1024) per that many `RingSource::next` calls, samples and silence
+  alike, one relaxed atomic per stride, no log or lock in the callback. The engine's tick counts ticks
+  without progress (`advance_progress`, as for `pushed`) and the pure `output_stall` decides: one WARN
+  when the state is `Playing` and nothing was pulled for `OUTPUT_STALL_TICKS` (50, 5 s; the reason is
+  on the constant), latched until the output pulls again, then one INFO. `Paused` and `Buffering` pause
+  the player, so the ring is not pulled by design; they never warn. Test A's log would read: `play
+  station_id=…`, then about 5 s after the disconnect `output stalled: nothing pulled for 5.0 s while
+  playing station_id=… (output 44100 Hz, 2 ch); the output device may be gone`, then on a later click
+  `play command`, `play received` and no `play station_id=`.
+
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
 Branch `defect-b` off `main` `d1b127b`. Records in `_handover/`:
