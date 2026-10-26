@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -1247,6 +1247,19 @@ Ink 7.49 / 13.28 / 11.97 (the chat's figures, recomputed by `mapContrast.test.ts
   in an ellipsis on one line.
 - **MT's line** keeps its bottom-left corner.
 - **Inset labels are unchanged.** They are names, and Martín judges them in the captures.
+
+**B5 explained (2026-10-26, 0.1.1 item 6): why many dots show no place.** A dot's place is
+radio-browser's `state`, never a lookup. The chain: `Station.state` (the record's free text,
+trimmed by `normalise::stations`) → the shell's `points_of`, which copies it as the point's
+`place` → `gather`'s `Group`, whose place is `majority`: the most frequent **non-empty** place
+among the dot's members, ties to the first met, `""` when none is non-empty → `MapHit.place` →
+the plate and the chip (`dotText`). So a dot is empty only when **every** member's `state` is
+empty, for three reasons: (1) radio-browser's `state` is often blank (29 of PT-60's 56 rows), so
+small and single-station dots are often wholly blank; (2) favourites and recents stored before
+cache v3 carry no `state` and read back as `""` (the lists refill on refresh; the two stores do
+not); (3) nothing derives a place from a dot's coordinates: no admin-1 test against the
+resource, no reverse geocoding. **Not a one-liner:** `majority` is already lenient; filling the
+gaps needs a data source (the resource's admin-1 polygons, or another), which is M5c's.
 
 ### M4c: built and measured (2026-10-12)
 
@@ -2637,6 +2650,16 @@ stated below). Tests 148 → **162** (audio 65, shell 40, stations 57).
   event had cleared `refreshing…` before the first open at +6.2 s; online, FR 3 652 → 750 in
   1.28 s and PT 344 → 327 in 0.45 s through the new exit path) and `m3a-acc-08` (countries
   240 rows refreshed at launch, `fetched_at` current). 0 `ERROR`/panic across the three runs.
+
+**The 750 cap explained (2026-10-26, 0.1.1 item 6).** It is applied at **ranking truncation,
+before storage**: when a country's fetch lands, the service ranks the rows with
+`filter::rank(rows, filter::CAP)` (drop, de-duplicate, sort, then `truncate(750)`) and stores
+that list together with the uncapped row count. It is **not the request**: the client asks for
+`STATIONS_LIMIT` (100 000) rows, and `SERVER_DEFAULT_LIMIT` (1000) only guards against a
+silently truncated answer. It is **not the cache**, which stores what it is given. Search is not
+capped (`rank(…, usize::MAX)`). So "France (3690)" in the dropdown is the server's count for the
+country and "750 stations" is the stored, ranked list. Lifting it is M5a's, after the measurement
+(D-cap, "M5 re-cut (2026-10-19)").
 
 ### M3 Step 0: the live data, measured (2026-09-21)
 

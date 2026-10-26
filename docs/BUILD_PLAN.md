@@ -458,9 +458,10 @@ at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; 
 - [ ] The favourites-list star to the right of the country dropdown — layout only; **a hypothesis
       to check with testers, not a diagnosed fix**
 - [ ] `srv.rs` uses the SRV record's port (latent defect, small, testable)
-- [ ] B5 explained (where a dot's place comes from and why it is empty) and the 750 cap explained
+- [x] B5 explained (where a dot's place comes from and why it is empty) and the 750 cap explained
       (where it is applied); read-only, into ONDAR.md; B5 fixed only if a one-liner; the cap is not
-      lifted (M5a)
+      lifted (M5a). Done 2026-10-26: ONDAR.md, "B5 explained" (M4c Step 0) and "The 750 cap
+      explained" (M3a); B5 is not a one-liner (it needs a data source, M5c)
 - [ ] F1 instruments: **7a** receipt lines (INFO in the shell's `play` command, and at the top of
       `Engine::play` and `Engine::stop`, before `clear`); **7d** one WARN when the state is
       `Playing` and the output has pulled nothing for 5 s; **7c** release builds keep symbols
