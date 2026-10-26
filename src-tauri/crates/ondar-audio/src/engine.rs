@@ -668,7 +668,16 @@ impl Engine {
         Ok((player, out))
     }
 
+    /// The receipt line comes first (F1 instrument 7a, 0.1.1): before `cancel_session` and before
+    /// the output's `clear`, which waits without a timeout for the output to drain and so never
+    /// returns once the output has stopped pulling (F1, `_handover/v011-f1-reads-2026-10-26.md`).
+    /// The `play station_id=…` line further down means "past `clear`". A bad URL or a device that
+    /// will not open also ends without that line, but with an Error state; so a wedge reads as
+    /// "received, then neither an Error state nor `play station_id=`". The Error state is
+    /// emitted to the page and not logged (the shell's event forwarder logs only a failed emit),
+    /// so in the log alone the two look alike; the page shows the error.
     fn play(&mut self, url: &str, station_id: &str, bitrate_kbps: Option<u32>) {
+        log::info!("play received station_id={station_id}");
         self.cancel_session();
         let generation = self.shared.begin_session(station_id.to_string());
         self.shared.paused.store(false, Ordering::Relaxed);
@@ -748,7 +757,10 @@ impl Engine {
         }
     }
 
+    /// The receipt line comes first, before the output's `clear` (F1 instrument 7a; see `play`).
+    /// It also fires once at shutdown, from `run`'s final `stop`.
     fn stop(&mut self) {
+        log::info!("stop received");
         self.cancel_session();
         self.shared.paused.store(false, Ordering::Relaxed);
         if let Some(p) = &self.player {
@@ -1713,10 +1725,11 @@ mod session_tests {
         }
     }
 
-    /// The test binary's logger (defect B C4): keeps the ADTS front end's lines, and since F1
-    /// the build's, with the name of the thread that logged them and their level, so a test
-    /// reads its own session's lines however many sessions run in parallel. Installed once;
-    /// the other lines are dropped.
+    /// The test binary's logger (defect B C4): keeps the ADTS front end's lines, since F1 the
+    /// build's, and since 0.1.1 the engine's receipt lines (`play received`, `stop received`,
+    /// `play station_id=`), with the name of the thread that logged them and their level, so a
+    /// test reads its own session's lines however many sessions run in parallel. Installed
+    /// once; the other lines are dropped.
     struct Capture;
 
     static CAPTURED: Mutex<Vec<(String, log::Level, String)>> = Mutex::new(Vec::new());
@@ -1727,7 +1740,14 @@ mod session_tests {
         }
         fn log(&self, r: &log::Record) {
             let msg = r.args().to_string();
-            if msg.starts_with("adts front end") || msg.starts_with("build") {
+            const KEPT: [&str; 5] = [
+                "adts front end",
+                "build",
+                "play received",
+                "stop received",
+                "play station_id=",
+            ];
+            if KEPT.iter().any(|p| msg.starts_with(p)) {
                 let name = thread::current().name().unwrap_or_default().to_string();
                 CAPTURED.lock().unwrap().push((name, r.level(), msg));
             }
@@ -1778,6 +1798,60 @@ mod session_tests {
             })
             .map(|(_, _, m)| m.clone())
             .collect()
+    }
+
+    /// The kept lines whose message starts with `prefix` and contains `needle`, from any
+    /// thread: the engine's receipt lines are logged on whichever thread drives `Engine`, and a
+    /// unique `needle` (a station id) keeps parallel tests apart.
+    fn lines_containing(prefix: &str, needle: &str) -> Vec<(log::Level, String)> {
+        CAPTURED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, m)| m.starts_with(prefix) && m.contains(needle))
+            .map(|(_, level, m)| (*level, m.clone()))
+            .collect()
+    }
+
+    /// F1 instrument 7a (0.1.1): `Engine::play` logs `play received station_id=…` at INFO as its
+    /// first act, before `cancel_session` and the output's `clear` — the call that wedged the
+    /// engine thread in F1 when the output had stopped pulling — and `Engine::stop` logs `stop
+    /// received`. A URL that fails to parse returns with an Error state before the output is
+    /// opened and before the `play station_id=` line, so the test needs no device. **What it
+    /// pins:** the receipt line exists, at INFO, for the station asked for, and a parse failure
+    /// writes no `play station_id=` line (so in a log, "received, then neither an Error state nor
+    /// `play station_id=`" reads as a wedge). **Fails if** either receipt line is removed, moved
+    /// after the early returns, or demoted below INFO.
+    #[test]
+    fn play_and_stop_log_their_receipt_before_touching_the_output() {
+        capture_logs();
+        let (ev_tx, ev_rx) = mpsc::channel();
+        let mut engine = Engine::new(test_ctx(ev_tx).shared, "Ondar/test");
+        engine.play("not a url", "st-7a-receipt", None);
+        assert_eq!(
+            lines_containing("play received", "st-7a-receipt"),
+            vec![(
+                log::Level::Info,
+                "play received station_id=st-7a-receipt".to_string()
+            )]
+        );
+        assert_eq!(
+            lines_containing("play station_id=", "st-7a-receipt"),
+            [] as [(log::Level, String); 0]
+        );
+        let error_state = ev_rx.try_iter().any(|ev| {
+            matches!(
+                ev,
+                EngineEvent::State(PlaybackState::Error {
+                    code: ErrorCode::InvalidUrl,
+                    ..
+                })
+            )
+        });
+        assert!(error_state, "a bad URL ends in an InvalidUrl error state");
+        let before = lines_containing("stop received", "").len();
+        engine.stop();
+        assert!(lines_containing("stop received", "").len() > before);
     }
 
     /// Record one engine event: a state is returned, `Started` and `StreamInfo` are kept on
