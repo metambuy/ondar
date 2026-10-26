@@ -25,13 +25,29 @@ struct RawCountry {
 /// - **`XX`** (empty name, 1 station) and any code that is not `[A-Z]{2}` after upper-casing
 ///   are **dropped** — `bycountrycodeexact` could not address them meaningfully.
 /// - Order: as served, which is alphabetical by name.
+///
+/// The dropped codes are logged once per call, at INFO (0.1.1): they are radio-browser's data,
+/// served on every refresh, not a fault of ours to warn about.
 pub fn countries(json: &[u8]) -> Result<Vec<Country>, ParseError> {
+    let (out, dropped) = countries_with_drops(json)?;
+    if !dropped.is_empty() {
+        log::info!(
+            "countries: dropped {} code(s) the directory cannot address: {dropped:?}",
+            dropped.len()
+        );
+    }
+    Ok(out)
+}
+
+/// [`countries`], with the raw codes it dropped, in the order served.
+pub(crate) fn countries_with_drops(json: &[u8]) -> Result<(Vec<Country>, Vec<String>), ParseError> {
     let raw: Vec<RawCountry> = serde_json::from_slice(json)?;
     let mut out: Vec<Country> = Vec::with_capacity(raw.len());
+    let mut dropped = Vec::new();
     for r in raw {
         let code = r.iso_3166_1.trim().to_ascii_uppercase();
         if code.len() != 2 || !code.bytes().all(|b| b.is_ascii_uppercase()) || code == "XX" {
-            log::warn!("countries: dropping code {:?} ({:?})", r.iso_3166_1, r.name);
+            dropped.push(r.iso_3166_1);
             continue;
         }
         if let Some(existing) = out.iter_mut().find(|c| c.code == code) {
@@ -44,7 +60,7 @@ pub fn countries(json: &[u8]) -> Result<Vec<Country>, ParseError> {
             station_count: r.stationcount,
         });
     }
-    Ok(out)
+    Ok((out, dropped))
 }
 
 #[derive(Deserialize)]
@@ -167,6 +183,18 @@ mod tests {
         );
         assert!(!cs.iter().any(|c| c.code == "XX"));
         assert_eq!(cs.iter().filter(|c| c.code == "DE").count(), 1);
+    }
+
+    /// 0.1.1 item 8: the codes the census drops are returned to the caller, which logs them once
+    /// per fetch at INFO; a WARN per row made every countries refresh fail the `tauri:dev` gate's
+    /// "no WARN line" on radio-browser's own data. **What it pins:** on the recorded list exactly
+    /// `XX` is dropped, and the list itself is unchanged. **Fails if** the drop rule widens or
+    /// narrows, or the dropped codes stop being reported.
+    #[test]
+    fn the_dropped_codes_are_reported_once_not_warned_per_row() {
+        let (cs, dropped) = countries_with_drops(COUNTRIES).expect("parses");
+        assert_eq!(dropped, ["XX"]);
+        assert_eq!(cs, countries(COUNTRIES).expect("parses"));
     }
 
     #[test]
