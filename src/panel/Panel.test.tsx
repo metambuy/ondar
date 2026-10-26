@@ -149,6 +149,20 @@ describe("Panel offline", () => {
     expect(screen.getByText("1 favourites · 0 recents")).toBeTruthy();
   });
 
+  // 0.1.1 item 4: the ★ toggle sits to the right of the country dropdown, in the same row, right
+  // after it — layout only, a hypothesis to check with testers (BUILD_PLAN M5a), not a diagnosed
+  // fix. Fails if the toggle goes back before the select, or leaves the row.
+  it("puts the favourites toggle right after the country dropdown, in its row", async () => {
+    render(<Panel />);
+    await settle();
+    const select = screen.getByRole("combobox");
+    const star = screen.getByRole("button", { name: "Favourites and recents" });
+    expect(select.compareDocumentPosition(star) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const row = document.querySelector("[data-measure='country_row']");
+    expect(star.parentElement).toBe(row);
+    expect(star.previousElementSibling?.contains(select)).toBe(true);
+  });
+
   // M4b commit 7: with no band in the layout no map pane is mounted, and with a band the platter
   // is mounted at the band's size with the `− fit +` row at the rect Rust gave. Fails if the
   // pane mounts on a collapsed layout, or if the page sizes the platter itself.
