@@ -444,29 +444,37 @@ testers. Merged to `main` 2026-10-16; the tag `m6lite-done` waits for the exit b
       link filled at the 0.1.0 release)
 - [x] Crash reporting and telemetry: **none** (decided 2026-10-12)
 
-**0.1.1** (branch `v0.1.1` from `main`, 23 October 2026, Martín at the Mac; scoped 2026-10-19 —
-`_handover/m5-ranking-2026-10-19.md`; ONDAR.md, "M5 re-cut (2026-10-19)"). The ranking's items 1–5,
-F1's instrument (added 2026-10-26), plus any tester defect reported before the 23rd. Nothing else.
+**0.1.1** (branch `v0.1.1` from `main`, started 2026-10-26; the release on a later day with Martín
+at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; plan
+`_handover/v011-plan.md`), superseding the 2026-10-19 list. Nothing else.
 
-- [ ] The version-pin test (the three version fields agree) — review finding, 0.1.1 regardless of
-      feedback
-- [ ] Hover plate: the place before the count (one component)
+- [x] F1 reads (`_handover/v011-f1-reads-2026-10-26.md`): the engine thread wedges in rodio's
+      `Player::clear()`, which waits without a timeout for an output that has stopped pulling; the
+      trigger, observed in Martín's repro, is loss of the output device (Bluetooth headphones
+      disconnected), not sleep alone. **The fix is 0.1.2** (follow the default output device; never
+      block the engine thread on the output); 0.1.1 ships only the instruments below
+- [ ] The version-pin test (the three version fields agree) — review finding
+- [ ] Hover plate: the place before the count (the dot-filter chip follows; it reads as the plate)
 - [ ] The favourites-list star to the right of the country dropdown — layout only; **a hypothesis
       to check with testers, not a diagnosed fix**
 - [ ] `srv.rs` uses the SRV record's port (latent defect, small, testable)
-- [ ] B5 explained (where the region label comes from and why it is empty; read-only, feeds M5c);
-      fixed only if a one-liner
-- [ ] The 750 cap **explained** in this session, not lifted (M5a lifts it after the measurement)
-- [ ] F1's instrument (`_handover/feedback/`): a play receipt log line if the shell logs nothing
-      at INFO on `play`; read-only on the engine channel and on sleep/device-change handling; the
-      fix is 0.1.2
-- [ ] Any tester defect
-- [ ] Release as 0.1.0's steps (ONDAR.md, "Release 0.1.0"): version bump, tag, build with the env
-      sourced in-command, the tar.gz-from-stapled-.app check, the DMG's own submit and staple, spike
-      2 on the DMG, `cn release draft/upload/publish`, feed check (0.1.0 → 200 with 0.1.1, 0.1.1 →
-      204). **Spike 5 on Martín's own 0.1.0 first** ("Ondar 0.1.1 available · Update", installs and
-      restarts); then the testers, both asked explicitly for the log file (the `m6lite-done` exit
-      needs one). `/code-review main..v0.1.1` before the merge
+- [ ] B5 explained (where a dot's place comes from and why it is empty) and the 750 cap explained
+      (where it is applied); read-only, into ONDAR.md; B5 fixed only if a one-liner; the cap is not
+      lifted (M5a)
+- [ ] F1 instruments: **7a** receipt lines (INFO in the shell's `play` command, and at the top of
+      `Engine::play` and `Engine::stop`, before `clear`); **7d** one WARN when the state is
+      `Playing` and the output has pulled nothing for 5 s; **7c** release builds keep symbols
+      (Step 0 measures the options against 0.1.0's 10 880 KiB). 7b (page errors forwarded) is out:
+      see M6
+- [ ] `countries: dropping code "XX"`: one INFO line per fetch instead of a WARN per row, so the
+      `tauri:dev` gate's "no WARN line" reads literally
+- [x] Tester defects: none as of 2026-10-26 13:28
+- [ ] Release as 0.1.0's steps (ONDAR.md, "Release 0.1.0"): version bump (three fields), tag, build
+      with the env sourced in-command, the tar.gz-from-stapled-.app check, the DMG's own submit and
+      staple, spike 2 on the DMG, `cn release draft/upload/publish`, feed check (0.1.0 → 200 with
+      0.1.1, 0.1.1 → 204). **Spike 5 on Martín's own 0.1.0 first** ("Ondar 0.1.1 available ·
+      Update", installs and restarts); then the testers, both asked explicitly for the log file (the
+      `m6lite-done` exit needs one). `/code-review main..v0.1.1` before the merge
 
 **Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release
 workflow.
@@ -486,6 +494,9 @@ through the prompt; a log file arrives.
 - [ ] Signing and notarisation in a CI release workflow (`APPLE_*` secrets)
 - [ ] Universal binary (aarch64 + x86_64)
 - [ ] README with screenshots, credits (Natural Earth, radio-browser.info), licence
+- [ ] Page-error forwarding (0.1.1's 7b: `window.onerror` and `unhandledrejection` to one Rust
+      command that logs at WARN): dropped from 0.1.1 on 2026-10-26 because the F1 reads showed the
+      page alive; kept for testers in general
 
 **Exit:** a notarised DMG that a stranger can open on a clean Mac without Gatekeeper warnings.
 
