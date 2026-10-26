@@ -268,7 +268,7 @@ describe("Panel's dot filter", () => {
     await expandedWithPT();
     await clickMap(hitB);
     expect(rows()).toEqual(["B"]);
-    expect(chip()!.textContent).toBe("✕ 1 station · Lisboa");
+    expect(chip()!.textContent).toBe("✕ Lisboa · 1 station");
     esc();
     await settle();
     expect(escapes).toBe(0);

@@ -349,9 +349,9 @@ describe("StationList", () => {
   it("14. the chip's text for n = 1 and 3, with and without a place; none without a filter", async () => {
     const cases: [MapHit, string][] = [
       [{ uuids: ["PT-A"], n: 1, place: "" }, "✕ 1 station"],
-      [{ uuids: ["PT-A"], n: 1, place: "Lisboa" }, "✕ 1 station · Lisboa"],
+      [{ uuids: ["PT-A"], n: 1, place: "Lisboa" }, "✕ Lisboa · 1 station"],
       [{ uuids: ["PT-A", "PT-B", "PT-C"], n: 3, place: "" }, "✕ 3 stations"],
-      [{ uuids: ["PT-A", "PT-B", "PT-C"], n: 3, place: "Porto" }, "✕ 3 stations · Porto"],
+      [{ uuids: ["PT-A", "PT-B", "PT-C"], n: 3, place: "Porto" }, "✕ Porto · 3 stations"],
     ];
     const view = render(list(country("PT")));
     await resolve(requests()[0], listed("PT", ["A", "B", "C"]));

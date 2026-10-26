@@ -521,14 +521,14 @@ describe("MapPane", () => {
     }
   };
 
-  // 19. Hover (decision 7, amended at k+4b): entering a dot shows "n station(s) · place" (the
-  //     count alone when the place is empty, "station" for one) on the controls' plate, an HTML
+  // 19. Hover (decision 7, amended at k+4b; the place first since 0.1.1): entering a dot shows
+  //     "place · n station(s)" (the count alone when the place is empty, "station" for one) on the controls' plate, an HTML
   //     element over the SVG, `aria-hidden` like the dots. A dot in the pane's left half puts it
   //     `LABEL_GAP_PT` right of the dot's edge, one in the right half `LABEL_GAP_PT` left of it,
   //     centred on the dot vertically; leaving clears it; a new frame drops it (the dot may have
   //     moved). Fails on the wrong text, a label outward of the dot or off its centre line, an
   //     SVG `<text>` (8 px, unreadable at k+4), one exposed, or one that outlives its dot.
-  it("19. hover: the count and place on the plate beside the dot, cleared on leave", () =>
+  it("19. hover: the place and count on the plate beside the dot, cleared on leave", () =>
     withHeight(async () => {
       const { container } = await mounted();
       act(() => pulls[0].resolve(withDots(1, three)));
@@ -537,7 +537,7 @@ describe("MapPane", () => {
       const c = dotCircles(container);
       fireEvent.pointerEnter(c[0]);
       let t = tip(container)!;
-      expect(t.textContent).toBe("64 stations · Lisboa");
+      expect(t.textContent).toBe("Lisboa · 64 stations");
       expect(t.classList.contains(styles.mapPlate)).toBe(true);
       expect(t.getAttribute("aria-hidden")).toBe("true");
       let b = box(t);
@@ -599,7 +599,7 @@ describe("MapPane", () => {
         fireEvent.pointerLeave(c[i]);
       }
       fireEvent.pointerEnter(c[4]);
-      expect(tip(container)!.textContent).toBe(`64 stations · ${long}`);
+      expect(tip(container)!.textContent).toBe(`${long} · 64 stations`);
     }));
 
   // 20. `map:changed` (the dots installed, or a landed refresh regathered) wakes the pull loop:
