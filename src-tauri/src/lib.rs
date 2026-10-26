@@ -407,4 +407,59 @@ mod tests {
              diverge from the real config"
         );
     }
+
+    /// The three version fields, compared: `None` when they agree, else a message naming each.
+    /// `conf` and `package_json` are the files' text; `cargo` is the root package's version.
+    fn version_mismatch(conf: &str, package_json: &str, cargo: &str) -> Option<String> {
+        let read = |text: &str, file: &str| -> String {
+            let v: serde_json::Value =
+                serde_json::from_str(text).unwrap_or_else(|e| panic!("{file} parses: {e}"));
+            v["version"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{file} has a string version"))
+                .to_string()
+        };
+        let tauri = read(conf, "tauri.conf.json");
+        let npm = read(package_json, "package.json");
+        (tauri != cargo || npm != cargo).then(|| {
+            format!(
+                "versions disagree: tauri.conf.json {tauri}, package.json {npm}, Cargo.toml {cargo}"
+            )
+        })
+    }
+
+    /// 0.1.1 item 2 (the M6-lite review's finding): the version a release ships is written in
+    /// three places — `tauri.conf.json` (what the bundle and the updater report), the root
+    /// `Cargo.toml` package (`CARGO_PKG_VERSION`, the startup line's) and `package.json` — and a
+    /// bump that misses one ships a release that names two versions. **What it pins:** all three
+    /// are equal. **Fails if** any one is bumped alone.
+    #[test]
+    fn the_three_version_fields_agree() {
+        assert_eq!(
+            version_mismatch(
+                include_str!("../tauri.conf.json"),
+                include_str!("../../package.json"),
+                env!("CARGO_PKG_VERSION"),
+            ),
+            None
+        );
+    }
+
+    /// The comparison itself, on a planted mismatch, so the check above cannot pass by comparing
+    /// nothing. **Fails if** `version_mismatch` stops looking at any one field.
+    #[test]
+    fn a_planted_version_mismatch_is_named() {
+        let conf = r#"{"version": "0.1.1"}"#;
+        let npm = r#"{"version": "0.1.0"}"#;
+        assert_eq!(
+            version_mismatch(conf, npm, "0.1.1").as_deref(),
+            Some("versions disagree: tauri.conf.json 0.1.1, package.json 0.1.0, Cargo.toml 0.1.1")
+        );
+        assert_eq!(
+            version_mismatch(npm, conf, "0.1.1").as_deref(),
+            Some("versions disagree: tauri.conf.json 0.1.0, package.json 0.1.1, Cargo.toml 0.1.1")
+        );
+        assert!(version_mismatch(conf, conf, "0.1.0").is_some());
+        assert_eq!(version_mismatch(conf, conf, "0.1.1"), None);
+    }
 }
