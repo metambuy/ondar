@@ -386,15 +386,10 @@ struct Engine {
     ticks_since_progress: u32,
     /// Cached at construction — see [`watchdog_ticks`].
     watchdog_ticks: u32,
-    /// `RingStats::pulled` as of the last tick, and how many consecutive ticks it has not
-    /// advanced (the output's progress, F1 instrument 7d; see [`output_stall`]).
-    last_pulled: u64,
-    ticks_since_pull: u32,
+    /// The output's progress, F1 instrument 7d; see [`OutputWatch`]. Reset on a new ring.
+    output_watch: OutputWatch,
     /// [`OUTPUT_STALL_TICKS`], on the engine so a test harness can shorten it.
     output_stall_ticks: u32,
-    /// Whether the stall WARN has been written and not yet answered by progress; reset on a
-    /// new ring.
-    output_stall_warned: bool,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -440,10 +435,8 @@ impl Engine {
             last_pushed: 0,
             ticks_since_progress: 0,
             watchdog_ticks: watchdog_ticks(),
-            last_pulled: 0,
-            ticks_since_pull: 0,
+            output_watch: OutputWatch::default(),
             output_stall_ticks: OUTPUT_STALL_TICKS,
-            output_stall_warned: false,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -551,9 +544,7 @@ impl Engine {
             self.last_pushed = stats.pushed.load(Ordering::Relaxed);
             self.ticks_since_progress = 0;
             self.underrun_ticks.clear();
-            self.last_pulled = stats.pulled.load(Ordering::Relaxed);
-            self.ticks_since_pull = 0;
-            self.output_stall_warned = false;
+            self.output_watch = OutputWatch::new(stats.pulled.load(Ordering::Relaxed));
         }
         let new_underrun = current_underruns > self.last_underruns;
         self.last_underruns = current_underruns;
@@ -588,12 +579,12 @@ impl Engine {
             &mut self.ticks_since_progress,
             stats.pushed.load(Ordering::Relaxed),
         );
-        advance_progress(
-            &mut self.last_pulled,
-            &mut self.ticks_since_pull,
+        let stall = self.output_watch.tick(
+            &current,
             stats.pulled.load(Ordering::Relaxed),
+            self.output_stall_ticks,
         );
-        self.report_output_stall(&current);
+        self.report_output_stall(stall);
 
         let dwell = dwell_for_tick(
             &mut self.latched_dwell,
@@ -661,15 +652,9 @@ impl Engine {
     /// F1 instrument 7d: one WARN when the state is `Playing` and the output has pulled nothing
     /// for `output_stall_ticks`, then one INFO when it pulls again. Logged here, on the engine
     /// thread, never in the callback chain (audio.md 14–15).
-    fn report_output_stall(&mut self, state: &PlaybackState) {
-        match output_stall(
-            state,
-            self.ticks_since_pull,
-            self.output_stall_ticks,
-            self.output_stall_warned,
-        ) {
+    fn report_output_stall(&self, action: StallAction) {
+        match action {
             StallAction::Warn => {
-                self.output_stall_warned = true;
                 let station = lock(&self.shared.session)
                     .station_id
                     .clone()
@@ -685,7 +670,6 @@ impl Engine {
                 );
             }
             StallAction::Resumed => {
-                self.output_stall_warned = false;
                 log::info!("output resumed: pulling again after the stall warning");
             }
             StallAction::None => {}
@@ -1337,10 +1321,55 @@ enum StallAction {
     Resumed,
 }
 
+/// The output-stall bookkeeping for one ring, pure (F1 instrument 7d): `RingStats::pulled` as of
+/// the last tick, the stall count [`output_stall`] reads, and the WARN latch.
+///
+/// The count is consecutive `Playing` ticks with no pull. A pull zeroes it; a non-`Playing`
+/// tick (the player paused, nothing pulls by design) zeroes it too, unless warned: then it
+/// holds, so that 0 while warned can only mean the output pulled again, and "output resumed"
+/// is never written for a pause.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct OutputWatch {
+    last_pulled: u64,
+    ticks_since_pull: u32,
+    /// The WARN has been written and not yet answered by progress.
+    warned: bool,
+}
+
+impl OutputWatch {
+    fn new(pulled: u64) -> Self {
+        Self {
+            last_pulled: pulled,
+            ..Self::default()
+        }
+    }
+
+    /// One tick: `state` as read this tick, `pulled` the ring's counter now. Returns what to
+    /// log, and moves the latch with it.
+    fn tick(&mut self, state: &PlaybackState, pulled: u64, stall_ticks: u32) -> StallAction {
+        if pulled != self.last_pulled {
+            self.last_pulled = pulled;
+            self.ticks_since_pull = 0;
+        } else if *state == PlaybackState::Playing {
+            self.ticks_since_pull = self.ticks_since_pull.saturating_add(1);
+        } else if !self.warned {
+            self.ticks_since_pull = 0;
+        }
+        let action = output_stall(state, self.ticks_since_pull, stall_ticks, self.warned);
+        match action {
+            StallAction::Warn => self.warned = true,
+            StallAction::Resumed => self.warned = false,
+            StallAction::None => {}
+        }
+        action
+    }
+}
+
 /// The output-stall decision, pure. Only `Playing` can warn: `Paused` and `Buffering` pause the
 /// player, so the ring is not pulled by design; `Idle`, `Connecting` and `Reconnecting` have no
 /// ring attached or not yet pulled. Once warned, nothing more until the output pulls again
-/// (`ticks_since_pull` back to 0), whatever the state does meanwhile.
+/// (`ticks_since_pull` back to 0, which [`OutputWatch::tick`] allows only for a pull), whatever
+/// the state does meanwhile.
 fn output_stall(
     state: &PlaybackState,
     ticks_since_pull: u32,
@@ -4962,6 +4991,94 @@ mod tick_tests {
         assert_eq!(
             output_stall(&PlaybackState::Playing, n, n, false),
             StallAction::Warn
+        );
+    }
+
+    /// No action: what `watch_ticks` returns for a stretch that logs nothing.
+    const QUIET: [StallAction; 0] = [];
+
+    /// Drives `watch` through `ticks` ticks of `state` with the ring's `pulled` counter at
+    /// `pulled` (standing still), collecting every action that is not `None`.
+    fn watch_ticks(
+        watch: &mut OutputWatch,
+        state: &PlaybackState,
+        pulled: u64,
+        ticks: u32,
+    ) -> Vec<StallAction> {
+        (0..ticks)
+            .map(|_| watch.tick(state, pulled, OUTPUT_STALL_TICKS))
+            .filter(|a| *a != StallAction::None)
+            .collect()
+    }
+
+    /// F1 instrument 7d, review finding 2026-10-27: a pause longer than the threshold, then
+    /// Resume. rodio's `Pausable` does not pull the ring while paused, and the engine ticks right
+    /// after the Resume command, before the callback has strided once. **What it pins:** the
+    /// stall count runs only over consecutive `Playing` ticks, so the first `Playing` tick after
+    /// the pause, with `pulled` not yet moved, writes nothing; a real stall after it still
+    /// warns at the threshold. **Fails if** the count carries the paused ticks into `Playing`
+    /// (the unfixed code: a false "output may be gone" WARN on every such resume).
+    #[test]
+    fn output_watch_a_long_pause_then_resume_does_not_warn() {
+        let n = OUTPUT_STALL_TICKS;
+        let mut w = OutputWatch::new(100);
+        assert_eq!(watch_ticks(&mut w, &PlaybackState::Playing, 100, 1), QUIET);
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Paused, 100, n * 2),
+            QUIET
+        );
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Playing, 100, n - 1),
+            QUIET,
+            "warned within n - 1 Playing ticks of a resume"
+        );
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Playing, 100, 1),
+            vec![StallAction::Warn],
+            "a real stall after the resume must still warn at n"
+        );
+    }
+
+    /// F1 instrument 7d: the same edge from `Buffering`, which pauses the player for its dwell
+    /// (longer than the threshold after an underrun burst). **What it pins:** `Buffering` ticks
+    /// do not count toward the stall, so `Buffering` ≥ threshold then `Playing` writes nothing
+    /// on the first `Playing` tick. **Fails if** non-`Playing` ticks feed the count.
+    #[test]
+    fn output_watch_a_long_buffering_then_playing_does_not_warn() {
+        let n = OUTPUT_STALL_TICKS;
+        let mut w = OutputWatch::new(7);
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Buffering, 7, n * 2),
+            QUIET
+        );
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Playing, 7, n - 1),
+            QUIET
+        );
+    }
+
+    /// F1 instrument 7d: warned, then paused and resumed while the output is still dead (the
+    /// device gone, the user tries pause/play). **What it pins:** "output resumed" means
+    /// `pulled` advanced, never that a pause cleared the count: no `Resumed` and no second WARN
+    /// through the pause and the dead resume; `Resumed` once `pulled` moves. **Fails if** a
+    /// non-`Playing` tick zeroes the count while warned (a naive fix for the pause edge: it
+    /// logs a false "output resumed" on the first paused tick).
+    #[test]
+    fn output_watch_warn_pause_resume_still_dead_logs_no_resume() {
+        let n = OUTPUT_STALL_TICKS;
+        let mut w = OutputWatch::new(0);
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Playing, 0, n),
+            vec![StallAction::Warn]
+        );
+        assert_eq!(watch_ticks(&mut w, &PlaybackState::Paused, 0, n * 2), QUIET);
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Playing, 0, n * 3),
+            QUIET
+        );
+        assert_eq!(
+            watch_ticks(&mut w, &PlaybackState::Playing, 1024, 1),
+            vec![StallAction::Resumed]
         );
     }
 
