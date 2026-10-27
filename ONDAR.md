@@ -1646,8 +1646,10 @@ which cpal stops the stream silently and the state stays `Playing` (`_handover/v
 - **7a, receipt lines.** `play command station_id=…` in the shell's `play` command; `play received
   station_id=…` and `stop received` as the first acts of `Engine::play` and `Engine::stop`, before the
   `clear`. The existing `play station_id=… prefetch_bytes=…` means "past `clear`". A bad URL or a
-  device that will not open also ends without it, with an Error state that is emitted to the page and
-  not logged.
+  device that will not open also ends without it, with an Error state; since 0.1.1 item 9c every
+  entry into Error is logged once at WARN where every state is written (`Shared::write_state`:
+  `playback error: code=… station_id=…: message`). So a wedge reads as "received, then neither a
+  `playback error` WARN nor `play station_id=`".
 - **7d, the output-stall WARN.** Step 0, buy before build: rodio's `Player::get_pos()` moves only while
   the mixer pulls, but it also advances on the ring's underrun silence, returns to 0 on `clear`, and the
   tick harness has no `Player`; `RingStats::pushed` is the decode side and `underruns` counts events,

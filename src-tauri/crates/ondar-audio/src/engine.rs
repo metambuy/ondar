@@ -181,6 +181,13 @@ impl Shared {
     /// `State(Playing)` is sent before `Started`, so a listener sees the state first; every
     /// entry into `Playing` after the first (an underrun's refill, a resume, a reconnect after
     /// playback) finds `started` set.
+    ///
+    /// Every state is written here, so an entry into `Error` is logged here, once, at WARN, with
+    /// its code, message and station (0.1.1 item 9c): before, an Error reached only the page, and
+    /// a bad URL or a device that would not open read in a log like F1's wedge. Only a write that
+    /// lands is logged (a stale session's, or a repeat of the current state, is not), and the line
+    /// is written after the session lock is released. Never on the audio callback's thread: no
+    /// state is written from the callback chain.
     fn write_state(&self, from: Option<u64>, s: PlaybackState) {
         let mut session = lock(&self.session);
         if from.is_some_and(|generation| generation != session.generation) {
@@ -194,11 +201,23 @@ impl Shared {
             *guard = s.clone();
         }
         let playing = s == PlaybackState::Playing;
+        let error = match &s {
+            PlaybackState::Error { code, message } => Some((
+                *code,
+                message.clone(),
+                session.station_id.clone().unwrap_or_default(),
+            )),
+            _ => None,
+        };
         let _ = self.events.send(EngineEvent::State(s));
         if playing && !session.started {
             session.started = true;
             let station_id = session.station_id.clone().unwrap_or_default();
             let _ = self.events.send(EngineEvent::Started { station_id });
+        }
+        drop(session);
+        if let Some((code, message, station_id)) = error {
+            log::warn!("playback error: code={code:?} station_id={station_id}: {message}");
         }
     }
 
@@ -737,10 +756,9 @@ impl Engine {
     /// the output's `clear`, which waits without a timeout for the output to drain and so never
     /// returns once the output has stopped pulling (F1, `_handover/v011-f1-reads-2026-10-26.md`).
     /// The `play station_id=…` line further down means "past `clear`". A bad URL or a device that
-    /// will not open also ends without that line, but with an Error state; so a wedge reads as
-    /// "received, then neither an Error state nor `play station_id=`". The Error state is
-    /// emitted to the page and not logged (the shell's event forwarder logs only a failed emit),
-    /// so in the log alone the two look alike; the page shows the error.
+    /// will not open also ends without that line, but with an Error state, which `write_state`
+    /// logs at WARN (`playback error: …`, 0.1.1 item 9c); so a wedge reads as "received, then
+    /// neither a `playback error` WARN nor `play station_id=`".
     fn play(&mut self, url: &str, station_id: &str, bitrate_kbps: Option<u32>) {
         log::info!("play received station_id={station_id}");
         self.cancel_session();
@@ -1858,7 +1876,7 @@ mod session_tests {
         }
         fn log(&self, r: &log::Record) {
             let msg = r.args().to_string();
-            const KEPT: [&str; 7] = [
+            const KEPT: [&str; 8] = [
                 "adts front end",
                 "build",
                 "play received",
@@ -1866,6 +1884,7 @@ mod session_tests {
                 "play station_id=",
                 "output stalled",
                 "output resumed",
+                "playback error",
             ];
             if KEPT.iter().any(|p| msg.starts_with(p)) {
                 let name = thread::current().name().unwrap_or_default().to_string();
@@ -1939,8 +1958,8 @@ mod session_tests {
     /// received`. A URL that fails to parse returns with an Error state before the output is
     /// opened and before the `play station_id=` line, so the test needs no device. **What it
     /// pins:** the receipt line exists, at INFO, for the station asked for, and a parse failure
-    /// writes no `play station_id=` line (so in a log, "received, then neither an Error state nor
-    /// `play station_id=`" reads as a wedge). **Fails if** either receipt line is removed, moved
+    /// writes no `play station_id=` line (so in a log, "received, then neither a `playback
+    /// error` WARN nor `play station_id=`" reads as a wedge). **Fails if** either receipt line is removed, moved
     /// after the early returns, or demoted below INFO.
     #[test]
     fn play_and_stop_log_their_receipt_before_touching_the_output() {
@@ -2043,6 +2062,24 @@ mod session_tests {
         );
         assert_eq!(tick_lines(&h, "output resumed")[0].0, log::Level::Info);
         h.ctx.cancel();
+    }
+
+    /// 0.1.1 item 9c: every entry into `PlaybackState::Error` writes one WARN with the code, the
+    /// message and the station, from the one place a state is written (`Shared::write_state`).
+    /// Before it an Error reached the page and no log, so in a tester's log a bad URL or a
+    /// device that would not open read like F1's wedge. **What it pins:** a play of an
+    /// unparsable URL leaves exactly one `playback error` WARN for that station, with its code.
+    /// **Fails if** the line is dropped, demoted, or written per attempt rather than per entry.
+    #[test]
+    fn an_error_state_is_logged_once_at_warn() {
+        capture_logs();
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let mut engine = Engine::new(test_ctx(ev_tx).shared, "Ondar/test");
+        engine.play("not a url", "st-9c-error", None);
+        let lines = lines_containing("playback error", "st-9c-error");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, log::Level::Warn);
+        assert!(lines[0].1.contains("code=InvalidUrl"), "{lines:?}");
     }
 
     /// Record one engine event: a state is returned, `Started` and `StreamInfo` are kept on
