@@ -41,7 +41,7 @@ many_single_char_names = "allow"
 
 [package]
 name = "ondar"
-version = "0.1.0"
+version = "0.1.1"
 description = "Ondar — macOS menu bar radio player"
 edition.workspace = true
 rust-version.workspace = true
