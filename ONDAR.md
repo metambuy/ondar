@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-27 (0.1.1: the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -1663,6 +1663,41 @@ which cpal stops the stream silently and the state stays `Playing` (`_handover/v
   station_id=…`, then about 5 s after the disconnect `output stalled: nothing pulled for 5.0 s while
   playing station_id=… (output 44100 Hz, 2 ch); the output device may be gone`, then on a later click
   `play command`, `play received` and no `play station_id=`.
+
+**0.1.1: release symbols (7c, 2026-10-27).** 0.1.0's samples were blind: `strip = true` left one
+symbol, and every Ondar frame read `???`. Step 0 built three variants with `cargo build --release
+--features tauri/custom-protocol`, the flag that makes it the binary `tauri build` ships; without it
+Tauri v2 builds in dev mode. Each variant had its own target directory and its profile set by
+`--config`, at `6256280`, with rustc 1.99.1.
+
+| variant | profile | `ondar` binary | symbols in it | dSYM | `atos` |
+|---|---|---|---|---|---|
+| V0 | `strip = true` (0.1.0's) | 8 782 KiB | 1 | none | — |
+| V1 | `strip = "debuginfo"` | 11 401 KiB (**+2 619**) | 17 276 | none | names, from the binary |
+| V2 | `strip = true`, `debug = "line-tables-only"`, `split-debuginfo = "packed"` | 8 798 KiB (+16) | 1 | 49 500 KiB, UUID = the binary's | names **and file:line**, from the dSYM |
+
+The decision rule was set in the plan review before measuring: V1 if its installed growth is at most
+10 % of 0.1.0's 10 880 KiB, that is 1 088 KiB; otherwise V2. V1 grew 2 619 KiB, so **V2**. The
+installed size is unchanged to within 16 KiB, and a tester's `sample` is readable against the
+release's dSYM. Both checks passed:
+- `atos` resolved an `Engine::play` closure to its name and `mod.rs:847` through the dSYM.
+- It resolved the same address with the sample's `-l <load address>` form.
+
+The dSYM is kept, never uploaded and never bundled:
+- **Where:** `tauri build` leaves it at `src-tauri/target/release/ondar.dSYM`, a symlink into
+  `deps/`. It is copied with `cp -RL` beside the release records (`_handover/v<version>/ondar.dSYM`).
+- **Check:** `dwarfdump --uuid` on the dSYM and on the stapled `.app`'s binary must agree.
+- **If it is lost:** that release's samples are blind for good.
+
+The recipe, for a tester's sample:
+
+```
+atos -arch arm64 -o _handover/v<version>/ondar.dSYM/Contents/Resources/DWARF/ondar-<hash> \
+     -l <the sample's "load address"> <addresses…>
+```
+
+The names are Rust's v0 mangling; pipe them through `rustfilt` to read them. The V0 UUID was not
+compared with 0.1.0's: it cannot match, because 0.1.0 was built with rustc 1.98.0.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

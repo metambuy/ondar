@@ -462,11 +462,12 @@ at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; 
       (where it is applied); read-only, into ONDAR.md; B5 fixed only if a one-liner; the cap is not
       lifted (M5a). Done 2026-10-26: ONDAR.md, "B5 explained" (M4c Step 0) and "The 750 cap
       explained" (M3a); B5 is not a one-liner (it needs a data source, M5c)
-- [ ] F1 instruments: **7a** receipt lines (INFO in the shell's `play` command, and at the top of
+- [x] F1 instruments: **7a** receipt lines (INFO in the shell's `play` command, and at the top of
       `Engine::play` and `Engine::stop`, before `clear`); **7d** one WARN when the state is
       `Playing` and the output has pulled nothing for 5 s; **7c** release builds keep symbols
       (Step 0 measures the options against 0.1.0's 10 880 KiB). 7b (page errors forwarded) is out:
-      see M6
+      see M6. Done 2026-10-27: 7a, 7d, plus Error states logged at WARN (9c); 7c chose the dSYM
+      (ONDAR.md, "0.1.1: release symbols")
 - [ ] `countries: dropping code "XX"`: one INFO line per fetch instead of a WARN per row, so the
       `tauri:dev` gate's "no WARN line" reads literally
 - [x] Tester defects: none as of 2026-10-26 13:28
@@ -475,7 +476,9 @@ at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; 
       staple, spike 2 on the DMG, `cn release draft/upload/publish`, feed check (0.1.0 → 200 with
       0.1.1, 0.1.1 → 204). **Spike 5 on Martín's own 0.1.0 first** ("Ondar 0.1.1 available ·
       Update", installs and restarts); then the testers, both asked explicitly for the log file (the
-      `m6lite-done` exit needs one). `/code-review main..v0.1.1` before the merge
+      `m6lite-done` exit needs one). **Since 7c:** copy `src-tauri/target/release/ondar.dSYM`
+      with `cp -RL` to `_handover/v0.1.1/ondar.dSYM`, and check that `dwarfdump --uuid` matches the
+      stapled `.app`'s binary; never upload it. `/code-review main..v0.1.1` before the merge
 
 **Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release
 workflow.

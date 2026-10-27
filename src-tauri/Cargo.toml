@@ -110,3 +110,8 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+# Release symbols live in a dSYM beside the binary, not in it (0.1.1, F1 instrument 7c; the
+# measurement and the decision: ONDAR.md, "0.1.1: release symbols"). `debug` is what gives the
+# dSYM its DWARF: without it there is nothing to split. The shipped binary stays stripped.
+debug = "line-tables-only"
+split-debuginfo = "packed"
