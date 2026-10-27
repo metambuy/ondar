@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -302,7 +302,9 @@ before actually adding):
   it works" (`ns_visual_effect_view_tagged.rs:92-99`). Ondar sends no private selector; Tauri
   does. A Tauri or window-vibrancy bump could drop it, so the corners are part of every
   milestone's by-eye acceptance. The `wants_layer=false` lead recorded during Step 0 is **void**:
-  rounding works with no layer backing.
+  rounding works with no layer backing. **After the 0.6.0 → 0.8.1 bump** (tauri 2.12.3, `433bee5`)
+  the corners were good in light and dark on the 0.1.0 build (by eye, Martín, 2026-10-26), so the
+  0.8.1 watch item is closed. The by-eye check at each milestone stays.
 
 **MSRV correction (found and closed 2026-09-10, `7bbe332`):** the workspace `Cargo.toml` used
 to declare `rust-version = "1.85"`, but `stream-download` 0.24.4's own manifest declares
@@ -1446,7 +1448,7 @@ may swap c and d. The six decisions:
    notices the playing state".** Martín: testers will not notice. Onboarding parked until a tester
    reports the first launch as confusing.
 
-**0.1.1** is scoped for 23 October; not started as of 2026-10-26 (F1, `_handover/feedback/`, adds one item: the play receipt log line). On branch `v0.1.1`, Martín at the Mac (BUILD_PLAN, the 0.1.1
+**0.1.1** (released 2026-10-27, see "Release 0.1.1") was scoped for 23 October and started 2026-10-26 (F1, `_handover/feedback/`, adds one item: the play receipt log line). On branch `v0.1.1`, Martín at the Mac (BUILD_PLAN, the 0.1.1
 block under M6-lite): the ranking's items 1–5 — the version-pin test, the hover plate's place
 before count, the favourites star beside the country dropdown (a hypothesis to check with testers,
 not a diagnosed fix), `srv.rs`'s SRV port, B5 explained (fixed only if a one-liner) — plus the cap
@@ -1688,19 +1690,93 @@ release's dSYM. Both checks passed:
 
 The dSYM is kept, never uploaded and never bundled:
 - **Where:** `tauri build` leaves it at `src-tauri/target/release/ondar.dSYM`, a symlink into
-  `deps/`. It is copied with `cp -RL` beside the release records (`_handover/v<version>/ondar.dSYM`).
+  `deps/`. It is copied with `cp -RL` beside the release records (`_handover/v<version>/ondar-<version>.dSYM`).
 - **Check:** `dwarfdump --uuid` on the dSYM and on the stapled `.app`'s binary must agree.
 - **If it is lost:** that release's samples are blind for good.
 
 The recipe, for a tester's sample:
 
 ```
-atos -arch arm64 -o _handover/v<version>/ondar.dSYM/Contents/Resources/DWARF/ondar-<hash> \
+atos -arch arm64 -o _handover/v<version>/ondar-<version>.dSYM/Contents/Resources/DWARF/ondar-<hash> \
      -l <the sample's "load address"> <addresses…>
 ```
 
 The names are Rust's v0 mangling; pipe them through `rustfilt` to read them. The V0 UUID was not
 compared with 0.1.0's: it cannot match, because 0.1.0 was built with rustc 1.98.0.
+
+**Release 0.1.1 (2026-10-27).** Tag `v0.1.1` (annotated) = `f60fb9c` (`chore(release): 0.1.1`);
+merged to `main` with `--no-ff`. Records: `_handover/v0.1.1/{build.log,dmg-notarize.log,checks.out,cn-release.log,feed-check.out,release-0.1.1/}`.
+The steps were 0.1.0's. Every command that needed a credential sourced `~/.config/ondar/notary.env`
+inside its own shell.
+
+- **Build** (`pnpm tauri build --bundles app,dmg`): wall 15:09:59 → 15:24:31 UTC, compile 1 m 26 s.
+  The `.app` was notarised in **25 s** (15:23:27 → 15:23:52, submission `735f8e95-0017-49cb-bd27-f89aab827c2c`).
+  The log order is `Stapling app...` (15:23:52), the DMG (15:23:53–15:24:31), then `Ondar.app.tar.gz` +
+  `.sig` (15:24:31).
+- **The keychain wait, a note for the next release.** The binary's `codesign` ran from 15:11:27 to
+  15:23:14, **11 m 47 s**. It was waiting for Martín to answer the keychain prompt for the Developer
+  ID key. Be at the Mac when the compile finishes.
+- **Checks, all exit 0.**
+  - The `.app`: `codesign --verify --deep --strict`, `spctl -a -t exec` (`Notarized Developer ID`)
+    and `stapler validate`.
+  - The `.app` extracted from `Ondar.app.tar.gz`: `stapler validate` and `codesign --verify --deep
+    --strict`.
+  - The DMG (spike 2), after its own notarisation (`d2847ec2-1780-4b2c-bcfe-33bc139c598f`, Accepted
+    in 28 s) and `stapler staple`: `codesign --verify --deep --strict`, `spctl -a -t open --context
+    context:primary-signature` (`Notarized Developer ID`) and `stapler validate`.
+- **SHA-256.**
+  - `Ondar.app.tar.gz` (7 474 353 B): `fed88c7c33dbb1264c9d97051c0c72e925d1b4f0417e2688502b03eff29834a4`.
+  - `Ondar.app.tar.gz.sig` (420 B): `f9cc8b8eb29059904f1823e84425ba9a8daf4d27fa2ae7977be581964860d5ac`.
+  - `Ondar_0.1.1_aarch64.dmg`, stapled (7 765 892 B): `76a3486a29d5bf410e668edc213cc57e322c976f2cb6cd0be7d15986f3f87a22`.
+    Before stapling it was `9a1015c5…3ed6`, not shipped.
+- **CrabNebula Cloud.** `cn --no-quality-reports release draft metambuy/ondar 0.1.1` created release
+  **`01M5YZFRHDQ6AR4E3S9M8XJSTN`**. The two explicit uploads made two assets:
+  - DMG `01M5YZG0KJAHDV0C194K4BPEB2` (`dmg-aarch64`, 7 765 892 B).
+  - Updater `01M5YZGAWHRKZEBP1HJSQX6PZQ` (`darwin-aarch64`, 7 474 353 B), its signature equal to the
+    `.sig`.
+
+  `cn release publish` → `Published`, `pubDate` 2026-10-27T15:33:54Z. No channel.
+- **Feed check.**
+  - `GET …/darwin-aarch64/0.1.0` → **200**, `version "0.1.1"`, `format "app"`. The `url` is asset
+    `01M5YZGAWHRKZEBP1HJSQX6PZQ`, and the file it serves hashes to the tar.gz above.
+  - `…/0.1.1` → **204**, empty body.
+  - The public link `…/download/metambuy/ondar/latest/platform/dmg-aarch64` → 302 → 200,
+    `Ondar_0.1.1_aarch64.dmg`, 7 765 892 B. It is **the stapled DMG, byte for byte**.
+- **Log grep, with a trap for next time.** Every record was grepped for `@icloud`, `AuthKey` and
+  `cn_`: 0, 0, 0. The second grep matched one line, `checks.out`'s own record of the first grep,
+  which names the three patterns. Exclude the record lines when you grep.
+- **Spike 5, on Martín's Mac** (log `_handover/v0.1.1/ondar.2026-10-27-spike5-testA.log`):
+  - 0.1.0 started at 15:36:11Z and logged `update available: 0.1.1 (running 0.1.0)` at 15:36:16.
+  - Update was clicked at 15:36:41: `update downloaded; installing`, then `update installed;
+    restarting`.
+  - `Ondar 0.1.1 starting` at 15:36:42, then `no update: 0.1.1 is current` at 15:36:47.
+  - The prompt works from 0.1.0. A tester seeing it is still open (BUILD_PLAN).
+- **Test A on 0.1.1:** the F1 instruments read as planned ("0.1.1: F1's instruments"). The log
+  shows `play station_id=…` at 15:37:31, then:
+  1. `output stalled: nothing pulled for 5.0 s while playing` at 15:37:46, 15 s after play.
+  2. On the next click, `play command` at 15:37:58.
+  3. `play received` at 15:37:58.
+  4. **No `play station_id=` after that:** the wedge, now named in the log.
+- **The dSYM:** UUID `0EB05B93-A442-30BF-ACC1-FF60F00489FC` (arm64), equal to the stapled `.app`'s
+  binary. It was copied with `cp -RL` to `_handover/v0.1.1/ondar-0.1.1.dSYM` (49 500 KiB). That
+  folder is gitignored, so the dSYM exists **on this Mac only**. It is never uploaded.
+- **Installed size, explained: not +1 064 KiB, but −16 KiB.** The 0.1.1 `.app` is 11 944 KiB
+  (`du -sk`; the bundle, the `.app` extracted from the tar.gz and `/Applications` agree). The
+  10 880 KiB recorded for 0.1.0 was measured on spike 3's build of `7cb845d`
+  (`_handover/m6lite/checks.out`), before the five commits up to `bd2795f`. The shipped 0.1.0
+  `.app`, extracted from its own tar.gz, is **11 960 KiB**.
+  - 0.1.0 → 0.1.1: −16 KiB, all of it the `ondar` binary (8 784 → 8 768 KiB, `du -ak`).
+  - `7cb845d` → shipped 0.1.0: +1 076 KiB, also all the binary (7 708 → 8 784 KiB). By `size -m`,
+    `__TEXT` grew +1 040 KiB and `__DATA_CONST` +32 KiB.
+  - The cause is the code added in between: `433bee5` (tauri 2.12.3) and `16a67bf` (the updater
+    plugin). The split between the two was not measured, since nothing was built in between.
+  - The tar.gz shrank (7 482 959 → 7 474 353 B) with the binary. 7c's 10 % rule was therefore
+    measured against a figure about 10 % low; V2 stands either way, since V1's +2 619 KiB is over
+    10 % of 11 960 too.
+- **Status of the open items (2026-10-27).**
+  - **F1 diagnosed:** loss of the output device, then rodio's untimed `clear`. The fix is 0.1.2.
+  - **F2, an open product note for 0.1.2's scoping** (Martín, 2026-10-27): the update line "Ondar
+    0.1.1 available · Update" does not stand out. It is grey text at the panel's foot.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -3858,6 +3934,8 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    **M6-lite comes next, before M5** (decided 2026-10-12) — see "M6-lite before M5".
    **M6-lite released 2026-10-14** (v0.1.0, Cloud release `01M4XF0DQR6APGTGZ0V2DKZEC2`); exit
    pending testers. Merged 2026-10-16 (`cb6610f`); no tag until the exit — see "Release 0.1.0".
+   **0.1.1 released 2026-10-27** (Cloud release `01M5YZFRHDQ6AR4E3S9M8XJSTN`, tag `v0.1.1`), merged
+   to `main` the same day — see "Release 0.1.1".
 5. **M5 — re-cut 2026-10-19 into five phases**, in order: M5a the list (cap + search), M5b one
    row per station, M5d audio UI (EQ, presets, spectrum), M5c the map at zoom, M5e system
    integration and states. Tray animation, onboarding and coordinate inference parked — see

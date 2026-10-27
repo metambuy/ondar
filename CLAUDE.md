@@ -40,8 +40,8 @@ ESLint holds the line (`eslint.config.js`, the boundary block): `fetch`, `XMLHtt
 | M2 | Tray + NSPanel popover | done, `m2a-done` … `m2d-done` |
 | M3 | Stations, cache, country/station UI | done, `m3a-done`, `m3b-done`, `defect-a-done`, `m3c-done`, `defect-b-done` |
 | M4 | The drawn map | done: M4a `m4a-done`, M4b `m4b-done` (2026-10-07), M4c `m4c-done` (2026-10-12). **M4 complete** |
-| M6-lite | Signed, notarised build for testers | released 2026-10-14 (v0.1.0), merged 2026-10-16; exit pending testers, no tag yet |
-| M5 | Five phases (re-cut 2026-10-19): M5a list (cap + search), M5b one row per station, M5d audio UI, M5c map at zoom, M5e system integration and states | 0.1.1 first (scoped 23 Oct, not started as of 2026-10-26); then M5a |
+| M6-lite | Signed, notarised build for testers | released 2026-10-14 (v0.1.0), merged 2026-10-16; 0.1.1 released and merged 2026-10-27; exit pending testers, no tag yet |
+| M5 | Five phases (re-cut 2026-10-19): M5a list (cap + search), M5b one row per station, M5d audio UI, M5c map at zoom, M5e system integration and states | next: M5a (0.1.1 released 2026-10-27) |
 | M6 | Signing, notarisation, DMG | |
 
 One milestone per session. Do not start the next milestone's work early, and never leave one with
@@ -104,6 +104,8 @@ lines: `cargo fmt`, the clippy line, `cargo test --workspace`, `cargo deny check
 `pnpm test`, `pnpm lint`, and `pnpm tauri:dev` launching with no console error. The toolchain is pinned
 (`rust-toolchain.toml` at the root; `rustup` follows the file, CI names no version), so the gates
 here and in CI run the same compiler; a bump is its own commit (ONDAR.md, "Repo tooling").
+CI also runs `cargo clippy --workspace --all-targets --release -- -D warnings`; run it locally before
+any release build (`944aec9` broke the release build for 10 days unseen, because every gate built debug).
 
 ## Test counts
 

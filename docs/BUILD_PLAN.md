@@ -439,7 +439,8 @@ testers. Merged to `main` 2026-10-16; the tag `m6lite-done` waits for the exit b
 - [ ] `tauri-plugin-updater`, the feed on CrabNebula Cloud: check on launch, a prompt in the popover
       — code in commit 4b (2026-10-14; tauri 2.12.3 in 4a); the 0.1.0 feed is live (0.0.9 → 200
       with 0.1.0, 0.1.0 → 204); ticked when a tester sees the prompt for 0.1.1 (ONDAR.md, "Updater",
-      "Release 0.1.0")
+      "Release 0.1.0"). Spike 5, 2026-10-27, on Martín's own 0.1.0: the prompt appeared, then it
+      installed and restarted into 0.1.1 (ONDAR.md, "Release 0.1.1"); a tester has not seen it yet
 - [x] A tester note in EN / ES / PT, with the known gaps (`docs/testers/`, 2026-10-14; the download
       link filled at the 0.1.0 release)
 - [x] Crash reporting and telemetry: **none** (decided 2026-10-12)
@@ -453,11 +454,12 @@ at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; 
       trigger, observed in Martín's repro, is loss of the output device (Bluetooth headphones
       disconnected), not sleep alone. **The fix is 0.1.2** (follow the default output device; never
       block the engine thread on the output); 0.1.1 ships only the instruments below
-- [ ] The version-pin test (the three version fields agree) — review finding
-- [ ] Hover plate: the place before the count (the dot-filter chip follows; it reads as the plate)
-- [ ] The favourites-list star to the right of the country dropdown — layout only; **a hypothesis
-      to check with testers, not a diagnosed fix**
-- [ ] `srv.rs` uses the SRV record's port (latent defect, small, testable)
+- [x] The version-pin test (the three version fields agree) — review finding (`abde367`)
+- [x] Hover plate: the place before the count (the dot-filter chip follows; it reads as the plate)
+      (`64d3b08`)
+- [x] The favourites-list star to the right of the country dropdown — layout only; **a hypothesis
+      to check with testers, not a diagnosed fix** (`6c70bb3`)
+- [x] `srv.rs` uses the SRV record's port (latent defect, small, testable) (`976ee02`)
 - [x] B5 explained (where a dot's place comes from and why it is empty) and the 750 cap explained
       (where it is applied); read-only, into ONDAR.md; B5 fixed only if a one-liner; the cap is not
       lifted (M5a). Done 2026-10-26: ONDAR.md, "B5 explained" (M4c Step 0) and "The 750 cap
@@ -468,17 +470,20 @@ at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; 
       (Step 0 measures the options against 0.1.0's 10 880 KiB). 7b (page errors forwarded) is out:
       see M6. Done 2026-10-27: 7a, 7d, plus Error states logged at WARN (9c); 7c chose the dSYM
       (ONDAR.md, "0.1.1: release symbols")
-- [ ] `countries: dropping code "XX"`: one INFO line per fetch instead of a WARN per row, so the
-      `tauri:dev` gate's "no WARN line" reads literally
+- [x] `countries: dropping code "XX"`: one INFO line per fetch instead of a WARN per row, so the
+      `tauri:dev` gate's "no WARN line" reads literally (`f751d81`)
 - [x] Tester defects: none as of 2026-10-26 13:28
-- [ ] Release as 0.1.0's steps (ONDAR.md, "Release 0.1.0"): version bump (three fields), tag, build
+- [x] Release as 0.1.0's steps (ONDAR.md, "Release 0.1.0"): version bump (three fields), tag, build
       with the env sourced in-command, the tar.gz-from-stapled-.app check, the DMG's own submit and
       staple, spike 2 on the DMG, `cn release draft/upload/publish`, feed check (0.1.0 → 200 with
       0.1.1, 0.1.1 → 204). **Spike 5 on Martín's own 0.1.0 first** ("Ondar 0.1.1 available ·
       Update", installs and restarts); then the testers, both asked explicitly for the log file (the
       `m6lite-done` exit needs one). **Since 7c:** copy `src-tauri/target/release/ondar.dSYM`
-      with `cp -RL` to `_handover/v0.1.1/ondar.dSYM`, and check that `dwarfdump --uuid` matches the
-      stapled `.app`'s binary; never upload it. `/code-review main..v0.1.1` before the merge
+      with `cp -RL` to `_handover/v0.1.1/ondar-0.1.1.dSYM`, and check that `dwarfdump --uuid` matches the
+      stapled `.app`'s binary; never upload it. `/code-review main..v0.1.1` before the merge.
+      Done 2026-10-27: tag `v0.1.1` = `f60fb9c`, Cloud release `01M5YZFRHDQ6AR4E3S9M8XJSTN`, feed
+      and download checked, spike 5 passed, merged to `main` (ONDAR.md, "Release 0.1.1"); the
+      testers next
 
 **Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release
 workflow.
