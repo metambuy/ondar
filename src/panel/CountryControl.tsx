@@ -1,8 +1,9 @@
 // The country control (M3b 1b, decision 1: a native `<select>` — 240 rows, keyboard type-ahead
 // and a native height for free; a searchable list is a later commit if this proves poor by
-// hand), and before it the ★ toggle that switches the list to the favourites and recents
+// hand), and after it the ★ toggle that switches the list to the favourites and recents
 // (`source.ts`; acceptance item 2, finding C — the stores left the select's menu, where they sat
-// out of view). Renders what Rust answers and reports a choice; the selection itself lives in
+// out of view). The toggle moved from before the select to after it in 0.1.1, layout only: a
+// hypothesis to check with testers (BUILD_PLAN M5a), not a diagnosed fix. Renders what Rust answers and reports a choice; the selection itself lives in
 // `Panel.tsx`, since the station list and, at M4, the map share it. The provenance line after
 // the control is Rust's `source`/`age_secs`/`refreshing` for the countries list.
 //
@@ -73,15 +74,6 @@ export default function CountryControl({ country, onSelect, mine, onToggleMine, 
   return (
     <div className={styles.stack}>
       <div className={styles.row} data-measure="country_row">
-        <button
-          type="button"
-          aria-pressed={mine}
-          aria-label="Favourites and recents"
-          title="Favourites and recents"
-          onClick={onToggleMine}
-        >
-          {mine ? "★" : "☆"}
-        </button>
         <label className={`${styles.field} ${styles.grow}`}>
           Country
           <select
@@ -96,6 +88,15 @@ export default function CountryControl({ country, onSelect, mine, onToggleMine, 
             ))}
           </select>
         </label>
+        <button
+          type="button"
+          aria-pressed={mine}
+          aria-label="Favourites and recents"
+          title="Favourites and recents"
+          onClick={onToggleMine}
+        >
+          {mine ? "★" : "☆"}
+        </button>
         {!failed && (
           <span className={`${styles.muted} ${styles.nowrap}`} data-measure="countries_provenance">
             {countries ? provenance(countries) : "loading…"}

@@ -166,5 +166,5 @@ mod decomposition {
 
     use crate::map::MapReply;
 
-    pub fn log(_: &Option<MapReply>, _: Instant, _: Instant, _: Option<(Instant, Instant)>) {}
+    pub fn log(_: Option<&MapReply>, _: Instant, _: Instant, _: Option<(Instant, Instant)>) {}
 }

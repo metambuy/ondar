@@ -183,6 +183,13 @@
   color: var(--chip-fg);
   font: var(--text-subheadline);
   cursor: default;
+  /* One line, ellipsis at the end (0.1.1: the place comes first, and a long one such as "Região
+     Autónoma dos Açores" would wrap or overflow at the pane's width); the "✕" leads, so it stays. */
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chip:focus-visible {

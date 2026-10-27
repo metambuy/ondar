@@ -39,6 +39,10 @@ pub fn play(
     if url.trim().is_empty() {
         return Err(OndarError::InvalidArgument("url is empty".into()));
     }
+    // F1 instrument 7a (0.1.1): the page's command reached the shell. The engine logs its own
+    // receipt when it takes the command off the channel (`Engine::play`); the pair separates
+    // "the page never sent it" from "the shell sent it and the engine never took it".
+    log::info!("play command station_id={station_id}");
     state.engine.send(AudioCommand::Play {
         url,
         station_id,
