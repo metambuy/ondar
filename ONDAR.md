@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -1777,6 +1777,91 @@ inside its own shell.
   - **F1 diagnosed:** loss of the output device, then rodio's untimed `clear`. The fix is 0.1.2.
   - **F2, an open product note for 0.1.2's scoping** (Martín, 2026-10-27): the update line "Ondar
     0.1.1 available · Update" does not stand out. It is grey text at the panel's foot.
+
+### 0.1.2: decisions (2026-10-30)
+
+Records in `_handover/` (gitignored, on this Mac): the Step 0 report
+`v012-step0-report-2026-10-27.md` (raw data `v012-step0/`), the probe report
+`v012-run2-report-2026-10-30.md` (`v012-run2/`), the chat's review `v012-step0-review-2026-10-30.md`
+(decisions 1-10, Martín's answers), the plan `v012-plan.md` and its review
+`v012-plan-review-2026-10-30.md`. Branch `v0.1.2` from `main` `3ddb31c`.
+
+**F1, what was measured (AudioPro A15 W, Bluetooth, 44.1 kHz; MacBook Pro speakers, 48 kHz).**
+- On rodio 0.22.2 / cpal 0.17.3, a default-output change is followed by cpal's output unit by
+  itself (gap 0.10-0.20 s). Only the loss of the device the stream *opened* on stops it: cpal's
+  `DeviceIsAlive` listener pauses the unit 226-262 ms after the disconnect and calls an error
+  callback that is a no-op for the default device (our own callback fired 0 times in 20 events).
+  The next `Player::clear()` then waits forever (the F1 wedge).
+- On rodio 0.23.0 / cpal 0.18.2: on loss the stream rerouted to the speakers 5 of 5 times and our
+  error callback received `DeviceChanged`; 10 of 10 manual switches played with no reopen; every
+  44.1 ↔ 48 kHz change kept the source's pull rate at 48 000 samples/s, with no `StreamInvalidated`.
+  `ondar-audio` compiled unchanged and its 193 tests passed.
+- rodio 0.23.0's default open asks for a `Fixed` buffer of about 50 ms (2048 frames at 44.1 kHz),
+  which cpal 0.18.2 refuses on the AudioPro (`Buffer size 2048 is not in the supported range
+  14..=1024`); `open_default_sink()` fails on every device. Opening with `BufferSize::Default` works.
+  Upstream: rodio PR #914 (open since 2026-08-06) clamps it; 0.23.0 shipped without it.
+
+**Decisions.**
+1. **The bump: rodio 0.23.0 / cpal 0.18.2**, the output opened with **`BufferSize::Default`**, not
+   `Fixed(1024)`: the device's own buffer cannot fall outside its range, which is how rodio's 2048
+   failed. Latency does not matter for a radio player; the ring absorbs the network. Revisit if the
+   measurement at the bump shows an underrun 0.22.2 does not show on the same station and device, or
+   a callback over 100 ms.
+2. **A `Player` per session; no `Player::clear()` in production** (a source scan enforces it). One
+   sink for the app, reopened only on loss; the session restarts through the existing reconnect path
+   (`Reconnecting` → `Playing`), which takes one backoff attempt.
+3. **Sink drops off the engine thread** (74-289 ms on a live device, measured). The principle is F1's:
+   the engine thread never waits on the output.
+4. **The error callback:** `DeviceNotAvailable` → reopen if a default device exists, else
+   `Error { code: Device }`; `DeviceChanged` → INFO only. With no output device at all cpal 0.18
+   pauses the stream (not measured; the speakers cannot be removed).
+5. **7d stays:** the WARN as now, plus one reopen per stall episode, latched like the WARN.
+6. **G: `getaddrinfo("all.api.radio-browser.info")` plus a reverse lookup of each address**, through
+   macOS (radio-browser documents it as the primary method; SRV is its alternative), with
+   `dns-lookup` 4.0.2, in `spawn_blocking` under a 5 s timeout. `getaddrinfo` cannot be cancelled, so
+   on a timeout its thread outlives the future; once per launch, accepted. **hickory-resolver leaves
+   the tree.** Reason: on Apple, hickory 0.26.3 reads the SystemConfiguration DNS store and queries
+   those servers itself, which a firewall shows (F3); on Martín's network it cannot parse the
+   router's `fe80::1%en0` and 0.1.1 already runs on `FALLBACK_HOSTS`.
+7. **F4, the groups.** A country is a territory if `SOVEREIGNT ≠ ADMIN`, `TYPE` is `Dependency` or
+   `Indeterminate`, or it comes from a map unit; a territory with `POP_EST` ≥ 500 000 goes to the main
+   list instead (Hong Kong, Puerto Rico, Macao, Réunion, Palestine); otherwise a country under
+   200 000 (NE's 2019 estimates) is a small state; otherwise main. On the 240 codes of the fixture
+   the rule gives 181 main, 19 small states, 40 territories, and every case Martín decided (the
+   overseas departments, Bonaire, Antarctica, Cook Islands, Niue as territories; Palestine, Kosovo,
+   Taiwan as main) with no group override. The select shows the groups as `<optgroup>`: main first,
+   unlabelled, then "Small states", then "Territories" (Martín, 2026-10-30).
+8. **F4, the names: CLDR 49 English**, pinned (version, SHA-256) as the NE inputs are; CLDR's short
+   form where its default carries a qualifier: Palestine (not "Palestinian Territories"), Hong Kong,
+   Macao, Myanmar. Sorted in Rust with accents folded.
+9. **Palestine's map: no change** (Martín, 2026-10-30). NE v5.1.2's default edition already has
+   Palestine as its own unit (`PSX`, the West Bank and Gaza), framed as Palestine's own land; East
+   Jerusalem and the Golan lie inside Israel's shape there. NE's point-of-view edition `_pse` was
+   not taken: it would redraw Israel from one side's view.
+10. **F2: the update line becomes a button**, "Update to <version>", in WebKit's `AccentColor` with
+    the same literal as fallback, label semibold. In WKWebView `AccentColor` (and
+    `-apple-system-control-accent`) is a fixed `rgb(0 122 255)`, never the user's accent (WebKit bugs
+    254578, 241866: a fingerprinting mitigation). The real accent is in BUILD_PLAN's parked list.
+11. **The tester note** says, for 0.1.2, that Ondar finds a directory server through macOS's normal
+    name lookup.
+
+**Buy before build (dated 2026-10-30).**
+
+| Name | Version | Covers | Misses against our use | Verdict |
+|---|---|---|---|---|
+| rodio + cpal | 0.23.0 (2026-10-11) / 0.18.2 (2026-08-16) | reroute on loss, `DeviceChanged` to our callback, rate conversion (measured 5/5, 10/10) | the default open fails (a fixed 2048 frames); `Player::clear()` still waits; no output device at all = a paused stream | **buy**, opened with `BufferSize::Default` |
+| rodio `clear()` without the wait | master (PR #842, 2026-03-08), unreleased | the wedge | a release | re-check at each rodio release |
+| rodio buffer clamp | PR #914, open, unreviewed | the 2048 refusal | a release | re-check at each rodio release; then the explicit buffer can go |
+| rodio `Drop for Player` + `Player::connect_new` | 0.22.2 (read, measured 0 µs); re-read on 0.23.0 before the code | a non-blocking replacement for `clear()` | nothing for us | **buy** |
+| `objc2-core-audio` listeners | 0.3.2 (in the tree) | default-output and `DeviceIsAlive` events (measured) | unsafe, removal and lifetime ours | not needed after the bump |
+| a safe device poll (`output_devices()` on the tick) | cpal 0.17.3 | loss of the opened device (1/5 losses, 0 false on 10 switches) | 22-27 ms median per check | withdrawn |
+| `dns-lookup` | 4.0.2 (2026-10-01, MIT/Apache) | `getaddrinfo` + `getnameinfo` through the system | blocking calls (→ `spawn_blocking`) | **buy** |
+| dns_sd `DNSServiceQueryRecord` | libSystem; `async-dnssd` 0.5.1 (2024-09-07) | SRV through mDNSResponder (measured) | ~120 lines of FFI by hand; the crate 2 years idle | no: the SRV's priority and port carry nothing today |
+| hickory-resolver | 0.26.3 (latest) | SRV | no system backend; fails on `fe80::1%en0` | **removed** |
+| CLDR `cldr-json` | 49.0.0 (2026-10-22) | English territory names, default and `alt-short` | nothing for the 240 codes | **buy**, pinned like NE |
+| Natural Earth admin 0 | 5.1.2 (pinned) | `TYPE`, `SOVEREIGNT`, `ADMIN`, `POP_EST` per code | 2019 populations | **buy** (already the map's source) |
+| `icu_normalizer` | 2.3.0 (in the lock, transitive) | NFD, to drop combining marks for the sort key | collation proper | **buy**: no new package; `icu_collator` rejected for its data size, for A to Z on about 250 names |
+| CSS `AccentColor` | WebKit, Safari 16.4+ | the keyword | a constant blue, never the user's accent | used, with the literal as fallback |
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -4249,13 +4334,13 @@ read, and the smaller items). Its verdicts:
 | Simplification | `geo` 0.33.1 `Simplify`/`SimplifyVwPreserve` — already bought | `tune` to the measured ≤ 0.25 pt, `exact`, the O(n) `is_simple`, the hybrid (P4) | keep |
 | Station gathering | `geo` `Dbscan`/`KMeans`, `supercluster` 3.0.8, `petal-clustering` 0.14.0 | Q4's rule (non-transitive 10 km, densest first, lowest uuid), `tests/dots.rs`'s pinned counts; `geo` is refused in the runtime crate | keep |
 | EQ soft clip | none for one function (`fundsp` 0.23.0 is a graph; AudioUnit sits outside rodio) | the measured curve and its closed-form inverse; one divide in the callback | keep |
-| SRV + fallbacks | `hickory-resolver` 0.26.3 — already bought; no RFC 2782 helper in it | the measured `de1`, `all.api` | keep |
+| SRV + fallbacks | `hickory-resolver` 0.26.3 — already bought; no RFC 2782 helper in it | the measured `de1`, `all.api` | keep (2026-10-16). **Re-decided 2026-10-30:** replaced in 0.1.2 by `getaddrinfo` + reverse lookup through macOS (`dns-lookup` 4.0.2); see "0.1.2: decisions", 6 |
 | Panel placement | `tauri-plugin-positioner` 2.4.0 | the mixed-scale fix (649 pt off, measured) | keep |
 | Map resource format | `postcard` 1.1.3 / `bincode` 3.0.0 (tables), `zstd` 0.14.2 (blobs) | the bounded no-panic loader; zstd is a C build for 2.7 MB read once | partial (tables), only with a v4 format, post-M5 |
 | Client retry, cache migrations, `clip.rs` | `backon` 1.6.0 / `reqwest-retry` 0.9.1; `rusqlite_migration` 2.6.0; geo `BooleanOps` | under the bar or recorded (the budget rule; decision 1; no polygon-boolean crate in the runtime) | keep |
 
 Not duplications, for a later touch: `client.rs::qenc` re-does `RequestBuilder::query` (12 lines);
-`filter.rs::fold` has no Unicode normalisation; `srv.rs` drops the SRV `port`. **No replacement
+`filter.rs::fold` has no Unicode normalisation; `srv.rs` drops the SRV `port` (stale: fixed in 0.1.1, `976ee02`). **No replacement
 starts during the feedback window.**
 
 ## How to work in this project

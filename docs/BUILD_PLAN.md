@@ -419,6 +419,9 @@ state has a test.
 - **Coordinate inference** for the stations without `geo` (20.7 %, 2026-09-21; the `cities.js`
   reservation) — measured in M5c's Step 0 as a read-only agent task, decided after; no reopening
   of M2 without that number (D-coordinates).
+- **The update button in the user's own accent** (0.1.2 review, 2026-10-30): WebKit's
+  `AccentColor` is a fixed `rgb(0 122 255)` in WKWebView, never the user's choice; following it needs
+  `NSColor.controlAccentColor` read in Rust and sent on change. Backlog, not 0.1.2.
 
 ---
 
@@ -484,6 +487,28 @@ at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; 
       Done 2026-10-27: tag `v0.1.1` = `f60fb9c`, Cloud release `01M5YZFRHDQ6AR4E3S9M8XJSTN`, feed
       and download checked, spike 5 passed, merged to `main` (ONDAR.md, "Release 0.1.1"); the
       testers next
+
+**0.1.2** (branch `v0.1.2` from `main` `3ddb31c`, started 2026-10-30). Scope final 2026-10-30
+(`_handover/v012-run3-plan-brief-2026-10-30.md`; plan `_handover/v012-plan.md`, approved with
+amendments in `_handover/v012-plan-review-2026-10-30.md`). Decisions: ONDAR.md, "0.1.2: decisions".
+
+- [ ] F1 fix: rodio 0.23.0 / cpal 0.18.2, the output opened with `BufferSize::Default` and our error
+      callback; a `Player` per session and no production `Player::clear()`; one sink, reopened on
+      `DeviceNotAvailable`, the session restarting through the reconnect path; sink drops off the
+      engine thread; 7d keeps its WARN and gains one latched reopen per stall episode. Tests F1 1-4,
+      each failing first where it can (test 1 on `3ddb31c`); test A by hand on the release build
+- [ ] F2: the update line becomes a small button, "Update to <version>", in the accent colour
+      (WebKit's `AccentColor`, a fixed `rgb(0 122 255)`), label semibold
+- [ ] F3 / G: directory discovery by `getaddrinfo("all.api.radio-browser.info")` plus a reverse
+      lookup of each address (`dns-lookup` 4.0.2), in `spawn_blocking` under a 5 s timeout;
+      hickory-resolver removed; the fallback hosts and their test kept
+- [ ] F4: the country select in three groups (main; small states; territories), each A to Z with
+      accents folded, sorted in Rust; groups from Natural Earth v5.1.2 admin 0 plus an override
+      table; names from CLDR 49 English, pinned
+- [ ] Tester defects: F5 (media keys, volume) goes to M5e; F6 (a station without a country) waits
+- [ ] Release docs: the tester note's privacy paragraph for 0.1.2; the release as 0.1.1's steps,
+      the dSYM to `_handover/v0.1.2/ondar-0.1.2.dSYM`; `/code-review` after the audio commits and
+      again on `main..v0.1.2` before the merge
 
 **Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release
 workflow.
