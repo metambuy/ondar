@@ -34,7 +34,14 @@ Quando houver uma versão nova pronta, aparece uma linha no fundo do painel: "On
 
 ## Privacidade
 
-Nada sai do teu Mac além das emissões de rádio e dos pedidos ao diretório de estações (radio-browser.info). Sem analítica, sem relatórios de falhas, sem conta.
+O que sai do teu Mac:
+
+- As emissões de rádio que ouves. O servidor da estação vê o teu endereço IP, como em qualquer leitor.
+- Os pedidos ao diretório de estações, radio-browser.info: listas de países e estações e um «clique» por cada estação que inicias, que o diretório pede às apps para contar audições.
+- Consultas DNS que o Ondar faz por conta própria para encontrar um servidor do diretório. Na 0.1.1 vão diretamente aos servidores DNS configurados no teu Mac, por isso uma firewall como o Little Snitch as mostra. Uma próxima versão vai enviá-las através do macOS, como fazem as outras apps.
+- Uma verificação de atualizações sempre que o Ondar arranca, para cdn.crabnebula.app (a CrabNebula aloja as versões do Ondar). Envia a versão que usas e a plataforma do teu Mac (macOS, Apple silicon).
+
+Sem analítica, sem relatórios de falhas, sem conta.
 
 ## Para sair
 
