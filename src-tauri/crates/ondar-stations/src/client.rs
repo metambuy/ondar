@@ -84,7 +84,7 @@ pub trait Transport: Send + Sync {
     fn get(&self, url: String, total: Duration) -> BoxFuture<'_, Result<Response, String>>;
 }
 
-/// The hosts to try, re-resolved between attempts 1 and 2. Implemented by [`crate::srv`] and by
+/// The hosts to try, re-resolved between attempts 1 and 2. Implemented by [`crate::discover`] and by
 /// the tests' fake (which records how often it was asked).
 pub trait HostSource: Send + Sync {
     fn hosts(&self) -> BoxFuture<'_, Vec<String>>;
@@ -257,7 +257,7 @@ impl Client {
         self
     }
 
-    /// The production client: reqwest with the measured timeouts, the live SRV lookup, real time.
+    /// The production client: reqwest with the measured timeouts, the live discovery, real time.
     pub fn production(user_agent: &str) -> Client {
         Client::new(
             Arc::new(ReqwestTransport::new(user_agent)),
@@ -334,7 +334,7 @@ impl Client {
         }
         let hosts = self.hosts.hosts().await;
         let hosts = if hosts.is_empty() {
-            crate::srv::order(Vec::new())
+            crate::discover::order(Vec::new())
         } else {
             hosts
         };
@@ -435,7 +435,7 @@ pub struct LiveHosts;
 
 impl HostSource for LiveHosts {
     fn hosts(&self) -> BoxFuture<'_, Vec<String>> {
-        Box::pin(crate::srv::discover())
+        Box::pin(crate::discover::discover())
     }
 }
 

@@ -38,11 +38,11 @@
 
 pub mod cache;
 pub mod client;
+pub mod discover;
 pub mod filter;
 pub mod model;
 pub mod normalise;
 pub mod service;
-pub mod srv;
 pub mod store;
 mod sync;
 

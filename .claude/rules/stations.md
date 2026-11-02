@@ -7,7 +7,8 @@ paths:
 # Station directory rules
 
 - **API etiquette (non-negotiable):** a `User-Agent` of `Ondar/<version>` on every request; servers
-  from the `_api._tcp.radio-browser.info` SRV record with the measured fallbacks; the click endpoint
+  from `all.api.radio-browser.info`'s addresses, each reverse-looked-up, through the system resolver
+  (`discover.rs`, 0.1.2), with the measured fallbacks; the click endpoint
   once per play, **never retried** (a retry could be a second vote); cache countries 7 days and
   station lists 24 h, and serve the cache offline. The page's row does nothing on the station
   already playing and resumes a paused one, so a double click is not two votes.

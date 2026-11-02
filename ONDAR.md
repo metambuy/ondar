@@ -140,7 +140,7 @@ tester notices the playing state — see "M5 re-cut (2026-10-19)".
 | Audio | **Rust**: `stream-download` (`on_progress` → `Arrivals`, the arrival clock) → `ClockedReader` (the decoder's first-byte stamp) → `IcyReader` → [`AdtsReader`, HTTP `audio/aac*` and `audio/x-aac*` only] → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. HLS (ADTS-AAC media playlists, M3c) enters as its own source, `HlsSource`, the stream `stream-download` reads. `.claude/rules/audio.md` carries the authoritative chain. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
-| Station API | **Rust** `reqwest` client for radio-browser.info; **`hickory-resolver`** for the SRV lookup | `reqwest` cannot do SRV; a resolver crate is required |
+| Station API | **Rust** `reqwest` client for radio-browser.info; **`dns-lookup`** 4.0.2 for discovery (`getaddrinfo` + `getnameinfo` of `all.api.radio-browser.info`, through macOS) | radio-browser's primary documented method; std has only the forward half. Replaced `hickory-resolver` in 0.1.2, which queried DNS servers itself (F3); see "0.1.2: decisions", 6 |
 | Cache | **SQLite** (`rusqlite`, bundled) | Offline country/station lists, favourites, recents |
 | Log file | **`tracing-appender`** 0.2.5 | The daily file sink under the app log dir, plain text. It shares the global filter, `info,ondar_audio=debug` by default, so the engine's DEBUG lines reach the file. See "Log file". |
 | Updater | **`tauri-plugin-updater`** 2.13.3 | Check on launch, prompt in the popover; no capability change, the page reaches only `update_install`. See "Updater". |
@@ -196,12 +196,12 @@ before actually adding):
   bottom-left origin and subtracts the icon height before handing it over). That is the
   convention Tauri's `PhysicalPosition` already uses, so no flip and no unit conversion are
   required. The M2 fallback in the stack table is therefore not taken.
-- `hickory-resolver` **0.26.3** (2026-09-10; verified by compiling against it in the M3 Step 0
-  census, 2026-09-21): `TokioResolver::builder_tokio()?.build()?`, `srv_lookup(name) ->
-  Lookup` (no `SrvLookup` type), `Lookup::answers() -> &[Record]`, `Lookup::valid_until()`;
-  `Record` and `SRV` expose **public fields** (`ttl`, `data`, `name`; `priority`, `weight`,
-  `port`, `target`), not accessor methods. Default features include `tokio` + `system-config`.
-  Was 0.26.2 (verified 2026-09-08).
+- `dns-lookup` **4.0.2** (2026-10-01, MIT/Apache; read 2026-11-02): `lookup_host(&str) ->
+  Result<impl Iterator<Item = IpAddr>, LookupError>` (`getaddrinfo`, `SOCK_STREAM` hint) and
+  `lookup_addr(&IpAddr) -> Result<String, LookupError>` (`getnameinfo` with `NI_NAMEREQD`, so a
+  name or an error, never the numeric form), `lookup.rs:30-63`. Both block: `discover.rs` runs them
+  in `spawn_blocking` under a 5 s timeout. Its `libc`, `socket2` and `cfg-if` were already in the
+  tree. Replaced `hickory-resolver` 0.26.3 (0.1.2, removed from the tree).
 - `tauri-specta` 2.0.0-rc.25 (not adopted)
 - `rusqlite` **0.40.2** (2026-08-08; `bundled`), in the tree since M3a (2026-09-22): `Connection`,
   `transaction()`, `pragma_query_value`/`pragma_update` for `user_version`, `OptionalExtension`.
