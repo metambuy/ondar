@@ -20,7 +20,9 @@ The decisions and figures: ONDAR.md, "M4: the drawn map", the M4a and M4b sectio
   (a mismatch is refused), shipped as one committed file and rebuilt only for a rule change. It is
   never fetched at runtime; the NE inputs never enter CI. The tool: `cargo run -p ondar-map-build
   --release -- [--tables DIR] [--out FILE] [--report FILE] [--encoding deflate|raw]
-  [--simplifier hybrid|vw] [--bench] [--allow-dropped-insets] [--allow-wide-labels]`, ~20 s; the
+  [--simplifier hybrid|vw] [--bench] [--allow-dropped-insets] [--allow-wide-labels]`, ~20 s
+  (`--countries FILE` instead writes only the country select's groups and names, from the NE `.dbf`
+  files and CLDR 49 pinned in `cldr.tsv`, to `ondar-stations/data/countries.tsv`; 0.1.2); the
   tables are written before the ship gate, so a refused build still leaves them to read; an
   `--allow-*` flag is for those tables only and is refused with `--out`. Its rules:
   parts under 300 km on the ground group; a remote group ≥ 1 000 km² must be a listed inset,

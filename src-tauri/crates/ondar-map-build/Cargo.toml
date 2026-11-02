@@ -22,3 +22,5 @@ shapefile = { version = "0.9", features = ["geo-types"] }
 geo = "0.33"
 # The inputs' SHA-256 pins. Already in the tree (0.10.9, via tauri-codegen).
 sha2 = "0.10"
+# The CLDR territory names (0.1.2, F4) are a JSON file. Already in the tree (ondar-stations).
+serde_json = "1"

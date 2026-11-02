@@ -4,7 +4,11 @@
 //! ```text
 //! cargo run -p ondar-map-build --release -- [--input DIR] [--tables DIR]
 //!     [--out FILE] [--report FILE] [--encoding deflate|raw] [--bench]
+//! cargo run -p ondar-map-build --release -- [--input DIR] --countries FILE
 //! ```
+//!
+//! `--countries` writes only the country select's groups and names (0.1.2, F4; `groups.rs`) and
+//! exits: no geometry is read.
 // Tests assert by panicking and print what they measured; the lib build still checks every
 // non-test line against the workspace table (src-tauri/Cargo.toml).
 #![cfg_attr(
@@ -42,6 +46,7 @@
 mod bench;
 mod borders;
 mod geom;
+mod groups;
 mod ne;
 mod pins;
 mod report;
@@ -71,6 +76,8 @@ struct Args {
     /// resource: `parse` refuses either with `--out`.
     allow_wide_labels: bool,
     allow_dropped_insets: bool,
+    /// 0.1.2, F4: write the country groups table here and do nothing else.
+    countries: Option<PathBuf>,
 }
 
 fn args() -> Result<Args, String> {
@@ -89,6 +96,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         bench: false,
         allow_wide_labels: false,
         allow_dropped_insets: false,
+        countries: None,
     };
     while let Some(x) = it.next() {
         let mut val = || {
@@ -101,6 +109,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--tables" => a.tables = Some(val()?),
             "--out" => a.out = Some(val()?),
             "--report" => a.report = Some(val()?),
+            "--countries" => a.countries = Some(val()?),
             "--bench" => a.bench = true,
             "--allow-wide-labels" => a.allow_wide_labels = true,
             "--allow-dropped-insets" => a.allow_dropped_insets = true,
@@ -445,6 +454,16 @@ pub fn header_pins() -> Result<ondar_map::format::Pins, String> {
 
 fn run() -> Result<(), String> {
     let a = args()?;
+    if let Some(path) = &a.countries {
+        let table = groups::build(&a.input)?;
+        std::fs::write(path, &table).map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!(
+            "wrote {} ({} countries)",
+            path.display(),
+            table.lines().filter(|l| !l.starts_with('#')).count()
+        );
+        return Ok(());
+    }
     let t0 = std::time::Instant::now();
     let inp = load(&a.input)?;
     eprintln!(

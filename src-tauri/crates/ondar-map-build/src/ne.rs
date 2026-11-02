@@ -111,3 +111,46 @@ pub fn admin1(l: &Layer) -> Result<Vec<Admin1>, String> {
         })
         .collect())
 }
+
+/// The attributes the country groups read (0.1.2, F4), from a layer's `.dbf` alone: no geometry
+/// is parsed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attrs {
+    /// `ISO_A2_EH`, as [`Unit::code`].
+    pub code: Option<String>,
+    /// `GU_A3` on the map-units layer, `ADM0_A3` on admin 0.
+    pub a3: String,
+    pub sovereignt: String,
+    pub admin: String,
+    pub kind: String,
+    /// `POP_EST`, NE's estimate (2019 for most sovereigns; `POP_YEAR` says which).
+    pub pop_est: f64,
+}
+
+fn number(rec: &Record, field: &str) -> f64 {
+    match rec.get(field) {
+        Some(FieldValue::Numeric(Some(v)) | FieldValue::Double(v) | FieldValue::Currency(v)) => *v,
+        Some(FieldValue::Float(Some(v))) => f64::from(*v),
+        Some(FieldValue::Integer(v)) => f64::from(*v),
+        _ => 0.0,
+    }
+}
+
+/// Every record's [`Attrs`], in the file's order; `a3_field` names the unit's own code.
+pub fn attributes(dbf: &[u8], a3_field: &str) -> Result<Vec<Attrs>, String> {
+    let mut r =
+        shapefile::dbase::Reader::new(Cursor::new(dbf.to_vec())).map_err(|e| format!("{e:?}"))?;
+    let mut out = Vec::new();
+    for rec in r.iter_records() {
+        let rec = rec.map_err(|e| format!("{e:?}"))?;
+        out.push(Attrs {
+            code: code_of(text(&rec, "ISO_A2_EH")),
+            a3: text(&rec, a3_field),
+            sovereignt: text(&rec, "SOVEREIGNT"),
+            admin: text(&rec, "ADMIN"),
+            kind: text(&rec, "TYPE"),
+            pop_est: number(&rec, "POP_EST"),
+        });
+    }
+    Ok(out)
+}
