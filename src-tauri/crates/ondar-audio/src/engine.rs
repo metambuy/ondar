@@ -470,8 +470,8 @@ struct Engine {
     output_watch: OutputWatch,
     /// [`OUTPUT_STALL_TICKS`], on the engine so a test harness can shorten it.
     output_stall_ticks: u32,
-    /// 7d's reopen latch (0.1.2, decision 5): set when a stall reopened the output, cleared only
-    /// when an output pulls again. It lives on the engine, not in [`OutputWatch`], because the
+    /// 7d's reopen latch (0.1.2, decision 5): set when a stall reopened the output, cleared when
+    /// an output pulls again or the user plays a station (R2). It lives on the engine, not in [`OutputWatch`], because the
     /// reopen restarts the session onto a new ring, which resets the watch; see [`stall_reopen`].
     stall_reopened: bool,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
@@ -918,6 +918,11 @@ impl Engine {
     /// logs at WARN (`playback error: …`, 0.1.1 item 9c).
     fn play(&mut self, url: &str, station_id: &str, bitrate_kbps: Option<u32>) {
         log::info!("play received station_id={station_id}");
+        // A user's new station is a new stall episode (R2): 7d's latch must not outlive the
+        // station it was set for, or a reopen that landed on a dead output would leave every later
+        // station silent with no reopen until a relaunch. Here, not in `cancel_session`: `stop`
+        // plays nothing, so it needs no episode, and the next `play` clears it anyway.
+        self.stall_reopened = false;
         self.cancel_session();
         let generation = self.shared.begin_session(station_id.to_string());
         self.shared.paused.store(false, Ordering::Relaxed);
@@ -2656,6 +2661,53 @@ mod session_tests {
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].1.contains("code=Device"), "{lines:?}");
         assert_eq!(out.opens.load(Ordering::SeqCst), 2, "one reopen attempt");
+        drop(tx);
+    }
+
+    /// R2 (the 0.1.2 review of commits 1-5): a stall reopen lands on an output that never pulls
+    /// either (the halt holds for every open), and the user then plays another station. Until
+    /// this fix the latch was cleared only by a pull, so every later station on that output
+    /// stalled with no reopen until a relaunch: the engine answered but was silent, F1's symptom.
+    /// **What it pins:** a user's `play` starts a new stall episode, so its stall reopens again
+    /// (a third open); within one episode the latch still holds (no third open before the
+    /// `play`). **Fails if** `play` leaves the latch set: on `eecc815` with this test
+    /// (`_handover/v012/plants/r2-test-on-eecc815.patch`), still two opens.
+    #[test]
+    fn a_new_station_starts_a_new_stall_episode() {
+        capture_logs();
+        let server = tone_server();
+        let halted = Arc::new(AtomicBool::new(false));
+        let opener = TestOpener::new(halted.clone());
+        let out = opener.handles();
+        let name = "ondar-audio:test-r2-episode";
+        let (tx, ev_rx) = spawn_engine_with(name, opener, TEST_OUTPUT_STALL_TICKS);
+        play(&tx, &server.url, "st-r2-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the first station never played"
+        );
+        halted.store(true, Ordering::SeqCst);
+        assert!(
+            eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 2),
+            "the first stall did not reopen the output"
+        );
+        assert!(
+            eventually(GUARD, || thread_lines(name, "output stalled").len() >= 2),
+            "the restarted session on the dead output did not warn"
+        );
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            2,
+            "the latch held within the episode"
+        );
+        play(&tx, &server.url, "st-r2-two");
+        assert!(
+            eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 3),
+            "the new station's stall was not reopened: the latch outlived the episode"
+        );
         drop(tx);
     }
 

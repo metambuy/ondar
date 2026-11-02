@@ -422,6 +422,11 @@ state has a test.
 - **The update button in the user's own accent** (0.1.2 review, 2026-10-30): WebKit's
   `AccentColor` is a fixed `rgb(0 122 255)` in WKWebView, never the user's choice; following it needs
   `NSColor.controlAccentColor` read in Rust and sent on change. Backlog, not 0.1.2.
+- **A minimum interval between loss-driven output reopens** (R3 of the 0.1.2 review, 2026-11-02):
+  none exists. A loop needs an output that opens and then reports `DeviceNotAvailable` again and
+  again; with cpal 0.18.2 that signal comes only when no default device exists, and then the open
+  fails and the session ends in `Error { code: Device }`, so no loop today. Reopened by a tester
+  log with repeated `output lost` lines.
 
 ---
 
