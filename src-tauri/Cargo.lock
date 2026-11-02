@@ -3126,6 +3126,7 @@ name = "ondar-stations"
 version = "0.1.0"
 dependencies = [
  "dns-lookup",
+ "icu_normalizer",
  "log",
  "reqwest",
  "rusqlite",

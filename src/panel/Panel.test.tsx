@@ -196,8 +196,8 @@ describe("Panel offline", () => {
   it("the map follows the dropdown: a country change re-selects, and back (A2)", async () => {
     countriesReply = {
       items: [
-        { code: "PT", name: "Portugal", station_count: 300 },
-        { code: "US", name: "United States", station_count: 5000 },
+        { code: "PT", name: "Portugal", group: "main", station_count: 300 },
+        { code: "US", name: "United States", group: "main", station_count: 5000 },
       ],
       fetched_at: 0,
       age_secs: 0,
@@ -246,8 +246,8 @@ describe("Panel's dot filter", () => {
   async function expandedWithPT() {
     countriesReply = {
       items: [
-        { code: "PT", name: "Portugal", station_count: 3 },
-        { code: "US", name: "United States", station_count: 1 },
+        { code: "PT", name: "Portugal", group: "main", station_count: 3 },
+        { code: "US", name: "United States", group: "main", station_count: 1 },
       ],
       fetched_at: 0,
       age_secs: 0,

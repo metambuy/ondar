@@ -12,6 +12,7 @@ import type { StreamInfo } from "./bindings/StreamInfo";
 import type { CacheSource } from "./bindings/CacheSource";
 import type { Codec } from "./bindings/Codec";
 import type { Country } from "./bindings/Country";
+import type { CountryGroup } from "./bindings/CountryGroup";
 import type { ListedCountries } from "./bindings/ListedCountries";
 import type { ListedStations } from "./bindings/ListedStations";
 import type { Station } from "./bindings/Station";
@@ -36,6 +37,7 @@ export type {
   CacheSource,
   Codec,
   Country,
+  CountryGroup,
   CountriesUpdated,
   ListedCountries,
   ListedStations,

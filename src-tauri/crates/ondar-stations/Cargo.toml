@@ -25,6 +25,9 @@ reqwest = { version = "0.13", default-features = false, features = ["native-tls"
 # (`lookup_host`, `lookup_addr`), which std has only half of (`ToSocketAddrs`, forward only).
 # 4.0.2 (2026-10-01, MIT/Apache); its libc, socket2 and cfg-if are already in the tree.
 dns-lookup = "4.0.2"
+# The country list's sort key (0.1.2, F4): NFD, to drop the accents a Latin letter carries. 2.3.0,
+# already in the tree (url → idna → idna_adapter); no new package.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # The service's fetch runtime (multi-thread, two workers), the retry backoff sleeps, and the
 # discovery's `spawn_blocking` + `timeout` (`rt` is in `rt-multi-thread`).
 tokio = { version = "1.52", features = ["rt-multi-thread", "time", "sync"] }

@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use crate::model::{Codec, Country, Station};
+use crate::model::{Codec, Country, CountryGroup, Station};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -24,7 +24,11 @@ struct RawCountry {
 ///   its uppercase row's name, are **merged into the uppercase row** (counts added).
 /// - **`XX`** (empty name, 1 station) and any code that is not `[A-Z]{2}` after upper-casing
 ///   are **dropped** — `bycountrycodeexact` could not address them meaningfully.
-/// - Order: as served, which is alphabetical by name.
+/// - **A row with no name** is dropped too, unless it merges into a named row of its code
+///   (0.1.2: radio-browser now serves `UN` with no name and one station; the list would show
+///   a blank option).
+/// - Order: as served (by ISO code, not by name: F4); the group, the CLDR name and the order
+///   are [`crate::country_table::arrange`]'s, applied where the list leaves the service.
 ///
 /// The dropped codes are logged once per call, at INFO (0.1.1): they are radio-browser's data,
 /// served on every refresh, not a fault of ours to warn about.
@@ -54,9 +58,14 @@ pub(crate) fn countries_with_drops(json: &[u8]) -> Result<(Vec<Country>, Vec<Str
             existing.station_count += r.stationcount;
             continue;
         }
+        if r.name.trim().is_empty() {
+            dropped.push(r.iso_3166_1);
+            continue;
+        }
         out.push(Country {
             code,
             name: r.name.trim().to_string(),
+            group: CountryGroup::Main,
             station_count: r.stationcount,
         });
     }
@@ -195,6 +204,28 @@ mod tests {
         let (cs, dropped) = countries_with_drops(COUNTRIES).expect("parses");
         assert_eq!(dropped, ["XX"]);
         assert_eq!(cs, countries(COUNTRIES).expect("parses"));
+    }
+
+    /// 0.1.2, found by eye in commit 8's check (2026-11-02): radio-browser now serves `UN` with an
+    /// empty name and one station, a row the census fixture predates. Sorted, it became a blank
+    /// option above Afghanistan (in 0.1.1, a blank one near the U's). **What it pins:** a row with
+    /// no name is dropped and reported like `XX` (which also has none), unless it merges into a
+    /// named row of its code. **Fails if** an empty name reaches the list.
+    #[test]
+    fn a_row_with_no_name_is_dropped_and_reported() {
+        let json = br#"[
+            {"name": "Portugal", "iso_3166_1": "PT", "stationcount": 371},
+            {"name": "", "iso_3166_1": "UN", "stationcount": 1},
+            {"name": " ", "iso_3166_1": "pt", "stationcount": 1}
+        ]"#;
+        let (cs, dropped) = countries_with_drops(json).expect("parses");
+        assert_eq!(
+            cs.iter()
+                .map(|c| (c.code.as_str(), c.name.as_str(), c.station_count))
+                .collect::<Vec<_>>(),
+            [("PT", "Portugal", 372)]
+        );
+        assert_eq!(dropped, ["UN"]);
     }
 
     #[test]
