@@ -560,11 +560,18 @@ impl Engine {
         self.close_output();
     }
 
-    /// Close the output off the engine thread (0.1.2 decision 3): the device's dispose took
-    /// 74-289 ms on a live device (measured 2026-10-30), and the engine thread never waits on the
-    /// output. The thread owns only the guard; nothing joins it.
+    /// Close the output at shutdown: the slot emptied (no attach may use it), then the device
+    /// released ([`Self::release_output`]).
     fn close_output(&mut self) {
         *lock(&self.output_slot) = None;
+        self.release_output();
+    }
+
+    /// Release the open output off the engine thread (0.1.2 decision 3): the device's dispose
+    /// took 74-289 ms on a live device (measured 2026-10-30), and the engine thread never waits on
+    /// the output. The thread owns only the guard; nothing joins it. The output slot is left as it
+    /// is: a reopen replaces it only once the new output is open (R1).
+    fn release_output(&mut self) {
         let Some(opened) = self.opened.take() else {
             return;
         };
@@ -870,10 +877,17 @@ impl Engine {
     /// measured on loss), and the session's chain is rebuilt for it. With no session, the next
     /// `play` opens the output. If the open fails (no output device left), the session ends in
     /// `Error { code: Device }`, logged once by `write_state`.
+    ///
+    /// **The slot is never empty while the output is replaced** (R1, the review of commits 1-5):
+    /// it keeps the old mixer until `ensure_output` puts the new one in, so a decode thread that
+    /// reaches its first attach inside the open (21-275 ms, Step 0 C) attaches to the old output
+    /// and is then restarted by the flag, instead of reading `None`, which means "closed, the
+    /// session is ending", and ending with no state change. Only a failed open empties it.
     fn reopen_output(&mut self, reason: &str) {
         log::warn!("output lost ({reason}); reopening the default output");
-        self.close_output();
+        self.release_output();
         let Some(session) = self.session.clone() else {
+            *lock(&self.output_slot) = None;
             return;
         };
         match self.ensure_output() {
@@ -884,6 +898,7 @@ impl Engine {
                 }
             }
             Err(message) => {
+                *lock(&self.output_slot) = None;
                 self.cancel_session();
                 self.shared.set_state(PlaybackState::Error {
                     code: ErrorCode::Device,
@@ -2307,6 +2322,8 @@ mod session_tests {
         /// Per open, in order: how many pulled samples were louder than 0.05, so a test can tell
         /// a session's audio reaching that output from the mixer's silence.
         loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
+        /// How long each open takes from now on (a device open took 21-275 ms, Step 0 C).
+        delay: Arc<Mutex<Duration>>,
     }
 
     impl TestOpener {
@@ -2317,6 +2334,7 @@ mod session_tests {
                 fail: Arc::new(AtomicBool::new(false)),
                 lost: Arc::new(Mutex::new(None)),
                 loud: Arc::new(Mutex::new(Vec::new())),
+                delay: Arc::new(Mutex::new(Duration::ZERO)),
             }
         }
 
@@ -2327,6 +2345,7 @@ mod session_tests {
                 fail: self.fail.clone(),
                 lost: self.lost.clone(),
                 loud: self.loud.clone(),
+                delay: self.delay.clone(),
             }
         }
     }
@@ -2336,6 +2355,7 @@ mod session_tests {
         fail: Arc<AtomicBool>,
         lost: Arc<Mutex<Option<LossSignal>>>,
         loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
+        delay: Arc<Mutex<Duration>>,
     }
 
     impl TestOutput {
@@ -2364,6 +2384,7 @@ mod session_tests {
 
     impl OutputOpener for TestOpener {
         fn open(&mut self, lost: LossSignal) -> Result<Opened, String> {
+            thread::sleep(*lock(&self.delay));
             self.opens.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
                 return Err("no output device (test)".into());
@@ -2635,6 +2656,46 @@ mod session_tests {
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].1.contains("code=Device"), "{lines:?}");
         assert_eq!(out.opens.load(Ordering::SeqCst), 2, "one reopen attempt");
+        drop(tx);
+    }
+
+    /// R1 (the 0.1.2 review of commits 1-5): a loss while a session is still before its first
+    /// attach (`Buffering`, its ring filling at the stream's real pace), with an open that takes
+    /// 1.5 s. Until this fix `reopen_output` emptied the output slot before the open and filled it
+    /// after, so a decode thread reaching its fill target inside the open read `None` and ended
+    /// with no state change: the session sat in `Buffering` with no decode thread. **What it
+    /// pins:** the session reaches `Playing`, and its audio the new output. **Fails if** a live
+    /// session can read an empty slot while the output is replaced: on `eecc815` with this test
+    /// (`_handover/v012/plants/r1-test-on-eecc815.patch`), no `Playing` within the guard.
+    #[test]
+    fn a_loss_during_the_first_buffering_still_reaches_playing() {
+        capture_logs();
+        let server = paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(tone_wav_response(44_100, 2, 440.0, 60.0)),
+            bytes_per_sec: 44_100 * 4,
+            after: After::Hold,
+        }]);
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine("ondar-audio:test-r1-slot", opener);
+        play(&tx, &server.url, "st-r1-slot");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Buffering)),
+            "the session never reached Buffering"
+        );
+        *lock(&out.delay) = Duration::from_millis(1500);
+        out.fire_loss();
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Playing)),
+            "the session never played: its attach read an empty output slot"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the session's audio never reached the new output"
+        );
         drop(tx);
     }
 
