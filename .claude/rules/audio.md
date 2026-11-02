@@ -24,7 +24,9 @@ in ONDAR.md under the section named.
    by `no_player_clear_scan` (`ondar-audio/src/lib.rs`). **One output, reopened on loss:** cpal's
    `DeviceNotAvailable` reopens the default device and restarts the live session through the
    reconnect path (`Reconnecting`, one backoff attempt), or ends it in `Error { code: Device }`
-   if nothing opens; a default change needs nothing (the stream follows). ("0.1.2: decisions")
+   if nothing opens; a default change needs nothing (the stream follows). 7d's stall WARN (5 s
+   `Playing` with nothing pulled) also reopens, once per episode (`stall_reopen`'s latch, cleared
+   only by a pull). ("0.1.2: decisions")
 2. **Ondar owns all reconnects** (own `Backoff` + a fresh `stream::open()`): stream-download's
    internal reconnect splices byte 0 onto a live mount. The one bounded exception: it stays live
    during the decoder build. ("Reconnect ownership and stream timeouts")

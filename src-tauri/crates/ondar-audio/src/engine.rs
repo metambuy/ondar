@@ -55,7 +55,9 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// gaps of an output route change or `CoreAudio` restarting IO after wake (a process suspended by
 /// sleep runs no ticks at all), and well inside a listener's patience. Observed trigger: the
 /// output device lost (Bluetooth headphones disconnected, `_handover/feedback/`, F1 "Repro
-/// results"); cpal then stops the stream silently and the state stays `Playing`.
+/// results"); cpal then stops the stream silently and the state stays `Playing`. Since 0.1.2 the
+/// WARN also reopens the output, once per stall episode ([`stall_reopen`]): the fallback for a stop
+/// cpal does not report.
 const OUTPUT_STALL_TICKS: u32 = 50;
 
 #[derive(Debug, Clone)]
@@ -468,6 +470,10 @@ struct Engine {
     output_watch: OutputWatch,
     /// [`OUTPUT_STALL_TICKS`], on the engine so a test harness can shorten it.
     output_stall_ticks: u32,
+    /// 7d's reopen latch (0.1.2, decision 5): set when a stall reopened the output, cleared only
+    /// when an output pulls again. It lives on the engine, not in [`OutputWatch`], because the
+    /// reopen restarts the session onto a new ring, which resets the watch; see [`stall_reopen`].
+    stall_reopened: bool,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -523,6 +529,7 @@ impl Engine {
             watchdog_ticks: watchdog_ticks(),
             output_watch: OutputWatch::default(),
             output_stall_ticks: OUTPUT_STALL_TICKS,
+            stall_reopened: false,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -685,12 +692,19 @@ impl Engine {
             &mut self.ticks_since_progress,
             stats.pushed.load(Ordering::Relaxed),
         );
-        let stall = self.output_watch.tick(
-            &current,
-            stats.pulled.load(Ordering::Relaxed),
-            self.output_stall_ticks,
-        );
+        let pulled = stats.pulled.load(Ordering::Relaxed);
+        let progressed = pulled != self.output_watch.last_pulled;
+        let stall = self
+            .output_watch
+            .tick(&current, pulled, self.output_stall_ticks);
         self.report_output_stall(stall);
+        let (reopen, latched) = stall_reopen(stall, progressed, self.stall_reopened);
+        self.stall_reopened = latched;
+        // Only an output this engine opened (the supervised test harness has none).
+        if reopen && self.opened.is_some() {
+            self.reopen_output("the output pulled nothing while playing");
+            return;
+        }
 
         let dwell = dwell_for_tick(
             &mut self.latched_dwell,
@@ -1527,6 +1541,21 @@ impl OutputWatch {
             StallAction::None => {}
         }
         action
+    }
+}
+
+/// 7d's reopen, pure (0.1.2, decision 5): whether this tick's stall `action` reopens the output,
+/// and the latch after it. A stall's WARN reopens once; while `latched`, a WARN only warns (the
+/// session restarted by the reopen gets a new ring and a fresh [`OutputWatch`], so on a dead
+/// system it warns again, and a reopen there would loop every few seconds). `progressed` (the
+/// ring was pulled this tick) ends the episode.
+fn stall_reopen(action: StallAction, progressed: bool, latched: bool) -> (bool, bool) {
+    if progressed {
+        return (false, false);
+    }
+    match action {
+        StallAction::Warn if !latched => (true, true),
+        _ => (false, latched),
     }
 }
 
@@ -2475,12 +2504,25 @@ mod session_tests {
         name: &str,
         opener: TestOpener,
     ) -> (mpsc::Sender<AudioCommand>, Receiver<EngineEvent>) {
+        spawn_engine_with(name, opener, OUTPUT_STALL_TICKS)
+    }
+
+    /// `spawn_engine` with the output-stall threshold set (7d), as the supervised harness sets it.
+    fn spawn_engine_with(
+        name: &str,
+        opener: TestOpener,
+        stall_ticks: u32,
+    ) -> (mpsc::Sender<AudioCommand>, Receiver<EngineEvent>) {
         let (ev_tx, ev_rx) = mpsc::channel();
         let shared = test_ctx(ev_tx).shared;
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
             .name(name.into())
-            .spawn(move || Engine::with_opener(shared, "Ondar/test", Box::new(opener)).run(&rx))
+            .spawn(move || {
+                let mut engine = Engine::with_opener(shared, "Ondar/test", Box::new(opener));
+                engine.output_stall_ticks = stall_ticks;
+                engine.run(&rx);
+            })
             .expect("spawn engine");
         (tx, ev_rx)
     }
@@ -2593,6 +2635,58 @@ mod session_tests {
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].1.contains("code=Device"), "{lines:?}");
         assert_eq!(out.opens.load(Ordering::SeqCst), 2, "one reopen attempt");
+        drop(tx);
+    }
+
+    /// 7d after 0.1.2 (decision 5): the output stops pulling with no loss reported (a stream
+    /// paused by something cpal does silently). **What it pins:** the stall WARN also reopens the
+    /// output, once; the restarted session on the new output, still dead (the halt holds for
+    /// every open), warns again but is **not** reopened again, so a dead system cannot loop; and
+    /// the output pulling again ends the episode. **Fails if** the stall never reopens (commit 4's
+    /// tree: one open, recorded in the commit), or if the latch resets with the session's ring
+    /// (a reopen on every WARN: a third open).
+    #[test]
+    fn a_stalled_output_is_reopened_once_per_episode() {
+        capture_logs();
+        let server = tone_server();
+        let halted = Arc::new(AtomicBool::new(false));
+        let opener = TestOpener::new(halted.clone());
+        let out = opener.handles();
+        let name = "ondar-audio:test-7d-reopen";
+        let (tx, ev_rx) = spawn_engine_with(name, opener, TEST_OUTPUT_STALL_TICKS);
+        play(&tx, &server.url, "st-7d-reopen");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        halted.store(true, Ordering::SeqCst);
+        assert!(
+            eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 2),
+            "the stall did not reopen the output"
+        );
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Playing)),
+            "the restarted session never attached"
+        );
+        assert!(
+            eventually(GUARD, || thread_lines(name, "output stalled").len() >= 2),
+            "the dead new output did not warn"
+        );
+        thread::sleep(TICK_INTERVAL * TEST_OUTPUT_STALL_TICKS * 3);
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            2,
+            "a second stall in one episode reopened again"
+        );
+        halted.store(false, Ordering::SeqCst);
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the output never pulled again"
+        );
         drop(tx);
     }
 
@@ -5530,6 +5624,27 @@ mod tick_tests {
         assert_eq!(
             output_stall(&PlaybackState::Playing, n, n, false),
             StallAction::Warn
+        );
+    }
+
+    /// 7d's reopen latch (0.1.2, decision 5): the first WARN of an episode reopens; a WARN while
+    /// latched does not; progress ends the episode, and the next WARN reopens again. **Fails if**
+    /// the latch is dropped (a reopen per WARN, the loop on a dead system), never clears (one
+    /// reopen for the app's life), or a reopen follows progress.
+    #[test]
+    fn a_stall_reopens_once_per_episode() {
+        assert_eq!(stall_reopen(StallAction::Warn, false, false), (true, true));
+        assert_eq!(stall_reopen(StallAction::Warn, false, true), (false, true));
+        assert_eq!(stall_reopen(StallAction::None, false, true), (false, true));
+        assert_eq!(stall_reopen(StallAction::None, true, true), (false, false));
+        assert_eq!(
+            stall_reopen(StallAction::Resumed, true, true),
+            (false, false)
+        );
+        assert_eq!(stall_reopen(StallAction::Warn, false, false), (true, true));
+        assert_eq!(
+            stall_reopen(StallAction::None, false, false),
+            (false, false)
         );
     }
 
