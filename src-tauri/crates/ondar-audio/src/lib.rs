@@ -47,6 +47,7 @@ pub mod engine;
 pub mod eq;
 pub mod hls;
 pub mod icy;
+mod output;
 pub mod reconnect;
 pub mod ring;
 pub mod stream;
@@ -96,5 +97,45 @@ mod callback_log_scan {
                 );
             }
         }
+    }
+}
+
+/// F1 (0.1.2), as a source scan: `engine.rs` outside its tests calls `.clear()` on nothing but
+/// the receivers named here. rodio's `Player::clear()` waits without a timeout for the output to
+/// pull (rodio 0.23.0 `player.rs:279-284`), which wedged the engine thread when the output device
+/// was lost; the engine drops a session's `Player` instead. Matching every `.clear()`, not only
+/// `player.clear()`, means a rename cannot hide one. **Fails on** a `Player::clear()` call
+/// anywhere in the engine's non-test code: on `3ddb31c` it found three (`play`, `stop`, the decode
+/// thread's attach).
+#[cfg(test)]
+mod no_player_clear_scan {
+    #[test]
+    fn the_engine_never_clears_a_player() {
+        const ALLOWED: [&str; 1] = ["self.underrun_ticks"];
+        let engine = include_str!("engine.rs");
+        let code = engine.split("#[cfg(test)]").next().unwrap_or(engine);
+        let mut found = Vec::new();
+        for (n, line) in code.lines().enumerate() {
+            let text = line.trim_start();
+            if text.starts_with("//") {
+                continue;
+            }
+            let mut rest = text;
+            while let Some(at) = rest.find(".clear()") {
+                let receiver = rest[..at]
+                    .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                    .next()
+                    .unwrap_or("");
+                if !ALLOWED.contains(&receiver) {
+                    found.push(format!("engine.rs:{}: {}", n + 1, text));
+                }
+                rest = &rest[at + ".clear()".len()..];
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "a `.clear()` on a receiver that may be a rodio `Player`, which waits for the output \
+             (F1, 0.1.2): {found:#?}"
+        );
     }
 }
