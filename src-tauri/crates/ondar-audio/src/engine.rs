@@ -317,8 +317,8 @@ impl SessionCtx {
 }
 
 /// The one format every session is converted to before the EQ: the output sink's own rate and
-/// channel count, read from `MixerDeviceSink::config()` when the sink opens (rodio 0.22.2 builds
-/// the mixer from that config, `stream.rs:497`). Fixed for the life of the sink.
+/// channel count, read from `MixerDeviceSink::config()` when the sink opens (rodio 0.23.0 builds
+/// the mixer from that config, `stream.rs:494`). Fixed for the life of the sink.
 ///
 /// Why a session converts itself (defect A, measured 2026-09-24, ONDAR.md): rodio's mixer wraps
 /// the `Player`'s whole queue in **one** `UniformSourceIterator` (`mixer.rs:62`), which reads its
@@ -347,6 +347,19 @@ fn output_chain(
         UniformSourceIterator::new(src, out.channels, out.sample_rate),
         gains,
     )
+}
+
+/// The output stream's error callback. It runs on cpal's own thread, never in the data callback,
+/// so a log line here is outside `.claude/rules/audio.md` 15. On rodio 0.23.0 / cpal 0.18.2 a
+/// stream on the default device follows a new default by itself and reports `DeviceChanged`
+/// (measured 5 of 5 losses and 10 of 10 switches, 2026-10-30): INFO. Anything else is WARN; the
+/// reopen on `DeviceNotAvailable` is F1's fix (0.1.2 plan, commit 4).
+fn log_output_error(e: &rodio::CpalError) {
+    if e.kind() == rodio::CpalErrorKind::DeviceChanged {
+        log::info!("output followed the default device: {e}");
+    } else {
+        log::warn!("output stream error: {:?}: {e}", e.kind());
+    }
 }
 
 struct Engine {
@@ -713,11 +726,24 @@ impl Engine {
 
     /// Open the output device on first use so a missing device is reported as a playback
     /// error rather than a crash at startup.
+    ///
+    /// The device's own buffer (`BufferSize::Default`), not rodio's: rodio 0.23.0 asks for a
+    /// `Fixed` ~50 ms (2048 frames at 44.1 kHz, `stream.rs:204-217`), which cpal 0.18.2 refuses on
+    /// a device whose range is lower (`14..=1024` on an Audio Pro A15 W, measured 2026-10-30), so
+    /// `open_default_sink` failed on every device. No fallback to another device: an open on an
+    /// output nobody hears is worse than an honest `Error { code: Device }` (rodio PR #914, which
+    /// clamps the buffer, is unreleased; re-check at each rodio release). ONDAR.md, "0.1.2:
+    /// decisions", 1.
     fn ensure_player(&mut self) -> Result<(Arc<Player>, OutputFormat), String> {
         if let (Some(p), Some(out)) = (&self.player, self.output) {
             return Ok((p.clone(), out));
         }
-        let mut sink = DeviceSinkBuilder::open_default_sink().map_err(|e| e.to_string())?;
+        let mut sink = DeviceSinkBuilder::from_default_device()
+            .map_err(|e| e.to_string())?
+            .with_buffer_size(rodio::cpal::BufferSize::Default)
+            .with_error_callback(|e| log_output_error(&e))
+            .open_stream()
+            .map_err(|e| e.to_string())?;
         sink.log_on_drop(false);
         let out = OutputFormat {
             channels: sink.config().channel_count(),

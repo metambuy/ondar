@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// `PREFETCH_BYTES` must cover at least one of these or the decode thread starves on its first
 /// refill — see `stream::PREFETCH_BYTES`. Crucially this size is **not Ondar's to choose**:
-/// `ondar-audio` never constructs a `MediaSourceStream`; rodio 0.22.2 does it internally over
-/// symphonia-core 0.5.5, and picks the size. Observed at 32768 B on 2026-09-11.
+/// `ondar-audio` never constructs a `MediaSourceStream`; rodio (0.22.2, and 0.23.0) does it
+/// internally over symphonia-core 0.5.5, and picks the size. Observed at 32768 B on 2026-09-11.
 ///
 /// A rodio or symphonia bump that raises it would reintroduce spontaneous underruns roughly
 /// 2 s into every station start, on a perfectly healthy network, with no error raised and
