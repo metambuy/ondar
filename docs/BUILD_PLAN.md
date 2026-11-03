@@ -429,6 +429,11 @@ state has a test.
   again; with cpal 0.18.2 that signal comes only when no default device exists, and then the open
   fails and the session ends in `Error { code: Device }`, so no loop today. Reopened by a tester
   log with repeated `output lost` lines.
+- **The `UN` drop logged once per process** (0.1.2 release logs, 2026-11-03): `countries: dropped 1
+  cached code(s) with no name: ["UN"]` is logged at every panel show; once per process is enough.
+- **OCR to v1.13.x** (0.1.2's reviews ran v1.12.13): upgrade before the next review round.
+- **rodio #914 re-check** (the buffer clamp, ONDAR.md "0.1.2: decisions", buy before build): at each
+  rodio release; once it ships, the explicit buffer can go.
 
 ---
 
@@ -499,23 +504,26 @@ at the Mac). Scope final 2026-10-26 (`_handover/v011-run2-brief-2026-10-26.md`; 
 (`_handover/v012-run3-plan-brief-2026-10-30.md`; plan `_handover/v012-plan.md`, approved with
 amendments in `_handover/v012-plan-review-2026-10-30.md`). Decisions: ONDAR.md, "0.1.2: decisions".
 
-- [ ] F1 fix: rodio 0.23.0 / cpal 0.18.2, the output opened with `BufferSize::Default` and our error
+- [x] F1 fix: rodio 0.23.0 / cpal 0.18.2, the output opened with `BufferSize::Default` and our error
       callback; a `Player` per session and no production `Player::clear()`; one sink, reopened on
       `DeviceNotAvailable`, the session restarting through the reconnect path; sink drops off the
       engine thread; 7d keeps its WARN and gains one latched reopen per stall episode. Tests F1 1-4,
       each failing first where it can (test 1 on `3ddb31c`); test A by hand on the release build
-- [ ] F2: the update line becomes a small button, "Update to <version>", in the accent colour
+- [x] F2: the update line becomes a small button, "Update to <version>", in the accent colour
       (WebKit's `AccentColor`, a fixed `rgb(0 122 255)`), label semibold
-- [ ] F3 / G: directory discovery by `getaddrinfo("all.api.radio-browser.info")` plus a reverse
+- [x] F3 / G: directory discovery by `getaddrinfo("all.api.radio-browser.info")` plus a reverse
       lookup of each address (`dns-lookup` 4.0.2), in `spawn_blocking` under a 5 s timeout;
       hickory-resolver removed; the fallback hosts and their test kept
-- [ ] F4: the country select in three groups (main; small states; territories), each A to Z with
+- [x] F4: the country select in three groups (main; small states; territories), each A to Z with
       accents folded, sorted in Rust; groups from Natural Earth v5.1.2 admin 0 plus an override
       table; names from CLDR 49 English, pinned
-- [ ] Tester defects: F5 (media keys, volume) goes to M5e; F6 (a station without a country) waits
-- [ ] Release docs: the tester note's privacy paragraph for 0.1.2; the release as 0.1.1's steps,
+- [x] Tester defects: F5 (media keys, volume) goes to M5e; F6 (a station without a country) waits
+- [x] Release docs: the tester note's privacy paragraph for 0.1.2; the release as 0.1.1's steps,
       the dSYM to `_handover/v0.1.2/ondar-0.1.2.dSYM`; `/code-review` after the audio commits and
       again on `main..v0.1.2` before the merge
+      Done 2026-11-03: tag `v0.1.2` = `1e155c1`, Cloud release `01M6GPF5ATTPNT3GASVJE06YA7`, feed
+      and download checked, spike 5 passed, merged to `main` (`60b60c8`; ONDAR.md, "Release 0.1.2").
+      The pre-merge reviews were the two OCR triages (2026-11-02, 2026-11-03); F6 still waits
 
 **Out, to M6:** the universal binary (aarch64 only here), DMG art, README screenshots, a CI release
 workflow.
@@ -535,6 +543,8 @@ through the prompt; a log file arrives.
 - [ ] Signing and notarisation in a CI release workflow (`APPLE_*` secrets)
 - [ ] Universal binary (aarch64 + x86_64)
 - [ ] README with screenshots, credits (Natural Earth, radio-browser.info), licence
+- [ ] A periodic update check (spike 5 of 0.1.2, 2026-11-03): the check runs once per launch, so a
+      running 0.1.x offers an update only after a relaunch
 - [ ] Page-error forwarding (0.1.1's 7b: `window.onerror` and `unhandledrejection` to one Rust
       command that logs at WARN): dropped from 0.1.1 on 2026-10-26 because the F1 reads showed the
       page alive; kept for testers in general
