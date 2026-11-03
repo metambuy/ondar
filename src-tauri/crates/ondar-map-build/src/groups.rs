@@ -199,11 +199,14 @@ pub fn build(input: &Path) -> Result<String, String> {
     };
     let admin0 = ne::attributes(dbf("ne_10m_admin_0_countries.dbf")?, "ADM0_A3")?;
     let map_units = ne::attributes(dbf("ne_10m_admin_0_map_units.dbf")?, "GU_A3")?;
-    let mut cldr = None;
-    for pin in pins::parse(CLDR_TSV)? {
-        cldr = Some(pins::read_checked(&input.join(&pin.file), &pin)?);
-    }
-    let cldr = cldr_names(&cldr.ok_or("cldr.tsv pins no file")?)?;
+    let cldr_pins = pins::parse(CLDR_TSV)?;
+    let [pin] = cldr_pins.as_slice() else {
+        return Err(format!(
+            "cldr.tsv: one pin expected, {} found",
+            cldr_pins.len()
+        ));
+    };
+    let cldr = cldr_names(&pins::read_checked(&input.join(&pin.file), pin)?)?;
     let rows = rows(
         &admin0,
         &map_units,

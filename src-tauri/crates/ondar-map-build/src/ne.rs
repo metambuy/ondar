@@ -127,12 +127,16 @@ pub struct Attrs {
     pub pop_est: f64,
 }
 
-fn number(rec: &Record, field: &str) -> f64 {
+/// A numeric field's value; a missing field or a null is an error, never 0 (0.1.2, E1: a 0
+/// `POP_EST` would file a sovereign as a small state silently).
+fn number(rec: &Record, field: &str) -> Result<f64, String> {
     match rec.get(field) {
-        Some(FieldValue::Numeric(Some(v)) | FieldValue::Double(v) | FieldValue::Currency(v)) => *v,
-        Some(FieldValue::Float(Some(v))) => f64::from(*v),
-        Some(FieldValue::Integer(v)) => f64::from(*v),
-        _ => 0.0,
+        Some(FieldValue::Numeric(Some(v)) | FieldValue::Double(v) | FieldValue::Currency(v)) => {
+            Ok(*v)
+        }
+        Some(FieldValue::Float(Some(v))) => Ok(f64::from(*v)),
+        Some(FieldValue::Integer(v)) => Ok(f64::from(*v)),
+        other => Err(format!("{field}: no number ({other:?})")),
     }
 }
 
@@ -149,8 +153,62 @@ pub fn attributes(dbf: &[u8], a3_field: &str) -> Result<Vec<Attrs>, String> {
             sovereignt: text(&rec, "SOVEREIGNT"),
             admin: text(&rec, "ADMIN"),
             kind: text(&rec, "TYPE"),
-            pop_est: number(&rec, "POP_EST"),
+            pop_est: number(&rec, "POP_EST")
+                .map_err(|e| format!("{} {e}", text(&rec, a3_field)))?,
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shapefile::dbase::{FieldName, TableWriterBuilder};
+
+    /// A one-record `.dbf` with the fields [`attributes`] reads; `pop` is `POP_EST`'s value, and
+    /// `with_pop: false` leaves the field out of the table.
+    fn dbf(with_pop: bool, pop: Option<f64>) -> Vec<u8> {
+        let name = |s: &str| FieldName::try_from(s).unwrap();
+        let mut b = TableWriterBuilder::new();
+        for f in ["ISO_A2_EH", "ADM0_A3", "SOVEREIGNT", "ADMIN", "TYPE"] {
+            b = b.add_character_field(name(f), 20);
+        }
+        if with_pop {
+            b = b.add_numeric_field(name("POP_EST"), 12, 0);
+        }
+        let mut out = Cursor::new(Vec::new());
+        {
+            let mut w = b.build_with_dest(&mut out);
+            let mut r = Record::default();
+            for (f, v) in [
+                ("ISO_A2_EH", "TV"),
+                ("ADM0_A3", "TUV"),
+                ("SOVEREIGNT", "Tuvalu"),
+                ("ADMIN", "Tuvalu"),
+                ("TYPE", "Sovereign country"),
+            ] {
+                r.insert(f.to_string(), FieldValue::Character(Some(v.to_string())));
+            }
+            if with_pop {
+                r.insert("POP_EST".to_string(), FieldValue::Numeric(pop));
+            }
+            w.write_record(&r).unwrap();
+            w.finalize().unwrap();
+        }
+        out.into_inner()
+    }
+
+    /// **What it pins:** a `POP_EST` that is null, or a table without the field, is an error, not
+    /// a population of 0 (which the rule files as a small state, silently). The control row with a
+    /// value reads back as that value, so the errors are about `POP_EST` and not the test's
+    /// `.dbf`. **Fails if** `number()`'s fallback to `0.0` comes back (it did, until E1, 0.1.2).
+    #[test]
+    fn a_missing_or_null_pop_est_is_an_error() {
+        let ok = attributes(&dbf(true, Some(11_646.0)), "ADM0_A3").unwrap();
+        assert_eq!(ok[0].pop_est, 11_646.0);
+        let null = attributes(&dbf(true, None), "ADM0_A3");
+        assert!(null.is_err(), "null POP_EST read as {null:?}");
+        let missing = attributes(&dbf(false, None), "ADM0_A3");
+        assert!(missing.is_err(), "missing POP_EST read as {missing:?}");
+    }
 }
