@@ -21,9 +21,15 @@ log = "0.4"
 # The HTTP client: the same TLS the engine uses (native-tls via stream-download). No gzip
 # feature on purpose — radio-browser ignores Accept-Encoding (measured 2026-09-21, G6).
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
-# SRV discovery of _api._tcp.radio-browser.info (verified 0.26.3 in the M3 Step 0 census).
-hickory-resolver = { version = "0.26.3", features = ["tokio", "system-config"] }
-# The service's fetch runtime (multi-thread, two workers) and the retry backoff sleeps.
+# Server discovery through the system resolver (0.1.2, G): `getaddrinfo` and `getnameinfo`
+# (`lookup_host`, `lookup_addr`), which std has only half of (`ToSocketAddrs`, forward only).
+# 4.0.2 (2026-10-01, MIT/Apache); its libc, socket2 and cfg-if are already in the tree.
+dns-lookup = "4.0.2"
+# The country list's sort key (0.1.2, F4): NFD, to drop the accents a Latin letter carries. 2.3.0,
+# already in the tree (url → idna → idna_adapter); no new package.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
+# The service's fetch runtime (multi-thread, two workers), the retry backoff sleeps, and the
+# discovery's `spawn_blocking` + `timeout` (`rt` is in `rt-multi-thread`).
 tokio = { version = "1.52", features = ["rt-multi-thread", "time", "sync"] }
 # The cache and store. `bundled` compiles SQLite in, so the bundle carries its own version and
 # the tests run in-memory with no system library involved. 0.40.2 is the current release

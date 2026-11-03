@@ -1,0 +1,6 @@
+# CLDR 49.0.0 (2026-10-22), unicode-org/cldr-json tag 49.0.0 (a4b67247b446fd51b475991017a2481911210c60),
+# raw.githubusercontent.com/unicode-org/cldr-json/49.0.0/cldr-json/cldr-localenames-full/main/en/territories.json,
+# saved as the name below. Fetched twice on 2026-11-02, byte-identical. The country groups (0.1.2, F4)
+# refuse a copy whose SHA-256 or size differs; scripts/fetch-cldr.sh checks the same table.
+# file	bytes	sha256
+cldr-49.0.0-en-territories.json	10190	1326fb3bcdf8b8cf63df73ea02ea7f8bf7a8362cbb60bd12bcdb53f3ad22bf04

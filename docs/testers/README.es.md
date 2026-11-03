@@ -30,15 +30,14 @@ Cuando algo vaya mal, adjunta el registro de hoy: en el Finder pulsa Cmd+Shift+G
 
 ## Actualizaciones
 
-Cuando haya una versión nueva lista, aparece una línea en la parte de abajo del panel: "Ondar 0.1.1 available · Update". Haz clic en Update; la app se reemplaza a sí misma y se vuelve a abrir. Esto solo funciona si Ondar está en Applications (paso 2).
+Cuando haya una versión nueva lista, aparece una línea en la parte de abajo del panel. En la versión que usas ahora es texto gris, "Ondar 0.1.2 available · Update", y haces clic en Update; a partir de 0.1.2 es un botón azul en el mismo sitio, "Update to" y la versión nueva. En ambos casos la app se reemplaza a sí misma y se vuelve a abrir, y en ambos casos solo funciona si Ondar está en Applications (paso 2).
 
 ## Privacidad
 
 Lo que sale de tu Mac:
 
 - Las emisiones de radio que escuchas. El servidor de la emisora ve tu dirección IP, como con cualquier reproductor.
-- Las peticiones al directorio de emisoras, radio-browser.info: listas de países y emisoras y un «clic» por cada emisora que inicias, que el directorio pide a las apps para contar escuchas.
-- Consultas DNS que Ondar hace por su cuenta para encontrar un servidor del directorio. En la 0.1.1 van directamente a los servidores DNS configurados en tu Mac, por eso un cortafuegos como Little Snitch las muestra. Una próxima versión las enviará a través de macOS, como hacen las demás apps.
+- Las peticiones al directorio de emisoras, radio-browser.info: listas de países y emisoras y un «clic» por cada emisora que inicias, que el directorio pide a las apps para contar escuchas. Ondar encuentra un servidor del directorio mediante la resolución de nombres normal de macOS, como las demás apps.
 - Una comprobación de actualizaciones cada vez que Ondar arranca, a cdn.crabnebula.app (CrabNebula aloja las versiones de Ondar). Envía la versión que usas y la plataforma de tu Mac (macOS, Apple silicon).
 
 Sin analíticas, sin informes de fallos, sin cuenta.

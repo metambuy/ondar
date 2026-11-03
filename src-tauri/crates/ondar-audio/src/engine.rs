@@ -2,8 +2,10 @@
 //!
 //! Threads:
 //!
-//! * **engine thread** (`ondar-audio`): owns the output device (`MixerDeviceSink`), the
-//!   `Player`, and the Tokio runtime that `stream-download` needs. It receives
+//! * **engine thread** (`ondar-audio`): owns the output device (through an
+//!   [`OutputOpener`]; its `Mixer` and the guard that closes it) and the Tokio runtime that
+//!   `stream-download` needs. Each attach of a session makes its own `Player` on that mixer
+//!   (0.1.2, F1): no call on this thread waits on the output. It receives
 //!   [`AudioCommand`]s over a channel, polling on a short timeout so it can also supervise
 //!   ring buffering (see [`Engine::tick`]) — it never blocks on network or decoding itself.
 //! * **one decode thread per session** (`ondar-decode`): opens the HTTP stream, probes it with
@@ -18,15 +20,16 @@
 
 use std::collections::VecDeque;
 use std::io::{Read, Seek};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use rodio::decoder::{DecoderBuilder, DecoderError};
+use rodio::mixer::Mixer;
 use rodio::source::UniformSourceIterator;
-use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source};
+use rodio::{ChannelCount, Player, SampleRate, Source};
 use rtrb::PushError;
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +39,7 @@ use crate::build::{
 };
 use crate::eq::{EqGains, Equalizer};
 use crate::icy::IcyReader;
+use crate::output::{DeviceOpener, LossSignal, Opened, OutputOpener};
 use crate::reconnect::{Backoff, STABLE_AFTER};
 use crate::ring::{self, RingSource, RingStats};
 use crate::stream;
@@ -51,7 +55,9 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// gaps of an output route change or `CoreAudio` restarting IO after wake (a process suspended by
 /// sleep runs no ticks at all), and well inside a listener's patience. Observed trigger: the
 /// output device lost (Bluetooth headphones disconnected, `_handover/feedback/`, F1 "Repro
-/// results"); cpal then stops the stream silently and the state stays `Playing`.
+/// results"); cpal then stops the stream silently and the state stays `Playing`. Since 0.1.2 the
+/// WARN also reopens the output, once per stall episode ([`stall_reopen`]): the fallback for a stop
+/// cpal does not report.
 const OUTPUT_STALL_TICKS: u32 = 50;
 
 #[derive(Debug, Clone)]
@@ -273,20 +279,71 @@ struct SessionCtx {
     /// decode thread, read and swapped by `Engine::tick`. Its bounds are fixed for the session:
     /// [`BuildBounds::for_prefetch`] in production, shorter ones in the tests.
     clock: Arc<BuildClock>,
+    /// The `Player` of the session's current attach, made by the decode thread on the output's
+    /// mixer (one per attach: the first, and each reconnect's) and published here, so the engine
+    /// thread can pause, resume and set its volume. Taken and dropped by [`Self::cancel`]:
+    /// `Drop for Player` is two atomic stores (rodio 0.23.0 `player.rs:345-353`), where
+    /// `Player::clear()` waits without a timeout for the output to pull (F1). Locked on the
+    /// engine and decode threads only, never in the callback chain.
+    player: Arc<Mutex<Option<Player>>>,
+    /// The engine's volume as `f32` bits, read at each attach under `player`'s lock.
+    volume: Arc<AtomicU32>,
+    /// The output the next attach connects to: the engine's, shared by every session, replaced
+    /// when the engine reopens the output after a loss (0.1.2, F1) and `None` while it is closed.
+    /// Read once per attach by the decode thread, so a session restarted after a loss converts to
+    /// the new output's format.
+    output: OutputSlot,
+    /// Set by the engine after it reopened the output (0.1.2, F1): the decode thread leaves its
+    /// stream, ring and attach, whatever it is waiting on (a network read, or a full ring that a
+    /// dead output no longer drains), and reconnects onto the new output. Cleared by the decode
+    /// thread when it acts on it.
+    restart: Arc<AtomicBool>,
     shared: Shared,
 }
+
+/// See [`SessionCtx::output`].
+type OutputSlot = Arc<Mutex<Option<(Mixer, OutputFormat)>>>;
 
 impl SessionCtx {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
 
+    /// Ends the session: its flag, its download, its generation, and its `Player`, dropped here,
+    /// which silences it within 5 ms of output (rodio applies `stopped` in `periodic_access`) and
+    /// never waits (F1).
     fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
         if let Some(token) = lock(&self.download).take() {
             token.cancel();
         }
         self.shared.end_session(self.generation);
+        drop(lock(&self.player).take());
+    }
+
+    /// The decode thread's attach: publish `player` as the session's, at the engine's volume,
+    /// playing unless the user paused. Decided under `player`'s lock, so it cannot interleave
+    /// with the engine's [`Self::cancel`], pause, resume or volume: a session already cancelled
+    /// gets no player (`false`; this one is dropped), and a volume or pause the engine set before
+    /// taking the lock is read here. The previous attach's player, if any, is dropped.
+    fn attach(&self, player: Player) -> bool {
+        let mut slot = lock(&self.player);
+        if self.cancelled() {
+            return false;
+        }
+        player.set_volume(f32::from_bits(self.volume.load(Ordering::Relaxed)));
+        if !self.shared.paused.load(Ordering::Relaxed) {
+            player.play();
+        }
+        drop(slot.replace(player));
+        true
+    }
+
+    /// `f` on the current attach's player, if there is one.
+    fn with_player(&self, f: impl FnOnce(&Player)) {
+        if let Some(p) = lock(&self.player).as_ref() {
+            f(p);
+        }
     }
 
     /// A state update from this session, dropped once the session is over so a stale decode
@@ -317,8 +374,8 @@ impl SessionCtx {
 }
 
 /// The one format every session is converted to before the EQ: the output sink's own rate and
-/// channel count, read from `MixerDeviceSink::config()` when the sink opens (rodio 0.22.2 builds
-/// the mixer from that config, `stream.rs:497`). Fixed for the life of the sink.
+/// channel count, read from `MixerDeviceSink::config()` when the sink opens (rodio 0.23.0 builds
+/// the mixer from that config, `stream.rs:494`). Fixed for the life of the sink.
 ///
 /// Why a session converts itself (defect A, measured 2026-09-24, ONDAR.md): rodio's mixer wraps
 /// the `Player`'s whole queue in **one** `UniformSourceIterator` (`mixer.rs:62`), which reads its
@@ -327,9 +384,9 @@ impl SessionCtx {
 /// played at the wrong speed. Every chain now reports this format, so the mixer's converter
 /// is an identity whatever it locked to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct OutputFormat {
-    channels: ChannelCount,
-    sample_rate: SampleRate,
+pub(crate) struct OutputFormat {
+    pub(crate) channels: ChannelCount,
+    pub(crate) sample_rate: SampleRate,
 }
 
 /// A session's source chain: the ring, converted to the output's fixed format, then the EQ. The
@@ -349,16 +406,39 @@ fn output_chain(
     )
 }
 
+/// The output stream's error callback. It runs on cpal's own thread, never in the data callback,
+/// so a log line here is outside `.claude/rules/audio.md` 15. On rodio 0.23.0 / cpal 0.18.2 a
+/// stream on the default device follows a new default by itself and reports `DeviceChanged`
+/// (measured 5 of 5 losses and 10 of 10 switches, 2026-10-30): INFO. Anything else is WARN; the
+/// reopen on `DeviceNotAvailable` is F1's fix (0.1.2 plan, commit 4).
+pub(crate) fn log_output_error(e: &rodio::CpalError) {
+    if e.kind() == rodio::CpalErrorKind::DeviceChanged {
+        log::info!("output followed the default device: {e}");
+    } else {
+        log::warn!("output stream error: {:?}: {e}", e.kind());
+    }
+}
+
 struct Engine {
     shared: Shared,
     client: reqwest::Client,
     rt: tokio::runtime::Runtime,
-    sink: Option<MixerDeviceSink>,
-    player: Option<Arc<Player>>,
-    /// The sink's format, set with `sink`; see [`OutputFormat`].
-    output: Option<OutputFormat>,
+    /// How the output is opened: the default device in production, a bare mixer in the tests.
+    opener: Box<dyn OutputOpener>,
+    /// The open output, from the first `play` on: its mixer, its format (see
+    /// [`OutputFormat`]) and the guard that keeps the device open.
+    opened: Option<Opened>,
+    /// Counts opens; an open's [`LossSignal`] carries its number, so a late signal from an output
+    /// already replaced is ignored.
+    output_generation: u64,
+    /// The loss signals' channel ([`Self::check_output_lost`]).
+    lost_tx: Sender<u64>,
+    lost_rx: Receiver<u64>,
+    /// The mixer and format every session's next attach uses; see [`SessionCtx::output`].
+    output_slot: OutputSlot,
     session: Option<SessionCtx>,
-    volume: f32,
+    /// As `f32` bits; every session's attach reads it ([`SessionCtx::attach`]).
+    volume: Arc<AtomicU32>,
     /// When the current session last transitioned into `Playing`, as observed by `tick()`.
     /// Drives the "reset backoff after `STABLE_AFTER` of continuous playback" rule.
     playing_since: Option<Instant>,
@@ -390,6 +470,10 @@ struct Engine {
     output_watch: OutputWatch,
     /// [`OUTPUT_STALL_TICKS`], on the engine so a test harness can shorten it.
     output_stall_ticks: u32,
+    /// 7d's reopen latch (0.1.2, decision 5): set when a stall reopened the output, cleared when
+    /// an output pulls again or the user plays a station (R2). It lives on the engine, not in [`OutputWatch`], because the
+    /// reopen restarts the session onto a new ring, which resets the watch; see [`stall_reopen`].
+    stall_reopened: bool,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -407,6 +491,10 @@ struct Engine {
 
 impl Engine {
     fn new(shared: Shared, user_agent: &str) -> Self {
+        Self::with_opener(shared, user_agent, Box::new(DeviceOpener))
+    }
+
+    fn with_opener(shared: Shared, user_agent: &str, opener: Box<dyn OutputOpener>) -> Self {
         #[allow(
             clippy::expect_used,
             reason = "runtime construction at startup; the app cannot run without it"
@@ -417,15 +505,19 @@ impl Engine {
             .enable_all()
             .build()
             .expect("tokio runtime");
+        let (lost_tx, lost_rx) = mpsc::channel();
         Self {
             shared,
             client: stream::build_client(user_agent),
             rt,
-            sink: None,
-            player: None,
-            output: None,
+            opener,
+            opened: None,
+            output_generation: 0,
+            lost_tx,
+            lost_rx,
+            output_slot: Arc::new(Mutex::new(None)),
             session: None,
-            volume: 1.0,
+            volume: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             playing_since: None,
             last_state: PlaybackState::Idle,
             current_ring: None,
@@ -437,6 +529,7 @@ impl Engine {
             watchdog_ticks: watchdog_ticks(),
             output_watch: OutputWatch::default(),
             output_stall_ticks: OUTPUT_STALL_TICKS,
+            stall_reopened: false,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -460,9 +553,36 @@ impl Engine {
                 // Handle dropped: shut down cleanly.
                 Err(RecvTimeoutError::Disconnected) => break,
             }
+            self.check_output_lost();
             self.tick();
         }
         self.stop();
+        self.close_output();
+    }
+
+    /// Close the output at shutdown: the slot emptied (no attach may use it), then the device
+    /// released ([`Self::release_output`]).
+    fn close_output(&mut self) {
+        *lock(&self.output_slot) = None;
+        self.release_output();
+    }
+
+    /// Release the open output off the engine thread (0.1.2 decision 3): the device's dispose
+    /// took 74-289 ms on a live device (measured 2026-10-30), and the engine thread never waits on
+    /// the output. The thread owns only the guard; nothing joins it. The output slot is left as it
+    /// is: a reopen replaces it only once the new output is open (R1).
+    fn release_output(&mut self) {
+        let Some(opened) = self.opened.take() else {
+            return;
+        };
+        let guard = opened.guard;
+        // A refused thread drops the guard here instead, on this thread: slower, not wrong.
+        if let Err(e) = thread::Builder::new()
+            .name("ondar-sink-drop".into())
+            .spawn(move || drop(guard))
+        {
+            log::warn!("output close thread refused ({e}); closing on the engine thread");
+        }
     }
 
     /// Buffering supervision. Runs on every wake-up of the engine thread (every
@@ -579,12 +699,19 @@ impl Engine {
             &mut self.ticks_since_progress,
             stats.pushed.load(Ordering::Relaxed),
         );
-        let stall = self.output_watch.tick(
-            &current,
-            stats.pulled.load(Ordering::Relaxed),
-            self.output_stall_ticks,
-        );
+        let pulled = stats.pulled.load(Ordering::Relaxed);
+        let progressed = pulled != self.output_watch.last_pulled;
+        let stall = self
+            .output_watch
+            .tick(&current, pulled, self.output_stall_ticks);
         self.report_output_stall(stall);
+        let (reopen, latched) = stall_reopen(stall, progressed, self.stall_reopened);
+        self.stall_reopened = latched;
+        // Only an output this engine opened (the supervised test harness has none).
+        if reopen && self.opened.is_some() {
+            self.reopen_output("the output pulled nothing while playing");
+            return;
+        }
 
         let dwell = dwell_for_tick(
             &mut self.latched_dwell,
@@ -611,15 +738,11 @@ impl Engine {
         match outcome.transition {
             Some(Transition::PauseAndBuffer) => {
                 log::debug!("underrun: pausing output until the ring refills");
-                if let Some(p) = &self.player {
-                    p.pause();
-                }
+                session.with_player(Player::pause);
                 session.set_state(PlaybackState::Buffering);
             }
             Some(Transition::ResumePlaying) => {
-                if let Some(p) = &self.player {
-                    p.play();
-                }
+                session.with_player(Player::play);
                 session.set_state(PlaybackState::Playing);
             }
             Some(Transition::ResumePaused) => {
@@ -659,7 +782,7 @@ impl Engine {
                     .station_id
                     .clone()
                     .unwrap_or_default();
-                let format = self.output.map_or_else(
+                let format = self.opened.as_ref().map(|o| o.format).map_or_else(
                     || "output not opened here".to_string(),
                     |o| format!("output {} Hz, {} ch", o.sample_rate, o.channels),
                 );
@@ -711,47 +834,98 @@ impl Engine {
         );
     }
 
-    /// Open the output device on first use so a missing device is reported as a playback
-    /// error rather than a crash at startup.
-    fn ensure_player(&mut self) -> Result<(Arc<Player>, OutputFormat), String> {
-        if let (Some(p), Some(out)) = (&self.player, self.output) {
-            return Ok((p.clone(), out));
+    /// Open the output on first use so a missing device is reported as a playback error rather
+    /// than a crash at startup. The open itself is the opener's ([`DeviceOpener`] in production).
+    fn ensure_output(&mut self) -> Result<(Mixer, OutputFormat), String> {
+        if let Some(o) = &self.opened {
+            return Ok((o.mixer.clone(), o.format));
         }
-        let mut sink = DeviceSinkBuilder::open_default_sink().map_err(|e| e.to_string())?;
-        sink.log_on_drop(false);
-        let out = OutputFormat {
-            channels: sink.config().channel_count(),
-            sample_rate: sink.config().sample_rate(),
-        };
+        self.output_generation += 1;
+        let lost = LossSignal::new(self.lost_tx.clone(), self.output_generation);
+        let opened = self.opener.open(lost)?;
         log::info!(
             "output opened sample_rate={} channels={}",
-            out.sample_rate,
-            out.channels
+            opened.format.sample_rate,
+            opened.format.channels
         );
-        let player = Arc::new(Player::connect_new(sink.mixer()));
-        player.set_volume(self.volume);
-        self.sink = Some(sink);
-        self.player = Some(player.clone());
-        self.output = Some(out);
-        Ok((player, out))
+        let out = (opened.mixer.clone(), opened.format);
+        *lock(&self.output_slot) = Some(out.clone());
+        self.opened = Some(opened);
+        Ok(out)
     }
 
-    /// The receipt line comes first (F1 instrument 7a, 0.1.1): before `cancel_session` and before
-    /// the output's `clear`, which waits without a timeout for the output to drain and so never
-    /// returns once the output has stopped pulling (F1, `_handover/v011-f1-reads-2026-10-26.md`).
-    /// The `play station_id=…` line further down means "past `clear`". A bad URL or a device that
-    /// will not open also ends without that line, but with an Error state, which `write_state`
-    /// logs at WARN (`playback error: …`, 0.1.1 item 9c); so a wedge reads as "received, then
-    /// neither a `playback error` WARN nor `play station_id=`".
+    /// Drain the loss signals; one from the output open now reopens it ([`Self::reopen_output`]).
+    /// A signal from an output already replaced (an older generation) is dropped.
+    fn check_output_lost(&mut self) {
+        let mut lost = false;
+        while let Ok(generation) = self.lost_rx.try_recv() {
+            lost |= generation == self.output_generation && self.opened.is_some();
+        }
+        if lost {
+            self.reopen_output("the output device is gone");
+        }
+    }
+
+    /// The output is gone (0.1.2, F1; decision 4): close it off this thread and, if a session is
+    /// live, open the default device again and restart the session through the reconnect path.
+    /// The restart sets the session's `restart` flag (the decode thread may be waiting on a full
+    /// ring that the dead output no longer drains) and cancels its download in place, as the
+    /// watchdog's `FailSession` does (it may be waiting on a read); `retry_or_fail` shows
+    /// `Reconnecting` (one backoff
+    /// attempt, accepted in the plan's review), and the next attach connects a new `Player` to the
+    /// new mixer at its format: a reopened output can come up at another rate (44.1 → 48 kHz,
+    /// measured on loss), and the session's chain is rebuilt for it. With no session, the next
+    /// `play` opens the output. If the open fails (no output device left), the session ends in
+    /// `Error { code: Device }`, logged once by `write_state`.
+    ///
+    /// **The slot is never empty while the output is replaced** (R1, the review of commits 1-5):
+    /// it keeps the old mixer until `ensure_output` puts the new one in, so a decode thread that
+    /// reaches its first attach inside the open (21-275 ms, Step 0 C) attaches to the old output
+    /// and is then restarted by the flag, instead of reading `None`, which means "closed, the
+    /// session is ending", and ending with no state change. Only a failed open empties it.
+    fn reopen_output(&mut self, reason: &str) {
+        log::warn!("output lost ({reason}); reopening the default output");
+        self.release_output();
+        let Some(session) = self.session.clone() else {
+            *lock(&self.output_slot) = None;
+            return;
+        };
+        match self.ensure_output() {
+            Ok(_) => {
+                session.restart.store(true, Ordering::Relaxed);
+                if let Some(t) = lock(&session.download).as_ref() {
+                    t.cancel();
+                }
+            }
+            Err(message) => {
+                *lock(&self.output_slot) = None;
+                self.cancel_session();
+                self.shared.set_state(PlaybackState::Error {
+                    code: ErrorCode::Device,
+                    message,
+                });
+            }
+        }
+    }
+
+    /// The receipt line comes first (F1 instrument 7a, 0.1.1), before `cancel_session`. Until
+    /// 0.1.2 the output's `Player::clear()` came next, which waits without a timeout for the
+    /// output to drain and so never returned once the output had stopped pulling (F1,
+    /// `_handover/v011-f1-reads-2026-10-26.md`). Now the previous station is silenced by
+    /// dropping its session's `Player` in `cancel_session`, which does not wait. The
+    /// `play station_id=…` line further down means "the session started". A bad URL or a device
+    /// that will not open ends without that line, but with an Error state, which `write_state`
+    /// logs at WARN (`playback error: …`, 0.1.1 item 9c).
     fn play(&mut self, url: &str, station_id: &str, bitrate_kbps: Option<u32>) {
         log::info!("play received station_id={station_id}");
+        // A user's new station is a new stall episode (R2): 7d's latch must not outlive the
+        // station it was set for, or a reopen that landed on a dead output would leave every later
+        // station silent with no reopen until a relaunch. Here, not in `cancel_session`: `stop`
+        // plays nothing, so it needs no episode, and the next `play` clears it anyway.
+        self.stall_reopened = false;
         self.cancel_session();
         let generation = self.shared.begin_session(station_id.to_string());
         self.shared.paused.store(false, Ordering::Relaxed);
-        if let Some(p) = &self.player {
-            // Silence the previous station now, not when the new one has buffered.
-            p.clear();
-        }
 
         let url = match stream::parse_url(url) {
             Ok(u) => u,
@@ -763,16 +937,13 @@ impl Engine {
                 return;
             }
         };
-        let (player, output) = match self.ensure_player() {
-            Ok(p) => p,
-            Err(message) => {
-                self.shared.set_state(PlaybackState::Error {
-                    code: ErrorCode::Device,
-                    message,
-                });
-                return;
-            }
-        };
+        if let Err(message) = self.ensure_output() {
+            self.shared.set_state(PlaybackState::Error {
+                code: ErrorCode::Device,
+                message,
+            });
+            return;
+        }
 
         let prefetch = stream::prefetch_bytes(bitrate_kbps);
         let ctx = SessionCtx {
@@ -783,6 +954,10 @@ impl Engine {
             reconnect_count: Arc::new(AtomicU64::new(0)),
             generation,
             clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(prefetch))),
+            player: Arc::new(Mutex::new(None)),
+            volume: self.volume.clone(),
+            output: self.output_slot.clone(),
+            restart: Arc::new(AtomicBool::new(false)),
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
@@ -800,23 +975,23 @@ impl Engine {
         )]
         let _decode = thread::Builder::new()
             .name(format!("ondar-decode:{station_id}"))
-            .spawn(move || run_session(&ctx, &url, &client, &handle, &player, prefetch, output))
+            .spawn(move || run_session(&ctx, &url, &client, &handle, prefetch))
             .expect("spawn decode thread");
     }
 
     fn pause(&mut self) {
-        if let (Some(p), Some(_)) = (&self.player, &self.session) {
+        if let Some(s) = &self.session {
             self.shared.paused.store(true, Ordering::Relaxed);
-            p.pause();
+            s.with_player(Player::pause);
             self.shared.set_state(PlaybackState::Paused);
         }
     }
 
     fn resume(&mut self) {
-        if let (Some(p), Some(_)) = (&self.player, &self.session) {
+        if let Some(s) = &self.session {
             self.shared.paused.store(false, Ordering::Relaxed);
             if self.shared.state() == PlaybackState::Paused {
-                p.play();
+                s.with_player(Player::play);
                 // tick() will downgrade this to Buffering if the ring is starved.
                 self.shared.set_state(PlaybackState::Playing);
             }
@@ -824,22 +999,21 @@ impl Engine {
         }
     }
 
-    /// The receipt line comes first, before the output's `clear` (F1 instrument 7a; see `play`).
-    /// It also fires once at shutdown, from `run`'s final `stop`.
+    /// The receipt line comes first (F1 instrument 7a; see `play`). `cancel_session` drops the
+    /// session's `Player`, which silences it without waiting on the output. It also fires once at
+    /// shutdown, from `run`'s final `stop`.
     fn stop(&mut self) {
         log::info!("stop received");
         self.cancel_session();
         self.shared.paused.store(false, Ordering::Relaxed);
-        if let Some(p) = &self.player {
-            p.clear();
-        }
         self.shared.set_state(PlaybackState::Idle);
     }
 
     fn set_volume(&mut self, v: f32) {
-        self.volume = v.clamp(0.0, 1.0);
-        if let Some(p) = &self.player {
-            p.set_volume(self.volume);
+        let v = v.clamp(0.0, 1.0);
+        self.volume.store(v.to_bits(), Ordering::Relaxed);
+        if let Some(s) = &self.session {
+            s.with_player(|p| p.set_volume(v));
         }
     }
 
@@ -863,9 +1037,7 @@ fn run_session(
     url: &reqwest::Url,
     client: &reqwest::Client,
     rt: &tokio::runtime::Handle,
-    player: &Arc<Player>,
     prefetch_bytes: u64,
-    output: OutputFormat,
 ) {
     // Whether this session has ever opened its stream. A terminal answer ends the session
     // only before that: afterwards the same 404 is a mount mid-restart, and the backoff
@@ -1034,10 +1206,15 @@ fn run_session(
         let fill_target = ring.stats.capacity / 2;
         let mut samples_since_check: u32 = 0;
 
-        loop {
+        'decode: loop {
             if ctx.cancelled() {
                 *lock(&ctx.ring) = None;
                 return;
+            }
+            // Only an attached session acts on a restart: before its attach, the attach itself
+            // reads the new output (`restart` is cleared there).
+            if source.is_none() && ctx.restart.load(Ordering::Relaxed) {
+                break;
             }
             let Some(sample) = decoder.next() else {
                 // EOF, or a read error (including our own cancellation, checked above).
@@ -1054,6 +1231,9 @@ fn run_session(
                         if ctx.cancelled() {
                             *lock(&ctx.ring) = None;
                             return;
+                        }
+                        if source.is_none() && ctx.restart.load(Ordering::Relaxed) {
+                            break 'decode;
                         }
                         thread::sleep(Duration::from_millis(5));
                     }
@@ -1073,13 +1253,28 @@ fn run_session(
             // is blocked in a read — which is exactly the watchdog's signal.
             ring.stats.pushed.fetch_add(1024, Ordering::Relaxed);
 
+            // A `Player` per attach (0.1.2, F1): the previous attach's player is dropped by
+            // `attach`, never cleared, so a reattach on a halted output cannot wait on it.
+            // The output is read at each attach: after a loss the engine has replaced it, and a
+            // `None` means it is closed (the session is being ended).
             if let Some(src) = source.take_if(|_| filled >= fill_target) {
-                player.clear();
+                // The engine replaces the output before it sets `restart`, so a restart asked
+                // before this read is already answered by it.
+                ctx.restart.store(false, Ordering::Relaxed);
+                let Some((mixer, output)) = lock(&ctx.output).clone() else {
+                    *lock(&ctx.ring) = None;
+                    return;
+                };
+                let player = Player::connect_new(&mixer);
+                player.pause();
                 player.append(output_chain(src, output, ctx.shared.gains.clone()));
+                if !ctx.attach(player) {
+                    *lock(&ctx.ring) = None;
+                    return;
+                }
                 if ctx.shared.paused.load(Ordering::Relaxed) {
                     ctx.set_state(PlaybackState::Paused);
                 } else {
-                    player.play();
                     ctx.set_state(PlaybackState::Playing);
                 }
             }
@@ -1089,17 +1284,21 @@ fn run_session(
         // queue; the reconnect path attaches a fresh source.
         *lock(&ctx.ring) = None;
         drop(ring);
+        drop(decoder);
         if ctx.cancelled() {
             return;
         }
-        log::warn!("stream ended or read failed; reconnecting");
-        if !retry_or_fail(
-            ctx,
-            ErrorCode::Network,
-            "the stream ended unexpectedly".to_string(),
-            false,
-            None,
-        ) {
+        let (code, message) = if source.is_none() && ctx.restart.swap(false, Ordering::Relaxed) {
+            log::info!("output reopened; reconnecting the stream onto it");
+            (ErrorCode::Device, "the output device changed".to_string())
+        } else {
+            log::warn!("stream ended or read failed; reconnecting");
+            (
+                ErrorCode::Network,
+                "the stream ended unexpectedly".to_string(),
+            )
+        };
+        if !retry_or_fail(ctx, code, message, false, None) {
             return;
         }
     }
@@ -1362,6 +1561,21 @@ impl OutputWatch {
             StallAction::None => {}
         }
         action
+    }
+}
+
+/// 7d's reopen, pure (0.1.2, decision 5): whether this tick's stall `action` reopens the output,
+/// and the latch after it. A stall's WARN reopens once; while `latched`, a WARN only warns (the
+/// session restarted by the reopen gets a new ring and a fresh [`OutputWatch`], so on a dead
+/// system it warns again, and a reopen there would loop every few seconds). `progressed` (the
+/// ring was pulled this tick) ends the episode.
+fn stall_reopen(action: StallAction, progressed: bool, latched: bool) -> (bool, bool) {
+    if progressed {
+        return (false, false);
+    }
+    match action {
+        StallAction::Warn if !latched => (true, true),
+        _ => (false, latched),
     }
 }
 
@@ -1697,16 +1911,20 @@ mod session_tests {
             clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(
                 stream::prefetch_bytes(None),
             ))),
+            player: Arc::new(Mutex::new(None)),
+            volume: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            output: Arc::new(Mutex::new(None)),
+            restart: Arc::new(AtomicBool::new(false)),
             shared,
         }
     }
 
     /// Start `run_session` against `url` on its own thread, as `Engine::play` does, minus the
-    /// device: the `Player` is connected to a bare mixer whose output a thread pulls at about
-    /// twice real time — the device's stand-in. Without that pull nothing ever drops a queued
-    /// source, and `Player::clear()` on a second open (a reconnect after playback) waits for
-    /// the mixer forever (found by `started_is_sent_once_per_session_across_a_reconnect`,
-    /// M3b commit 5: the second stream reached its fill target and never left `clear()`).
+    /// device: each attach's `Player` is connected to a bare mixer whose output a thread pulls at
+    /// about twice real time — the device's stand-in. Until 0.1.2 the attach called
+    /// `Player::clear()`, which on a second open (a reconnect after playback) waited for that pull
+    /// forever when it was missing (found by `started_is_sent_once_per_session_across_a_reconnect`,
+    /// M3b commit 5); the attach now makes a new `Player` and waits on nothing (F1).
     fn start_session(url: &str) -> Harness {
         start_session_with(url, None, None, None)
     }
@@ -1838,7 +2056,6 @@ mod session_tests {
             std::num::NonZero::new(2).expect("2"),
             std::num::NonZero::new(44_100).expect("44100"),
         );
-        let player = Arc::new(Player::connect_new(&mixer));
         let output_halted = Arc::new(AtomicBool::new(false));
         let halted = output_halted.clone();
         thread::spawn(move || {
@@ -1855,14 +2072,17 @@ mod session_tests {
         let handle = rt.handle().clone();
         let session = ctx.clone();
         let prefetch = prefetch.unwrap_or_else(|| stream::prefetch_bytes(None));
-        let output = OutputFormat {
-            channels: std::num::NonZero::new(2).expect("2"),
-            sample_rate: std::num::NonZero::new(44_100).expect("44100"),
-        };
+        *lock(&session.output) = Some((
+            mixer,
+            OutputFormat {
+                channels: std::num::NonZero::new(2).expect("2"),
+                sample_rate: std::num::NonZero::new(44_100).expect("44100"),
+            },
+        ));
         capture_logs();
         thread::Builder::new()
             .name(decode_thread.clone())
-            .spawn(move || run_session(&session, &url, &client, &handle, &player, prefetch, output))
+            .spawn(move || run_session(&session, &url, &client, &handle, prefetch))
             .expect("spawn decode thread");
         Harness {
             ctx,
@@ -1905,7 +2125,8 @@ mod session_tests {
         }
         fn log(&self, r: &log::Record) {
             let msg = r.args().to_string();
-            const KEPT: [&str; 8] = [
+            const KEPT: [&str; 9] = [
+                "output lost",
                 "adts front end",
                 "build",
                 "play received",
@@ -2090,6 +2311,524 @@ mod session_tests {
             "no resume line within 10 s of the output pulling again"
         );
         assert_eq!(tick_lines(&h, "output resumed")[0].0, log::Level::Info);
+        h.ctx.cancel();
+    }
+
+    /// The test seam's output (0.1.2, F1): a bare mixer whose output a thread pulls at about
+    /// twice real time while `halted` is clear, standing in for the device; `opens` counts every
+    /// open. Dropping the guard ends the puller.
+    struct TestOpener {
+        halted: Arc<AtomicBool>,
+        opens: Arc<AtomicUsize>,
+        /// Set: the next open fails, as with no output device at all.
+        fail: Arc<AtomicBool>,
+        /// The last open's loss signal, for the test to fire.
+        lost: Arc<Mutex<Option<LossSignal>>>,
+        /// Per open, in order: how many pulled samples were louder than 0.05, so a test can tell
+        /// a session's audio reaching that output from the mixer's silence.
+        loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
+        /// How long each open takes from now on (a device open took 21-275 ms, Step 0 C).
+        delay: Arc<Mutex<Duration>>,
+    }
+
+    impl TestOpener {
+        fn new(halted: Arc<AtomicBool>) -> Self {
+            Self {
+                halted,
+                opens: Arc::new(AtomicUsize::new(0)),
+                fail: Arc::new(AtomicBool::new(false)),
+                lost: Arc::new(Mutex::new(None)),
+                loud: Arc::new(Mutex::new(Vec::new())),
+                delay: Arc::new(Mutex::new(Duration::ZERO)),
+            }
+        }
+
+        /// The handles a test keeps once the opener has moved into the engine.
+        fn handles(&self) -> TestOutput {
+            TestOutput {
+                opens: self.opens.clone(),
+                fail: self.fail.clone(),
+                lost: self.lost.clone(),
+                loud: self.loud.clone(),
+                delay: self.delay.clone(),
+            }
+        }
+    }
+
+    struct TestOutput {
+        opens: Arc<AtomicUsize>,
+        fail: Arc<AtomicBool>,
+        lost: Arc<Mutex<Option<LossSignal>>>,
+        loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
+        delay: Arc<Mutex<Duration>>,
+    }
+
+    impl TestOutput {
+        fn fire_loss(&self) {
+            lock(&self.lost)
+                .as_ref()
+                .expect("an output was opened")
+                .fire();
+        }
+
+        /// Loud samples pulled so far from open `n` (0-based).
+        fn loud(&self, n: usize) -> u64 {
+            lock(&self.loud)
+                .get(n)
+                .map_or(0, |c| c.load(Ordering::SeqCst))
+        }
+    }
+
+    struct StopOnDrop(Arc<AtomicBool>);
+
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl OutputOpener for TestOpener {
+        fn open(&mut self, lost: LossSignal) -> Result<Opened, String> {
+            thread::sleep(*lock(&self.delay));
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("no output device (test)".into());
+            }
+            *lock(&self.lost) = Some(lost);
+            let loud = Arc::new(AtomicU64::new(0));
+            lock(&self.loud).push(loud.clone());
+            let (mixer, mixer_out) = rodio::mixer::mixer(
+                std::num::NonZero::new(2).expect("2"),
+                std::num::NonZero::new(44_100).expect("44100"),
+            );
+            let (halted, closed) = (self.halted.clone(), Arc::new(AtomicBool::new(false)));
+            let ended = closed.clone();
+            thread::spawn(move || {
+                let mut out = mixer_out;
+                while !ended.load(Ordering::SeqCst) {
+                    if !halted.load(Ordering::SeqCst) {
+                        let n = out.by_ref().take(4410).filter(|x| x.abs() > 0.05).count();
+                        loud.fetch_add(n as u64, Ordering::SeqCst);
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            });
+            Ok(Opened {
+                mixer,
+                format: OutputFormat {
+                    channels: std::num::NonZero::new(2).expect("2"),
+                    sample_rate: std::num::NonZero::new(44_100).expect("44100"),
+                },
+                guard: Box::new(StopOnDrop(closed)),
+            })
+        }
+    }
+
+    /// The kept lines with `prefix` logged on the thread named `thread`, in order.
+    fn thread_lines(thread: &str, prefix: &str) -> Vec<String> {
+        CAPTURED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _, m)| t == thread && m.starts_with(prefix))
+            .map(|(_, _, m)| m.clone())
+            .collect()
+    }
+
+    /// Wait up to `within` for an event `f` accepts, dropping the others; the timeout is a hang
+    /// guard, never the claim.
+    fn await_event(
+        rx: &Receiver<EngineEvent>,
+        within: Duration,
+        f: impl Fn(&EngineEvent) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + within;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(ev) if f(&ev) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// F1 (0.1.2), the wedge itself, through the engine's own command loop: a session plays, the
+    /// output stops pulling (the device lost), then the user plays another station and stops.
+    /// Until 0.1.2 `Engine::play` called `Player::clear()` on the playing session's player, which
+    /// waits without a timeout for the output to pull, so the engine thread never reached the
+    /// second station's `play station_id=` line, never handled `Stop`, and never wrote `Idle`.
+    /// **What it pins:** with the output halted, the engine still starts the second session and
+    /// handles `Stop` (its receipt line and `Idle`, read after awaiting the event). **Fails if**
+    /// any call on the engine thread's `play` or `stop` path waits on the output again: it failed
+    /// on `3ddb31c` with this test's plant (`_handover/v012/plants/f1-test1-3ddb31c.patch`), no
+    /// `Idle` within the guard.
+    #[test]
+    fn a_halted_output_never_stops_the_engine_answering() {
+        capture_logs();
+        let one = paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(wav_response(10.0)),
+            bytes_per_sec: 0,
+            after: After::Hold,
+        }]);
+        let two = paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(wav_response(10.0)),
+            bytes_per_sec: 0,
+            after: After::Hold,
+        }]);
+        let (ev_tx, ev_rx) = mpsc::channel();
+        let shared = test_ctx(ev_tx).shared;
+        let halted = Arc::new(AtomicBool::new(false));
+        let opener = TestOpener::new(halted.clone());
+        let (tx, rx) = mpsc::channel();
+        let name = "ondar-audio:test-f1-halted";
+        thread::Builder::new()
+            .name(name.into())
+            .spawn(move || Engine::with_opener(shared, "Ondar/test", Box::new(opener)).run(&rx))
+            .expect("spawn engine");
+        tx.send(AudioCommand::Play {
+            url: one.url.clone(),
+            station_id: "st-f1-one".into(),
+            bitrate_kbps: None,
+        })
+        .expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { station_id } if station_id == "st-f1-one"
+            )),
+            "the first station never played"
+        );
+        halted.store(true, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(300));
+        tx.send(AudioCommand::Play {
+            url: two.url.clone(),
+            station_id: "st-f1-two".into(),
+            bitrate_kbps: None,
+        })
+        .expect("send");
+        tx.send(AudioCommand::Stop).expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Idle)),
+            "no Idle after Stop: the engine thread is waiting on the halted output"
+        );
+        assert_eq!(
+            thread_lines(name, "play station_id=st-f1-two").len(),
+            1,
+            "the second session started"
+        );
+        assert_eq!(thread_lines(name, "stop received").len(), 1);
+        drop(tx);
+    }
+
+    /// An engine on its own thread named `name`, as `AudioEngine::start` runs it, with `opener`
+    /// for its output: the commands' sender and the events' receiver.
+    fn spawn_engine(
+        name: &str,
+        opener: TestOpener,
+    ) -> (mpsc::Sender<AudioCommand>, Receiver<EngineEvent>) {
+        spawn_engine_with(name, opener, OUTPUT_STALL_TICKS)
+    }
+
+    /// `spawn_engine` with the output-stall threshold set (7d), as the supervised harness sets it.
+    fn spawn_engine_with(
+        name: &str,
+        opener: TestOpener,
+        stall_ticks: u32,
+    ) -> (mpsc::Sender<AudioCommand>, Receiver<EngineEvent>) {
+        let (ev_tx, ev_rx) = mpsc::channel();
+        let shared = test_ctx(ev_tx).shared;
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                let mut engine = Engine::with_opener(shared, "Ondar/test", Box::new(opener));
+                engine.output_stall_ticks = stall_ticks;
+                engine.run(&rx);
+            })
+            .expect("spawn engine");
+        (tx, ev_rx)
+    }
+
+    /// A paced server answering every connection with 60 s of a 440 Hz tone, then holding: at
+    /// the test output's twice-real-time pull that lasts 30 s, past [`GUARD`], so no reconnect a
+    /// test awaits can come from the stream running out.
+    fn tone_server() -> Paced {
+        paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(tone_wav_response(44_100, 2, 440.0, 60.0)),
+            bytes_per_sec: 0,
+            after: After::Hold,
+        }])
+    }
+
+    fn play(tx: &mpsc::Sender<AudioCommand>, url: &str, station_id: &str) {
+        tx.send(AudioCommand::Play {
+            url: url.into(),
+            station_id: station_id.into(),
+            bitrate_kbps: None,
+        })
+        .expect("send");
+    }
+
+    /// F1 test 2 (0.1.2): the output reports its device gone (cpal 0.18's `DeviceNotAvailable`,
+    /// here the test opener's loss signal) while a session plays. **What it pins:** the engine
+    /// opens the output again (a second `open()`), the session goes through `Reconnecting` back to
+    /// `Playing`, and its audio reaches the **new** output (loud samples pulled from the second
+    /// mixer, read after awaiting `Playing`), with one `output lost` WARN. **Fails if** the loss is
+    /// ignored (no second open: the plant `_handover/v012/plants/f1-loss-ignored.patch` on this
+    /// commit's tree), if the session is not restarted (no `Reconnecting`), or if the restarted
+    /// session attaches to the old mixer (nothing loud on the second).
+    #[test]
+    fn a_lost_output_reopens_and_the_session_plays_on_the_new_one() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let name = "ondar-audio:test-f1-loss";
+        let (tx, ev_rx) = spawn_engine(name, opener);
+        play(&tx, &server.url, "st-f1-loss");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(0) > 0),
+            "the first output never heard the session"
+        );
+        out.fire_loss();
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::State(PlaybackState::Reconnecting { .. })
+            )),
+            "the session was not restarted after the loss"
+        );
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Playing)),
+            "the restarted session never played"
+        );
+        assert_eq!(out.opens.load(Ordering::SeqCst), 2, "one reopen");
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the restarted session's audio never reached the new output"
+        );
+        let lost = thread_lines(name, "output lost");
+        assert_eq!(lost.len(), 1, "{lost:?}");
+        drop(tx);
+    }
+
+    /// F1 test 3 (0.1.2): the output is lost and the reopen fails (no output device left).
+    /// **What it pins:** the session ends in `Error { code: Device }`, with one `playback error`
+    /// WARN for the station (0.1.1's 9c line). **Fails if** the failed reopen leaves the state
+    /// `Playing` (the F1 shape: silence with a playing state) or retries without end: on the
+    /// plant `f1-loss-ignored.patch` no Error arrives.
+    #[test]
+    fn a_lost_output_that_cannot_reopen_ends_in_a_device_error() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine("ondar-audio:test-f1-noout", opener);
+        play(&tx, &server.url, "st-f1-noout");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.fail.store(true, Ordering::SeqCst);
+        out.fire_loss();
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::State(PlaybackState::Error {
+                    code: ErrorCode::Device,
+                    ..
+                })
+            )),
+            "no Device error after a loss with no output to reopen"
+        );
+        let lines = lines_containing("playback error", "st-f1-noout");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].1.contains("code=Device"), "{lines:?}");
+        assert_eq!(out.opens.load(Ordering::SeqCst), 2, "one reopen attempt");
+        drop(tx);
+    }
+
+    /// R2 (the 0.1.2 review of commits 1-5): a stall reopen lands on an output that never pulls
+    /// either (the halt holds for every open), and the user then plays another station. Until
+    /// this fix the latch was cleared only by a pull, so every later station on that output
+    /// stalled with no reopen until a relaunch: the engine answered but was silent, F1's symptom.
+    /// **What it pins:** a user's `play` starts a new stall episode, so its stall reopens again
+    /// (a third open); within one episode the latch still holds (no third open before the
+    /// `play`). **Fails if** `play` leaves the latch set: on `eecc815` with this test
+    /// (`_handover/v012/plants/r2-test-on-eecc815.patch`), still two opens.
+    #[test]
+    fn a_new_station_starts_a_new_stall_episode() {
+        capture_logs();
+        let server = tone_server();
+        let halted = Arc::new(AtomicBool::new(false));
+        let opener = TestOpener::new(halted.clone());
+        let out = opener.handles();
+        let name = "ondar-audio:test-r2-episode";
+        let (tx, ev_rx) = spawn_engine_with(name, opener, TEST_OUTPUT_STALL_TICKS);
+        play(&tx, &server.url, "st-r2-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the first station never played"
+        );
+        halted.store(true, Ordering::SeqCst);
+        assert!(
+            eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 2),
+            "the first stall did not reopen the output"
+        );
+        assert!(
+            eventually(GUARD, || thread_lines(name, "output stalled").len() >= 2),
+            "the restarted session on the dead output did not warn"
+        );
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            2,
+            "the latch held within the episode"
+        );
+        play(&tx, &server.url, "st-r2-two");
+        assert!(
+            eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 3),
+            "the new station's stall was not reopened: the latch outlived the episode"
+        );
+        drop(tx);
+    }
+
+    /// R1 (the 0.1.2 review of commits 1-5): a loss while a session is still before its first
+    /// attach (`Buffering`, its ring filling at the stream's real pace), with an open that takes
+    /// 1.5 s. Until this fix `reopen_output` emptied the output slot before the open and filled it
+    /// after, so a decode thread reaching its fill target inside the open read `None` and ended
+    /// with no state change: the session sat in `Buffering` with no decode thread. **What it
+    /// pins:** the session reaches `Playing`, and its audio the new output. **Fails if** a live
+    /// session can read an empty slot while the output is replaced: on `eecc815` with this test
+    /// (`_handover/v012/plants/r1-test-on-eecc815.patch`), no `Playing` within the guard.
+    #[test]
+    fn a_loss_during_the_first_buffering_still_reaches_playing() {
+        capture_logs();
+        let server = paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(tone_wav_response(44_100, 2, 440.0, 60.0)),
+            bytes_per_sec: 44_100 * 4,
+            after: After::Hold,
+        }]);
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine("ondar-audio:test-r1-slot", opener);
+        play(&tx, &server.url, "st-r1-slot");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Buffering)),
+            "the session never reached Buffering"
+        );
+        *lock(&out.delay) = Duration::from_millis(1500);
+        out.fire_loss();
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Playing)),
+            "the session never played: its attach read an empty output slot"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the session's audio never reached the new output"
+        );
+        drop(tx);
+    }
+
+    /// 7d after 0.1.2 (decision 5): the output stops pulling with no loss reported (a stream
+    /// paused by something cpal does silently). **What it pins:** the stall WARN also reopens the
+    /// output, once; the restarted session on the new output, still dead (the halt holds for
+    /// every open), warns again but is **not** reopened again, so a dead system cannot loop; and
+    /// the output pulling again ends the episode. **Fails if** the stall never reopens (commit 4's
+    /// tree: one open, recorded in the commit), or if the latch resets with the session's ring
+    /// (a reopen on every WARN: a third open).
+    #[test]
+    fn a_stalled_output_is_reopened_once_per_episode() {
+        capture_logs();
+        let server = tone_server();
+        let halted = Arc::new(AtomicBool::new(false));
+        let opener = TestOpener::new(halted.clone());
+        let out = opener.handles();
+        let name = "ondar-audio:test-7d-reopen";
+        let (tx, ev_rx) = spawn_engine_with(name, opener, TEST_OUTPUT_STALL_TICKS);
+        play(&tx, &server.url, "st-7d-reopen");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        halted.store(true, Ordering::SeqCst);
+        assert!(
+            eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 2),
+            "the stall did not reopen the output"
+        );
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Playing)),
+            "the restarted session never attached"
+        );
+        assert!(
+            eventually(GUARD, || thread_lines(name, "output stalled").len() >= 2),
+            "the dead new output did not warn"
+        );
+        thread::sleep(TICK_INTERVAL * TEST_OUTPUT_STALL_TICKS * 3);
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            2,
+            "a second stall in one episode reopened again"
+        );
+        halted.store(false, Ordering::SeqCst);
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the output never pulled again"
+        );
+        drop(tx);
+    }
+
+    /// F1 (0.1.2), the decode thread's side (Step 0 A1, row 3): a stream ends and reconnects
+    /// while the output is halted. Until 0.1.2 the reattach called `Player::clear()` before
+    /// `append`, and with the first stream's source still current in a queue nobody pulls, that
+    /// waited for ever: the session never left `Buffering`. **What it pins:** the reconnect's
+    /// attach reaches `Playing` again with the output halted. **Fails if** the attach waits on the
+    /// output (a `clear()`, `sleep_until_end`, or `append` on a stopped player): it failed on
+    /// `c898e56` with this test's plant (`_handover/v012/plants/f1-reattach-c898e56.patch`).
+    #[test]
+    fn a_reconnect_reattaches_while_the_output_is_halted() {
+        let (url, requests) = counting_server_owned(wav_response(1.5));
+        let h = start_session(&url);
+        let seen = states_until(&h, GUARD, |s| *s == PlaybackState::Playing || is_error(s));
+        assert_eq!(last(&seen), PlaybackState::Playing, "{seen:?}");
+        h.output_halted.store(true, Ordering::SeqCst);
+        let seen = states_until(&h, GUARD, |s| *s == PlaybackState::Playing || is_error(s));
+        assert!(
+            seen.iter()
+                .any(|s| matches!(s, PlaybackState::Reconnecting { .. })),
+            "the stream reconnected ({seen:?})"
+        );
+        assert_eq!(
+            last(&seen),
+            PlaybackState::Playing,
+            "the reattach waited on the halted output ({seen:?})"
+        );
+        assert!(requests.load(Ordering::SeqCst) >= 2, "two requests");
         h.ctx.cancel();
     }
 
@@ -3633,7 +4372,6 @@ mod session_tests {
             std::num::NonZero::new(mixer_ch).expect("channels"),
             std::num::NonZero::new(mixer_rate).expect("rate"),
         );
-        let player = Arc::new(Player::connect_new(&mixer));
         let capture: Arc<Mutex<Option<Vec<f32>>>> = Arc::new(Mutex::new(None));
         let cap = capture.clone();
         let chunk = mixer_rate as usize * mixer_ch as usize / 20;
@@ -3654,7 +4392,6 @@ mod session_tests {
         let start = |body: Vec<u8>, station: &str| -> SessionCtx {
             let (url, _) = scripted_server(vec![body]);
             let generation = shared.begin_session(station.into());
-            player.clear();
             let ctx = SessionCtx {
                 cancel: Arc::new(AtomicBool::new(false)),
                 download: Arc::new(Mutex::new(None)),
@@ -3665,6 +4402,16 @@ mod session_tests {
                 clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(
                     stream::prefetch_bytes(None),
                 ))),
+                player: Arc::new(Mutex::new(None)),
+                volume: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+                output: Arc::new(Mutex::new(Some((
+                    mixer.clone(),
+                    OutputFormat {
+                        channels: std::num::NonZero::new(mixer_ch).expect("channels"),
+                        sample_rate: std::num::NonZero::new(mixer_rate).expect("rate"),
+                    },
+                )))),
+                restart: Arc::new(AtomicBool::new(false)),
                 shared: shared.clone(),
             };
             shared.set_state(PlaybackState::Connecting);
@@ -3672,14 +4419,9 @@ mod session_tests {
             let url = stream::parse_url(&url).expect("url");
             let client = client.clone();
             let handle = rt.handle().clone();
-            let player = player.clone();
             let prefetch = stream::prefetch_bytes(None);
-            let output = OutputFormat {
-                channels: std::num::NonZero::new(mixer_ch).expect("channels"),
-                sample_rate: std::num::NonZero::new(mixer_rate).expect("rate"),
-            };
             thread::spawn(move || {
-                run_session(&session, &url, &client, &handle, &player, prefetch, output);
+                run_session(&session, &url, &client, &handle, prefetch);
             });
             ctx
         };
@@ -3710,7 +4452,7 @@ mod session_tests {
         thread::sleep(Duration::from_millis(300));
         one.cancel();
         let _two = start(second, "second");
-        // Captured from here: `start` has already cleared the first station's source, and the
+        // Captured from here: `one.cancel()` has dropped the first station's player, and the
         // second cannot sound before its prefetch. Starting at its `Started` instead made the
         // capture depend on how soon the test woke — a late wake missed the tone.
         *capture.lock().unwrap() = Some(Vec::new());
@@ -4718,6 +5460,10 @@ mod started_tests {
             clock: Arc::new(BuildClock::new(BuildBounds::for_prefetch(
                 stream::prefetch_bytes(None),
             ))),
+            player: Arc::new(Mutex::new(None)),
+            volume: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            output: Arc::new(Mutex::new(None)),
+            restart: Arc::new(AtomicBool::new(false)),
             shared: s.clone(),
         }
     }
@@ -4991,6 +5737,27 @@ mod tick_tests {
         assert_eq!(
             output_stall(&PlaybackState::Playing, n, n, false),
             StallAction::Warn
+        );
+    }
+
+    /// 7d's reopen latch (0.1.2, decision 5): the first WARN of an episode reopens; a WARN while
+    /// latched does not; progress ends the episode, and the next WARN reopens again. **Fails if**
+    /// the latch is dropped (a reopen per WARN, the loop on a dead system), never clears (one
+    /// reopen for the app's life), or a reopen follows progress.
+    #[test]
+    fn a_stall_reopens_once_per_episode() {
+        assert_eq!(stall_reopen(StallAction::Warn, false, false), (true, true));
+        assert_eq!(stall_reopen(StallAction::Warn, false, true), (false, true));
+        assert_eq!(stall_reopen(StallAction::None, false, true), (false, true));
+        assert_eq!(stall_reopen(StallAction::None, true, true), (false, false));
+        assert_eq!(
+            stall_reopen(StallAction::Resumed, true, true),
+            (false, false)
+        );
+        assert_eq!(stall_reopen(StallAction::Warn, false, false), (true, true));
+        assert_eq!(
+            stall_reopen(StallAction::None, false, false),
+            (false, false)
         );
     }
 

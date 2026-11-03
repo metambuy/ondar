@@ -11,9 +11,14 @@
 // the service only when asked for again — M3a acceptance item 6, carried) and after a refresh
 // `landed`; a `failed` refresh clears the flag without asking again (an offline page would
 // otherwise loop fetch → fail → event → fetch).
+//
+// Groups (0.1.2, F4): Rust sends the list sorted and grouped (`Country.group`, CLDR names); the
+// page renders it in that order and sorts nothing. The main list comes first with no heading,
+// then "Small states" and "Territories" as `<optgroup>`s (Martín, 2026-10-30): a heading says
+// why Monaco is at the bottom, where a bare line would not.
 import { useEffect, useState } from "react";
 import { onCountriesUpdated, stations } from "../api";
-import type { Country, ListedCountries } from "../api";
+import type { Country, CountryGroup, ListedCountries } from "../api";
 import styles from "./panel.module.css";
 import { describeError, provenance } from "./provenance";
 
@@ -30,6 +35,12 @@ type Props = {
   /** The list landed: `Panel` takes the names (the map names the country). Stable identity. */
   onCountries: (items: Country[]) => void;
 };
+
+/** The headed groups, in the order Rust sorts them; `main` comes before them, unheaded. */
+const HEADED: { group: CountryGroup; label: string }[] = [
+  { group: "small", label: "Small states" },
+  { group: "territory", label: "Territories" },
+];
 
 export default function CountryControl({ country, onSelect, mine, onToggleMine, showGeneration, onCountries }: Props) {
   const [countries, setCountries] = useState<ListedCountries | null>(null);
@@ -65,7 +76,12 @@ export default function CountryControl({ country, onSelect, mine, onToggleMine, 
   // item 9's fit run), so it is never empty. Neither control is ever disabled: offline with
   // nothing cached the stores, behind ★, are the one thing that still works (M3b acceptance
   // item 9, finding B; `Panel.test.tsx`).
-  const items = countries?.items ?? [{ code: country, name: country, station_count: 0 }];
+  const items: Country[] = countries?.items ?? [{ code: country, name: country, group: "main", station_count: 0 }];
+  const option = (c: Country) => (
+    <option key={c.code} value={c.code}>
+      {countries ? `${c.name} (${c.station_count})` : c.name}
+    </option>
+  );
   // An error has no countries to describe, and can be a sentence long: it takes a line of its
   // own under the row, wrapped and clamped to three lines, so the select keeps its width (on
   // the row, `nowrap`, it pushed the control off the panel — item 9). The row keeps the short
@@ -81,11 +97,15 @@ export default function CountryControl({ country, onSelect, mine, onToggleMine, 
             value={country}
             onChange={(e) => onSelect(e.target.value)}
           >
-            {items.map((c) => (
-              <option key={c.code} value={c.code}>
-                {countries ? `${c.name} (${c.station_count})` : c.name}
-              </option>
-            ))}
+            {items.filter((c) => c.group === "main").map(option)}
+            {HEADED.map(({ group, label }) => {
+              const members = items.filter((c) => c.group === group);
+              return members.length > 0 ? (
+                <optgroup key={group} label={label}>
+                  {members.map(option)}
+                </optgroup>
+              ) : null;
+            })}
           </select>
         </label>
         <button

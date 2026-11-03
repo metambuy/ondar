@@ -353,7 +353,7 @@ fn listed_countries(
     refreshing: bool,
 ) -> ListedCountries {
     ListedCountries {
-        items: s.items,
+        items: crate::country_table::arrange(s.items),
         fetched_at: s.fetched_at,
         age_secs: s.age_secs,
         source,

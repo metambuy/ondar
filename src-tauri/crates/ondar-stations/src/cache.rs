@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{Country, Station};
+use crate::model::{Country, CountryGroup, Station};
 
 pub const TTL_COUNTRIES: i64 = 7 * 24 * 3600;
 pub const TTL_STATIONS: i64 = 24 * 3600;
@@ -163,7 +163,10 @@ impl Cache {
         }
     }
 
-    /// The countries list, if one was ever stored. Ordered as stored (by name, as served).
+    /// The countries list, if one was ever stored, in the order stored (radio-browser serves it
+    /// by ISO code, not by name, F4). Rows read back in the main group: the group and the order
+    /// are applied after the cache, by [`crate::country_table::arrange`], so a list stored by an
+    /// earlier version comes out grouped too.
     pub fn countries(&self) -> Result<Option<Stored<Vec<Country>>>, CacheError> {
         let fetched_at: Option<i64> = self
             .conn
@@ -181,6 +184,7 @@ impl Cache {
                 Ok(Country {
                     code: r.get(0)?,
                     name: r.get(1)?,
+                    group: CountryGroup::Main,
                     station_count: r.get(2)?,
                 })
             })?
@@ -508,11 +512,13 @@ pub(crate) mod tests {
             Country {
                 code: "PT".into(),
                 name: "Portugal".into(),
+                group: CountryGroup::Main,
                 station_count: 371,
             },
             Country {
                 code: "MT".into(),
                 name: "Malta".into(),
+                group: CountryGroup::Main,
                 station_count: 14,
             },
         ];

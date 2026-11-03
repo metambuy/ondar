@@ -40,6 +40,18 @@
   --color-separator: rgb(0 0 0 / 0.098);
   /* `controlAccentColor` — follows the user's accent setting; re-measure if it changes. */
   --color-accent: rgb(0 122 255);
+  /* The update button (0.1.2, F2): the system accent. WebKit's `AccentColor` is a constant
+     rgb(0 122 255) in WKWebView, never the user's chosen accent (WebKit bugs 254578, 241866: a
+     fingerprinting mitigation; read 2026-10-30), so this literal is what WebKit before 16.4
+     (macOS 12's Safari 15, no `AccentColor`) gets, and the same blue; the keyword replaces it
+     where supported, in the `@supports` block below. White on it is about 4.0:1 (computed), so
+     the label is semibold (review answer 4). Both appearances: the accent is the same in each. */
+  --color-update-fill: rgb(0 122 255);
+  --color-update-label: rgb(255 255 255);
+  /* DECISION, not a measurement: subheadline's size, semibold. */
+  --text-update-button: 600 11px/14px var(--font-system);
+  /* DECISION: the chip's radius and the 4/8 pt rhythm. */
+  --update-button-radius: 4px;
 
   /* DECISION, not a measurement: the 8 pt spacing rhythm from the M2c brief (2026-09-16), with
      a 4 pt half step. The macOS HIG prescribes no grid; do not cite it for these. */
@@ -100,6 +112,15 @@
   --chip-fg: rgb(0 0 0 / 0.847);
   --chip-radius: 4px;
   --chip-padding: 1px 6px;
+}
+
+/* The system accent keyword where WebKit has it (16.4+); the literal above otherwise. A custom
+   property cannot carry a fallback itself (its value is not checked when declared), hence the
+   `@supports`. Not overridden in the dark block: the accent is the same in both appearances. */
+@supports (color: AccentColor) {
+  :root {
+    --color-update-fill: AccentColor;
+  }
 }
 
 /* Dark appearance (NSAppearanceNameDarkAqua), measured in the same run. Defined in the same

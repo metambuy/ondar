@@ -1,0 +1,6 @@
+# The country groups' overrides (0.1.2, F4): a code the rule (`groups.rs::classify`) files wrongly,
+# and the group it belongs in (main | small | territory). Empty on purpose: on the pinned NE v5.1.2
+# the rule gives every case decided on 2026-10-30 (the overseas departments, Bonaire, Antarctica,
+# Cook Islands, Niue as territories; Palestine, Kosovo, Taiwan, Hong Kong, Puerto Rico, Macao,
+# Réunion as main). The tests pin those, so an input change cannot move one unseen.
+# code	group

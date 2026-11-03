@@ -2,6 +2,6 @@
 
 /**
  * Payload of `update:available`: the version announced and its notes (empty when the feed
- * carries none). The page shows `Ondar {version} available`.
+ * carries none). The page renders it as the update button's label (`UpdateLine.tsx`).
  */
 export type UpdateAvailable = { version: string, notes: string, };

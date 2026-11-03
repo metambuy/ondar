@@ -25,7 +25,7 @@ pub const CHECK_DELAY: Duration = Duration::from_secs(5);
 const LOG_EVERY_BYTES: usize = 1 << 20;
 
 /// Payload of `update:available`: the version announced and its notes (empty when the feed
-/// carries none). The page shows `Ondar {version} available`.
+/// carries none). The page renders it as the update button's label (`UpdateLine.tsx`).
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct UpdateAvailable {

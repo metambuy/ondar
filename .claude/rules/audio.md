@@ -18,7 +18,15 @@ for HTTP; decode on a per-session thread. Commands never block on audio. Each in
 in ONDAR.md under the section named.
 
 1. **One `AudioEngine`**, created once at startup. Switching stations tears down the session and
-   keeps the device and `Player`.
+   keeps the device. **A `Player` per attach** (0.1.2, F1): the decode thread connects a new one
+   to the output's mixer at each attach, and a session's end drops it. **Never
+   `Player::clear()`**: it waits without a timeout for the output to pull (the F1 wedge); pinned
+   by `no_player_clear_scan` (`ondar-audio/src/lib.rs`). **One output, reopened on loss:** cpal's
+   `DeviceNotAvailable` reopens the default device and restarts the live session through the
+   reconnect path (`Reconnecting`, one backoff attempt), or ends it in `Error { code: Device }`
+   if nothing opens; a default change needs nothing (the stream follows). 7d's stall WARN (5 s
+   `Playing` with nothing pulled) also reopens, once per episode (`stall_reopen`'s latch, cleared
+   only by a pull). ("0.1.2: decisions")
 2. **Ondar owns all reconnects** (own `Backoff` + a fresh `stream::open()`): stream-download's
    internal reconnect splices byte 0 onto a live mount. The one bounded exception: it stays live
    during the decoder build. ("Reconnect ownership and stream timeouts")

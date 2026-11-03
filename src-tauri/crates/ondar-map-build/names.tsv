@@ -1,0 +1,9 @@
+# The country select's names (0.1.2, F4): CLDR 49 English, its default name for every code except
+# these, which take the CLDR key named here. The rule: CLDR's short form where its default carries
+# a qualifier (Martín's answers, _handover/v012-plan-review-2026-10-30.md, answer 3). Palestine is a
+# country in Ondar's list (Martín, 2026-10-30), not "Palestinian Territories".
+# code	cldr_key
+PS	PS-alt-short
+HK	HK-alt-short
+MO	MO-alt-short
+MM	MM-alt-short

@@ -4,17 +4,33 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// A country row from `/json/countries`, after [`crate::normalise::countries`].
+/// A country row from `/json/countries`, after [`crate::normalise::countries`], with its group
+/// and CLDR name from the built table (0.1.2, F4; [`crate::country_table::arrange`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Country {
     /// ISO 3166-1 alpha-2, upper case — the key `list_stations` takes.
     pub code: String,
+    /// CLDR 49's English name (radio-browser's own for a code the table does not know).
     pub name: String,
+    /// Which part of the select the country is in; the list arrives sorted by it, then by name.
+    pub group: CountryGroup,
     /// radio-browser's own count for the code (with `hidebroken=true`, the checked-OK count).
     /// The app lists its own filtered, capped count once a list is cached; this one fills the
     /// dropdown before that.
     pub station_count: u32,
+}
+
+/// The country select's three groups (0.1.2, F4), in their order on the page: the main list
+/// (sovereign states, and territories of 500 000 people or more), small states (sovereign, under
+/// 200 000), territories. Decided once, at build time (`ondar-map-build --countries`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum CountryGroup {
+    Main,
+    Small,
+    Territory,
 }
 
 /// How a background refresh ended — carried by `stations:updated` / `countries:updated`, so
