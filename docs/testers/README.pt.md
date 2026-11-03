@@ -30,7 +30,7 @@ Quando algo correr mal, anexa o registo de hoje: no Finder carrega em Cmd+Shift+
 
 ## Atualizações
 
-Quando houver uma versão nova pronta, aparece uma linha no fundo do painel: "Ondar 0.1.1 available · Update". Clica em Update; a app substitui-se a si própria e volta a abrir. Isto só funciona se o Ondar estiver em Applications (passo 2).
+Quando houver uma versão nova pronta, aparece uma linha no fundo do painel. Na versão que usas agora é texto cinzento, "Ondar 0.1.2 available · Update", e clicas em Update; a partir da 0.1.2 é um botão azul no mesmo lugar, "Update to" e a versão nova. Em ambos os casos a app substitui-se a si própria e volta a abrir, e em ambos os casos só funciona se o Ondar estiver em Applications (passo 2).
 
 ## Privacidade
 

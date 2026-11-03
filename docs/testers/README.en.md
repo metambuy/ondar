@@ -30,7 +30,7 @@ When something goes wrong, attach today's log: in Finder press Cmd+Shift+G and p
 
 ## Updates
 
-When a new version is ready, a line appears at the bottom of the popover: "Ondar 0.1.1 available · Update". Click Update; the app replaces itself and relaunches. This only works if Ondar is in Applications (step 2).
+When a new version is ready, a line appears at the bottom of the popover. On the version you are running now it is grey text, "Ondar 0.1.2 available · Update", and you click Update; from 0.1.2 on it is a blue button in the same place, "Update to" and the new version. Either way the app replaces itself and relaunches, and either way it only works if Ondar is in Applications (step 2).
 
 ## Privacy
 
