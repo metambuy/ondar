@@ -45,9 +45,10 @@
   color: var(--color-label-secondary);
 }
 
-/* The update line (M6-lite commit 4b): one line of secondary text with a native button, above
-   the expand row. The system's secondary label on the system material, light and dark
-   (`UpdateLine.test.tsx` pins the token; by eye in Sand and Ink at acceptance). */
+/* The update line (M6-lite commit 4b; 0.1.2, F2): a small button in the system accent, "Update to
+   <version>", above the expand row; a failure's text beside it in the secondary label. Grey text
+   at the panel's foot did not stand out (F2, Martín 2026-10-27). Tokens only
+   (`UpdateLine.test.tsx` pins them; by eye in Sand and Ink). */
 .updateLine {
   margin: 0;
   display: flex;
@@ -55,6 +56,26 @@
   gap: var(--space-2);
   font: var(--text-subheadline);
   color: var(--color-label-secondary);
+}
+
+.updateButton {
+  appearance: none;
+  border: none;
+  border-radius: var(--update-button-radius);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-update-fill);
+  color: var(--color-update-label);
+  font: var(--text-update-button);
+  cursor: default;
+}
+
+.updateButton:disabled {
+  opacity: 0.6;
+}
+
+.updateButton:focus-visible {
+  outline: var(--hairline) solid var(--color-label);
+  outline-offset: var(--hairline);
 }
 
 /* Status and error text is bounded to three lines. The panel is 360 pt wide at one of two

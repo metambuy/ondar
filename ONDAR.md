@@ -1572,11 +1572,14 @@ redaction**; a tester sends it knowingly.
 - **No capability change.** `updater:default` would grant the *page* the plugin's own commands;
   Ondar's page calls none of them (the one rule). The plugin is registered for its config only.
 - **The page** (`UpdateLine.tsx`, the last block of the transport body, above the expand row):
-  nothing until the event; then `Ondar 0.1.1 available · Update`; `Updating…` with the button
-  disabled while the call is pending; `Update failed, see log` with the button back on rejection.
-  Secondary label on the system material (`--color-label-secondary`, both appearances; the token
-  pinned by test, the look by eye in Sand and Ink at acceptance). Five behaviour tests + the token
-  test; the page checks, compares and persists nothing.
+  nothing until the event; then **one small button in the system accent, `Update to 0.1.3`**
+  (0.1.2, F2; until then grey text `Ondar 0.1.1 available · Update`, which did not stand out);
+  `Updating…` with the button disabled while the call is pending; `Update failed, see log` beside
+  the button, back on rejection. Fill `--color-update-fill` (WebKit's `AccentColor` through
+  `@supports`, the literal `rgb(0 122 255)` before WebKit 16.4; in WKWebView the keyword is that
+  same constant blue, never the user's accent: "0.1.2: decisions", 10), label white and semibold
+  (`--color-update-label`, `--text-update-button`). Five behaviour tests + the token test; the page
+  checks, compares and persists nothing.
 - **Config** (`tauri.conf.json`, pinned by `updater_config_names_one_https_feed_and_a_minisign_key`):
   `bundle.createUpdaterArtifacts: true`; `plugins.updater.endpoints` =
   `https://cdn.crabnebula.app/update/metambuy/ondar/{{target}}-{{arch}}/{{current_version}}`

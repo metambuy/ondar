@@ -1,8 +1,9 @@
-// The update line (M6-lite commit 4b). Rust checked the feed once after launch; if it found a
-// newer version it said so with `update:available`, and this renders one line: "Ondar 0.1.1
-// available · Update". A click is a report (`updater.install`): Rust downloads, verifies, swaps
-// the bundle and restarts, so a success never answers; a rejection is shown as "Update failed,
-// see log" and the button stays for a retry. Nothing here checks, compares or persists anything:
+// The update line (M6-lite commit 4b; 0.1.2, F2). Rust checked the feed once after launch; if it
+// found a newer version it said so with `update:available`, and this renders one small button in
+// the system accent: "Update to 0.1.3" (until 0.1.2, grey text "Ondar 0.1.1 available · Update",
+// which did not stand out: F2). A click is a report (`updater.install`): Rust downloads, verifies,
+// swaps the bundle and restarts, so a success never answers; a rejection is shown as "Update
+// failed, see log" beside the button, which stays for a retry. Nothing here checks, compares or persists anything:
 // the version shown is the event's, and the three phases are view state.
 import { useEffect, useRef, useState } from "react";
 import { onUpdateAvailable, updater } from "../api";
@@ -44,11 +45,15 @@ export default function UpdateLine() {
 
   return (
     <p className={styles.updateLine} data-measure="update_line" aria-live="polite">
-      <span>{phase === "failed" ? "Update failed, see log" : `Ondar ${update.version} available`}</span>
-      <span aria-hidden="true">·</span>
-      <button type="button" disabled={phase === "installing"} onClick={install}>
-        {phase === "installing" ? "Updating…" : "Update"}
+      <button
+        type="button"
+        className={styles.updateButton}
+        disabled={phase === "installing"}
+        onClick={install}
+      >
+        {phase === "installing" ? "Updating…" : `Update to ${update.version}`}
       </button>
+      {phase === "failed" && <span>Update failed, see log</span>}
     </p>
   );
 }

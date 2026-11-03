@@ -1,7 +1,7 @@
 // The update line's four states and its one report — vitest under jsdom, `pnpm test`. `../api`
 // is mocked whole: nothing reaches Tauri; the update arrives through `onUpdateAvailable` as the
-// `update:available` event would. The last test reads the stylesheets as text and pins the line's
-// colour to a system label token. Each test's comment states what it pins and what it would have
+// `update:available` event would. The last test reads the stylesheets as text and pins the
+// button's colours to their tokens (0.1.2, F2). Each test's comment states what it pins and what it would have
 // to see to fail.
 import { readFileSync } from "node:fs";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -60,15 +60,17 @@ describe("the update line", () => {
     expect(container.innerHTML).toBe("");
   });
 
-  // 2. The event renders "Ondar 0.1.1 available" and an enabled Update button; the version is
-  //    the event's. Fails if the page composes the version from anywhere else or the button is
-  //    missing or disabled.
-  it("2. the event renders the version and an Update button", async () => {
-    render(<UpdateLine />);
+  // 2. F2 (0.1.2): the event renders one enabled button, "Update to 0.1.1", the version the
+  //    event's, and no other text. Fails on the 0.1.1 line ("Ondar 0.1.1 available · Update", the
+  //    grey text F2 is about), if the page composes the version from anywhere else, or if the
+  //    button is missing or disabled.
+  it("2. the event renders one button, Update to <version>", async () => {
+    const { container } = render(<UpdateLine />);
     await settle();
     act(() => mock.emit(v011));
-    expect(screen.getByText("Ondar 0.1.1 available")).toBeTruthy();
-    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Update" }).disabled).toBe(false);
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Update to 0.1.1" });
+    expect(button.disabled).toBe(false);
+    expect(container.textContent).toBe("Update to 0.1.1");
   });
 
   // 3. A click calls `install` once and disables the button, relabelled "Updating…", while the
@@ -78,7 +80,7 @@ describe("the update line", () => {
     render(<UpdateLine />);
     await settle();
     act(() => mock.emit(v011));
-    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    fireEvent.click(screen.getByRole("button", { name: "Update to 0.1.1" }));
     expect(mock.installs).toHaveLength(1);
     const button = screen.getByRole<HTMLButtonElement>("button", { name: "Updating…" });
     expect(button.disabled).toBe(true);
@@ -93,13 +95,13 @@ describe("the update line", () => {
     render(<UpdateLine />);
     await settle();
     act(() => mock.emit(v011));
-    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    fireEvent.click(screen.getByRole("button", { name: "Update to 0.1.1" }));
     await act(async () => {
       mock.rejects[0]({ code: "updater", message: "temp directory is not on the same mount point as the app" });
     });
     expect(screen.getByText("Update failed, see log")).toBeTruthy();
-    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Update" }).disabled).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Update to 0.1.1" }).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Update to 0.1.1" }));
     expect(mock.installs).toHaveLength(2);
   });
 
@@ -110,33 +112,35 @@ describe("the update line", () => {
     await settle();
     act(() => mock.emit(v011));
     act(() => mock.emit(v011));
-    expect(screen.getAllByText("Ondar 0.1.1 available")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Update to 0.1.1" }));
     await act(async () => {
       mock.rejects[0]({ code: "updater", message: "x" });
     });
     act(() => mock.emit({ version: "0.1.2", notes: "" }));
-    expect(screen.getByText("Ondar 0.1.2 available")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Update to 0.1.2" })).toBeTruthy();
     expect(screen.queryByText("Update failed, see log")).toBeNull();
   });
 
-  // 6. The line's colour is one of the two system label tokens, which `tokens.css` defines for
-  //    both appearances (the measured secondary label, light and dark). The line sits on the
-  //    popover's material, so there is no fixed background to compute a ratio against; the
-  //    contrast is Apple's pair, checked by eye in Sand and Ink at acceptance (chat decision 5,
-  //    2026-10-14). Fails if the rule takes a map, chip or control token, a literal, or a token
-  //    the dark block does not define.
-  it("6. the line's colour is a system label token defined in both appearances", () => {
+  // 6. F2 (0.1.2): the button's fill and label are their tokens, never literals; the fill is
+  //    the system `AccentColor` where WebKit supports it, with a literal blue before that
+  //    (macOS 12's WebKit has no `AccentColor`), set through `@supports` because a custom
+  //    property cannot fall back by itself; neither appearance overrides it (the accent is the
+  //    same). Fails if the rule takes a literal or another token, if the `@supports` block or
+  //    the fallback goes, or if the dark block redefines the fill to something else.
+  it("6. the button's colours are the accent tokens, with a fallback", () => {
     const panelCss = readFileSync("src/panel/panel.module.css", "utf8");
     const tokensCss = readFileSync("src/styles/tokens.css", "utf8");
-    const start = panelCss.indexOf(".updateLine {");
-    expect(start, "no .updateLine rule").toBeGreaterThanOrEqual(0);
+    const start = panelCss.indexOf(".updateButton {");
+    expect(start, "no .updateButton rule").toBeGreaterThanOrEqual(0);
     const body = panelCss.slice(start, panelCss.indexOf("}", start));
-    const colour = /(?:^|[\s;{])color:\s*var\((--[\w-]+)\)/.exec(body)?.[1];
-    expect(["--color-label", "--color-label-secondary"]).toContain(colour);
+    expect(/background:\s*var\(--color-update-fill\)/.test(body)).toBe(true);
+    expect(/(?:^|[\s;{])color:\s*var\(--color-update-label\)/.test(body)).toBe(true);
     const darkAt = tokensCss.indexOf("prefers-color-scheme: dark");
-    const defined = (css: string) => new RegExp(`${colour}:\\s*[^;]+;`).test(css);
-    expect(defined(tokensCss.slice(0, darkAt)), "Sand").toBe(true);
-    expect(defined(tokensCss.slice(darkAt)), "Ink").toBe(true);
+    const light = tokensCss.slice(0, darkAt);
+    expect(/--color-update-fill:\s*rgb\(0 122 255\);/.test(light), "the fallback").toBe(true);
+    expect(/--color-update-label:\s*rgb\([^)]+\);/.test(light)).toBe(true);
+    expect(/@supports \(color: AccentColor\)\s*\{\s*:root\s*\{\s*--color-update-fill:\s*AccentColor;/.test(tokensCss)).toBe(true);
+    expect(tokensCss.slice(darkAt).includes("--color-update-fill"), "not redefined in Ink").toBe(false);
   });
 });
