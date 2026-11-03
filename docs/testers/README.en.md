@@ -37,8 +37,7 @@ When a new version is ready, a line appears at the bottom of the popover: "Ondar
 What leaves your Mac:
 
 - The radio streams you play. The station's server sees your IP address, as with any player.
-- Requests to the station directory, radio-browser.info: country and station lists, and one "click" for each station you start, which the directory asks apps to send so it can count plays.
-- DNS lookups Ondar makes itself to find a directory server. In 0.1.1 they go straight to the DNS servers your Mac is set to use, which is why a firewall such as Little Snitch shows them. A coming version sends them through macOS, as other apps do.
+- Requests to the station directory, radio-browser.info: country and station lists, and one "click" for each station you start, which the directory asks apps to send so it can count plays. Ondar finds a directory server through macOS's normal name lookup, as other apps do.
 - One update check each time Ondar starts, to cdn.crabnebula.app (CrabNebula hosts Ondar's releases). It sends the version you run and your Mac's platform (macOS, Apple silicon).
 
 No analytics, no crash reports, no account.

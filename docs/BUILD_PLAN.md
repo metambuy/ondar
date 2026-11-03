@@ -384,6 +384,8 @@ feel more like a map; rivers too (D-map).
 - [ ] Admin-1 past a zoom threshold.
 - [ ] Water: rivers and lakes, in the style tokens, both themes.
 - [ ] Persistent place labels.
+- [ ] The neighbouring countries' names on the map pane (Martín, 2026-11-02, at 0.1.2's by-eye
+      check of the country list; the selected country's own name is not wanted there). Not 0.1.2.
 - [ ] The B5 fix.
 - [ ] Format v4, if the lines need it.
 - [ ] `missing_docs` flip: `ondar-map` and `ondar-map-build`; `laea.rs:1-4` if not already done
