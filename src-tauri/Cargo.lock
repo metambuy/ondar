@@ -2979,6 +2979,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-media-player"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85f2a98483f6e76313cb85a5a185eaa3cda86a177b13a8852d56cbd0085bf635"
+dependencies = [
+ "bitflags 2.13.1",
+ "block2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-osa-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3057,7 +3071,13 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "ondar"
 version = "0.1.2"
 dependencies = [
+ "block2",
  "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-media-player",
  "ondar-audio",
  "ondar-map",
  "ondar-stations",

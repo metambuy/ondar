@@ -34,6 +34,7 @@ mod error;
 mod log_rate_limit;
 mod log_sink;
 mod map;
+mod media;
 mod now_playing;
 mod sync;
 // The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
@@ -258,6 +259,12 @@ pub fn run() {
             #[cfg(debug_assertions)]
             measure::setup(app.handle());
             updater::setup(app.handle());
+            // Media keys (M5e1): `setup` runs on the main thread (measured, Step 0 C). Nothing
+            // is published until the first play (A1).
+            match objc2::MainThreadMarker::new() {
+                Some(mtm) => media::register(mtm, app.handle()),
+                None => log::warn!("media keys not registered: setup ran off the main thread"),
+            }
 
             let handle = app.handle().clone();
             // The OS refused a thread: the app cannot run (.claude/rules/rust.md, the exemption).
@@ -273,6 +280,11 @@ pub fn run() {
                     // Reconnecting attempt) are not an idle/playing flip, so only a flip swaps.
                     let mut tray_playing = false;
                     for ev in engine_events {
+                        // Now Playing (M5e1): a state or a title changes what it shows, once a
+                        // play has named a station (A1); one owned hop to the main thread.
+                        if let Some(info) = handle.state::<AppState>().now_playing.on_event(&ev) {
+                            media::publish(&handle, info);
+                        }
                         let result = match ev {
                             EngineEvent::State(s) => {
                                 let playing = matches!(s, PlaybackState::Playing);

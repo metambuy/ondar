@@ -68,7 +68,7 @@ const OUTPUT_STALL_TICKS: u32 = 50;
 /// on every command, and a volume drag must not shorten it. See [`output_close`].
 const OUTPUT_IDLE_CLOSE: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
     /// `bitrate_kbps`: the station record's, for the prefetch (M3b commit 6); `None` when the
     /// record has none (the floor applies).
