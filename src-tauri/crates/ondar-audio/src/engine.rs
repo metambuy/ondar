@@ -165,11 +165,14 @@ impl Shared {
     /// the previous session is cancelled and before `Connecting`; a write from the previous
     /// session's decode thread carries the old generation and is dropped by [`Self::write_state`]
     /// however late it lands.
-    fn begin_session(&self, station_id: String) -> u64 {
+    ///
+    /// `started` is `false` for a `Play`. The resume's replay after a paused close (M5e1) passes
+    /// `true`: it is a resume of a session that already sent its `Started` (audio.md 7).
+    fn begin_session(&self, station_id: String, started: bool) -> u64 {
         let mut session = lock(&self.session);
         session.generation += 1;
         session.station_id = Some(station_id);
-        session.started = false;
+        session.started = started;
         session.generation
     }
 
@@ -427,6 +430,13 @@ pub(crate) fn log_output_error(e: &rodio::CpalError) {
     }
 }
 
+/// A `Play`'s arguments, kept by the engine for the paused close's replay (M5e1).
+struct PlayArgs {
+    url: String,
+    station_id: String,
+    bitrate_kbps: Option<u32>,
+}
+
 struct Engine {
     shared: Shared,
     client: reqwest::Client,
@@ -486,6 +496,10 @@ struct Engine {
     output_idle_close: Duration,
     /// When the output became closable, as [`output_close`] keeps it; `None` while it is not.
     idle_since: Option<Instant>,
+    /// The `Play` of the live session (M5e1), kept for the paused close to park.
+    live_play: Option<PlayArgs>,
+    /// The `Play` a paused close ended, which `resume` replays; see [`Engine::resume`].
+    parked: Option<PlayArgs>,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -544,6 +558,8 @@ impl Engine {
             stall_reopened: false,
             output_idle_close: OUTPUT_IDLE_CLOSE,
             idle_since: None,
+            live_play: None,
+            parked: None,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -626,12 +642,26 @@ impl Engine {
             self.output_idle_close,
         );
         self.idle_since = idle_since;
-        if close == Close::Release {
-            self.close_output();
-            log::info!(
-                "output closed after {} s with no session",
-                self.output_idle_close.as_secs()
-            );
+        match close {
+            Close::Keep => {}
+            Close::Release => {
+                self.close_output();
+                log::info!(
+                    "output closed after {} s with no session",
+                    self.output_idle_close.as_secs()
+                );
+            }
+            Close::ReleaseAndPark => {
+                // The session ends before the slot is emptied, so no live decode thread can read
+                // the `None` slot (R1). No state write: it stays `Paused`, `shared.paused` set.
+                self.cancel_session();
+                self.parked = self.live_play.take();
+                self.close_output();
+                log::info!(
+                    "output closed after {} s paused; the session ended, resume replays it",
+                    self.output_idle_close.as_secs()
+                );
+            }
         }
 
         let Some(session) = self.session.clone() else {
@@ -952,16 +982,33 @@ impl Engine {
     /// logs at WARN (`playback error: …`, 0.1.1 item 9c).
     fn play(&mut self, url: &str, station_id: &str, bitrate_kbps: Option<u32>) {
         log::info!("play received station_id={station_id}");
-        // A user's new station is a new stall episode (R2): 7d's latch must not outlive the
-        // station it was set for, or a reopen that landed on a dead output would leave every later
-        // station silent with no reopen until a relaunch. Here, not in `cancel_session`: `stop`
-        // plays nothing, so it needs no episode, and the next `play` clears it anyway.
+        // A new station: a paused close's parked play is forgotten.
+        self.parked = None;
+        self.start_session(
+            PlayArgs {
+                url: url.to_string(),
+                station_id: station_id.to_string(),
+                bitrate_kbps,
+            },
+            false,
+        );
+    }
+
+    /// A new session for `args`: a `Play`'s (`started` false), or the resume's replay of a paused
+    /// close (`started` true, so it sends no second `Started`; audio.md 7).
+    fn start_session(&mut self, args: PlayArgs, started: bool) {
+        // A new session is a new stall episode (R2): 7d's latch must not outlive the station it
+        // was set for, or a reopen that landed on a dead output would leave every later station
+        // silent with no reopen until a relaunch. Here, not in `cancel_session`: `stop` plays
+        // nothing, so it needs no episode, and the next session clears it anyway.
         self.stall_reopened = false;
         self.cancel_session();
-        let generation = self.shared.begin_session(station_id.to_string());
+        let generation = self.shared.begin_session(args.station_id.clone(), started);
         self.shared.paused.store(false, Ordering::Relaxed);
+        let station_id = args.station_id.clone();
+        let bitrate_kbps = args.bitrate_kbps;
 
-        let url = match stream::parse_url(url) {
+        let url = match stream::parse_url(&args.url) {
             Ok(u) => u,
             Err(e) => {
                 self.shared.set_state(PlaybackState::Error {
@@ -995,6 +1042,7 @@ impl Engine {
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
+        self.live_play = Some(args);
         self.shared.set_state(PlaybackState::Connecting);
 
         let client = self.client.clone();
@@ -1021,7 +1069,21 @@ impl Engine {
         }
     }
 
+    /// With no session and a parked play (a paused close, M5e1), the resume replays it as a fresh
+    /// session, `Connecting` → `Buffering` → `Playing`, on a new connection and through
+    /// `ensure_output`'s reopen. `parked` is set only by that close, in `Paused`, and cleared by
+    /// `play`, `stop` and this replay, so it alone decides.
     fn resume(&mut self) {
+        if self.session.is_none() {
+            if let Some(args) = self.parked.take() {
+                log::info!(
+                    "resume replays station_id={} after the paused close",
+                    args.station_id
+                );
+                self.start_session(args, true);
+            }
+            return;
+        }
         if let Some(s) = &self.session {
             self.shared.paused.store(false, Ordering::Relaxed);
             if self.shared.state() == PlaybackState::Paused {
@@ -1038,6 +1100,7 @@ impl Engine {
     /// shutdown, from `run`'s final `stop`.
     fn stop(&mut self) {
         log::info!("stop received");
+        self.parked = None;
         self.cancel_session();
         self.shared.paused.store(false, Ordering::Relaxed);
         self.shared.set_state(PlaybackState::Idle);
@@ -1619,13 +1682,20 @@ enum Close {
     Keep,
     /// No session has needed the output for the limit: empty the slot and release it.
     Release,
+    /// A session has been `Paused` for the limit: end it, park its `Play` for `resume`, then
+    /// release the output as [`Close::Release`] does (M5e1, A2).
+    ReleaseAndPark,
 }
 
 /// The output close, pure (M5e1): whether to close the output at `now`, and the `idle_since` to
 /// keep. The output is closable while it is open and no session can use it: none at all, or
 /// one that ended (`Idle` after Stop, `Error`, whose decode thread has returned). The time is
 /// counted from the first closable tick and restarts on any tick that is not closable, so a play
-/// inside the window keeps the output. `Paused` is not closable here.
+/// inside the window keeps the output.
+///
+/// A `Paused` session is closable too (A2): at the limit it is ended and parked
+/// ([`Close::ReleaseAndPark`]), and `resume` replays it. `Paused` with no session ending is
+/// right as a state: not audible, and Resume continues this station.
 ///
 /// It runs on the engine thread, outside [`decide_tick`], as [`stall_reopen`] does, and it
 /// writes no state: the close changes nothing a listener sees (the plan review's Q6).
@@ -1638,14 +1708,17 @@ fn output_close(
     limit: Duration,
 ) -> (Close, Option<Instant>) {
     let ended = matches!(state, PlaybackState::Idle | PlaybackState::Error { .. });
-    if !has_output || (has_session && !ended) {
+    let paused = has_session && *state == PlaybackState::Paused;
+    if !has_output || (has_session && !ended && !paused) {
         return (Close::Keep, None);
     }
     let since = idle_since.unwrap_or(now);
-    if now.saturating_duration_since(since) >= limit {
-        (Close::Release, None)
-    } else {
+    if now.saturating_duration_since(since) < limit {
         (Close::Keep, Some(since))
+    } else if paused {
+        (Close::ReleaseAndPark, None)
+    } else {
+        (Close::Release, None)
     }
 }
 
@@ -1970,7 +2043,7 @@ mod session_tests {
             paused: Arc::new(AtomicBool::new(false)),
             session: Arc::new(Mutex::new(Session::default())),
         };
-        let generation = shared.begin_session("u1".into());
+        let generation = shared.begin_session("u1".into(), false);
         SessionCtx {
             cancel: Arc::new(AtomicBool::new(false)),
             download: Arc::new(Mutex::new(None)),
@@ -2997,6 +3070,174 @@ mod session_tests {
         );
         assert_eq!(out.opens.load(Ordering::SeqCst), 1, "the output was kept");
         assert!(!out.closed(0), "the output was closed inside the window");
+        drop(tx);
+    }
+
+    /// Play `server` on a fresh engine with the shortened close, pause it once it plays, and await
+    /// the paused close (the first open's guard dropped). Returns the engine's channels and the
+    /// output's handles; every event up to the `Paused` has been read.
+    fn play_pause_and_close(
+        name: &str,
+        server: &Paced,
+        station_id: &str,
+    ) -> (
+        mpsc::Sender<AudioCommand>,
+        Receiver<EngineEvent>,
+        TestOutput,
+    ) {
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured(name, opener, |e| {
+            e.output_idle_close = TEST_IDLE_CLOSE;
+        });
+        play(&tx, &server.url, station_id);
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        tx.send(AudioCommand::Pause).expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Paused)),
+            "no Paused after Pause"
+        );
+        assert!(
+            eventually(GUARD, || out.closed(0)),
+            "the output was never closed while paused"
+        );
+        (tx, ev_rx, out)
+    }
+
+    /// The events up to and including the first `State(Playing)`, in order; the hang guard is
+    /// `GUARD`. Then every event already queued behind it (a `Started` is sent under the same
+    /// lock right after its `Playing`, so it is in the channel by now).
+    fn events_through_playing(rx: &Receiver<EngineEvent>) -> Vec<EngineEvent> {
+        let deadline = Instant::now() + GUARD;
+        let mut seen = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(ev) = rx.recv_timeout(left) else {
+                panic!("no Playing within the guard: {seen:?}");
+            };
+            let playing = ev == EngineEvent::State(PlaybackState::Playing);
+            seen.push(ev);
+            if playing {
+                break;
+            }
+        }
+        seen.extend(rx.try_iter());
+        seen
+    }
+
+    fn states_of(events: &[EngineEvent]) -> Vec<PlaybackState> {
+        events
+            .iter()
+            .filter_map(|ev| match ev {
+                EngineEvent::State(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// M5e1 commit 2 (A2): a long pause ends the session, so the output can close (Part 0's (d):
+    /// 0.1.2 held the sleep assertion across a Pause), and Resume replays the station live.
+    /// **What it pins:** after the limit in `Paused`, the open's guard is dropped (awaited); the
+    /// close sends no event (the first event after `Paused` is the resume's `Connecting`, Q6);
+    /// the resume is a fresh session, `Connecting`, `Buffering`, `Playing` with no `Reconnecting`,
+    /// on a second open and a second request. **Fails if** a paused session keeps the output (the
+    /// hang guard: on commit 1's code with this test), if the close writes a state, or if the
+    /// resume goes through the reconnect path or does not reconnect at all.
+    #[test]
+    fn a_paused_session_closes_and_resume_replays_it_live() {
+        let server = tone_server();
+        let (tx, ev_rx, out) =
+            play_pause_and_close("ondar-audio:test-pause-close", &server, "st-pause-close");
+        tx.send(AudioCommand::Resume).expect("send");
+        let seen = events_through_playing(&ev_rx);
+        assert_eq!(
+            seen.first(),
+            Some(&EngineEvent::State(PlaybackState::Connecting)),
+            "the close sent an event of its own: {seen:?}"
+        );
+        assert_eq!(
+            states_of(&seen),
+            vec![
+                PlaybackState::Connecting,
+                PlaybackState::Buffering,
+                PlaybackState::Playing
+            ]
+        );
+        assert_eq!(out.opens.load(Ordering::SeqCst), 2, "the resume reopened");
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            2,
+            "the resume reconnected"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the resume was not heard on the reopened output"
+        );
+        drop(tx);
+    }
+
+    /// M5e1 commit 2, audio.md 7 ("never on a resume"): the replay after a paused close is a
+    /// resume, so it sends no second `Started` (a second radio-browser click and a recents
+    /// reorder for one listening). **What it pins:** one `Started` across play, pause, close,
+    /// resume and the replay's `Playing`. **Fails if** the replay begins its session with
+    /// `started` down (mutation: `begin_session(…, false)` for the replay, two).
+    #[test]
+    fn a_resumed_replay_sends_no_second_started() {
+        let server = tone_server();
+        let (tx, ev_rx, _out) = play_pause_and_close(
+            "ondar-audio:test-pause-started",
+            &server,
+            "st-pause-started",
+        );
+        tx.send(AudioCommand::Resume).expect("send");
+        let seen = events_through_playing(&ev_rx);
+        let started: Vec<_> = seen
+            .iter()
+            .filter(|ev| matches!(ev, EngineEvent::Started { .. }))
+            .collect();
+        assert!(started.is_empty(), "the replay sent Started: {seen:?}");
+        drop(tx);
+    }
+
+    /// M5e1 commit 2: Stop after a paused close forgets the parked station. **What it pins:**
+    /// pause, close, Stop (`Idle`), then Resume, then Stop again as a sentinel, then a play of a
+    /// second server: the states from there are exactly the play's `Connecting`, `Buffering`,
+    /// `Playing`, and the first server saw one request. **Fails if** `stop` leaves the parked
+    /// play (mutation: no `parked = None` in `stop`): the Resume replays it, and its `Connecting`
+    /// and the sentinel's `Idle` come first.
+    #[test]
+    fn stop_after_a_paused_close_forgets_the_station() {
+        let first = tone_server();
+        let second = tone_server();
+        let (tx, ev_rx, _out) =
+            play_pause_and_close("ondar-audio:test-pause-stop", &first, "st-pause-stop");
+        tx.send(AudioCommand::Stop).expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Idle)),
+            "no Idle after Stop"
+        );
+        tx.send(AudioCommand::Resume).expect("send");
+        tx.send(AudioCommand::Stop).expect("send");
+        play(&tx, &second.url, "st-pause-stop-two");
+        let seen = events_through_playing(&ev_rx);
+        assert_eq!(
+            states_of(&seen),
+            vec![
+                PlaybackState::Connecting,
+                PlaybackState::Buffering,
+                PlaybackState::Playing
+            ],
+            "{seen:?}"
+        );
+        assert_eq!(first.connections.load(Ordering::SeqCst), 1);
         drop(tx);
     }
 
@@ -4333,7 +4574,7 @@ mod session_tests {
         while h.events.try_recv().is_ok() {}
 
         h.ctx.cancel();
-        let _b = h.ctx.shared.begin_session("u2".into());
+        let _b = h.ctx.shared.begin_session("u2".into(), false);
         h.ctx.shared.set_state(PlaybackState::Connecting);
 
         let deadline = Instant::now() + GUARD;
@@ -4588,7 +4829,7 @@ mod session_tests {
         let client = stream::build_client("Ondar/test");
         let start = |body: Vec<u8>, station: &str| -> SessionCtx {
             let (url, _) = scripted_server(vec![body]);
-            let generation = shared.begin_session(station.into());
+            let generation = shared.begin_session(station.into(), false);
             let ctx = SessionCtx {
                 cancel: Arc::new(AtomicBool::new(false)),
                 download: Arc::new(Mutex::new(None)),
@@ -5724,9 +5965,9 @@ mod started_tests {
     #[test]
     fn g2_a_stale_session_emits_nothing() {
         let (s, rx) = shared();
-        let a = ctx(&s, s.begin_session("u1".into()));
+        let a = ctx(&s, s.begin_session("u1".into(), false));
         let mut a_title = title_sink(&a);
-        let b = ctx(&s, s.begin_session("u2".into()));
+        let b = ctx(&s, s.begin_session("u2".into(), false));
         let mut b_title = title_sink(&b);
 
         a.emit(info("A"));
@@ -5760,7 +6001,7 @@ mod started_tests {
     #[test]
     fn started_fires_once_per_session_whatever_the_route_back_to_playing() {
         let (s, rx) = shared();
-        s.begin_session("u1".into());
+        s.begin_session("u1".into(), false);
         drive(&s, &[Connecting, Buffering, Playing]);
         assert_eq!(started_ids(&rx), vec!["u1"]);
         drive(&s, &[Buffering, Playing]); // an underrun's refill
@@ -5773,10 +6014,10 @@ mod started_tests {
     #[test]
     fn a_second_play_for_the_same_station_starts_again() {
         let (s, rx) = shared();
-        s.begin_session("u1".into());
+        s.begin_session("u1".into(), false);
         drive(&s, &[Connecting, Buffering, Playing, Paused]);
         assert_eq!(started_ids(&rx), vec!["u1"]);
-        s.begin_session("u1".into());
+        s.begin_session("u1".into(), false);
         drive(&s, &[Connecting, Buffering, Playing]);
         assert_eq!(started_ids(&rx), vec!["u1"]);
     }
@@ -5785,7 +6026,7 @@ mod started_tests {
     #[test]
     fn a_session_that_reconnected_before_ever_playing_starts_on_its_first_playing() {
         let (s, rx) = shared();
-        s.begin_session("u1".into());
+        s.begin_session("u1".into(), false);
         drive(
             &s,
             &[Connecting, Reconnecting { attempt: 1 }, Buffering, Playing],
@@ -5798,7 +6039,7 @@ mod started_tests {
     #[test]
     fn paused_while_buffering_starts_on_resume() {
         let (s, rx) = shared();
-        s.begin_session("u1".into());
+        s.begin_session("u1".into(), false);
         drive(&s, &[Connecting, Buffering, Paused, Playing]);
         let events: Vec<EngineEvent> = rx.try_iter().collect();
         let playing_at = events
@@ -5824,7 +6065,7 @@ mod started_tests {
     #[test]
     fn a_repeated_playing_is_a_no_op() {
         let (s, rx) = shared();
-        s.begin_session("u1".into());
+        s.begin_session("u1".into(), false);
         drive(&s, &[Playing, Playing]);
         let events: Vec<EngineEvent> = rx.try_iter().collect();
         assert_eq!(events.len(), 2, "one State and one Started: {events:?}");
@@ -5840,9 +6081,9 @@ mod started_tests {
     #[test]
     fn a_stale_sessions_playing_cannot_take_the_new_sessions_started() {
         let (s, rx) = shared();
-        let stale = ctx(&s, s.begin_session("u1".into()));
+        let stale = ctx(&s, s.begin_session("u1".into(), false));
         stale.set_state(Connecting);
-        let live = ctx(&s, s.begin_session("u2".into()));
+        let live = ctx(&s, s.begin_session("u2".into(), false));
         s.set_state(Connecting); // the engine thread, as `play` does
         stale.set_state(Playing); // the race: its cancel check passed before `begin_session`
         assert_eq!(s.state(), Connecting, "the stale write is dropped");
@@ -5857,7 +6098,7 @@ mod started_tests {
     #[test]
     fn a_cancelled_sessions_write_is_dropped_before_any_successor() {
         let (s, rx) = shared();
-        let old = ctx(&s, s.begin_session("u1".into()));
+        let old = ctx(&s, s.begin_session("u1".into(), false));
         old.set_state(Connecting);
         old.cancel();
         s.set_state(PlaybackState::Idle);
@@ -5958,12 +6199,13 @@ mod tick_tests {
         );
     }
 
-    /// M5e1 commit 1, the close's decision: per state and session, with the output open or not,
-    /// just before the limit and at it. Closable (an open output with no session, or one in
-    /// `Idle` / `Error`) keeps its start and releases at the limit; everything else keeps the
-    /// output and restarts the count. **Fails if** the comparison is off at the limit, a state
-    /// with a live session (`Paused` included, until commit 2) is closable, a closed output is
-    /// released again, or a non-closable tick does not restart the count.
+    /// M5e1 commits 1 and 2, the close's decision: per state and session, with the output open
+    /// or not, just before the limit and at it. Closable (an open output with no session, one in
+    /// `Idle` / `Error`, or a `Paused` one) keeps its start and, at the limit, releases (a
+    /// `Paused` session: releases and parks); everything else keeps the output and restarts the
+    /// count. **Fails if** the comparison is off at the limit, a playing or connecting session is
+    /// closable, `Paused` releases without parking (or an ended session parks), a closed output
+    /// is released again, or a non-closable tick does not restart the count.
     #[test]
     fn output_close_releases_at_the_limit_only_when_nothing_can_use_the_output() {
         let limit = OUTPUT_IDLE_CLOSE;
@@ -5973,22 +6215,23 @@ mod tick_tests {
             code: ErrorCode::Network,
             message: String::new(),
         };
+        // (state, session, the close at the limit with the output open; `None`: not closable)
         let rows = [
-            (PlaybackState::Idle, false, true),
-            (error.clone(), false, true),
-            (error, true, true),
-            (PlaybackState::Paused, true, false),
-            (PlaybackState::Connecting, true, false),
-            (PlaybackState::Buffering, true, false),
-            (PlaybackState::Playing, true, false),
-            (PlaybackState::Reconnecting { attempt: 1 }, true, false),
+            (PlaybackState::Idle, false, Some(Close::Release)),
+            (error.clone(), false, Some(Close::Release)),
+            (error, true, Some(Close::Release)),
+            (PlaybackState::Paused, true, Some(Close::ReleaseAndPark)),
+            (PlaybackState::Connecting, true, None),
+            (PlaybackState::Buffering, true, None),
+            (PlaybackState::Playing, true, None),
+            (PlaybackState::Reconnecting { attempt: 1 }, true, None),
         ];
-        for (state, has_session, closable) in rows {
+        for (state, has_session, closes) in rows {
             for has_output in [false, true] {
                 let row = format!("{state:?} session={has_session} output={has_output}");
-                let close = closable && has_output;
+                let close = closes.filter(|_| has_output);
                 let first = output_close(&state, has_session, has_output, None, t0, limit);
-                let start = if close { Some(t0) } else { None };
+                let start = close.map(|_| t0);
                 assert_eq!(first, (Close::Keep, start), "{row}, first tick");
                 assert_eq!(
                     output_close(&state, has_session, has_output, start, just_before, limit),
@@ -5996,11 +6239,7 @@ mod tick_tests {
                     "{row}, just before the limit"
                 );
                 let at = output_close(&state, has_session, has_output, start, t0 + limit, limit);
-                let expected = if close {
-                    (Close::Release, None)
-                } else {
-                    (Close::Keep, None)
-                };
+                let expected = (close.unwrap_or(Close::Keep), None);
                 assert_eq!(at, expected, "{row}, at the limit");
             }
         }
