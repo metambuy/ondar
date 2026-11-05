@@ -60,6 +60,14 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// cpal does not report.
 const OUTPUT_STALL_TICKS: u32 = 50;
 
+/// How long the output stays open with no session before the engine closes it (M5e1). An open
+/// output holds a `PreventUserIdleSystemSleep` assertion from `coreaudiod` for the process
+/// (measured on 0.1.2, 2026-11-04: held from the first play until quit, across Stop and Pause),
+/// so an idle Ondar kept the Mac awake. 30 s keeps a quick replay on the open output; the next
+/// `play` reopens it through the first-play path. Elapsed time, not ticks: the engine also wakes
+/// on every command, and a volume drag must not shorten it. See [`output_close`].
+const OUTPUT_IDLE_CLOSE: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone)]
 pub enum AudioCommand {
     /// `bitrate_kbps`: the station record's, for the prefetch (M3b commit 6); `None` when the
@@ -474,6 +482,10 @@ struct Engine {
     /// an output pulls again or the user plays a station (R2). It lives on the engine, not in [`OutputWatch`], because the
     /// reopen restarts the session onto a new ring, which resets the watch; see [`stall_reopen`].
     stall_reopened: bool,
+    /// [`OUTPUT_IDLE_CLOSE`], on the engine so a test harness can shorten it.
+    output_idle_close: Duration,
+    /// When the output became closable, as [`output_close`] keeps it; `None` while it is not.
+    idle_since: Option<Instant>,
     /// Monotonic tick counter for `current_ring`'s lifetime, used to window `underrun_ticks`.
     tick_index: u64,
     /// `tick_index` of each underrun event still within `UNDERRUN_WINDOW_TICKS`, oldest
@@ -530,6 +542,8 @@ impl Engine {
             output_watch: OutputWatch::default(),
             output_stall_ticks: OUTPUT_STALL_TICKS,
             stall_reopened: false,
+            output_idle_close: OUTPUT_IDLE_CLOSE,
+            idle_since: None,
             tick_index: 0,
             underrun_ticks: VecDeque::new(),
             current_reconnect_counter: None,
@@ -560,8 +574,10 @@ impl Engine {
         self.close_output();
     }
 
-    /// Close the output at shutdown: the slot emptied (no attach may use it), then the device
-    /// released ([`Self::release_output`]).
+    /// Close the output, at shutdown or after [`OUTPUT_IDLE_CLOSE`] with no session: the slot
+    /// emptied (no attach may use it), then the device released ([`Self::release_output`]). The
+    /// next `play`'s `ensure_output` opens it again. A loss signal from the closed output is
+    /// ignored: [`Self::check_output_lost`] needs an open output, and the reopen a new generation.
     fn close_output(&mut self) {
         *lock(&self.output_slot) = None;
         self.release_output();
@@ -599,6 +615,24 @@ impl Engine {
             self.playing_since = None;
         }
         self.last_state = current.clone();
+
+        // Before the session's early return: the close is for an engine with no session.
+        let (close, idle_since) = output_close(
+            &current,
+            self.session.is_some(),
+            self.opened.is_some(),
+            self.idle_since,
+            Instant::now(),
+            self.output_idle_close,
+        );
+        self.idle_since = idle_since;
+        if close == Close::Release {
+            self.close_output();
+            log::info!(
+                "output closed after {} s with no session",
+                self.output_idle_close.as_secs()
+            );
+        }
 
         let Some(session) = self.session.clone() else {
             return;
@@ -1579,6 +1613,42 @@ fn stall_reopen(action: StallAction, progressed: bool, latched: bool) -> (bool, 
     }
 }
 
+/// What [`Engine::tick`] does with the open output this tick (M5e1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Close {
+    Keep,
+    /// No session has needed the output for the limit: empty the slot and release it.
+    Release,
+}
+
+/// The output close, pure (M5e1): whether to close the output at `now`, and the `idle_since` to
+/// keep. The output is closable while it is open and no session can use it: none at all, or
+/// one that ended (`Idle` after Stop, `Error`, whose decode thread has returned). The time is
+/// counted from the first closable tick and restarts on any tick that is not closable, so a play
+/// inside the window keeps the output. `Paused` is not closable here.
+///
+/// It runs on the engine thread, outside [`decide_tick`], as [`stall_reopen`] does, and it
+/// writes no state: the close changes nothing a listener sees (the plan review's Q6).
+fn output_close(
+    state: &PlaybackState,
+    has_session: bool,
+    has_output: bool,
+    idle_since: Option<Instant>,
+    now: Instant,
+    limit: Duration,
+) -> (Close, Option<Instant>) {
+    let ended = matches!(state, PlaybackState::Idle | PlaybackState::Error { .. });
+    if !has_output || (has_session && !ended) {
+        return (Close::Keep, None);
+    }
+    let since = idle_since.unwrap_or(now);
+    if now.saturating_duration_since(since) >= limit {
+        (Close::Release, None)
+    } else {
+        (Close::Keep, Some(since))
+    }
+}
+
 /// The output-stall decision, pure. Only `Playing` can warn: `Paused` and `Buffering` pause the
 /// player, so the ring is not pulled by design; `Idle`, `Connecting` and `Reconnecting` have no
 /// ring attached or not yet pulled. Once warned, nothing more until the output pulls again
@@ -2125,8 +2195,9 @@ mod session_tests {
         }
         fn log(&self, r: &log::Record) {
             let msg = r.args().to_string();
-            const KEPT: [&str; 9] = [
+            const KEPT: [&str; 10] = [
                 "output lost",
+                "output closed",
                 "adts front end",
                 "build",
                 "play received",
@@ -2329,6 +2400,8 @@ mod session_tests {
         loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
         /// How long each open takes from now on (a device open took 21-275 ms, Step 0 C).
         delay: Arc<Mutex<Duration>>,
+        /// Per open, in order: set when that open's guard is dropped (the output closed).
+        closed: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     }
 
     impl TestOpener {
@@ -2340,6 +2413,7 @@ mod session_tests {
                 lost: Arc::new(Mutex::new(None)),
                 loud: Arc::new(Mutex::new(Vec::new())),
                 delay: Arc::new(Mutex::new(Duration::ZERO)),
+                closed: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -2351,6 +2425,7 @@ mod session_tests {
                 lost: self.lost.clone(),
                 loud: self.loud.clone(),
                 delay: self.delay.clone(),
+                closed: self.closed.clone(),
             }
         }
     }
@@ -2361,6 +2436,7 @@ mod session_tests {
         lost: Arc<Mutex<Option<LossSignal>>>,
         loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
         delay: Arc<Mutex<Duration>>,
+        closed: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     }
 
     impl TestOutput {
@@ -2376,6 +2452,13 @@ mod session_tests {
             lock(&self.loud)
                 .get(n)
                 .map_or(0, |c| c.load(Ordering::SeqCst))
+        }
+
+        /// Whether open `n` (0-based) has been closed: its guard dropped.
+        fn closed(&self, n: usize) -> bool {
+            lock(&self.closed)
+                .get(n)
+                .is_some_and(|c| c.load(Ordering::SeqCst))
         }
     }
 
@@ -2402,6 +2485,7 @@ mod session_tests {
                 std::num::NonZero::new(44_100).expect("44100"),
             );
             let (halted, closed) = (self.halted.clone(), Arc::new(AtomicBool::new(false)));
+            lock(&self.closed).push(closed.clone());
             let ended = closed.clone();
             thread::spawn(move || {
                 let mut out = mixer_out;
@@ -2539,6 +2623,16 @@ mod session_tests {
         opener: TestOpener,
         stall_ticks: u32,
     ) -> (mpsc::Sender<AudioCommand>, Receiver<EngineEvent>) {
+        spawn_engine_configured(name, opener, move |e| e.output_stall_ticks = stall_ticks)
+    }
+
+    /// `spawn_engine` with `configure` applied to the engine before it runs (a test's shortened
+    /// limits).
+    fn spawn_engine_configured(
+        name: &str,
+        opener: TestOpener,
+        configure: impl FnOnce(&mut Engine) + Send + 'static,
+    ) -> (mpsc::Sender<AudioCommand>, Receiver<EngineEvent>) {
         let (ev_tx, ev_rx) = mpsc::channel();
         let shared = test_ctx(ev_tx).shared;
         let (tx, rx) = mpsc::channel();
@@ -2546,7 +2640,7 @@ mod session_tests {
             .name(name.into())
             .spawn(move || {
                 let mut engine = Engine::with_opener(shared, "Ondar/test", Box::new(opener));
-                engine.output_stall_ticks = stall_ticks;
+                configure(&mut engine);
                 engine.run(&rx);
             })
             .expect("spawn engine");
@@ -2800,6 +2894,109 @@ mod session_tests {
             eventually(GUARD, || out.loud(1) > 0),
             "the output never pulled again"
         );
+        drop(tx);
+    }
+
+    /// The shortened [`OUTPUT_IDLE_CLOSE`] the close tests run with.
+    const TEST_IDLE_CLOSE: Duration = Duration::from_secs(1);
+
+    /// M5e1 commit 1 (Part 0: an idle 0.1.2 held `coreaudiod`'s `PreventUserIdleSystemSleep`
+    /// from its first play until quit). **What it pins:** after Stop, with no session, the engine
+    /// closes its output once the limit passes (the open's guard dropped, awaited); the close sends
+    /// no event of its own (the first event after `Idle` is the next play's `Connecting`, the
+    /// review's Q6); and the next play opens the output again and is heard on it. **Fails if** the
+    /// output is never closed (the hang guard fires: on `e2c1813` with this test), if the close
+    /// writes a state (mutation: a `set_state(Error { code: Device, .. })` in the close; a repeat
+    /// `Idle` would be dropped by `write_state` and is no test), or if the next play does not
+    /// reopen (one open).
+    #[test]
+    fn an_idle_engine_closes_its_output_and_the_next_play_reopens_it() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let name = "ondar-audio:test-idle-close";
+        let (tx, ev_rx) = spawn_engine_configured(name, opener, |e| {
+            e.output_idle_close = TEST_IDLE_CLOSE;
+        });
+        play(&tx, &server.url, "st-idle-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        tx.send(AudioCommand::Stop).expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Idle)),
+            "no Idle after Stop"
+        );
+        assert!(
+            eventually(GUARD, || out.closed(0)),
+            "the output was never closed with no session"
+        );
+        play(&tx, &server.url, "st-idle-two");
+        assert_eq!(
+            ev_rx.recv_timeout(GUARD).ok(),
+            Some(EngineEvent::State(PlaybackState::Connecting)),
+            "the close sent an event of its own"
+        );
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { station_id } if station_id == "st-idle-two"
+            )),
+            "the next play never played"
+        );
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            2,
+            "the next play reopened"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the next play was not heard on the reopened output"
+        );
+        assert_eq!(thread_lines(name, "output closed").len(), 1);
+        drop(tx);
+    }
+
+    /// M5e1 commit 1: a play inside the close's window finds the output still open. **What it
+    /// pins:** Stop, then a play at once, at the production limit: one open for both sessions.
+    /// **Fails if** the output closes at Stop rather than after the limit (mutation: a limit of
+    /// `Duration::ZERO`, two opens).
+    #[test]
+    fn a_play_inside_the_idle_window_keeps_the_output() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine("ondar-audio:test-idle-window", opener);
+        play(&tx, &server.url, "st-window-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        tx.send(AudioCommand::Stop).expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Idle)),
+            "no Idle after Stop"
+        );
+        play(&tx, &server.url, "st-window-two");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { station_id } if station_id == "st-window-two"
+            )),
+            "the second play never played"
+        );
+        assert_eq!(out.opens.load(Ordering::SeqCst), 1, "the output was kept");
+        assert!(!out.closed(0), "the output was closed inside the window");
         drop(tx);
     }
 
@@ -5758,6 +5955,66 @@ mod tick_tests {
         assert_eq!(
             stall_reopen(StallAction::None, false, false),
             (false, false)
+        );
+    }
+
+    /// M5e1 commit 1, the close's decision: per state and session, with the output open or not,
+    /// just before the limit and at it. Closable (an open output with no session, or one in
+    /// `Idle` / `Error`) keeps its start and releases at the limit; everything else keeps the
+    /// output and restarts the count. **Fails if** the comparison is off at the limit, a state
+    /// with a live session (`Paused` included, until commit 2) is closable, a closed output is
+    /// released again, or a non-closable tick does not restart the count.
+    #[test]
+    fn output_close_releases_at_the_limit_only_when_nothing_can_use_the_output() {
+        let limit = OUTPUT_IDLE_CLOSE;
+        let t0 = Instant::now();
+        let just_before = t0 + limit.saturating_sub(Duration::from_millis(1));
+        let error = PlaybackState::Error {
+            code: ErrorCode::Network,
+            message: String::new(),
+        };
+        let rows = [
+            (PlaybackState::Idle, false, true),
+            (error.clone(), false, true),
+            (error, true, true),
+            (PlaybackState::Paused, true, false),
+            (PlaybackState::Connecting, true, false),
+            (PlaybackState::Buffering, true, false),
+            (PlaybackState::Playing, true, false),
+            (PlaybackState::Reconnecting { attempt: 1 }, true, false),
+        ];
+        for (state, has_session, closable) in rows {
+            for has_output in [false, true] {
+                let row = format!("{state:?} session={has_session} output={has_output}");
+                let close = closable && has_output;
+                let first = output_close(&state, has_session, has_output, None, t0, limit);
+                let start = if close { Some(t0) } else { None };
+                assert_eq!(first, (Close::Keep, start), "{row}, first tick");
+                assert_eq!(
+                    output_close(&state, has_session, has_output, start, just_before, limit),
+                    (Close::Keep, start),
+                    "{row}, just before the limit"
+                );
+                let at = output_close(&state, has_session, has_output, start, t0 + limit, limit);
+                let expected = if close {
+                    (Close::Release, None)
+                } else {
+                    (Close::Keep, None)
+                };
+                assert_eq!(at, expected, "{row}, at the limit");
+            }
+        }
+        // A tick that is not closable restarts the count.
+        assert_eq!(
+            output_close(
+                &PlaybackState::Playing,
+                true,
+                true,
+                Some(t0),
+                t0 + limit,
+                limit
+            ),
+            (Close::Keep, None)
         );
     }
 
