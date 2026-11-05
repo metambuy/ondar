@@ -79,6 +79,10 @@ pub enum AudioCommand {
     },
     Pause,
     Resume,
+    /// Pause if `Playing`, resume if `Paused`, nothing otherwise: decided on the engine thread
+    /// against its own state ([`toggle_action`]), so a media key's toggle cannot act on a stale
+    /// snapshot (M5e1, decision 4).
+    TogglePlayPause,
     Stop,
     SetVolume(f32),
 }
@@ -577,6 +581,7 @@ impl Engine {
                 }) => self.play(&url, &station_id, bitrate_kbps),
                 Ok(AudioCommand::Pause) => self.pause(),
                 Ok(AudioCommand::Resume) => self.resume(),
+                Ok(AudioCommand::TogglePlayPause) => self.toggle(),
                 Ok(AudioCommand::Stop) => self.stop(),
                 Ok(AudioCommand::SetVolume(v)) => self.set_volume(v),
                 Err(RecvTimeoutError::Timeout) => {}
@@ -1092,6 +1097,17 @@ impl Engine {
                 self.shared.set_state(PlaybackState::Playing);
             }
             // If we are Buffering, tick() resumes output once the ring refills.
+        }
+    }
+
+    /// `TogglePlayPause`: [`toggle_action`] on the state as this thread sees it, then `pause` or
+    /// `resume` as they are. A `Paused` whose session a paused close ended resumes through the
+    /// replay ([`Self::resume`]).
+    fn toggle(&mut self) {
+        match toggle_action(&self.shared.state()) {
+            Toggle::Pause => self.pause(),
+            Toggle::Resume => self.resume(),
+            Toggle::Ignore => {}
         }
     }
 
@@ -1673,6 +1689,31 @@ fn stall_reopen(action: StallAction, progressed: bool, latched: bool) -> (bool, 
     match action {
         StallAction::Warn if !latched => (true, true),
         _ => (false, latched),
+    }
+}
+
+/// What a `TogglePlayPause` does (M5e1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Toggle {
+    Pause,
+    Resume,
+    Ignore,
+}
+
+/// The toggle, pure (M5e1, decision 4): `Playing` pauses, `Paused` resumes, and every other
+/// state does nothing. `Connecting`, `Buffering` and `Reconnecting` are in flight: the
+/// transport's Pause is disabled outside `Playing` and a Play there would be a new session, so the
+/// toggle, like the key, leaves them alone. `Idle` and `Error` have no session to toggle; the
+/// shell decides whether a key replays a station there.
+fn toggle_action(state: &PlaybackState) -> Toggle {
+    match state {
+        PlaybackState::Playing => Toggle::Pause,
+        PlaybackState::Paused => Toggle::Resume,
+        PlaybackState::Idle
+        | PlaybackState::Connecting
+        | PlaybackState::Buffering
+        | PlaybackState::Reconnecting { .. }
+        | PlaybackState::Error { .. } => Toggle::Ignore,
     }
 }
 
@@ -3238,6 +3279,44 @@ mod session_tests {
             "{seen:?}"
         );
         assert_eq!(first.connections.load(Ordering::SeqCst), 1);
+        drop(tx);
+    }
+
+    /// The next `State` event, skipping the others; the hang guard is `GUARD`.
+    fn next_state(rx: &Receiver<EngineEvent>) -> Option<PlaybackState> {
+        let deadline = Instant::now() + GUARD;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(EngineEvent::State(s)) => return Some(s),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// M5e1 commit 3: `TogglePlayPause` through the engine's own command loop. **What it pins:**
+    /// from `Playing` a toggle pauses, and from `Paused` the next toggle resumes, each the next
+    /// state off the event stream. **Fails if** the command is not handled (on this commit's
+    /// variant with an empty arm: no state within the guard), or resolves against the wrong
+    /// state (a toggle that always pauses: no `Playing`).
+    #[test]
+    fn toggle_pauses_a_playing_session_and_resumes_a_paused_one() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let (tx, ev_rx) = spawn_engine("ondar-audio:test-toggle", opener);
+        play(&tx, &server.url, "st-toggle");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        tx.send(AudioCommand::TogglePlayPause).expect("send");
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Paused));
+        tx.send(AudioCommand::TogglePlayPause).expect("send");
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Playing));
         drop(tx);
     }
 
@@ -6255,6 +6334,31 @@ mod tick_tests {
             ),
             (Close::Keep, None)
         );
+    }
+
+    /// M5e1 commit 3, the toggle per state (all seven). **Fails if** any state maps to another
+    /// action: an in-flight state toggling (a pause the transport would not offer), `Idle` or
+    /// `Error` acting with no session, or `Playing` / `Paused` swapped.
+    #[test]
+    fn toggle_action_pauses_playing_resumes_paused_and_ignores_the_rest() {
+        let rows = [
+            (PlaybackState::Idle, Toggle::Ignore),
+            (PlaybackState::Connecting, Toggle::Ignore),
+            (PlaybackState::Buffering, Toggle::Ignore),
+            (PlaybackState::Playing, Toggle::Pause),
+            (PlaybackState::Paused, Toggle::Resume),
+            (PlaybackState::Reconnecting { attempt: 2 }, Toggle::Ignore),
+            (
+                PlaybackState::Error {
+                    code: ErrorCode::Network,
+                    message: String::new(),
+                },
+                Toggle::Ignore,
+            ),
+        ];
+        for (state, expected) in rows {
+            assert_eq!(toggle_action(&state), expected, "{state:?}");
+        }
     }
 
     /// No action: what `watch_ticks` returns for a stretch that logs nothing.
