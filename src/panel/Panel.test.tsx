@@ -51,6 +51,11 @@ const stationsReplies = new Map<string, ListedStations>();
 let hitReply: MapHit | null = null;
 let escapes = 0;
 let layoutListener: ((l: PanelLayout) => void) | null = null;
+// M5e1 commit 4: what `audio.getStation` answers, and the page's `playback:station` and
+// `playback:state` listeners (Now Playing and the transport each register one).
+let stationReply: Station | null = null;
+let stationListener: ((s: Station) => void) | null = null;
+const stateListeners: ((s: unknown) => void)[] = [];
 
 vi.mock("../api", () => {
   const listener = () => Promise.resolve(() => {});
@@ -62,6 +67,11 @@ vi.mock("../api", () => {
       stop: () => Promise.resolve(),
       setVolume: () => Promise.resolve(),
       getPlaybackState: () => Promise.resolve({ kind: "idle" }),
+      getStation: () => Promise.resolve(stationReply),
+    },
+    onStation: (cb: (s: Station) => void) => {
+      stationListener = cb;
+      return Promise.resolve(() => {});
     },
     panel: {
       escape: () => {
@@ -99,7 +109,10 @@ vi.mock("../api", () => {
       addFavourite: () => Promise.resolve(),
       removeFavourite: () => Promise.resolve(true),
     },
-    onState: listener,
+    onState: (cb: (s: unknown) => void) => {
+      stateListeners.push(cb);
+      return Promise.resolve(() => {});
+    },
     onStreamInfo: listener,
     onMetadata: listener,
     onStationsUpdated: listener,
@@ -117,6 +130,9 @@ beforeEach(() => {
   hitReply = null;
   escapes = 0;
   layoutListener = null;
+  stationReply = null;
+  stationListener = null;
+  stateListeners.length = 0;
 });
 afterEach(() => {
   cleanup();
@@ -347,5 +363,58 @@ describe("Panel's dot filter", () => {
   it("8. the map pane is given the country's name", async () => {
     await expandedWithPT();
     expect(screen.getByRole("img").getAttribute("aria-label")).toBe("Map of Portugal");
+  });
+});
+
+// M5e1 commit 4 (decision 5): Rust owns the station playing. The page names what
+// `playback:station` (or `get_station` on mount) says, never what it clicked: a media key can
+// play a station with the popover closed, and the popover must then name that one.
+describe("Panel mirrors Rust's station", () => {
+  const nowPlayingName = () => document.querySelector("[data-measure='now_playing_name']")!.textContent;
+  const favourite = () => screen.getByRole("button", { name: /favourites$/ }) as HTMLButtonElement;
+  const playing = () => act(async () => stateListeners.forEach((cb) => cb({ kind: "playing" })));
+  async function withPT() {
+    stationsReplies.set("PT", {
+      country_code: "PT",
+      items: [orbital],
+      fetched_at: 0,
+      age_secs: 0,
+      source: { kind: "fresh" },
+      refreshing: false,
+    });
+    render(<Panel />);
+    await settle();
+    await playing();
+  }
+
+  // (i) A row click alone names nothing: the click is a command, the station arrives as an
+  //     event. Fails on `e2c1813`, where the click set `playing` (`onPlay={setPlaying}`); the
+  //     mutation that puts that back fails it.
+  it("(i) a row click with no playback:station event leaves Now Playing as it was", async () => {
+    await withPT();
+    fireEvent.click(screen.getByRole("button", { name: "Play ORBITAL" }));
+    await settle();
+    expect(nowPlayingName()).toBe("—");
+    expect(favourite().disabled).toBe(true);
+  });
+
+  // (ii) A `playback:station` event with no click (a media key's play) names the station in
+  //     Now Playing and in the transport's ★ (ORBITAL is a favourite). Fails with no listener
+  //     (`e2c1813`).
+  it("(ii) a playback:station event alone names the station", async () => {
+    await withPT();
+    await act(async () => stationListener?.(orbital));
+    expect(nowPlayingName()).toBe("ORBITAL");
+    expect(favourite().disabled).toBe(false);
+    expect(favourite().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  // (iii) The getter on mount names it: an event emitted before the listener existed is lost,
+  //     so the page asks, as it asks `get_playback_state`. Fails with no getter call (`e2c1813`).
+  it("(iii) get_station on mount names the station", async () => {
+    stationReply = orbital;
+    await withPT();
+    expect(nowPlayingName()).toBe("ORBITAL");
+    expect(favourite().getAttribute("aria-pressed")).toBe("true");
   });
 });

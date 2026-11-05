@@ -65,9 +65,9 @@ export type { UpdateAvailable };
 export type OndarError = { code: string; message: string };
 
 export const audio = {
-  // `bitrateKbps`: the station record's, or null — Rust sizes the stream's prefetch from it.
-  play: (url: string, stationId: string, bitrateKbps: number | null) =>
-    invoke<void>("play", { url, stationId, bitrateKbps }),
+  // The whole station (M5e1): Rust stores it as the station playing and answers with
+  // `playback:station` (`onStation`); the page names that, never what it clicked.
+  play: (station: Station) => invoke<void>("play", { station }),
   pause: () => invoke<void>("pause"),
   resume: () => invoke<void>("resume"),
   stop: () => invoke<void>("stop"),
@@ -75,6 +75,8 @@ export const audio = {
   setEqGain: (band: number, gainDb: number) => invoke<void>("set_eq_gain", { band, gainDb }),
   getEq: () => invoke<EqBand[]>("get_eq"),
   getPlaybackState: () => invoke<PlaybackState>("get_playback_state"),
+  // The station playing, for the mount read: `null` before the process's first play.
+  getStation: () => invoke<Station | null>("get_station"),
 };
 
 // The popover itself. `escape` reports a key and `setExpanded` a click on the expand control;
@@ -130,6 +132,9 @@ export const onStreamInfo = (cb: (i: StreamInfo) => void): Promise<UnlistenFn> =
   listen<StreamInfo>("playback:stream_info", (e) => cb(e.payload));
 export const onMetadata = (cb: (m: IcyMetadata) => void): Promise<UnlistenFn> =>
   listen<IcyMetadata>("playback:metadata", (e) => cb(e.payload));
+// Every play, the page's or a media key's (M5e1): the station Rust now holds as playing.
+export const onStation = (cb: (s: Station) => void): Promise<UnlistenFn> =>
+  listen<Station>("playback:station", (e) => cb(e.payload));
 
 // The station directory (M3a). Every call is answered by Rust's stations service from its
 // SQLite cache; a list carries its provenance (`source`, `age_secs`, `refreshing`), and an

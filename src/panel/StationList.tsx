@@ -60,9 +60,8 @@ type Props = {
   showGeneration: number;
   /** Bumped by `Panel` when it added or removed a favourite; the favourites re-request. */
   storeGeneration: number;
-  /** A row was clicked: `Panel` hands the station to Now Playing. */
-  onPlay: (s: Station) => void;
-  /** The station Now Playing names (`Panel`'s `playing`), so its row does not replay it. */
+  /** The station playing, as Rust holds it (`Panel`'s `playing`), so its row does not replay
+   *  it. A click on another row is a `play`; Rust's `playback:station` names it (M5e1). */
   playingUuid: string | null;
   /** The map dot's stations the list is narrowed to (`Panel`'s, from `map_hit`), or none. */
   filter: MapHit | null;
@@ -102,7 +101,6 @@ function StationList({
   source,
   showGeneration,
   storeGeneration,
-  onPlay,
   playingUuid,
   filter,
   onClearFilter,
@@ -270,9 +268,8 @@ function StationList({
     const first = shown?.items[0];
     if (measureParam("play") !== "first" || autoPlayed.current || first === undefined) return;
     autoPlayed.current = true;
-    onPlay(first);
-    void audio.play(first.url, first.uuid, first.bitrate_kbps);
-  }, [shown, onPlay]);
+    void audio.play(first);
+  }, [shown]);
 
   const status = shown ? shown.status : (error ?? "loading…");
   const cue =
@@ -313,8 +310,7 @@ function StationList({
                   if (playback === "paused") void audio.resume();
                   return;
                 }
-                onPlay(s);
-                void audio.play(s.url, s.uuid, s.bitrate_kbps);
+                void audio.play(s);
               }}
             >
               <span className={styles.stationName}>

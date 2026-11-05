@@ -13,7 +13,7 @@ import styles from "./panel.module.css";
 import { describeError } from "./provenance";
 
 type Props = {
-  /** The station Now Playing names (`Panel`'s `playing`); Play replays it. */
+  /** The station playing, as Rust holds it (`Panel`'s `playing`); Play replays it. */
   station: Station | null;
   isFavourite: boolean;
   onToggleFavourite: () => void;
@@ -65,10 +65,7 @@ export default function Transport({ station, isFavourite, onToggleFavourite }: P
           <button
             type="button"
             disabled={station === null}
-            onClick={() =>
-              station &&
-              audio.play(station.url, station.uuid, station.bitrate_kbps).catch(report("play"))
-            }
+            onClick={() => station && audio.play(station).catch(report("play"))}
           >
             Play
           </button>
