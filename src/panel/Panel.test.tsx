@@ -54,6 +54,8 @@ let layoutListener: ((l: PanelLayout) => void) | null = null;
 // M5e1 commit 4: what `audio.getStation` answers, and the page's `playback:station` and
 // `playback:state` listeners (Now Playing and the transport each register one).
 let stationReply: Station | null = null;
+// The review's e4-1: `get_station` cannot fail in Rust, but the IPC can; true makes it reject.
+let stationRejects = false;
 let stationListener: ((s: Station) => void) | null = null;
 const stateListeners: ((s: unknown) => void)[] = [];
 
@@ -67,7 +69,7 @@ vi.mock("../api", () => {
       stop: () => Promise.resolve(),
       setVolume: () => Promise.resolve(),
       getPlaybackState: () => Promise.resolve({ kind: "idle" }),
-      getStation: () => Promise.resolve(stationReply),
+      getStation: () => (stationRejects ? Promise.reject(new Error("ipc")) : Promise.resolve(stationReply)),
     },
     onStation: (cb: (s: Station) => void) => {
       stationListener = cb;
@@ -131,6 +133,7 @@ beforeEach(() => {
   escapes = 0;
   layoutListener = null;
   stationReply = null;
+  stationRejects = false;
   stationListener = null;
   stateListeners.length = 0;
 });
@@ -416,5 +419,30 @@ describe("Panel mirrors Rust's station", () => {
     await withPT();
     expect(nowPlayingName()).toBe("ORBITAL");
     expect(favourite().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  // (iv) The review's e4-1: a getter that rejects (only the IPC can) leaves Now Playing as it
+  //     was and leaves no rejection unhandled, which the beta's page-error forwarding would
+  //     report. Node's `unhandledRejection` is the witness; jsdom fires no
+  //     `unhandledrejection` event. Fails on `261cb6a`, where the getter had no rejection
+  //     handler; the mutation that drops the `() => {}` fails it.
+  it("(iv) a get_station that rejects leaves Now Playing as it was, with no unhandled rejection", async () => {
+    type Proc = {
+      on(e: "unhandledRejection", f: (r: unknown) => void): void;
+      off(e: "unhandledRejection", f: (r: unknown) => void): void;
+    };
+    const proc = (globalThis as unknown as { process: Proc }).process;
+    const unhandled: unknown[] = [];
+    const record = (r: unknown) => unhandled.push(r);
+    proc.on("unhandledRejection", record);
+    try {
+      stationRejects = true;
+      await withPT();
+      await act(() => new Promise((r) => setTimeout(r, 0)));
+      expect(nowPlayingName()).toBe("—");
+      expect(unhandled).toEqual([]);
+    } finally {
+      proc.off("unhandledRejection", record);
+    }
   });
 });

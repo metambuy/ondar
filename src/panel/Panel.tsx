@@ -116,16 +116,22 @@ export default function Panel() {
 
   useEffect(() => {
     // The getter can answer after an event it predates; an event is always the newer, so the
-    // getter's answer is taken only while no event has arrived.
+    // getter's answer is taken only while no event has arrived. `get_station` cannot fail in
+    // Rust, only the IPC can; then Now Playing waits for the next `playback:station`.
+    let cancelled = false;
     let evented = false;
     const unlisten = onStation((s) => {
       evented = true;
       setPlaying(s);
     });
-    audio.getStation().then((s) => {
-      if (!evented && s !== null) setPlaying(s);
-    });
+    audio.getStation().then(
+      (s) => {
+        if (!cancelled && !evented && s !== null) setPlaying(s);
+      },
+      () => {},
+    );
     return () => {
+      cancelled = true;
       unlisten.then((un) => un());
     };
   }, []);

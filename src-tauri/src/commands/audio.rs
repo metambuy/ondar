@@ -9,8 +9,9 @@
 //!   stores it as the station playing and emits `playback:station` (M5e1).
 //! * **Channel message, returns `()`** — [`pause`], [`resume`], [`stop`]. Nothing to
 //!   validate.
-//! * **Direct engine access, never touches the channel** — [`set_eq_gain`], [`get_eq`],
-//!   [`get_playback_state`], and [`get_station`], which reads the shell's holder. These reach into `AudioEngine` through the shared handle.
+//! * **Direct access, never touches the channel**: [`set_eq_gain`], [`get_eq`] and
+//!   [`get_playback_state`] reach into `AudioEngine` through the shared handle; [`get_station`]
+//!   reads the shell's `NowPlaying` holder.
 //!   `set_eq_gain` stores an atomic into `EqGains` that the audio thread picks up at its
 //!   next frame-boundary check; the getters read a snapshot synchronously. Because gains
 //!   live on the handle rather than in the command stream, they are *not* ordered against

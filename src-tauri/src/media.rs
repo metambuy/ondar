@@ -173,8 +173,8 @@ fn artwork(mtm: MainThreadMarker) -> Option<Retained<MPMediaItemArtwork>> {
     let image: Retained<NSImage> = NSApplication::sharedApplication(mtm).applicationIconImage()?;
     let size: CGSize = image.size();
     let handler = RcBlock::new(move |_size: CGSize| NonNull::from(&*image));
-    // SAFETY: the block returns a pointer to the image it owns, valid for the block's life,
-    // which the artwork holds.
+    // SAFETY: on the main thread (`mtm`); the block returns a pointer to the image it owns,
+    // valid for the block's life, which the artwork holds.
     Some(unsafe {
         MPMediaItemArtwork::initWithBoundsSize_requestHandler(
             MPMediaItemArtwork::alloc(),
