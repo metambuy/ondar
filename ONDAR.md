@@ -1992,9 +1992,11 @@ parked**; it stays `Paused` with no state event, and Resume replays it as a fres
 `MainThreadMarker::new_unchecked` (a source-scan test). The handlers take two short locks and never
 wait. Two threads publish (the forwarder, a play), so `Info` carries a sequence number and the
 main thread drops an older one that arrives late. The `play` command is a sync
-`#[tauri::command]`, which Tauri runs on the main thread (read in tauri 2.12.3, tauri-macros 2.7.2,
-wry 0.57.0; the fix commit's message has the lines), so the two play paths never race (review
-finding e4-3, no change).
+`#[tauri::command]`, which Tauri runs inline, called from wry's handler for WebKit's
+`webView:startURLSchemeTask:` with no thread hop (read in tauri 2.12.3, tauri-macros 2.7.2,
+tauri-runtime-wry 2.12.1, wry 0.57.0; the fix commit's message has the lines). That WebKit calls
+`startURLSchemeTask` on the main thread is **inferred** from Apple's API contract, not read in a
+source. So the two play paths never race (review finding e4-3, no change).
 
 **Buy before build (dated 2026-11-04).** `objc2-media-player` 0.3.2 bought: both centres, every
 command, `IsLiveStream`, `MPMediaItemArtwork`; every call is `unsafe` and the dictionary is ours to
@@ -2042,10 +2044,21 @@ out of range and a flat battery are untested. 0.1.2 already plays on, so 0.1.3 i
 with no media-key code). **G3:** no Xrun fix in M5e1; `ondar_audio::engine: output stream error:
 Xrun` becomes a known WARN line in the gate (F8), still logged at WARN.
 
-**Xruns against output opens (dev log, 2026-11-06):** 1 Xrun in 7 opens, inside the 10:32:07 open
-(47 ms after `play received`, 3 ms before the `output opened` line, which is written after the open
-returns); 6 opens with none. 0.1.2's eleven Xruns (2026-11-04 to -06) cannot be at an open, since
-0.1.2 never closes its output. Not clustered at opens in this sample.
+**Xruns against output opens** (`grep -c` per file, `~/Library/Logs/`; "near" = within 5 s of an
+`output opened`):
+
+| File | Build | Xruns | Opens | Near an open |
+|---|---|---|---|---|
+| `eu.ondar.radio/ondar.2026-11-04.log` | installed 0.1.2 | 1 | 2 | 0 (4.8 h from the nearest) |
+| `eu.ondar.radio/ondar.2026-11-05.log` | installed 0.1.2 | 4 | 0 | 0 (no open that day) |
+| `eu.ondar.radio/ondar.2026-11-06.log` | installed 0.1.2 | 1 | 0 | 0 |
+| `eu.ondar.radio.dev/ondar.2026-11-04.log` | dev, M5e1 Step 0's probe on `e2c1813` | 7 (bursts of 2 and 5 within 0.25 s) | 1 | 0 (73 and 90 min after it) |
+| `eu.ondar.radio.dev/ondar.2026-11-06.log` | debug bundle, `261cb6a` | 1 | 8 | 1 (inside the 10:32:07 open) |
+
+Total 14: the installed 0.1.2's 6, the probe build's 7, M5e1's 1. 0.1.2 opens its output once per
+process, at the first play, and none of its 6 falls within 5 s of an open. The one on M5e1 sits
+inside an open: 47 ms after `play received`, 3 ms before the `output opened` line, which is written
+after the open returns; the other 7 M5e1 opens had none. Not clustered at opens in this sample.
 
 **Reviews.** OCR v1.12.13: the engine chunks (commits 1–3), one finding, wrong (no fix); commits 4
 and 5, six findings: e4-1, e4-2, e4-4, e5-1 fixed in one commit, test first for e4-1 (a rejecting

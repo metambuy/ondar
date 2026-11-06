@@ -1,4 +1,4 @@
-# Ondar 0.1.0, test build
+# Ondar, test build
 
 Thanks for trying this. Ondar is a small radio player that lives in the menu bar: pick a country, pick a station, listen. It is a project by Martín Vieira, built during an apprenticeship at CrabNebula. This is the first build outside my own Mac, so your job is to use it like a normal app and tell me what is awkward, broken or missing.
 
@@ -14,11 +14,11 @@ A Mac with Apple Silicon (M1 or later) running macOS 12 or newer. Intel Macs are
 
 ## What works
 
-Country list with search, station list, play and pause, volume, favourites and recents, the live track title when the station sends one, and an expanded view with a map of the selected country showing where stations are. Click a dot on the map to filter the list to that place.
+Country list with search, station list, play and pause, volume, favourites and recents, the live track title when the station sends one, and an expanded view with a map of the selected country showing where stations are. Click a dot on the map to filter the list to that place. The play/pause media key and Control Centre work once you have played a station since opening Ondar.
 
 ## What is not there yet (no need to report these)
 
-No equalizer controls or spectrum display. No media keys or Now Playing integration. No sleep timer. The menu bar icon does not animate while playing. Some streams will not play: HE-AAC v2 and Opus streams, and some stations whose stream is simply down. When a stream fails, the app says so; if it does not, tell me.
+No equalizer controls or spectrum display. The next and previous media keys do nothing yet, and the volume keys change the Mac's volume, not Ondar's slider. If a Bluetooth speaker or headphones lose their connection, Ondar may keep playing through the Mac's speakers; that fix is next. No sleep timer. The menu bar icon does not animate while playing. Some streams will not play: HE-AAC v2 and Opus streams, and some stations whose stream is simply down. When a stream fails, the app says so; if it does not, tell me.
 
 ## What I want to hear
 
