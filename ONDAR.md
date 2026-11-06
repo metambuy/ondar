@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -1942,6 +1942,114 @@ The steps were 0.1.1's, plus the dSYM zip (the dSYM paragraph in "0.1.1: release
   binary; `_handover/v0.1.2/ondar-0.1.2.dSYM` (46 696 KiB), zipped to `ondar-0.1.2.dSYM.zip`
   (10 882 494 B); 0.1.1's zipped too (11 498 833 B). Martín uploads both zips to his private Google
   Drive, `Ondar/dSYM/`.
+
+### M5e1: media keys and Now Playing (2026-11-04 to 2026-11-06)
+
+Records in `_handover/` (gitignored, on this Mac): the Step 0 report
+`m5e1-step0-report-2026-11-04.md`, the plan `m5e1-plan.md` and its review
+`m5e1-plan-review-2026-11-05.md`, the two OCR triages (`m5e1-code-review-engine-2026-11-05.md`,
+`m5e1-code-review-2026-11-06.md`), the reports `last-report-2026-11-05.md` and
+`last-report-2026-11-06.md`. Branch `m5e1` from `main` `e2c1813`. Pulled forward from M5e
+(2026-11-04) because F5's play/pause is the tester-visible half.
+
+**Decisions (Martín, 2026-11-04 ~16:57; the plan review's answers 2026-11-05).**
+1. Buy `objc2-media-player` 0.3.2, `default-features = false`, only the features used.
+2. "Play" with nothing playing replays Rust's current station. **A1 (2026-11-05) supersedes the
+   original "also after a relaunch, the most recent from `list_recents`":** Ondar claims Now
+   Playing only after its first play in the process, so a launch never takes the keys from Music or
+   MediaMonkey. With no current station a key answers `NoActionableNowPlayingItem`.
+3. After Stop the Now Playing info stays, with `playbackState = Stopped`, so F8 comes back to Ondar.
+4. `AudioCommand::TogglePlayPause`, resolved on the engine thread from a pure
+   `toggle_action`; `play` and `pause` keep their own commands (Control Centre sends those, H1d).
+5. Rust owns "the station playing": `play(station)` stores the `Station` and sends its `Play` under
+   one lock (`now_playing.rs`), then emits `playback:station`; the page mirrors it and
+   `get_station`. It lives in the shell, not the engine: `ondar-audio` has no `Station` and no
+   dependency on `ondar-stations`, and keeps it that way.
+6. Next and previous disabled (M5e, with neighbour data per F5); volume keys untouched. The skips,
+   seeks, position and rate commands are disabled too, so Control Centre shows no scrubber (H1c).
+7. Now Playing content from the pure `now_playing(state, station, icy_title)`: the station name;
+   the ICY title as subtitle, cleared on `Connecting` (ordered by the engine's channel, so the old
+   session's last title cannot land on the new station); the app's own icon as artwork, no fetch;
+   `IsLiveStream = true`; `Error` → `Stopped` with no subtitle.
+
+Review answers: Q3 a key is ignored while `Connecting`, `Buffering` or `Reconnecting`, as the
+transport's buttons are; Q4 30 s; Q6 the close lives outside `decide_tick` on condition that it
+writes no state, pinned by a test. A2: a long pause ends the session and Resume replays it. A4: H2 a
+gate.
+
+**Part 0, measured (installed 0.1.2, 2026-11-04):** an idle Ondar held the Mac awake. After the
+first play, coreaudiod held `PreventUserIdleSystemSleep`
+`com.apple.audio.BuiltInSpeakerDevice.context.preventuseridlesleep`, Created for PID 86399, id
+`0x0003fac200019f6a`, and the same id was still held 60 s after Stop and 60 s after Pause (age
+11:34): the output stayed open for the process's life. Hence the close: **the output closes after
+30 s with no session** (`Idle`, `Error`), and **a session `Paused` for 30 s is ended and its `Play`
+parked**; it stays `Paused` with no state event, and Resume replays it as a fresh session
+(`Connecting` → `Buffering` → `Playing`, no second `Started`). Elapsed time on a monotonic
+`Instant`, not engine wakes, so a volume drag cannot shorten it (`.claude/rules/audio.md` 1, 7).
+
+**Threading.** Every function in `media.rs` that touches MediaPlayer or AppKit takes a
+`MainThreadMarker`, so the compiler holds the main-thread rule; the file never calls
+`MainThreadMarker::new_unchecked` (a source-scan test). The handlers take two short locks and never
+wait. Two threads publish (the forwarder, a play), so `Info` carries a sequence number and the
+main thread drops an older one that arrives late. The `play` command is a sync
+`#[tauri::command]`, which Tauri runs on the main thread (read in tauri 2.12.3, tauri-macros 2.7.2,
+wry 0.57.0; the fix commit's message has the lines), so the two play paths never race (review
+finding e4-3, no change).
+
+**Buy before build (dated 2026-11-04).** `objc2-media-player` 0.3.2 bought: both centres, every
+command, `IsLiveStream`, `MPMediaItemArtwork`; every call is `unsafe` and the dictionary is ours to
+build; `objc2` 0.6.4, `block2` 0.6.2 and `objc2-foundation` 0.3.2 were already in the lock. 0.3.2
+needs its `objc2-app-kit` and `objc2-core-foundation` features for
+`initWithBoundsSize:requestHandler:`, and `CGSize` is under `CFCGTypes`. Refused: **souvlaki**
+0.9.3 (`objc` 0.2, a second Objective-C binding; enables next, previous and seek unconditionally;
+no `IsLiveStream`; artwork only by URL fetch; no say in the handler's thread or status);
+**`tauri-plugin-media`** 0.1.1 (`objc` 0.2 / `cocoa`; a page-driven API, against the one rule; 14
+months without a release); **`tauri-plugin-media-session`** 0.2.4 (mobile only). "Learning value
+beats speed" is not invoked.
+
+**Privacy: unchanged.** M5e1 opens no connection. Now Playing and the remote commands are local IPC
+with macOS (`mediaremoted`), the artwork is the bundle's icon, no favicon is fetched.
+
+**By hand (debug bundle from `261cb6a`, 2026-11-06):** H1a–H1f pass (F8 toggles, F7 and F9 do
+nothing; with MediaMonkey last every key goes to it; Control Centre shows the name, the ICY title,
+the icon, next and previous greyed, no scrubber; Control Centre sends `play` and `pause`; F8 after
+Stop replays; after a relaunch and before a play F8 goes to MediaMonkey). **H2 (the gate) passes:**
+no Ondar assertion after either close; F8 after the closed Stop replays, F8 after the closed Pause
+replays with no `reconnecting`. G (the Audio Pro switched off mid-play) paused Ondar, and
+MediaMonkey resumed.
+
+**What paused it, from the macOS unified log** (`/usr/bin/log show`, which names each command's
+sender):
+- 12:16:49.117 `bluetoothd`: `Received AVRCP Stop command from device 70:F7:54:E3:09:56`, the Audio
+  Pro itself, as it powered down; it reached Ondar (the Now Playing app) as a Pause, 7 s before the
+  link dropped.
+- 12:16:56.965, 0.5 s after the drop: `mediaremoted` sent one Pause, one command id, to MediaMonkey
+  and to Ondar, each with its own delivery. The same broadcast followed the MOMENTUM 4 headphones'
+  disconnect at 11:02:30, before Ondar's first play: that is how a command reaches Ondar before it
+  is Now Playing, and Ondar's `Success` swallowed nothing (MediaMonkey had its own copy).
+- No `playerCommand:Play` reached MediaMonkey, so its resume did not come through MediaRemote.
+- **A Mac-ended disconnect** (`blueutil --disconnect`, the speaker left on, ×3): no pause at all, no
+  command to any app; the output followed the default in 0.4–0.5 s and Ondar played on aloud
+  through the Mac's speakers. Why the broadcast came after the speaker and the headphones ended the
+  link and not after the Mac did: unknown.
+
+**G1, revised 2026-11-06 ~14:10:** Ondar obeys any pause it receives; no code in M5e1. Martín
+decided that Ondar will pause itself when the previous output device no longer exists, on every
+output type, a manual switch still playing on: a beta item after 0.1.3 and before M5a, with its own
+Step 0 (BUILD_PLAN, "Beta"). **The known gap on 0.1.3:** a Mac-ended disconnect plays on aloud;
+out of range and a flat battery are untested. 0.1.2 already plays on, so 0.1.3 is no regression.
+**G2:** MediaMonkey resuming is not ours to prevent (it resumed in 0.1.2's test A, 2026-11-03,
+with no media-key code). **G3:** no Xrun fix in M5e1; `ondar_audio::engine: output stream error:
+Xrun` becomes a known WARN line in the gate (F8), still logged at WARN.
+
+**Xruns against output opens (dev log, 2026-11-06):** 1 Xrun in 7 opens, inside the 10:32:07 open
+(47 ms after `play received`, 3 ms before the `output opened` line, which is written after the open
+returns); 6 opens with none. 0.1.2's eleven Xruns (2026-11-04 to -06) cannot be at an open, since
+0.1.2 never closes its output. Not clustered at opens in this sample.
+
+**Reviews.** OCR v1.12.13: the engine chunks (commits 1–3), one finding, wrong (no fix); commits 4
+and 5, six findings: e4-1, e4-2, e4-4, e5-1 fixed in one commit, test first for e4-1 (a rejecting
+`get_station`); e4-3 and e5-2 wrong. Counts at the fix commit: 509 + 64.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -4107,6 +4215,9 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    row per station, M5d audio UI (EQ, presets, spectrum), M5c the map at zoom, M5e system
    integration and states. Tray animation, onboarding and coordinate inference parked — see
    "M5 re-cut (2026-10-19)" and BUILD_PLAN.
+   **M5e1** (media keys play/pause, Now Playing, the output close) pulled forward 2026-11-04, built
+   on `m5e1` 2026-11-05/06; see "M5e1: media keys and Now Playing". **Beta cut 2026-11-06:**
+   strangers through a public link; M5d out (BUILD_PLAN, "Beta").
 6. **M6 — Signing, notarisation, DMG.**
 
 ## Principle: verify the instrument before trusting a surprising measurement
