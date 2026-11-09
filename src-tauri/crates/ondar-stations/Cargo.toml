@@ -36,4 +36,4 @@ tokio = { version = "1.52", features = ["rt-multi-thread", "time", "sync"] }
 # (2026-08-08). No other crate in the tree offers SQLite.
 # `fallible_uint`: `usize`/`u64` parameters bind through rusqlite's own checked conversion
 # (`Error::ToSqlConversionFailure` past i64::MAX) instead of an `as i64` at every call (2026-10-17).
-rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
