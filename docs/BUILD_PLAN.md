@@ -276,8 +276,11 @@ feels like a map at zoom; the app behaves on the system. Re-cut 2026-10-19 at th
 (record `_handover/m5-ranking-2026-10-19.md`; decisions in ONDAR.md, "M5 re-cut (2026-10-19)").
 No tester evidence yet, so Martín's list led: if only three fit before audio work, search, the cap,
 favourites. Order: **M5a → M5b → M5d → M5c → M5e**; one phase per session. M5d before M5c because
-M1's EQ exit criterion 4 has been open since September, and no tester has mentioned the map;
-Martín may swap c and d, the phases are independent.
+M1's EQ exit criterion 4 has been open since September; when the order was set no tester had
+mentioned the map (F7 did on 2026-11-04: zoom does nothing on the Faroe Islands). Martín may swap
+c and d, the phases are independent. **M5e1 pulled forward 2026-11-04** (F5's play/pause).
+**Beta cut 2026-11-06:** M5e1, then the lost-device pause, then M5a and M5b; M5d out (see "Beta",
+below).
 
 **Every phase:** Step 0 with the buy-before-build paragraph — the crates and OS facilities checked,
 each with name, version, what it covers, what it misses against our use, why not (ONDAR.md, "Buy
@@ -387,6 +390,8 @@ feel more like a map; rivers too (D-map).
 - [ ] The neighbouring countries' names on the map pane (Martín, 2026-11-02, at 0.1.2's by-eye
       check of the country list; the selected country's own name is not wanted there). Not 0.1.2.
 - [ ] The B5 fix.
+- [ ] Finer levels for frames finer than 1.5 km/pt (F7, 2026-11-04), the floor set from Natural
+      Earth 10m's measured vertex spacing; the zoom controls show their limits.
 - [ ] Format v4, if the lines need it.
 - [ ] `missing_docs` flip: `ondar-map` and `ondar-map-build`; `laea.rs:1-4` if not already done
       (re-dated in the 2026-10-19 docs commit).
@@ -394,14 +399,30 @@ feel more like a map; rivers too (D-map).
 **Exit:** France at 3 km/pt shows regions, the major rivers and the top-N place names; paint within
 M4c's bars; the resource's growth stated.
 
-### M5e — system integration and states
+### M5e1: media keys play/pause, Now Playing, the output close (pulled forward 2026-11-04)
+
+Built on `m5e1` 2026-11-05/06 (ONDAR.md, "M5e1: media keys and Now Playing"); released as 0.1.3.
+- [x] Media keys play/pause and Control Centre's play and pause (`objc2-media-player` 0.3.2);
+      next, previous, skips, seeks, position and rate disabled.
+- [x] Now Playing: station name, ICY title, the app icon, live stream; no claim before the process's
+      first play.
+- [x] The output closes after 30 s with no session or 30 s paused; Resume replays a closed pause.
+- [x] Rust owns the station playing (`play(station)`, `get_station`, `playback:station`).
+
+**Exit:** F8 and Control Centre work with the popover hidden; F8 after Stop plays; Ondar claims no
+Now Playing before its first play; no sleep assertion 40 s after Stop or Pause. Met by hand on the
+debug bundle 2026-11-06 (H1a–H1f, H2); the release bundle's checks are 0.1.3's.
+
+### M5e — system integration and states (the rest)
 
 - **Step 0.** Buy before build, named with versions (covers, misses, why not): `objc2`
   `MPNowPlayingInfoCenter`; `tauri-plugin-global-shortcut`; `tauri-plugin-autostart`; sleep/wake and
   device-change notifications (IOKit / CoreAudio). **The four states (empty, loading, offline,
   error) designed before coded.** Instrument: the device-change path measured as defect A's was.
 - [ ] Global keyboard shortcut to toggle the popover; `Space` play/pause when focused.
-- [ ] Media keys and macOS **Now Playing** (`MPNowPlayingInfoCenter` via `objc2`).
+- [ ] Next and previous with neighbour data (F5: previous a random station in the same country,
+      next one in a random bordering country, across the sea for an island). Play/pause and Now
+      Playing are M5e1's.
 - [ ] Launch at login (`tauri-plugin-autostart`).
 - [ ] Sleep timer; pause/resume on system sleep/wake and on audio device change.
 - [ ] Empty, loading, offline and error states designed, not defaulted (honest states are a
@@ -431,9 +452,35 @@ state has a test.
   log with repeated `output lost` lines.
 - **The `UN` drop logged once per process** (0.1.2 release logs, 2026-11-03): `countries: dropped 1
   cached code(s) with no name: ["UN"]` is logged at every panel show; once per process is enough.
-- **OCR to v1.13.x** (0.1.2's reviews ran v1.12.13): upgrade before the next review round.
+- ~~**OCR to v1.13.x**~~ (0.1.2's and M5e1's reviews ran v1.12.13): **done 2026-11-06**, v1.13.6
+  (`891df1b6`, Homebrew's npm: `/opt/homebrew/bin/npm i -g @alibaba-group/open-code-review@1.13.6`).
 - **rodio #914 re-check** (the buffer clamp, ONDAR.md "0.1.2: decisions", buy before build): at each
   rodio release; once it ships, the explicit buffer can go.
+
+### Beta (decided 2026-11-06)
+
+**Audience:** strangers, through a public link. Apple Silicon only.
+
+**In:** M5e1 (0.1.3); Ondar pausing itself when the previous output device no longer exists,
+on every output type, a manual switch playing on (own Step 0: is the device list current when
+`DeviceChanged` arrives; next after 0.1.3); M5a; M5b; the empty, loading, offline and error states (from M5e); the
+periodic update check and page-error forwarding (from M6); zoom controls that show their limits
+(F7's note, from M5c); a README for strangers (what it is, screenshots, requirements, credits for
+Natural Earth and radio-browser.info, licence, privacy, how to report a problem); a `LICENSE` file
+and third-party licence notices.
+
+**Out, after the beta:** M5d; M5c; the rest of M5e; the universal binary, DMG art and CI release
+workflow.
+
+**Open, each decided before the beta:** the licence (`src-tauri/Cargo.toml` says MIT and the repo
+root has no `LICENSE` file); where strangers report problems; the minimum macOS (`12.0` is declared
+and has not been tested on 12).
+
+**Exit:** a stranger opens the public DMG with no Gatekeeper warning and plays a station; "BBC"
+reaches BBC stations in one action; a beta install receives the next version through the prompt;
+a Mac-ended Bluetooth disconnect pauses Ondar and a manual output
+switch does not; the second tester's feedback is read and `m6lite-done` tagged; one overnight run with sleep and no
+wedge, its log read; every Open line above decided.
 
 ---
 

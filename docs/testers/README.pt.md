@@ -1,4 +1,4 @@
-# Ondar 0.1.0, versão de teste
+# Ondar, versão de teste
 
 Obrigado por experimentares. O Ondar é um pequeno leitor de rádio que vive na barra de menus: escolhes um país, escolhes uma estação, ouves. É um projeto de Martín Vieira, construído durante um estágio na CrabNebula. Esta é a primeira versão a sair do meu próprio Mac, por isso a tua tarefa é usá-lo como uma app normal e dizer-me o que é incómodo, o que está partido e o que falta.
 
@@ -14,11 +14,11 @@ Um Mac com Apple Silicon (M1 ou posterior) com macOS 12 ou mais recente. Os Mac 
 
 ## O que funciona
 
-Lista de países com pesquisa, lista de estações, reproduzir e pausar, volume, favoritos e recentes, o título da faixa em direto quando a estação o envia, e uma vista expandida com um mapa do país selecionado que mostra onde estão as estações. Clica num ponto do mapa para filtrar a lista para esse lugar.
+Lista de países com pesquisa, lista de estações, reproduzir e pausar, volume, favoritos e recentes, o título da faixa em direto quando a estação o envia, e uma vista expandida com um mapa do país selecionado que mostra onde estão as estações. Clica num ponto do mapa para filtrar a lista para esse lugar. A tecla multimédia de reproduzir e pausar e a Central de controlo funcionam depois de tocares uma estação desde que abriste o Ondar.
 
 ## O que ainda não existe (não precisas de reportar isto)
 
-Não há controlos de equalizador nem visualização de espetro. Não há teclas multimédia nem integração com o Now Playing. Não há temporizador para adormecer. O ícone da barra de menus não se anima durante a reprodução. Algumas emissões não vão tocar: as emissões HE-AAC v2 e Opus, e algumas estações cuja emissão está simplesmente em baixo. Quando uma emissão falha, a app diz; se não disser, diz-me tu.
+Não há controlos de equalizador nem visualização de espetro. As teclas multimédia de seguinte e anterior ainda não fazem nada, e as teclas de volume mudam o volume do Mac, não o controlo do Ondar. Se uma coluna ou uns auscultadores Bluetooth perderem a ligação, o Ondar pode continuar a tocar pelas colunas do Mac; é a próxima coisa a corrigir. Não há temporizador para adormecer. O ícone da barra de menus não se anima durante a reprodução. Algumas emissões não vão tocar: as emissões HE-AAC v2 e Opus, e algumas estações cuja emissão está simplesmente em baixo. Quando uma emissão falha, a app diz; se não disser, diz-me tu.
 
 ## O que quero saber
 

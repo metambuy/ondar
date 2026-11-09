@@ -41,7 +41,7 @@ many_single_char_names = "allow"
 
 [package]
 name = "ondar"
-version = "0.1.2"
+version = "0.1.3"
 description = "Ondar — macOS menu bar radio player"
 edition.workspace = true
 rust-version.workspace = true
@@ -103,6 +103,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Finder launch (which discards stderr) still leaves a log a tester can send. Neither std nor
 # tracing-subscriber rotates or prunes files.
 tracing-appender = "0.2.5"
+# Media keys and Now Playing (M5e1, `media.rs`): bindings to MediaPlayer's
+# `MPRemoteCommandCenter` and `MPNowPlayingInfoCenter`, which std and Tauri do not expose.
+# Bought over souvlaki 0.9.3 (enables next/previous/seek, objc 0.2) and the Tauri media plugins
+# (ONDAR.md, "M5e1"). Zlib OR Apache-2.0 OR MIT. `MPMediaItem` with `block2`, `objc2-app-kit`
+# and `objc2-core-foundation` binds `MPMediaItemArtwork`'s `initWithBoundsSize:requestHandler:`.
+objc2-media-player = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem"] }
+# Already in the tree at these versions (tauri, wry, cpal); named directly with only the
+# features `media.rs` uses: the `MainThreadMarker`, the handlers' blocks, the info dictionary,
+# the app icon and its size.
+objc2 = "0.6.4"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSDictionary", "NSString", "NSValue", "NSObject"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 
 [profile.release]
 codegen-units = 1

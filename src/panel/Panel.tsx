@@ -4,7 +4,7 @@
 // of it: the height comes from Rust (decision D1 — "expanded" is a function of the display), and
 // a click on the control is a report, answered by the next `panel:layout`.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { onPanelLayout, panel, stations } from "../api";
+import { audio, onPanelLayout, onStation, panel, stations } from "../api";
 import type { Country, MapHit, PanelLayout, PanelView, Station } from "../api";
 import { measureMode, measureParam, report, reportBlocks } from "../measure";
 import About from "./About";
@@ -71,8 +71,9 @@ export default function Panel() {
   // getter's answer on mount is generation 0 and is not a show, so the mount request is the
   // effects' own first run, not a bump.
   const [showGeneration, setShowGeneration] = useState(0);
-  // The station the page last asked to play — what Now Playing names. View state: whether
-  // anything is audible is Rust's (`playback:state`), and a preset play clears this.
+  // The station playing, as Rust holds it (M5e1, decision 5): mirrored from `playback:station`
+  // and the `get_station` mount read, never set by a click — a media key can play a station with
+  // the popover closed. Whether anything is audible is Rust's too (`playback:state`).
   const [playing, setPlaying] = useState<Station | null>(null);
   // The favourites' uuids, from Rust, so the transport's ★ shows the playing station's state;
   // re-read on every show and after every toggle. `storeGeneration` tells the list.
@@ -109,6 +110,28 @@ export default function Panel() {
     // An emit before this listener existed was dropped by Tauri, so ask for the current layout.
     panel.getLayout().then(apply);
     return () => {
+      unlisten.then((un) => un());
+    };
+  }, []);
+
+  useEffect(() => {
+    // The getter can answer after an event it predates; an event is always the newer, so the
+    // getter's answer is taken only while no event has arrived. `get_station` cannot fail in
+    // Rust, only the IPC can; then Now Playing waits for the next `playback:station`.
+    let cancelled = false;
+    let evented = false;
+    const unlisten = onStation((s) => {
+      evented = true;
+      setPlaying(s);
+    });
+    audio.getStation().then(
+      (s) => {
+        if (!cancelled && !evented && s !== null) setPlaying(s);
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
       unlisten.then((un) => un());
     };
   }, []);
@@ -248,7 +271,6 @@ export default function Panel() {
             showGeneration={showGeneration}
             storeGeneration={storeGeneration}
             playingUuid={playing?.uuid ?? null}
-            onPlay={setPlaying}
             filter={dotFilter}
             onClearFilter={() => setDotFilter(null)}
             measureRep={mountRep}

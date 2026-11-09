@@ -5,10 +5,13 @@
 //! * **Channel message, returns `Result`** — [`play`], [`set_volume`]. Send an
 //!   `AudioCommand` and return immediately; the `Result` reports argument validation only.
 //!   The playback outcome arrives later as a `playback:*` event, never as a return value.
+//!   `play` takes the whole `Station` and goes through [`crate::now_playing::play`], which
+//!   stores it as the station playing and emits `playback:station` (M5e1).
 //! * **Channel message, returns `()`** — [`pause`], [`resume`], [`stop`]. Nothing to
 //!   validate.
-//! * **Direct engine access, never touches the channel** — [`set_eq_gain`], [`get_eq`],
-//!   [`get_playback_state`]. These reach into `AudioEngine` through the shared handle.
+//! * **Direct access, never touches the channel**: [`set_eq_gain`], [`get_eq`] and
+//!   [`get_playback_state`] reach into `AudioEngine` through the shared handle; [`get_station`]
+//!   reads the shell's `NowPlaying` holder.
 //!   `set_eq_gain` stores an atomic into `EqGains` that the audio thread picks up at its
 //!   next frame-boundary check; the getters read a snapshot synchronously. Because gains
 //!   live on the handle rather than in the command stream, they are *not* ordered against
@@ -20,34 +23,27 @@
     reason = "tauri::command takes State and AppHandle by value"
 )]
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use ondar_audio::{AudioCommand, BAND_COUNT, EqBand, MAX_GAIN_DB, PlaybackState};
+use ondar_stations::model::Station;
 
 use crate::AppState;
 use crate::error::OndarError;
 
-/// `bitrate_kbps`: the station record's, or absent — the engine sizes its prefetch from it
-/// (M3b commit 6: `max(one decoder read, RING_SECONDS × bitrate / 8)`).
+/// The station's `bitrate_kbps` sizes the engine's prefetch (M3b commit 6: `max(one decoder
+/// read, RING_SECONDS × bitrate / 8)`). M5e1: the whole `Station`, so Rust holds the station
+/// playing and the page mirrors it (`playback:station`, `get_station`).
 #[tauri::command]
-pub fn play(
-    state: State<'_, AppState>,
-    url: String,
-    station_id: String,
-    bitrate_kbps: Option<u32>,
-) -> Result<(), OndarError> {
-    if url.trim().is_empty() {
+pub fn play(app: AppHandle, station: Station) -> Result<(), OndarError> {
+    if station.url.trim().is_empty() {
         return Err(OndarError::InvalidArgument("url is empty".into()));
     }
     // F1 instrument 7a (0.1.1): the page's command reached the shell. The engine logs its own
     // receipt when it takes the command off the channel (`Engine::play`); the pair separates
     // "the page never sent it" from "the shell sent it and the engine never took it".
-    log::info!("play command station_id={station_id}");
-    state.engine.send(AudioCommand::Play {
-        url,
-        station_id,
-        bitrate_kbps,
-    });
+    log::info!("play command station_id={}", station.uuid);
+    crate::now_playing::play(&app, station);
     Ok(())
 }
 
@@ -102,4 +98,11 @@ pub fn get_eq(state: State<'_, AppState>) -> Vec<EqBand> {
 #[tauri::command]
 pub fn get_playback_state(state: State<'_, AppState>) -> PlaybackState {
     state.engine.state()
+}
+
+/// The station playing (M5e1): the last one a play named in this process, or `None` before the
+/// first. The page's mount read, as `get_playback_state` is for `playback:state`.
+#[tauri::command]
+pub fn get_station(state: State<'_, AppState>) -> Option<Station> {
+    state.now_playing.station()
 }

@@ -34,6 +34,8 @@ mod error;
 mod log_rate_limit;
 mod log_sink;
 mod map;
+mod media;
+mod now_playing;
 mod sync;
 // The dev-only measurement harness: debug builds only, so a release binary has no trace of it.
 #[cfg(debug_assertions)]
@@ -56,6 +58,8 @@ pub struct AppState {
     /// The station directory (`ondar-stations`): every method answered by its own DB thread,
     /// none blocking the caller. Started in `setup`, once the data directory is known.
     pub stations: StationsHandle,
+    /// The station playing (M5e1, decision 5): the last one a play named, beside the engine.
+    pub now_playing: now_playing::NowPlaying,
 }
 
 /// Event names — the only strings the webview needs to know.
@@ -64,6 +68,10 @@ pub mod events {
     pub const STREAM_INFO: &str = "playback:stream_info";
     pub const METADATA: &str = "playback:metadata";
     pub const RECONNECT: &str = "playback:reconnect";
+    /// The station playing (M5e1): payload `Station`, emitted on every play through
+    /// `now_playing::play`, the page's or a media key's. Never "cleared": after Stop the
+    /// popover's Play replays it. The page asks `get_station` on mount for the same value.
+    pub const STATION: &str = "playback:station";
     /// What the popover page renders (`panel::PanelLayout`: pane, height state, size in points,
     /// expandable) — emitted on every effective show and every resize, so the page mirrors it and
     /// never decides it. The page asks `get_panel_layout` on mount for the same value. M2d;
@@ -239,7 +247,11 @@ pub fn run() {
                 }
             };
             let stations_for_events = stations.clone();
-            app.manage(AppState { engine, stations });
+            app.manage(AppState {
+                engine,
+                stations,
+                now_playing: now_playing::NowPlaying::default(),
+            });
 
             map::setup(app);
             panel::setup(app)?;
@@ -247,6 +259,12 @@ pub fn run() {
             #[cfg(debug_assertions)]
             measure::setup(app.handle());
             updater::setup(app.handle());
+            // Media keys (M5e1): `setup` runs on the main thread (measured, Step 0 C). Nothing
+            // is published until the first play (A1).
+            match objc2::MainThreadMarker::new() {
+                Some(mtm) => media::register(mtm, app.handle()),
+                None => log::warn!("media keys not registered: setup ran off the main thread"),
+            }
 
             let handle = app.handle().clone();
             // The OS refused a thread: the app cannot run (.claude/rules/rust.md, the exemption).
@@ -262,6 +280,11 @@ pub fn run() {
                     // Reconnecting attempt) are not an idle/playing flip, so only a flip swaps.
                     let mut tray_playing = false;
                     for ev in engine_events {
+                        // Now Playing (M5e1): a state or a title changes what it shows, once a
+                        // play has named a station (A1); one owned hop to the main thread.
+                        if let Some(info) = handle.state::<AppState>().now_playing.on_event(&ev) {
+                            media::publish(&handle, info);
+                        }
                         let result = match ev {
                             EngineEvent::State(s) => {
                                 let playing = matches!(s, PlaybackState::Playing);
@@ -298,6 +321,7 @@ pub fn run() {
             commands::audio::set_eq_gain,
             commands::audio::get_eq,
             commands::audio::get_playback_state,
+            commands::audio::get_station,
             commands::panel::panel_escape,
             commands::panel::get_panel_layout,
             commands::panel::panel_set_expanded,

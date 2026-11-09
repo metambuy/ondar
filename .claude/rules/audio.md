@@ -26,7 +26,12 @@ in ONDAR.md under the section named.
    reconnect path (`Reconnecting`, one backoff attempt), or ends it in `Error { code: Device }`
    if nothing opens; a default change needs nothing (the stream follows). 7d's stall WARN (5 s
    `Playing` with nothing pulled) also reopens, once per episode (`stall_reopen`'s latch, cleared
-   only by a pull). ("0.1.2: decisions")
+   only by a pull). ("0.1.2: decisions") **Closed after 30 s with no session** (`Idle`, `Error`;
+   `OUTPUT_IDLE_CLOSE`, elapsed time, not ticks), so an idle Ondar holds no sleep assertion;
+   the next play reopens it. **A session `Paused` for 30 s is ended** (`cancel_session` before
+   the slot empties) and its `Play` parked; it stays `Paused`, and Resume replays it as a fresh
+   session (`Connecting` → `Buffering` → `Playing`); Stop or a play forgets it. The close writes
+   no state. (M5e1)
 2. **Ondar owns all reconnects** (own `Backoff` + a fresh `stream::open()`): stream-download's
    internal reconnect splices byte 0 onto a live mount. The one bounded exception: it stays live
    during the decoder build. ("Reconnect ownership and stream timeouts")
@@ -43,7 +48,8 @@ in ONDAR.md under the section named.
    keep the filter state (no click). No makeup gain; the soft-clip (identity below 0.95, ceiling
    1.0) is the last operation inside `Equalizer` and cannot be bypassed.
 7. **The click endpoint, once per session**, on the first `Playing` of the session a `play` began
-   (`EngineEvent::Started`). Write, liveness and flag are decided under one lock. **Every session
+   (`EngineEvent::Started`). A resume's replay after a paused close is a resume: no `Started`
+   (`begin_session(…, true)`). Write, liveness and flag are decided under one lock. **Every session
    event goes through `SessionCtx::emit` → `Shared::emit_from`** (generation-gated); a new event
    must choose, and an event from the audio path (M5's spectrum) must **not** take that lock.
 8. **Prefetch from bitrate** (`stream::prefetch_for`): the knee `RING_SECONDS × bitrate / 8`,

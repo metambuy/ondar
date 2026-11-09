@@ -19,9 +19,14 @@ station id to the stations service). No boundary type is typed by hand in TS: ts
 
 | Group | Commands | Return |
 |---|---|---|
-| Channel message | `play(url, stationId, bitrateKbps)`, `set_volume` | `Result` = argument validation only, never a playback outcome (that is an event) |
+| Channel message | `play(station)`, `set_volume` | `Result` = argument validation only, never a playback outcome (that is an event) |
 | Channel message | `pause`, `resume`, `stop` | `()` |
-| Direct engine access | `set_eq_gain`, `get_eq`, `get_playback_state` | `set_eq_gain` validates; the getters return data |
+| Direct engine access | `set_eq_gain`, `get_eq`, `get_playback_state`, `get_station` | `set_eq_gain` validates; the getters return data |
+
+**The station playing is Rust's** (M5e1): `play(station)` goes through `now_playing::play`, which
+stores the `Station` and sends its `Play` under one lock, then emits `playback:station`; a media
+key takes the same path. The page mirrors `playback:station` and `get_station` (on mount, `null`
+before the first play) and never names the row it clicked.
 
 EQ changes are **not** ordered against `play`/`stop`: gains live on the engine handle and outlive
 any session.
@@ -57,6 +62,7 @@ its launch check found; a success never answers (the app restarts), a failure is
 error, logged at ERROR). The page never checks the feed, compares versions or restarts.
 
 **Events:** `playback:state`, `playback:stream_info`, `playback:metadata`, `playback:reconnect`,
+`playback:station` (a `Station`, on every play; never cleared),
 `stations:updated` and `countries:updated` (`outcome` `landed` → re-request; `failed` → keep the
 list, clear `refreshing`, do **not** re-request), `recents:updated`, `panel:layout` (a
 `PanelLayout`; the page mirrors it and computes none of it), `map:changed` (no payload: pull),

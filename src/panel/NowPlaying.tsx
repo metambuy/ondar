@@ -1,9 +1,9 @@
 // Now Playing (M3b 1c, the product shape): the station's name, the live ICY title, and one line
 // of `flag · codec · bitrate` with the playback state where it is not simply "playing" — an
 // error as text a person can act on, clamped to three lines (the full text is in Rust's log).
-// Mirrors Rust's `playback:*` events; the station is the one the page last asked to play (view
-// state, handed down by `Panel`), never a parallel model of what is audible: Rust says whether
-// anything is playing, this only names it.
+// Mirrors Rust's `playback:*` events; the station is the one Rust holds as playing
+// (`playback:station`, mirrored by `Panel`, M5e1), never a parallel model of what is audible:
+// Rust says whether anything is playing, this only names it.
 //
 // The title line is reserved at body height while no title has arrived (decision 5, F4): a
 // title arriving mid-stream must not move the blocks below it, at the cost of 16 pt of the list
