@@ -411,7 +411,8 @@ Built on `m5e1` 2026-11-05/06 (ONDAR.md, "M5e1: media keys and Now Playing"); re
 
 **Exit:** F8 and Control Centre work with the popover hidden; F8 after Stop plays; Ondar claims no
 Now Playing before its first play; no sleep assertion 40 s after Stop or Pause. Met by hand on the
-debug bundle 2026-11-06 (H1a–H1f, H2); the release bundle's checks are 0.1.3's.
+debug bundle 2026-11-06 (H1a–H1f, H2); on the release bundle (0.1.3) 2026-11-06 (H1a, H1c, H1e,
+H2) and 2026-11-09 (G-a, G-b): met (ONDAR.md, "Release 0.1.3").
 
 ### M5e — system integration and states (the rest)
 
@@ -461,7 +462,8 @@ state has a test.
 
 **Audience:** strangers, through a public link. Apple Silicon only.
 
-**In:** M5e1 (0.1.3); Ondar pausing itself when the previous output device no longer exists,
+**In:** M5e1 (0.1.3, released 2026-11-09); `rusqlite` 0.41, SQLite 3.54 (RUSTSEC-2026-0459; done on
+`main`, `fab9b9b`, ships with the next release); Ondar pausing itself when the previous output device no longer exists,
 on every output type, a manual switch playing on (own Step 0: is the device list current when
 `DeviceChanged` arrives; next after 0.1.3); M5a; M5b; the empty, loading, offline and error states (from M5e); the
 periodic update check and page-error forwarding (from M6); zoom controls that show their limits

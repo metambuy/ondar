@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-11-09 ("Release 0.1.3" after "M5e1: media keys and Now Playing": 0.1.3 released and merged, spike 5, the 9b table, G as read, G-a and G-b, RUSTSEC-2026-0459 and `fab9b9b`; two lessons for the release steps). Previously 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -2063,6 +2063,85 @@ after the open returns; the other 7 M5e1 opens had none. Not clustered at opens 
 **Reviews.** OCR v1.12.13: the engine chunks (commits 1–3), one finding, wrong (no fix); commits 4
 and 5, six findings: e4-1, e4-2, e4-4, e5-1 fixed in one commit, test first for e4-1 (a rejecting
 `get_station`); e4-3 and e5-2 wrong. Counts at the fix commit: 509 + 64.
+
+**Release 0.1.3 (2026-11-09).** Tag `v0.1.3` (annotated, `b3b912c`; its message is only "Ondar
+0.1.3", left as it is) = `5bcb6a4` (`chore(release): 0.1.3`), built, checked and drafted on `m5e1`
+2026-11-06, published 2026-11-09. Merged to `main` with `--no-ff` (`a3b9bce`, tag `m5e1-done`). The
+merge tree is `v0.1.3`'s plus `fab9b9b` (rusqlite 0.41, below): `git diff v0.1.3 main` shows only
+`src-tauri/Cargo.lock` and `crates/ondar-stations/Cargo.toml`. Records:
+`_handover/v0.1.3/{build.log,dmg-notarize.log,checks.out,cn-release.log,feed-check.out,release-0.1.3/}`.
+The steps were 0.1.2's, with the built `.app` run from the bundle folder for the checks (spike 5
+needed 0.1.2 still installed).
+
+- **Build** (`pnpm tauri build --bundles app,dmg`): compile 1 m 20 s; the binary's `codesign`
+  took 46 s. The `.app` was notarised in **27 s** (submission
+  `b8a6ae52-d945-4380-af47-db60c6e5fbf4`); `Stapling app...` (15:04:34Z), the DMG, then
+  `Ondar.app.tar.gz` (15:05:02).
+- **Checks, all exit 0.** The `.app` and the `.app` extracted from the tar.gz: `codesign --verify
+  --deep --strict`, `spctl` (`Notarized Developer ID`), `stapler validate`. The DMG after its own
+  notarisation (`f40e271e-ebbc-471b-bbee-3e85cc0c2f71`, Accepted in 21 s) and `stapler staple`:
+  codesign, `spctl -a -t open`, stapler validate.
+- **SHA-256.**
+  - `Ondar.app.tar.gz` (7 291 769 B): `c2a1395d7b2811007fdfa71252471192adb38f5b7ee28a345b9d4e66ffc231ea`.
+  - `Ondar.app.tar.gz.sig` (420 B): `02cc227a3b28622369c6194b19f8c87bb6498d52248c987a80ea00128d9ed18a`.
+  - `Ondar_0.1.3_aarch64.dmg`, stapled (7 533 796 B): `d8aa8f576074c62ac065ed22ac758d541ebafad159137b137670bba68b57caf4`.
+    Before stapling it was `7d72b88b…de73`, not shipped.
+- **Installed size:** **11 636 KiB** (`du -sk`), against 0.1.2's 11 620 (+16 KiB, under 5 %).
+- **The dSYM:** UUID `DF72F25E-A65A-326A-AF5B-4FF85A2A3984` (arm64), equal to the binary's;
+  `_handover/v0.1.3/ondar-0.1.3.dSYM` (46 804 KiB), zipped to `ondar-0.1.3.dSYM.zip` (10 902 646 B)
+  for Martín's private Drive, `Ondar/dSYM/`.
+- **CrabNebula Cloud.** Release **`01M6RPBDRWMJNBHNXA0QQ9HESJ`**: DMG asset
+  `01M6RPBEM9ZBKKMYDJR6PGBNBM` (`dmg-aarch64`), updater asset `01M6RPBKED5DQ4A3ADSBWATS6C`
+  (`darwin-aarch64`), its signature equal to the `.sig`. `cn release publish` → `Published`,
+  `pubDate` 2026-11-09T11:17:10.613Z. No channel.
+- **Feed check** (2026-11-09): `…/darwin-aarch64/0.1.0`, `…/0.1.1` and `…/0.1.2` → **200**,
+  `version "0.1.3"`, the signature equal to the `.sig`, the served asset hashing to the tar.gz;
+  `…/0.1.3` → **204**; the public DMG link → 302 → `Ondar_0.1.3_aarch64.dmg`, **the stapled DMG,
+  byte for byte**. Log grep for `@icloud`, `AuthKey`, `cn_`: 0, 0, 0.
+- **Spike 5** (`_handover/v0.1.3/ondar.2026-11-09-spike5.log`): 0.1.2 started 11:19:08Z, `update
+  available: 0.1.3 (running 0.1.2)` at 11:19:14, `update installed; restarting` at 11:19:34, `Ondar
+  0.1.3 starting` at 11:19:35 (`/Applications/Ondar.app`), `no update: 0.1.3 is current` at
+  11:19:40. The first real showing of F2's blue button, "Update to 0.1.3".
+- **The release checks (9b), the signed `.app` from the bundle folder, 2026-11-06**
+  (`_handover/v0.1.3/ondar.2026-11-06-checks-release.log`):
+
+  | # | Check | Result |
+  |---|---|---|
+  | H1a | F8 ×4; F7 ×2, F9 ×2 | pass: F8 toggled, heard; F7 and F9 no `remote` line |
+  | H1c | Control Centre | pass: station name, ICY title, the Ondar icon on the signed bundle, next and previous greyed, no scrubber |
+  | H1e | Stop, F8 at once | pass: replayed the stopped station; Music did not open |
+  | H2 | Stop, 40 s, `pmset`, F8; play, Pause, 40 s, `pmset`, F8 | pass: no Ondar assertion after either; replay after Stop, resume after Pause, no `reconnecting` (part 1 redone: a popover play and Stop had reopened the output before the F8) |
+  | G | Audio Pro playing, speaker off, then F8 | see below |
+
+  WARN lines: the known kinds only, 0 Xrun.
+- **G as read.** Every disconnect paused Ondar (AVRCP Stop, or the one Pause `mediaremoted`
+  broadcasts after the ACL drop). F8 then belongs to whichever app is Now Playing, so a player that
+  resumes by itself takes it, correctly: MediaMonkey resumed after the 15:33:51 disconnect and the
+  F8 at 15:34:07 went to it alone (G2). G's own resumes (15:31:17, 15:32:24, 15:33:28) came after
+  `ACL connected`, so G had not shown a resume with the device gone.
+- **G-a and G-b, the re-run** (same stapled `.app`, MediaMonkey quit; `_handover/v0.1.3/`
+  `ondar.2026-11-0{6,9}-G-rerun.log`, `unified-log-G{a,b1,b2}-*.log`). **G-a** (2026-11-06): ACL
+  drop 16:49:41.931, `output followed the default device`, `remote cmd=pause`; F8 7 s later, `remote
+  cmd=toggle`, a live resume on the Mac's speakers (no replay, no new open). **G-b** (2026-11-09):
+  ACL drop 11:06:24.872, pause 11:06:25.328, `output closed after 30 s paused` 11:06:55.374; F8
+  11:13:09, `resume replays … after the paused close`, `output opened sample_rate=48000` (the Mac's
+  speakers, against the Audio Pro's 44 100), no `reconnecting`, heard. G-b's first try was a
+  second G-a (the F8 27 s after the pause, before the close). WARN lines: the two known kinds only.
+- **RUSTSEC-2026-0459** (CVE-2026-119375, issued 2026-11-09, after 0.1.3's CI): SQLite before
+  3.54.0 can return uninitialised page-cache memory for a database and `-wal` pair whose page sizes
+  differ; local, needs files a less trusted party wrote. **0.1.3 shipped with SQLite 3.53.2**
+  (`libsqlite3-sys` 0.38.2, `rusqlite` 0.40.2, `bundled`); `cargo deny check` failed on the first
+  merge attempt. Fixed on the branch before the merge by `fab9b9b` (`rusqlite` 0.41.1,
+  `libsqlite3-sys` 0.39.1, `SELECT sqlite_version()` = 3.54.1, no source change); **the next
+  release carries 3.54.x**. No 0.1.4 of its own (the chat, 2026-11-09): Ondar opens only its own
+  cache, in a folder only the same user can write. No `ignore` in `deny.toml`.
+
+**Release steps: two lessons from 0.1.3 (2026-11-09).**
+1. **A device-change check passes only when the resume happens with the device gone.** Read
+   `ACL connected` (bluetoothd, the unified log) against the resume's time: G's three resumes all
+   followed a reconnect, so they proved nothing about the Mac's speakers.
+2. **Quit other players (MediaMonkey, Music) for the by-hand key checks.** One that resumes by
+   itself becomes Now Playing and takes F8, which is correct behaviour and a failed check.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
@@ -4224,12 +4303,15 @@ to path-scoped `.claude/rules/*.md`, loaded only when a matching file is read or
    to `main` the same day — see "Release 0.1.1".
    **0.1.2 released 2026-11-03** (Cloud release `01M6GPF5ATTPNT3GASVJE06YA7`, tag `v0.1.2`), merged
    to `main` the same day (`60b60c8`) — see "Release 0.1.2".
+   **0.1.3 released 2026-11-09** (Cloud release `01M6RPBDRWMJNBHNXA0QQ9HESJ`, tag `v0.1.3`), merged
+   to `main` the same day (`a3b9bce`, tag `m5e1-done`); see "Release 0.1.3".
 5. **M5 — re-cut 2026-10-19 into five phases**, in order: M5a the list (cap + search), M5b one
    row per station, M5d audio UI (EQ, presets, spectrum), M5c the map at zoom, M5e system
    integration and states. Tray animation, onboarding and coordinate inference parked — see
    "M5 re-cut (2026-10-19)" and BUILD_PLAN.
    **M5e1** (media keys play/pause, Now Playing, the output close) pulled forward 2026-11-04, built
-   on `m5e1` 2026-11-05/06; see "M5e1: media keys and Now Playing". **Beta cut 2026-11-06:**
+   on `m5e1` 2026-11-05/06, shipped as 0.1.3 and merged 2026-11-09 (`m5e1-done`); see "M5e1:
+   media keys and Now Playing". **Beta cut 2026-11-06:**
    strangers through a public link; M5d out (BUILD_PLAN, "Beta").
 6. **M6 — Signing, notarisation, DMG.**
 

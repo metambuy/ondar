@@ -40,8 +40,8 @@ ESLint holds the line (`eslint.config.js`, the boundary block): `fetch`, `XMLHtt
 | M2 | Tray + NSPanel popover | done, `m2a-done` … `m2d-done` |
 | M3 | Stations, cache, country/station UI | done, `m3a-done`, `m3b-done`, `defect-a-done`, `m3c-done`, `defect-b-done` |
 | M4 | The drawn map | done: M4a `m4a-done`, M4b `m4b-done` (2026-10-07), M4c `m4c-done` (2026-10-12). **M4 complete** |
-| M6-lite | Signed, notarised build for testers | released 2026-10-14 (v0.1.0), merged 2026-10-16; 0.1.1 released and merged 2026-10-27; 0.1.2 released and merged 2026-11-03; exit pending testers, no tag yet |
-| M5 | Five phases (re-cut 2026-10-19): M5a list (cap + search), M5b one row per station, M5d audio UI, M5c map at zoom, M5e system integration and states. M5e1 (media keys play/pause, Now Playing, the output close) pulled forward 2026-11-04; beta cut 2026-11-06, M5d out (BUILD_PLAN, "Beta") | M5e1 built on `m5e1` (0.1.3 next); then the lost-device pause, then M5a |
+| M6-lite | Signed, notarised build for testers | released 2026-10-14 (v0.1.0), merged 2026-10-16; 0.1.1 released and merged 2026-10-27; 0.1.2 released and merged 2026-11-03; 0.1.3 released and merged 2026-11-09; exit pending testers, no tag yet |
+| M5 | Five phases (re-cut 2026-10-19): M5a list (cap + search), M5b one row per station, M5d audio UI, M5c map at zoom, M5e system integration and states. M5e1 (media keys play/pause, Now Playing, the output close) pulled forward 2026-11-04; beta cut 2026-11-06, M5d out (BUILD_PLAN, "Beta") | M5e1 done, `m5e1-done` (0.1.3, 2026-11-09); next the lost-device pause, then M5a |
 | M6 | Signing, notarisation, DMG | |
 
 One milestone per session. Do not start the next milestone's work early, and never leave one with
