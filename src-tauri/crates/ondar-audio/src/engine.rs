@@ -4234,9 +4234,13 @@ mod session_tests {
     /// paused by something cpal does silently). **What it pins:** the stall WARN also reopens the
     /// output, once; the restarted session on the new output, still dead (the halt holds for
     /// every open), warns again but is **not** reopened again, so a dead system cannot loop; and
-    /// the output pulling again ends the episode. **Fails if** the stall never reopens (commit 4's
-    /// tree: one open, recorded in the commit), or if the latch resets with the session's ring
-    /// (a reopen on every WARN: a third open).
+    /// the output pulling again ends the episode. Since beta item 1 (A6) the backstop reopen goes
+    /// through the owner (`Reopen`): the same UID, opened only after the old guard's 300 ms drop
+    /// (`prev_closed_at_open`), the session re-attached (`Buffering` then `Playing`, no
+    /// `Reconnecting`). **Fails if** the stall never reopens (commit 4's tree: one open, recorded
+    /// in the commit), if the latch resets with the session's ring (a reopen on every WARN: a
+    /// third open), or if the reopen is made before the drop (mutation: `Action::Open` beside
+    /// `Release` in the `Open` + `Reopen` cell: the second open sees the first guard alive).
     #[test]
     fn a_stalled_output_is_reopened_once_per_episode() {
         capture_logs();
@@ -4244,6 +4248,7 @@ mod session_tests {
         let halted = Arc::new(AtomicBool::new(false));
         let opener = TestOpener::new(halted.clone());
         let out = opener.handles();
+        *lock(&out.drop_delay) = Duration::from_millis(300);
         let name = "ondar-audio:test-7d-reopen";
         let (tx, ev_rx) = spawn_engine_with(name, opener, TEST_OUTPUT_STALL_TICKS);
         play(&tx, &server.url, "st-7d-reopen");
@@ -4259,10 +4264,24 @@ mod session_tests {
             eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 2),
             "the stall did not reopen the output"
         );
-        assert!(
-            await_event(&ev_rx, GUARD, |ev| *ev
-                == EngineEvent::State(PlaybackState::Playing)),
-            "the restarted session never attached"
+        assert_eq!(
+            out.prev_closed_at_open(1),
+            Some(true),
+            "the stall reopened before the old unit was dropped"
+        );
+        assert_eq!(
+            out.opened(),
+            vec![TEST_OUT.to_string(), TEST_OUT.to_string()]
+        );
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Buffering),
+            "the reopen did not show Buffering"
+        );
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Playing),
+            "the re-attached session never played"
         );
         assert!(
             eventually(GUARD, || thread_lines(name, "output stalled").len() >= 2),
