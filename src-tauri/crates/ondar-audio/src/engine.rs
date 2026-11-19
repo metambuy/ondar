@@ -39,7 +39,7 @@ use crate::build::{
 };
 use crate::eq::{EqGains, Equalizer};
 use crate::icy::IcyReader;
-use crate::output::owner::{Action, Env, OutputState, Then, decide_output};
+use crate::output::owner::{Action, Env, OutputState, decide_output};
 use crate::output::{
     DeviceOpener, OpenError, Opened, OutputEvent, OutputMsg, OutputOpener, OutputSignal,
 };
@@ -332,6 +332,21 @@ impl SessionCtx {
         self.cancel.load(Ordering::Relaxed)
     }
 
+    /// The output for an attach: the slot's pair, waited for while the owner is switching and the
+    /// session is not cancelled (polled every 20 ms; the wait is the owner's, at most the fresh
+    /// device's 3 s plus the drop). `None` once the slot is empty with nothing coming, or on cancel.
+    fn await_output(&self) -> Option<(Mixer, OutputFormat)> {
+        loop {
+            if let Some(pair) = lock(&self.output).clone() {
+                return Some(pair);
+            }
+            if self.cancelled() || !self.shared.output_switching.load(Ordering::Relaxed) {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Ends the session: its flag, its download, its generation, and its `Player`, dropped here,
     /// which silences it within 5 ms of output (rodio applies `stopped` in `periodic_access`) and
     /// never waits (F1).
@@ -466,6 +481,11 @@ struct Engine {
     output_rx: Receiver<OutputMsg>,
     /// The message of the last `Action::Fail` applied, read back by [`Self::ensure_output`].
     output_failed: Option<String>,
+    /// Events produced while the owner's actions are applied (`open_output`'s `Opened`, a
+    /// `pause()`'s `Pause`), handled after them, in order (OCR a3-4/8: `feed` is not re-entrant).
+    output_queue: VecDeque<OutputEvent>,
+    /// Set while [`Self::feed`] drains the queue.
+    feeding: bool,
     /// The owner's wait for a device that appeared at the change, and the pause before the one
     /// retry of a failed start; on the engine so a test harness can shorten them.
     fresh_wait: Duration,
@@ -561,6 +581,8 @@ impl Engine {
             output_tx,
             output_rx,
             output_failed: None,
+            output_queue: VecDeque::new(),
+            feeding: false,
             fresh_wait: crate::output::owner::FRESH_DEVICE_WAIT,
             retry_delay: crate::output::owner::RETRY_DELAY,
             output_slot: Arc::new(Mutex::new(None)),
@@ -610,17 +632,18 @@ impl Engine {
             self.tick();
         }
         self.stop();
-        self.close_output();
+        self.close_output(true);
     }
 
-    /// Close the output, at shutdown or after [`OUTPUT_IDLE_CLOSE`] with no session: the slot
-    /// emptied (no attach may use it), the owner told (`IdleClose`: an open output is released,
-    /// a pending open cancelled), and the watcher stopped (review R8: an idle Ondar polls
-    /// nothing). The next `play`'s `ensure_output` opens again and starts the watcher again.
-    fn close_output(&mut self) {
+    /// Close the output, at shutdown (`join`) or after [`OUTPUT_IDLE_CLOSE`] with no session: the
+    /// slot emptied (no attach may use it), the owner told (`IdleClose`: an open output is
+    /// released, a pending open cancelled), and the watcher stopped (review R8: an idle Ondar polls
+    /// nothing; OCR a3-1: the idle close only tells it, the shutdown waits for it). The next
+    /// `play`'s `ensure_output` opens again and starts the watcher again.
+    fn close_output(&mut self, join: bool) {
         *lock(&self.output_slot) = None;
         self.feed(OutputEvent::IdleClose);
-        self.opener.stop_watch();
+        self.opener.stop_watch(join);
     }
 
     /// Release the open output off the engine thread (0.1.2 decision 3): the device's dispose
@@ -677,7 +700,7 @@ impl Engine {
         match close {
             Close::Keep => {}
             Close::Release => {
-                self.close_output();
+                self.close_output(false);
                 log::info!(
                     "output closed after {} s with no session",
                     self.output_idle_close.as_secs()
@@ -688,7 +711,7 @@ impl Engine {
                 // the `None` slot (R1). No state write: it stays `Paused`, `shared.paused` set.
                 self.cancel_session();
                 self.parked = self.live_play.take();
-                self.close_output();
+                self.close_output(false);
                 log::info!(
                     "output closed after {} s paused; the session ended, resume replays it",
                     self.output_idle_close.as_secs()
@@ -966,34 +989,32 @@ impl Engine {
         }
     }
 
-    /// One event through the owner's table, its actions applied in order. `previous_present`
-    /// is asked of the opener for the device held or waited for; the current default for the
-    /// cells that open it.
+    /// One event through the owner's table, its actions applied in order; the host is asked only
+    /// by the cells that need it (`Host`, the chat's C2). An event produced while the actions run
+    /// (`open_output`'s `Opened`, a `pause()`'s `Pause`) is queued and handled after them, so no
+    /// action runs inside another's (OCR a3-4/8).
     fn feed(&mut self, event: OutputEvent) {
-        let held = match &self.owner {
-            OutputState::Open { uid }
-            | OutputState::Waiting { uid, .. }
-            | OutputState::Releasing {
-                then: Then::Open { uid, .. },
-                ..
-            } => Some(uid.clone()),
-            OutputState::Releasing { .. } | OutputState::Closed { .. } => None,
-        };
-        let env = Env {
-            now: Instant::now(),
-            previous_present: held.as_deref().is_none_or(|uid| self.opener.present(uid)),
-            current_default: self.opener.default_output(),
-            fresh_wait: self.fresh_wait,
-            retry_delay: self.retry_delay,
-        };
-        let (state, actions) = decide_output(&self.owner, event, &env);
-        self.owner = state;
-        self.shared
-            .output_switching
-            .store(self.owner.is_switching(), Ordering::Relaxed);
-        for action in actions {
-            self.apply(action);
+        self.output_queue.push_back(event);
+        if self.feeding {
+            return;
         }
+        self.feeding = true;
+        while let Some(event) = self.output_queue.pop_front() {
+            let env = Env {
+                now: Instant::now(),
+                fresh_wait: self.fresh_wait,
+                retry_delay: self.retry_delay,
+            };
+            let (state, actions) = decide_output(&self.owner, event, &env, &*self.opener);
+            self.owner = state;
+            self.shared
+                .output_switching
+                .store(self.owner.is_switching(), Ordering::Relaxed);
+            for action in actions {
+                self.apply(action);
+            }
+        }
+        self.feeding = false;
     }
 
     fn apply(&mut self, action: Action) {
@@ -1462,7 +1483,10 @@ fn run_session(
                 // The engine replaces the output before it sets `restart`, so a restart asked
                 // before this read is already answered by it.
                 ctx.restart.store(false, Ordering::Relaxed);
-                let Some((mixer, output)) = lock(&ctx.output).clone() else {
+                // An empty slot while the owner is switching (an idle close's drop in flight, a
+                // wait for a fresh device; OCR a3-5) is not "closed": the open is coming, so wait
+                // for it. An empty slot otherwise means the session is being ended.
+                let Some((mixer, output)) = ctx.await_output() else {
                     *lock(&ctx.ring) = None;
                     return;
                 };
@@ -2624,6 +2648,11 @@ mod session_tests {
         watch_tx: Arc<Mutex<Option<mpsc::Sender<OutputMsg>>>>,
         watch_starts: Arc<AtomicUsize>,
         watch_stops: Arc<AtomicUsize>,
+        /// The stops that joined the thread (the shutdown's), OCR a3-1.
+        watch_joins: Arc<AtomicUsize>,
+        /// Every `current_default()` and `present()` the engine asked (the chat's C2: none on a
+        /// `Tick`).
+        host_calls: Arc<AtomicUsize>,
     }
 
     /// The scripted host: one output `test-out` as the default unless a test says otherwise.
@@ -2654,6 +2683,8 @@ mod session_tests {
                 watch_tx: Arc::new(Mutex::new(None)),
                 watch_starts: Arc::new(AtomicUsize::new(0)),
                 watch_stops: Arc::new(AtomicUsize::new(0)),
+                watch_joins: Arc::new(AtomicUsize::new(0)),
+                host_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -2672,6 +2703,8 @@ mod session_tests {
                 watch_tx: self.watch_tx.clone(),
                 watch_starts: self.watch_starts.clone(),
                 watch_stops: self.watch_stops.clone(),
+                watch_joins: self.watch_joins.clone(),
+                host_calls: self.host_calls.clone(),
             }
         }
     }
@@ -2691,6 +2724,8 @@ mod session_tests {
         watch_tx: Arc<Mutex<Option<mpsc::Sender<OutputMsg>>>>,
         watch_starts: Arc<AtomicUsize>,
         watch_stops: Arc<AtomicUsize>,
+        watch_joins: Arc<AtomicUsize>,
+        host_calls: Arc<AtomicUsize>,
     }
 
     impl TestOutput {
@@ -2774,6 +2809,14 @@ mod session_tests {
         fn watch_stops(&self) -> usize {
             self.watch_stops.load(Ordering::SeqCst)
         }
+
+        fn host_calls(&self) -> usize {
+            self.host_calls.load(Ordering::SeqCst)
+        }
+
+        fn watch_joins(&self) -> usize {
+            self.watch_joins.load(Ordering::SeqCst)
+        }
     }
 
     /// The guard of a test open: its drop waits `delay` (a device's dispose, 74–289 ms measured)
@@ -2787,6 +2830,13 @@ mod session_tests {
         fn drop(&mut self) {
             thread::sleep(self.delay);
             self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl crate::output::owner::Host for TestOpener {
+        fn current_default(&self) -> Option<String> {
+            self.host_calls.fetch_add(1, Ordering::SeqCst);
+            lock(&self.devices).default.clone()
         }
     }
 
@@ -2837,11 +2887,8 @@ mod session_tests {
             })
         }
 
-        fn default_output(&self) -> Option<String> {
-            lock(&self.devices).default.clone()
-        }
-
         fn present(&self, uid: &str) -> bool {
+            self.host_calls.fetch_add(1, Ordering::SeqCst);
             lock(&self.devices).present.iter().any(|p| p == uid)
         }
 
@@ -2853,9 +2900,12 @@ mod session_tests {
             }
         }
 
-        fn stop_watch(&mut self) {
+        fn stop_watch(&mut self, join: bool) {
             if lock(&self.watch_tx).take().is_some() {
                 self.watch_stops.fetch_add(1, Ordering::SeqCst);
+                if join {
+                    self.watch_joins.fetch_add(1, Ordering::SeqCst);
+                }
             }
         }
     }
@@ -3378,12 +3428,14 @@ mod session_tests {
         drop(tx);
     }
 
-    /// Beta item 1, A3 (review R8): the watcher runs from the first open to the idle close, and
-    /// again from the next open to the shutdown. **What it pins:** one start after the first
-    /// play; one stop at the idle close (300 ms here) after Stop; a second start at the next play;
-    /// a second stop when the engine ends. **Fails if** the idle close leaves the watcher polling
-    /// (an idle Ondar waking every 100 ms) or the shutdown does not stop it, or if a second open
-    /// does not start it again.
+    /// Beta item 1, A3 (review R8) and F2 (OCR a3-1): the watcher runs from the first open to the
+    /// idle close, and again from the next open to the shutdown; the idle close only tells it to
+    /// stop, the shutdown joins it. **What it pins:** one start after the first play; one stop at
+    /// the idle close (300 ms here) after Stop, with no join; a second start at the next play; a
+    /// second stop, joined, when the engine ends. **Fails if** the idle close leaves the watcher
+    /// polling (an idle Ondar waking every 100 ms), if it joins there (the engine thread held for a
+    /// period plus a poll), if the shutdown does not stop and join it, or if a second open does
+    /// not start it again.
     #[test]
     fn the_watcher_runs_from_the_first_open_to_the_idle_close() {
         let server = tone_server();
@@ -3415,6 +3467,7 @@ mod session_tests {
             eventually(GUARD, || out.watch_stops() == 1 && out.closed(0)),
             "the idle close did not stop the watcher"
         );
+        assert_eq!(out.watch_joins(), 0, "the idle close joined the watcher");
         play(&tx, &server.url, "st-watch-two");
         assert!(
             await_event(&ev_rx, GUARD, |ev| matches!(
@@ -3430,9 +3483,47 @@ mod session_tests {
         );
         drop(tx);
         assert!(
-            eventually(GUARD, || out.watch_stops() == 2),
-            "the shutdown did not stop the watcher"
+            eventually(GUARD, || out.watch_stops() == 2 && out.watch_joins() == 1),
+            "the shutdown did not stop and join the watcher"
         );
+    }
+
+    /// F2 (OCR a3-4/8): `feed` is not re-entrant: an event produced while the owner's actions are
+    /// applied is handled after them. **What it pins:** on an engine driven directly, a `Tick` in
+    /// `Waiting` whose open succeeds ends `Open` with the session's re-attach asked, and the
+    /// engine's queue is empty and not draining afterwards. **Fails if** `open_output`'s `Opened`
+    /// is fed in place (mutation: `self.feeding = false` before the loop: the nested drain leaves
+    /// `feeding` false while the outer loop still runs, so a second nested event would run its
+    /// actions inside the outer action's; here the owner would still end `Open`, which is why the
+    /// pin is the queue's state, checked with the invariant `feeding == false` at rest).
+    #[test]
+    fn feed_drains_a_queue_instead_of_recursing() {
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let shared = test_ctx(ev_tx).shared;
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let mut engine = Engine::with_opener(shared, "Ondar/test", Box::new(opener));
+        engine.owner = OutputState::Waiting {
+            uid: TEST_OUT.into(),
+            until: Instant::now(),
+            retry: false,
+            last: None,
+        };
+        engine.feed(OutputEvent::Tick);
+        assert_eq!(
+            engine.owner,
+            OutputState::Open {
+                uid: TEST_OUT.into()
+            }
+        );
+        assert_eq!(out.opens.load(Ordering::SeqCst), 1);
+        assert!(engine.output_queue.is_empty(), "events left in the queue");
+        assert!(!engine.feeding, "the drain did not finish");
+        assert!(
+            !engine.shared.output_switching.load(Ordering::Relaxed),
+            "the flag was left set after Open"
+        );
+        engine.opener.stop_watch(true);
     }
 
     /// Beta item 1, A3 (review R7): every open logs its duration. **What it pins:** one `output
@@ -3467,6 +3558,99 @@ mod session_tests {
             "{lines:?}"
         );
         assert!(lines[1].contains("uid=bt"), "{lines:?}");
+        drop(tx);
+    }
+
+    /// The chat's C2 (2026-11-19): while the owner waits for a fresh device, the engine's 100 ms
+    /// `Tick` asks the host nothing (`default_output_device()` took 35–191 ms during exactly that
+    /// window, R2; the poll belongs to the watcher's thread). **What it pins:** the host-call count
+    /// does not move across 500 ms of `Waiting`. **Fails if** `Env` is filled eagerly for every
+    /// event (A3's `feed`: two host calls per tick).
+    #[test]
+    fn a_tick_while_waiting_asks_the_host_nothing() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-lazy-env", opener, |e| {
+            e.fresh_wait = Duration::from_secs(2);
+        });
+        play(&tx, &server.url, "st-lazy-env");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.default_changed("hp", true);
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Buffering),
+            "the switch did not show Buffering"
+        );
+        // Releasing → Dropped → Waiting settles within a few ticks; then the window.
+        thread::sleep(Duration::from_millis(300));
+        let before = out.host_calls();
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            out.host_calls(),
+            before,
+            "the engine asked the host during the wait"
+        );
+        drop(tx);
+    }
+
+    /// OCR a3-5 (2026-11-19): a Play that lands while the idle close's drop is in flight finds
+    /// the slot empty; the decode thread must wait for the open, not end silently. **What it
+    /// pins:** with a 1 s drop and a 300 ms idle close, Stop then Play inside the drop ends in
+    /// `Started` for the second station on a second open. **Fails if** the attach arm treats the
+    /// empty slot as "closed" while the owner is switching (A3: the session ends with no state, no
+    /// `Started` within the guard).
+    #[test]
+    fn a_play_during_the_idle_closes_drop_still_plays() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        *lock(&out.drop_delay) = Duration::from_secs(1);
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-play-in-drop", opener, |e| {
+            e.output_idle_close = Duration::from_millis(300);
+        });
+        play(&tx, &server.url, "st-in-drop-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the first station never played"
+        );
+        tx.send(AudioCommand::Stop).expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Idle)),
+            "no Idle after Stop"
+        );
+        // The idle close fires (the watcher stops with it); its drop runs for 1 s.
+        assert!(
+            eventually(GUARD, || out.watch_stops() == 1),
+            "the idle close did not fire"
+        );
+        assert!(
+            !out.closed(0),
+            "the drop already finished; the window was missed"
+        );
+        play(&tx, &server.url, "st-in-drop-two");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { station_id } if station_id == "st-in-drop-two"
+            )),
+            "the second station never played: the session ended on the empty slot"
+        );
+        assert_eq!(out.opens.load(Ordering::SeqCst), 2);
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "nothing heard on the second output"
+        );
         drop(tx);
     }
 
