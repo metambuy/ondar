@@ -63,10 +63,25 @@ impl OutputSignal {
     }
 }
 
-/// An open that failed: `message` is what the `Error { code: Device }` shows.
+/// An open that failed: `message` is what the `Error { code: Device }` shows (the chat's text,
+/// review 2026-11-19), `cause` what the log says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OpenError {
     pub(crate) message: String,
+    pub(crate) cause: String,
+}
+
+impl OpenError {
+    /// The one user-facing text for a device that did not start, whatever the cause: the device's
+    /// name (its UID when the name cannot be read), what to do, and that Play is the way back.
+    pub(crate) fn did_not_start(device: &str, cause: impl Into<String>) -> Self {
+        Self {
+            message: format!(
+                "No sound on {device}: the output did not start. Reconnect it or pick another output, then press Play."
+            ),
+            cause: cause.into(),
+        }
+    }
 }
 
 /// How the engine reaches the output devices. Production is cpal through rodio; the tests script
@@ -279,17 +294,16 @@ impl OutputOpener for DeviceOpener {
     fn open(&mut self, uid: &str, signal: OutputSignal) -> Result<Opened, OpenError> {
         let host = rodio::cpal::default_host();
         let Some(device) = host.device_by_id(&device_id(uid)) else {
-            return Err(OpenError {
-                message: format!("the output device {uid} is gone"),
-            });
+            return Err(OpenError::did_not_start(
+                uid,
+                "device_by_id found no such device",
+            ));
         };
         let name = device
             .description()
             .map_or_else(|_| uid.to_string(), |d| d.name().to_string());
         let mut sink = DeviceSinkBuilder::from_device(device)
-            .map_err(|e| OpenError {
-                message: format!("{name}: {e}"),
-            })?
+            .map_err(|e| OpenError::did_not_start(&name, e.to_string()))?
             .with_buffer_size(rodio::cpal::BufferSize::Default)
             .with_error_callback(move |e| {
                 log_output_error(&e);
@@ -302,9 +316,7 @@ impl OutputOpener for DeviceOpener {
                 }
             })
             .open_stream()
-            .map_err(|e| OpenError {
-                message: format!("{name}: {e}"),
-            })?;
+            .map_err(|e| OpenError::did_not_start(&name, e.to_string()))?;
         sink.log_on_drop(false);
         let format = OutputFormat {
             channels: sink.config().channel_count(),

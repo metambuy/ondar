@@ -1130,9 +1130,9 @@ impl Engine {
                 self.opener.start_watch(self.output_tx.clone());
                 self.feed(OutputEvent::Opened { uid: uid.into() });
             }
-            Err(OpenError { message }) => {
+            Err(OpenError { message, cause }) => {
                 log::warn!(
-                    "output open failed uid={uid} after {} ms: {message}",
+                    "output open failed uid={uid} after {} ms: {cause}",
                     started.elapsed().as_millis()
                 );
                 self.feed(OutputEvent::OpenFailed {
@@ -2745,7 +2745,7 @@ mod session_tests {
         opened: Arc<Mutex<Vec<String>>>,
         /// Whether the previous open's guard had been dropped when each open was made.
         prev_closed_at_open: Arc<Mutex<Vec<bool>>>,
-        fail: Arc<AtomicBool>,
+        fail: Arc<AtomicUsize>,
         signal: Arc<Mutex<Option<OutputSignal>>>,
         loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
         delay: Arc<Mutex<Duration>>,
@@ -2780,7 +2780,7 @@ mod session_tests {
                 opens: Arc::new(AtomicUsize::new(0)),
                 opened: Arc::new(Mutex::new(Vec::new())),
                 prev_closed_at_open: Arc::new(Mutex::new(Vec::new())),
-                fail: Arc::new(AtomicBool::new(false)),
+                fail: Arc::new(AtomicUsize::new(0)),
                 signal: Arc::new(Mutex::new(None)),
                 loud: Arc::new(Mutex::new(Vec::new())),
                 delay: Arc::new(Mutex::new(Duration::ZERO)),
@@ -2826,7 +2826,7 @@ mod session_tests {
         opens: Arc<AtomicUsize>,
         opened: Arc<Mutex<Vec<String>>>,
         prev_closed_at_open: Arc<Mutex<Vec<bool>>>,
-        fail: Arc<AtomicBool>,
+        fail: Arc<AtomicUsize>,
         signal: Arc<Mutex<Option<OutputSignal>>>,
         loud: Arc<Mutex<Vec<Arc<AtomicU64>>>>,
         delay: Arc<Mutex<Duration>>,
@@ -2842,6 +2842,11 @@ mod session_tests {
     }
 
     impl TestOutput {
+        /// The next `n` opens fail (A5: one failure is retried, two end in `Error { Device }`).
+        fn fail_next_open(&self, n: usize) {
+            self.fail.store(n, Ordering::SeqCst);
+        }
+
         /// The open output reports its device gone (cpal's `DeviceNotAvailable`).
         fn fire_loss(&self) {
             self.fire(OutputEvent::DeviceGone);
@@ -2962,10 +2967,14 @@ mod session_tests {
                 .last()
                 .is_none_or(|c| c.load(Ordering::SeqCst));
             lock(&self.prev_closed_at_open).push(prev_closed);
-            if self.fail.load(Ordering::SeqCst) {
-                return Err(OpenError {
-                    message: format!("No sound on {uid}: no output device (test)"),
-                });
+            if self
+                .fail
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                    (n > 0).then(|| n.saturating_sub(1))
+                })
+                .is_ok()
+            {
+                return Err(OpenError::did_not_start(uid, "no output device (test)"));
             }
             *lock(&self.signal) = Some(signal);
             let loud = Arc::new(AtomicU64::new(0));
@@ -3256,7 +3265,7 @@ mod session_tests {
             )),
             "the station never played"
         );
-        out.fail.store(true, Ordering::SeqCst);
+        out.fail.store(usize::MAX, Ordering::SeqCst);
         out.fire_loss();
         assert!(
             await_event(&ev_rx, GUARD, |ev| matches!(
@@ -4017,6 +4026,120 @@ mod session_tests {
         let replaced = thread_lines(name, "output replaced");
         assert_eq!(replaced.len(), 1, "{replaced:?}");
         assert!(replaced[0].contains("reconnecting live"), "{replaced:?}");
+        drop(tx);
+    }
+
+    /// Beta item 1, A5 (plan §6): a failed start is retried once, after `retry_delay`, with the
+    /// old unit gone. **What it pins:** a switch whose first open fails plays after the retry
+    /// (three opens, `Playing`, the new output heard), with no `Error`. **Fails if** the first
+    /// failure is final (mutation: `Fail` in the `!retry` arm: an `Error` and two opens) or the
+    /// retry is not delayed (the third open inside `retry_delay`).
+    #[test]
+    fn a_failed_start_is_retried_once() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-retry-once", opener, |e| {
+            e.retry_delay = Duration::from_millis(500);
+        });
+        play(&tx, &server.url, "st-retry-once");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.fail_next_open(1);
+        let changed_at = Instant::now();
+        out.default_changed("bt", false);
+        assert!(
+            eventually(GUARD, || out.opens.load(Ordering::SeqCst) == 3),
+            "no retry after the failed start"
+        );
+        assert!(
+            changed_at.elapsed() >= Duration::from_millis(500),
+            "the retry came before retry_delay"
+        );
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Buffering),
+            "the switch did not show Buffering"
+        );
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Playing),
+            "the retried open did not end in Playing"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "nothing heard after the retry"
+        );
+        drop(tx);
+    }
+
+    /// Beta item 1, A5 (plan §6, the review's text): a second failure ends the session in
+    /// `Error { code: Device }` naming the device, never `Playing`, and a Play afterwards opens
+    /// again. **What it pins:** two failed opens → the Error with "No sound on bt: the output did
+    /// not start. Reconnect it or pick another output, then press Play.", the slot empty (a Play
+    /// then makes a fourth open and plays). **Fails if** the retry is unbounded (a third open on
+    /// `bt` before the Error), if the message does not name the device, or if the state after the
+    /// failures is `Playing`.
+    #[test]
+    fn two_failed_starts_end_in_a_device_error_naming_the_device() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-retry-fail", opener, |e| {
+            e.retry_delay = Duration::from_millis(100);
+        });
+        play(&tx, &server.url, "st-retry-fail");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.fail_next_open(2);
+        out.default_changed("bt", false);
+        let message = std::cell::RefCell::new(None);
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| match ev {
+                EngineEvent::State(PlaybackState::Playing) => {
+                    panic!("Playing after the failed starts")
+                }
+                EngineEvent::State(PlaybackState::Error {
+                    code: ErrorCode::Device,
+                    message: m,
+                }) => {
+                    *message.borrow_mut() = Some(m.clone());
+                    true
+                }
+                _ => false,
+            }),
+            "no Device error after two failed starts"
+        );
+        assert_eq!(
+            message.borrow().as_deref(),
+            Some(
+                "No sound on bt: the output did not start. Reconnect it or pick another output, then press Play."
+            )
+        );
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            3,
+            "the retry was not bounded"
+        );
+        play(&tx, &server.url, "st-retry-fail-two");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { station_id } if station_id == "st-retry-fail-two"
+            )),
+            "a Play after the error did not play"
+        );
+        assert_eq!(out.opens.load(Ordering::SeqCst), 4);
         drop(tx);
     }
 
