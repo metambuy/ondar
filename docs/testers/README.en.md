@@ -18,7 +18,7 @@ Country list with search, station list, play and pause, volume, favourites and r
 
 ## What is not there yet (no need to report these)
 
-No equalizer controls or spectrum display. The next and previous media keys do nothing yet, and the volume keys change the Mac's volume, not Ondar's slider. If a Bluetooth speaker or headphones lose their connection, Ondar may keep playing through the Mac's speakers; that fix is next. No sleep timer. The menu bar icon does not animate while playing. Some streams will not play: HE-AAC v2 and Opus streams, and some stations whose stream is simply down. When a stream fails, the app says so; if it does not, tell me.
+No equalizer controls or spectrum display. The next and previous media keys do nothing yet, and the volume keys change the Mac's volume, not Ondar's slider. If a Bluetooth speaker or headphones lose their connection, Ondar may keep playing through the Mac's speakers; that fix is next. Plugging headphones into the jack while playing pauses the sound for about three seconds, then it continues in them. No sleep timer. The menu bar icon does not animate while playing. Some streams will not play: HE-AAC v2 and Opus streams, and some stations whose stream is simply down. When a stream fails, the app says so; if it does not, tell me.
 
 ## What I want to hear
 

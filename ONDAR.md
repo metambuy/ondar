@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-11-09 ("Release 0.1.3" after "M5e1: media keys and Now Playing": 0.1.3 released and merged, spike 5, the 9b table, G as read, G-a and G-b, RUSTSEC-2026-0459 and `fab9b9b`; two lessons for the release steps). Previously 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-11-19 ("Beta item 1 A: the output owner" after "M5e1: media keys and Now Playing": F9, decisions D1–D4, the Step 0 of 2026-11-11/19, the owner's design, the stack row). Previously 2026-11-09 ("Release 0.1.3" after "M5e1: media keys and Now Playing": 0.1.3 released and merged, spike 5, the 9b table, G as read, G-a and G-b, RUSTSEC-2026-0459 and `fab9b9b`; two lessons for the release steps). Previously 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -137,7 +137,7 @@ tester notices the playing state — see "M5 re-cut (2026-10-19)".
 | Vibrancy | **Tauri's own `set_effects`** + `PanelBuilder::transparent(true)` *and* `with_window(\|w\| w.transparent(true))` | `window-vibrancy` is **not** a direct dependency: Tauri wraps it. Applying to the real `OndarPanel` **measured by view tree on 2026-09-15; confirmed by eye 2026-09-16 over a bright, busy backdrop (Martín).** The spike's measurement was on a window already converted back to a `TaoWindow` — see "The spike measured a reverted `TaoWindow`". |
 | Map rendering | **Inline SVG in the webview, drawing exactly the paths Rust sends** | Projection (spherical LAEA, authalic radius), framing, insets, level choice, clipping, station gathering and hit-testing all run in Rust (`ondar-map`); the webview is a renderer. Leaflet and the tile pyramid are gone (2026-09-24/30). |
 | Map data | **Natural Earth 10m admin 0 + admin 1, tag v5.1.2, pinned by SHA-256**, built at build time into one bundled resource (a global scale ladder of six rungs, 1.5/3/6/12/24/48 km/pt (48 since M4c, neighbours only), each unit once per level, simplified to a measured ≤ 0.25 pt) | Public domain, offline, no API key. Credited in About anyway. Station coordinates are radio-browser's `geo` only (decision M2, 2026-09-30); no city set in M4. |
-| Audio | **Rust**: `stream-download` (`on_progress` → `Arrivals`, the arrival clock) → `ClockedReader` (the decoder's first-byte stamp) → `IcyReader` → [`AdtsReader`, HTTP `audio/aac*` and `audio/x-aac*` only] → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. HLS (ADTS-AAC media playlists, M3c) enters as its own source, `HlsSource`, the stream `stream-download` reads. `.claude/rules/audio.md` carries the authoritative chain. |
+| Audio | **Rust**: `stream-download` (`on_progress` → `Arrivals`, the arrival clock) → `ClockedReader` (the decoder's first-byte stamp) → `IcyReader` → [`AdtsReader`, HTTP `audio/aac*` and `audio/x-aac*` only] → `rodio 0.22` `Decoder` (Symphonia inside) → **`rtrb` ring buffer** → per-session converter to the sink's rate and channels (rodio's `UniformSourceIterator`; defect A, 2026-09-24) → EQ `Source` adapter → `Player` → `MixerDeviceSink` (**the output pinned by UID**, cpal 0.18.2's `HalOutput` unit through `device_by_id` + `from_device`; our own follow through a 100 ms watcher thread and the pure `decide_output`; beta item 1 A, 2026-11-19) | Real EQ, ICY metadata, no CORS, survives webview reload. rodio 0.22 terms: *Sink→Player*, *OutputStream→MixerDeviceSink*. Symphonia is rodio's default decoder, not a separate stage. **Decoding happens on its own thread** and blocks on a stalled read, so buffering supervision lives on the engine thread (100 ms poll of shared `RingStats`, not the decode loop). Stall recovery is layered: `stream-download` re-requests after `retry_timeout` (default 5 s — set explicitly, do not rely on the default) of no new data; the `reqwest` `read_timeout` (20 s) is a backstop for a reconnect that connects and then hangs; the session-level `Backoff` covers failed connects. **`read_timeout` must stay > `retry_timeout`** — see "Reconnect ownership and stream timeouts". Resume hysteresis is measured as of 2026-09-11: the dwell is latched on entry to `Buffering` (it was previously being cancelled mid-wait), and an engine-level watchdog bounds `Buffering` with no decode progress. HLS (ADTS-AAC media playlists, M3c) enters as its own source, `HlsSource`, the stream `stream-download` reads. `.claude/rules/audio.md` carries the authoritative chain. |
 | Equalizer | **Rust**, `biquad` peaking filters as a `rodio::Source` adapter | Genuine DSP; unit-testable without audio hardware |
 | Spectrum | **Rust**, `rustfft`, pushed to UI as events | UI never touches audio |
 | Station API | **Rust** `reqwest` client for radio-browser.info; **`dns-lookup`** 4.0.2 for discovery (`getaddrinfo` + `getnameinfo` of `all.api.radio-browser.info`, through macOS) | radio-browser's primary documented method; std has only the forward half. Replaced `hickory-resolver` in 0.1.2, which queried DNS servers itself (F3); see "0.1.2: decisions", 6 |
@@ -2142,6 +2142,94 @@ needed 0.1.2 still installed).
    followed a reconnect, so they proved nothing about the Mac's speakers.
 2. **Quit other players (MediaMonkey, Music) for the by-hand key checks.** One that resumes by
    itself becomes Now Playing and takes F8, which is correct behaviour and a failed check.
+
+### Beta item 1 A: the output owner (2026-11-11 to 2026-11-19)
+
+Records in `_handover/` (gitignored, on this Mac): F9's record
+`feedback/F9-jack-output-silent-2026-11-11.md` and its unified-log slices (`feedback/F9-logs/`), the
+controls `last-report-2026-11-11.md` (C1, C2), the Step 0 `f9-step0-report-2026-11-11.md` with its
+probe and logs (`f9-step0/`), the plan `output-owner-plan.md`, its review
+`output-owner-plan-review-2026-11-19.md`, the A3 read `output-owner-a3-read-2026-11-19.md`, the OCR
+triage `output-owner-ocr-triage-a1-a3-2026-11-19.md`, the reports `last-report-2026-11-19.md`.
+Branch `lost-device` from `main` `62f2c00`. Merge A of beta item 1; merge B (the lost-device pause and
+a pause from any source, D2/D3) follows on the same branch.
+
+**F9 (found 2026-11-11, Part 0 of the lost-device plan run, on the installed 0.1.3).** Wired
+headphones plugged into the jack while a station played: 3 of 4 follows and 5 of 5 fresh opens on
+`BuiltInHeadphoneOutputDevice` pulled nothing while the state said `Playing`; Stop and Play, a new
+station and F1's stall reopen did not cure it; unplugging did. `afplay` from a new process played 3 of
+3 with the headphones in; the device alone 3 of 3. **The cause, read in coreaudiod's log:** on a
+plug-in the default-following AUHAL (cpal's `DefaultOutput` unit) moves its IOProc to the headphones
+~105 ms after publication, the codec's first power-up (`'idle'→'ppar'`) takes ~1.5 s, and
+`'ppar'→'pwrm'` fails `'what'` for any start begun inside ~1.2 s of publication; the error never
+reaches cpal (only a `DeviceChanged` ~40 ms later), and every later open on that device in the same
+process reports `setPlayState Started` with no server `StartIO` until the failed unit is destroyed.
+Accepted as ours to work around (macOS 26.6.2's codec losing to the first starter); an Apple
+Feedback report is Martín's. rodio #271 (open since 2020) is the same symptom unexplained; no fix to
+buy.
+
+**Decisions.** D1 (Martín, 2026-11-11): no Core Audio listener of our own, no `unsafe` in
+`ondar-audio`; measured sufficient (the polled `default_output_device().id()` saw 30 of 30 changes
+within 60 ms). D2, D3 (merge B). **D4 (the chat, from the Step 0; Martín's `/approve` 2026-11-19):**
+the engine owns `{uid, output}`, opened pinned by UID (cpal's `HalOutput`, no follow), the default
+polled off the engine thread; a switch releases the old output, waits for its drop, waits 3 s for a
+device that appeared at the change (none for one that existed), then opens the new default by UID;
+a failed start retries once, then `Error { Device }` naming the device, never `Playing`; the stall
+WARN's reopen takes the same path. **Martín (2026-11-19 ~09:15): the delay after a switch is
+accepted** (bytes kept, behind live, a 30 s cap).
+
+**Measured (the Step 0, 2026-11-11 and 2026-11-19; `f9-step0-report-2026-11-11.md`).** F9 reproduced
+3 of 3 in a 150-line probe. In-process, nothing recovers while the failed unit lives (new by-UID
+streams at 0, 2.5 and 29 s: 0 pulls; Ondar's own order, open-then-drop, dead); drop first, then open
+recovers (heard 3 of 3). A start inside ~1.2 s of publication fails; at ≥ 2 s the codec powers up in
+0.1–1.5 ms and starts (2 s 3 of 3, 3 s 1 of 1, 1 s 0 of 2: **3 s is the margin**, one Mac, one build,
+the power-up itself 1.5 s). A start that succeeds while the speakers' stream still runs is inaudible
+(one codec serves both), so the old stream must go first. Bluetooth (MOMENTUM 4) 3 of 3 and AirPlay
+3 of 3 start within 25–130 ms of the IOProc move: F9 is the jack's codec only. The 12:33 AirPlay-leave
+`Start failed` is `'nope'` on a device being removed, another family. **R1 (2026-11-19):** the rule
+"wait only for a device absent from the previous poll's list or appeared within 3 s" over 22 opens, 0
+failures, all heard: jack in ×4 (3.07 s), jack out ×3 and speakers ↔ Audio Pro ×7 (at once, 0.13–0.27 s
+to the first pull), AirPlay ×1 and MOMENTUM 4 connecting ×2 (~3 s). **R2:** with no stream open
+`default_output_device()` took 35–68 ms on the plug-in's tick, never otherwise; with a stream, to 191 ms
+during a Bluetooth connect: the poll belongs to its own thread.
+
+**Built (`34b050d`…, merge A on `lost-device`, 2026-11-19).** `output.rs`: the opener seam
+(`open(uid)`, `present`, `start_watch`/`stop_watch`, the `Host` supertrait for the lazy
+`current_default`), `DeviceOpener` by UID with cpal's callbacks mapped (`DeviceNotAvailable` →
+`DeviceGone`; `StreamInvalidated`, a nominal-rate change that cpal answers by pausing the stream, read
+in cpal 0.18.2 `host/coreaudio/macos/mod.rs:170-181`, `:224-228` → `Reopen`), the `DefaultWatcher`
+(100 ms, a pure `WatchState::observe`: the first poll seeds and reports nothing; `fresh` = absent from
+the previous list or appeared within 3 s; run from the first open to the idle close, detached there,
+joined at shutdown), and **the owner's pure state machine** `decide_output` over `Closed { last }` /
+`Open { uid }` / `Releasing { then, last }` / `Waiting { uid, until, retry, last }` × the watcher's
+`DefaultChanged`/`NoDefault`, the stream's `DeviceGone`/`Reopen`, the drop thread's `Dropped`, `Tick`,
+`Opened`/`OpenFailed`, Play/Pause/Stop/IdleClose → actions (Release, Open, SessionBuffering,
+SessionReattach, Fail), one table test per cell. The engine: one output channel with generations
+(stale messages dropped), `feed` draining a queue (no re-entrancy), the open synchronous on the
+engine thread (9–318 ms; a failed start ~1.5 s, twice with the retry, commands queued meanwhile: review
+R7, accepted), `output_switching` holding `Buffering` in `decide_tick` and the attach arm while the
+owner is not `Open` (review R1), **the session re-attached** on the new output without a reconnect
+(`SessionCtx::reattach`: the `Player` dropped, a new ring at the new output's format, the stream and its
+buffered bytes kept; the lag estimate `away + 2 s` per switch, past `MAX_LAG` 30 s the next switch
+reconnects live: review R6), `OpenError::did_not_start` with the one user-facing text (the chat's: "No
+sound on <device>: the output did not start. Reconnect it or pick another output, then press Play.";
+"No audio output found. Connect one, then press Play." with no device at all: review R5), the stall
+reopen through the owner. Merge A keeps today's behaviour on a loss (a switch to the current default
+with no wait); merge B makes it the pause.
+
+**Reviews.** The chat's plan review (R1–R8 and an addendum: `last` kept while Closed for a Play
+inside a fresh window; the loss-paused session must still end after 30 s (B); no device at all is an
+Error; the lag bounded and stated; the synchronous open's worst case written down; the watcher's idle
+cost, met by stopping it at the idle close). OCR on A1–A3 (glm-5.2, v1.13.6; 10 findings, triaged by
+the chat) and the chat's A3 read: two fix commits before A4 (`5f7fc28` the last change carried through
+a release, Play opens the current default, a change during a close only recorded; `f54af4c` the lazy
+host, the queue, the detached watcher, the attach that waits while switching). What the OCR missed
+and the chat found: `feed` asking cpal on the engine thread for every tick while waiting (C2).
+
+**Exit (merge A):** wired headphones plugged in while playing are heard within 4 s, 4 of 4, and never
+`Playing` in silence; the by-hand table in `output-owner-plan.md` §9. **Known gaps after A:** a loss
+still plays on through the current default (B); the idle-closed Ondar's Play within ~1.2 s of a plug-in
+relies on the retry (one by-hand row); a switch leaves the audio `away + 2 s` behind live, up to 30 s.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

@@ -18,7 +18,7 @@ Lista de países con búsqueda, lista de emisoras, reproducir y pausar, volumen,
 
 ## Qué no está todavía (no hace falta que lo reportes)
 
-No hay controles de ecualizador ni visualización de espectro. Las teclas multimedia de siguiente y anterior aún no hacen nada, y las teclas de volumen cambian el volumen del Mac, no el control de Ondar. Si un altavoz o unos auriculares Bluetooth pierden la conexión, Ondar puede seguir sonando por los altavoces del Mac; es lo próximo que corregiré. No hay temporizador de apagado. El icono de la barra de menús no se anima mientras reproduce. Algunas emisiones no se reproducirán: las emisiones HE-AAC v2 y Opus, y algunas emisoras cuya emisión simplemente está caída. Cuando una emisión falla, la app lo dice; si no lo dice, dímelo.
+No hay controles de ecualizador ni visualización de espectro. Las teclas multimedia de siguiente y anterior aún no hacen nada, y las teclas de volumen cambian el volumen del Mac, no el control de Ondar. Si un altavoz o unos auriculares Bluetooth pierden la conexión, Ondar puede seguir sonando por los altavoces del Mac; es lo próximo que corregiré. Al conectar unos auriculares al jack mientras suena, el sonido se detiene unos tres segundos y luego continúa en ellos. No hay temporizador de apagado. El icono de la barra de menús no se anima mientras reproduce. Algunas emisiones no se reproducirán: las emisiones HE-AAC v2 y Opus, y algunas emisoras cuya emisión simplemente está caída. Cuando una emisión falla, la app lo dice; si no lo dice, dímelo.
 
 ## Qué quiero saber
 

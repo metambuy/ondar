@@ -463,9 +463,14 @@ state has a test.
 **Audience:** strangers, through a public link. Apple Silicon only.
 
 **In:** M5e1 (0.1.3, released 2026-11-09); `rusqlite` 0.41, SQLite 3.54 (RUSTSEC-2026-0459; done on
-`main`, `fab9b9b`, ships with the next release); Ondar pausing itself when the previous output device no longer exists,
-on every output type, a manual switch playing on (own Step 0: is the device list current when
-`DeviceChanged` arrives; next after 0.1.3); M5a; M5b; the empty, loading, offline and error states (from M5e); the
+`main`, `fab9b9b`, ships with the next release); **beta item 1 in two merges** (`_handover/output-owner-plan.md`):
+**A, the output owner** (F9, found 2026-11-11: wired headphones plugged in while playing were silent
+with the state `Playing`; the output opened pinned by UID, our own follow, a 3 s wait for a device
+that just appeared, the session re-attached without a reconnect; exit: heard within 4 s, 4 of 4,
+never `Playing` in silence; built 2026-11-19 on `lost-device`, merge pending its by-hand checks and
+review), then **B, the pause rules**: Ondar pausing itself when the previous output device no longer exists,
+on every output type, a manual switch playing on (the Step 0 of 2026-11-09: the device list is
+current at the change, 14 of 14 losses), a pause from any source in any state with a session; M5a; M5b; the empty, loading, offline and error states (from M5e); the
 periodic update check and page-error forwarding (from M6); zoom controls that show their limits
 (F7's note, from M5c); a README for strangers (what it is, screenshots, requirements, credits for
 Natural Earth and radio-browser.info, licence, privacy, how to report a problem); a `LICENSE` file
