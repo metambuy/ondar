@@ -3152,10 +3152,19 @@ mod session_tests {
         (tx, ev_rx, out)
     }
 
-    /// The events up to and including the first `State(Playing)`, in order; the hang guard is
-    /// `GUARD`. Then every event already queued behind it (a `Started` is sent under the same
-    /// lock right after its `Playing`, so it is in the channel by now).
-    fn events_through_playing(rx: &Receiver<EngineEvent>) -> Vec<EngineEvent> {
+    /// The events up to and including the first `State(Playing)`, in order, and everything the
+    /// engine sent right behind it, read up to a sentinel; the hang guard is `GUARD`. A `Started`
+    /// is sent under the session lock right after its `Playing` (`Shared::write_state`), so a
+    /// reader woken by `Playing` can run between the two sends: `try_iter()` there misses the
+    /// `Started` (M5e1 `/code-review` finding 3; shown with a 5 ms sleep between the sends, where
+    /// the two-`Started` mutation passed 6 of 6). The sentinel is a `Pause`: the engine thread's
+    /// `Paused` write takes the same lock, so it lands after any `Started` of the `Playing`. The
+    /// sentinel's own `Paused` is not returned; the engine is left `Paused`, and a caller that needs
+    /// playback sends `Resume`.
+    fn events_through_playing(
+        tx: &mpsc::Sender<AudioCommand>,
+        rx: &Receiver<EngineEvent>,
+    ) -> Vec<EngineEvent> {
         let deadline = Instant::now() + GUARD;
         let mut seen = Vec::new();
         loop {
@@ -3169,7 +3178,17 @@ mod session_tests {
                 break;
             }
         }
-        seen.extend(rx.try_iter());
+        tx.send(AudioCommand::Pause).expect("send the sentinel");
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(ev) = rx.recv_timeout(left) else {
+                panic!("no Paused sentinel within the guard: {seen:?}");
+            };
+            if ev == EngineEvent::State(PlaybackState::Paused) {
+                break;
+            }
+            seen.push(ev);
+        }
         seen
     }
 
@@ -3197,7 +3216,7 @@ mod session_tests {
         let (tx, ev_rx, out) =
             play_pause_and_close("ondar-audio:test-pause-close", &server, "st-pause-close");
         tx.send(AudioCommand::Resume).expect("send");
-        let seen = events_through_playing(&ev_rx);
+        let seen = events_through_playing(&tx, &ev_rx);
         assert_eq!(
             seen.first(),
             Some(&EngineEvent::State(PlaybackState::Connecting)),
@@ -3217,6 +3236,8 @@ mod session_tests {
             2,
             "the resume reconnected"
         );
+        // The sentinel left the replay paused; resume it, then listen on the reopened output.
+        tx.send(AudioCommand::Resume).expect("send");
         assert!(
             eventually(GUARD, || out.loud(1) > 0),
             "the resume was not heard on the reopened output"
@@ -3238,7 +3259,7 @@ mod session_tests {
             "st-pause-started",
         );
         tx.send(AudioCommand::Resume).expect("send");
-        let seen = events_through_playing(&ev_rx);
+        let seen = events_through_playing(&tx, &ev_rx);
         let started: Vec<_> = seen
             .iter()
             .filter(|ev| matches!(ev, EngineEvent::Started { .. }))
@@ -3268,7 +3289,7 @@ mod session_tests {
         tx.send(AudioCommand::Resume).expect("send");
         tx.send(AudioCommand::Stop).expect("send");
         play(&tx, &second.url, "st-pause-stop-two");
-        let seen = events_through_playing(&ev_rx);
+        let seen = events_through_playing(&tx, &ev_rx);
         assert_eq!(
             states_of(&seen),
             vec![
