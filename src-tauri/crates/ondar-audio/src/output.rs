@@ -118,17 +118,27 @@ pub(crate) struct Snapshot {
     pub(crate) outputs: Vec<String>,
 }
 
+/// How many consecutive polls must read no default output before `NoDefault` is reported (F3,
+/// 2026-11-19): during a Bluetooth → `AirPlay` switch of one speaker, `coreaudiod` moved the default
+/// through the speakers in 150 ms and one poll read none, which ended the session in a false
+/// `Error`. Three polls are ~300 ms: not a wait anyone sees, and no transport switch measured
+/// (jack, Bluetooth, `AirPlay`, 2026-11-09 to 11-19) left the default unreadable that long.
+pub(crate) const NO_DEFAULT_POLLS: u32 = 3;
+
 /// The watcher's memory between polls, pure: [`WatchState::observe`] turns a snapshot into at most
 /// one event. The first snapshot only seeds it (nothing is known, so nothing is fresh and no
-/// change is reported: the review's addendum).
+/// change is reported: the review's addendum). A poll with no readable default is held for
+/// [`NO_DEFAULT_POLLS`] before it counts.
 #[derive(Debug, Default)]
 pub(crate) struct WatchState {
     last: Option<Snapshot>,
     appeared: HashMap<String, Instant>,
+    /// Consecutive polls that read no default output.
+    none_polls: u32,
 }
 
 impl WatchState {
-    pub(crate) fn observe(&mut self, snap: Snapshot, now: Instant) -> Option<OutputEvent> {
+    pub(crate) fn observe(&mut self, mut snap: Snapshot, now: Instant) -> Option<OutputEvent> {
         let Some(last) = self.last.take() else {
             self.last = Some(snap);
             return None;
@@ -139,6 +149,15 @@ impl WatchState {
             }
         }
         self.appeared.retain(|uid, _| snap.outputs.contains(uid));
+        if snap.default_uid.is_none() {
+            self.none_polls += 1;
+            if self.none_polls < NO_DEFAULT_POLLS {
+                // Not yet believed: the last readable default stands.
+                snap.default_uid.clone_from(&last.default_uid);
+            }
+        } else {
+            self.none_polls = 0;
+        }
         let event = if snap.default_uid == last.default_uid {
             None
         } else {
@@ -1382,14 +1401,24 @@ mod watch_tests {
         );
     }
 
-    /// No output device at all is `NoDefault` (review R5), and a device that comes back after
-    /// that is reported as a fresh change. **Fails if** `None` is treated as "unchanged" or
-    /// reported as a change to an empty UID.
+    /// No output device at all is `NoDefault` (review R5), reported once it has held for
+    /// `NO_DEFAULT_POLLS` consecutive polls (F3, the by-hand checks of 2026-11-19: during a Bluetooth
+    /// → `AirPlay` switch of the same speaker, `coreaudiod` moved the default through the speakers in
+    /// 150 ms and one poll read no default, which ended the session in a false `Error`); a device
+    /// that comes back after that is a fresh change. **Fails if** one unreadable poll is reported
+    /// (mutation: `NO_DEFAULT_POLLS = 1`), if a steady absence is never reported, if `None` is
+    /// treated as "unchanged", or if it is reported as a change to an empty UID.
     #[test]
-    fn no_default_is_its_own_event() {
+    fn no_default_is_reported_only_once_it_holds() {
         let t = Instant::now();
         let mut w = WatchState::default();
         w.observe(snap(Some("spk"), &["spk"]), t);
+        // One unreadable poll inside a transport switch: nothing, and the default is still spk.
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        // A steady absence: reported on the third poll, once.
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(w.observe(snap(None, &[]), t), None);
         assert_eq!(w.observe(snap(None, &[]), t), Some(OutputEvent::NoDefault));
         assert_eq!(w.observe(snap(None, &[]), t), None);
         assert_eq!(
