@@ -336,13 +336,26 @@ pub(crate) mod owner {
     pub(crate) const NO_OUTPUT_MESSAGE: &str =
         "No audio output found. Connect one, then press Play.";
 
-    /// The watcher's last `DefaultChanged`, kept while the owner is `Closed` (review R2): a `Play`
-    /// inside a fresh device's window waits for it instead of starting inside F9's window.
+    /// The watcher's last `DefaultChanged`, kept while the owner has no open output (`Closed`,
+    /// `Releasing`, `Waiting`; review R2, OCR a2-1): a `Play` on that same device inside its fresh
+    /// window waits for it instead of starting inside F9's window. It never names the device to
+    /// open (the chat's C1: the current default is opened; `last` only supplies the wait).
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(crate) struct Change {
         pub(crate) uid: String,
         pub(crate) fresh: bool,
         pub(crate) at: Instant,
+    }
+
+    impl Change {
+        /// When `uid` may be opened: the change's `at + wait` if this is a fresh change to that
+        /// device still inside its window, else now.
+        fn not_before(last: Option<&Change>, uid: &str, now: Instant, wait: Duration) -> Instant {
+            match last {
+                Some(c) if c.fresh && c.uid == uid && now < c.at + wait => c.at + wait,
+                _ => now,
+            }
+        }
     }
 
     /// What the owner does once the releasing output's drop is reported.
@@ -360,20 +373,22 @@ pub(crate) mod owner {
     /// The owner's state. The open itself is synchronous on the engine thread (9–318 ms measured
     /// 2026-11-19), so there is no `Opening`: an `Action::Open` is answered by `Opened` or
     /// `OpenFailed` before the next event, and `Waiting { until <= now }` is "the open is due".
+    /// Every state without an open output carries `last`, the watcher's last change (OCR a2-1).
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(crate) enum OutputState {
-        /// No output. `last` is the watcher's last default change, if it is running.
+        /// No output.
         Closed { last: Option<Change> },
         /// The normal state: one output, pinned to `uid`.
         Open { uid: String },
         /// The guard is dropping off the engine thread; `Dropped` moves on to `then`.
-        Releasing { then: Then },
+        Releasing { then: Then, last: Option<Change> },
         /// The old unit is gone; `uid` is opened at `until`. `retry` marks the one retry after a
         /// failed start: a second failure is final.
         Waiting {
             uid: String,
             until: Instant,
             retry: bool,
+            last: Option<Change>,
         },
     }
 
@@ -386,6 +401,15 @@ pub(crate) mod owner {
         /// instead of `Playing`, and `decide_tick` never resumes to `Playing`.
         pub(crate) fn is_switching(&self) -> bool {
             !matches!(self, Self::Open { .. })
+        }
+
+        fn last(&self) -> Option<&Change> {
+            match self {
+                Self::Closed { last }
+                | Self::Releasing { last, .. }
+                | Self::Waiting { last, .. } => last.as_ref(),
+                Self::Open { .. } => None,
+            }
         }
     }
 
@@ -419,7 +443,8 @@ pub(crate) mod owner {
         Pause,
         /// A `stop`.
         Stop,
-        /// The tick found no session for the idle limit: the output is to be released.
+        /// The tick found no session for the idle limit: the output is to be released. The watcher
+        /// stops with it, so `last` is forgotten too.
         IdleClose,
     }
 
@@ -457,9 +482,10 @@ pub(crate) mod owner {
         pub(crate) retry_delay: Duration,
     }
 
-    /// The owner's table (plan §2, with reviews R1–R5), pure. Merge A's loss column: a device that
-    /// is gone is a switch to the current default with no wait (today's F1 outcome through the new
-    /// path); merge B replaces it with the pause (`Then::Pause`, `Action::SessionPause`).
+    /// The owner's table (plan §2, with reviews R1–R5 and the OCR triage of A1–A3), pure. Merge A's
+    /// loss column: a device that is gone is a switch to the current default with no wait (today's
+    /// F1 outcome through the new path); merge B replaces it with the pause (`Then::Pause`,
+    /// `Action::SessionPause`).
     #[allow(
         clippy::match_same_arms,
         reason = "one fall-through arm per row of the table keeps each row readable on its own"
@@ -480,21 +506,41 @@ pub(crate) mod owner {
                 Duration::ZERO
             }
         };
-        let no_output = (
-            S::closed(),
-            vec![A::Fail {
-                message: NO_OUTPUT_MESSAGE.into(),
-            }],
-        );
-        let open_now = |uid: String| {
+        let fail_no_output = || A::Fail {
+            message: NO_OUTPUT_MESSAGE.into(),
+        };
+        let last = state.last().cloned();
+        let changed = |uid: &str, fresh: bool| {
+            Some(Change {
+                uid: uid.into(),
+                fresh,
+                at: env.now,
+            })
+        };
+        // Open `uid` at `not_before`: due now, the open action comes with the state.
+        let open_at = |uid: String, not_before: Instant, last: Option<Change>| {
+            let due = not_before <= env.now;
             (
                 S::Waiting {
                     uid: uid.clone(),
-                    until: env.now,
+                    until: not_before,
                     retry: false,
+                    last,
                 },
-                vec![A::Open { uid }],
+                if due {
+                    vec![A::Open { uid }]
+                } else {
+                    Vec::new()
+                },
             )
+        };
+        // A `Play` with no open output: the current default, after its fresh window if `last` is
+        // that device's fresh change (R2, C1).
+        let play_target = || {
+            env.current_default.as_ref().map(|d| {
+                let nb = Change::not_before(last.as_ref(), d, env.now, env.fresh_wait);
+                (d.clone(), nb)
+            })
         };
         let unchanged = (state.clone(), Vec::new());
 
@@ -502,35 +548,19 @@ pub(crate) mod owner {
             // ---- Closed ---------------------------------------------------------------------
             (S::Closed { .. }, E::DefaultChanged { uid, fresh }) => (
                 S::Closed {
-                    last: Some(Change {
-                        uid,
-                        fresh,
-                        at: env.now,
-                    }),
+                    last: changed(&uid, fresh),
                 },
                 Vec::new(),
             ),
-            (S::Closed { .. }, E::NoDefault) => (S::closed(), Vec::new()),
-            (S::Closed { last }, E::Play) => {
-                let Some(uid) = last
-                    .as_ref()
-                    .map(|c| c.uid.clone())
-                    .or_else(|| env.current_default.clone())
-                else {
-                    return no_output;
-                };
-                match last {
-                    Some(c) if c.fresh && env.now < c.at + env.fresh_wait => (
-                        S::Waiting {
-                            uid,
-                            until: c.at + env.fresh_wait,
-                            retry: false,
-                        },
-                        vec![A::SessionBuffering],
-                    ),
-                    _ => open_now(uid),
+            (S::Closed { .. }, E::NoDefault | E::IdleClose) => (S::closed(), Vec::new()),
+            (S::Closed { .. }, E::Play) => match play_target() {
+                None => (S::closed(), vec![fail_no_output()]),
+                Some((uid, nb)) if nb <= env.now => open_at(uid, nb, last),
+                Some((uid, nb)) => {
+                    let (s, _) = open_at(uid, nb, last);
+                    (s, vec![A::SessionBuffering])
                 }
-            }
+            },
             (S::Closed { .. }, _) => unchanged,
 
             // ---- Open -----------------------------------------------------------------------
@@ -541,21 +571,20 @@ pub(crate) mod owner {
                 (
                     S::Releasing {
                         then: Then::Open {
-                            uid: d,
+                            uid: d.clone(),
                             not_before: env.now + wait(fresh),
                         },
+                        last: changed(&d, fresh),
                     },
                     vec![A::Release, A::SessionBuffering],
                 )
             }
             (S::Open { .. }, E::NoDefault) => (
-                S::Releasing { then: Then::Close },
-                vec![
-                    A::Release,
-                    A::Fail {
-                        message: NO_OUTPUT_MESSAGE.into(),
-                    },
-                ],
+                S::Releasing {
+                    then: Then::Close,
+                    last: None,
+                },
+                vec![A::Release, fail_no_output()],
             ),
             (S::Open { .. }, E::DeviceGone) => match env.current_default.clone() {
                 Some(d) => (
@@ -564,17 +593,16 @@ pub(crate) mod owner {
                             uid: d,
                             not_before: env.now,
                         },
+                        last: None,
                     },
                     vec![A::Release, A::SessionBuffering],
                 ),
                 None => (
-                    S::Releasing { then: Then::Close },
-                    vec![
-                        A::Release,
-                        A::Fail {
-                            message: NO_OUTPUT_MESSAGE.into(),
-                        },
-                    ],
+                    S::Releasing {
+                        then: Then::Close,
+                        last: None,
+                    },
+                    vec![A::Release, fail_no_output()],
                 ),
             },
             (S::Open { uid }, E::Reopen) => (
@@ -583,99 +611,136 @@ pub(crate) mod owner {
                         uid: uid.clone(),
                         not_before: env.now,
                     },
+                    last: None,
                 },
                 vec![A::Release, A::SessionBuffering],
             ),
-            (S::Open { .. }, E::IdleClose) => {
-                (S::Releasing { then: Then::Close }, vec![A::Release])
-            }
+            (S::Open { .. }, E::IdleClose) => (
+                S::Releasing {
+                    then: Then::Close,
+                    last: None,
+                },
+                vec![A::Release],
+            ),
             (S::Open { .. }, _) => unchanged,
 
             // ---- Releasing ------------------------------------------------------------------
-            (S::Releasing { .. }, E::DefaultChanged { uid: d, fresh }) => (
-                S::Releasing {
-                    then: Then::Open {
-                        uid: d,
-                        not_before: env.now + wait(fresh),
+            // A pending open follows the newest default (the wait restarts); a close or a pause
+            // only records the change (OCR a3-5: the slot is empty, nothing may open on it).
+            (S::Releasing { then, .. }, E::DefaultChanged { uid: d, fresh }) => match then {
+                Then::Open { .. } => (
+                    S::Releasing {
+                        then: Then::Open {
+                            uid: d.clone(),
+                            not_before: env.now + wait(fresh),
+                        },
+                        last: changed(&d, fresh),
                     },
-                },
-                vec![A::SessionBuffering],
-            ),
-            (S::Releasing { .. }, E::NoDefault) => (
-                S::Releasing { then: Then::Close },
-                vec![A::Fail {
-                    message: NO_OUTPUT_MESSAGE.into(),
-                }],
-            ),
-            (S::Releasing { then }, E::Dropped) => match then {
-                Then::Open { uid, not_before } if *not_before <= env.now => open_now(uid.clone()),
-                Then::Open { uid, not_before } => (
-                    S::Waiting {
-                        uid: uid.clone(),
-                        until: *not_before,
-                        retry: false,
+                    vec![A::SessionBuffering],
+                ),
+                Then::Pause | Then::Close => (
+                    S::Releasing {
+                        then: then.clone(),
+                        last: changed(&d, fresh),
                     },
                     Vec::new(),
                 ),
-                Then::Pause | Then::Close => (S::closed(), Vec::new()),
             },
-            (S::Releasing { then }, E::Play) => match then {
+            (S::Releasing { then, .. }, E::NoDefault) => match then {
+                Then::Open { .. } => (
+                    S::Releasing {
+                        then: Then::Close,
+                        last: None,
+                    },
+                    vec![fail_no_output()],
+                ),
+                Then::Pause | Then::Close => (
+                    S::Releasing {
+                        then: then.clone(),
+                        last: None,
+                    },
+                    Vec::new(),
+                ),
+            },
+            (S::Releasing { then, last }, E::Dropped) => match then {
+                Then::Open { uid, not_before } => open_at(uid.clone(), *not_before, last.clone()),
+                Then::Pause | Then::Close => (S::Closed { last: last.clone() }, Vec::new()),
+            },
+            (S::Releasing { then, .. }, E::Play) => match then {
                 Then::Open { .. } => unchanged,
-                Then::Pause | Then::Close => match env.current_default.clone() {
-                    Some(d) => (
+                Then::Pause | Then::Close => match play_target() {
+                    Some((uid, not_before)) => (
                         S::Releasing {
-                            then: Then::Open {
-                                uid: d,
-                                not_before: env.now,
-                            },
+                            then: Then::Open { uid, not_before },
+                            last,
                         },
                         Vec::new(),
                     ),
                     None => (
-                        S::Releasing { then: Then::Close },
-                        vec![A::Fail {
-                            message: NO_OUTPUT_MESSAGE.into(),
-                        }],
+                        S::Releasing {
+                            then: Then::Close,
+                            last: None,
+                        },
+                        vec![fail_no_output()],
                     ),
                 },
             },
-            (S::Releasing { .. }, E::Stop | E::IdleClose) => {
-                (S::Releasing { then: Then::Close }, Vec::new())
-            }
+            (S::Releasing { .. }, E::Stop) => (
+                S::Releasing {
+                    then: Then::Close,
+                    last,
+                },
+                Vec::new(),
+            ),
+            (S::Releasing { .. }, E::IdleClose) => (
+                S::Releasing {
+                    then: Then::Close,
+                    last: None,
+                },
+                Vec::new(),
+            ),
             (S::Releasing { .. }, _) => unchanged,
 
             // ---- Waiting --------------------------------------------------------------------
             (S::Waiting { uid, .. }, E::DefaultChanged { uid: d, .. }) if *uid == d => unchanged,
             (S::Waiting { .. }, E::DefaultChanged { uid: d, fresh }) => (
                 S::Waiting {
-                    uid: d,
+                    uid: d.clone(),
                     until: env.now + wait(fresh),
                     retry: false,
+                    last: changed(&d, fresh),
                 },
                 Vec::new(),
             ),
-            (S::Waiting { .. }, E::NoDefault) => no_output,
+            (S::Waiting { .. }, E::NoDefault) => (S::closed(), vec![fail_no_output()]),
             (S::Waiting { uid, until, .. }, E::Tick) if *until <= env.now => {
                 (state.clone(), vec![A::Open { uid: uid.clone() }])
             }
             (S::Waiting { uid, .. }, E::Opened { uid: o }) if *uid == o => {
                 (S::Open { uid: o }, vec![A::SessionReattach])
             }
-            (S::Waiting { uid, retry, .. }, E::OpenFailed { uid: o, message }) if *uid == o => {
+            (
+                S::Waiting {
+                    uid, retry, last, ..
+                },
+                E::OpenFailed { uid: o, message },
+            ) if *uid == o => {
                 if *retry {
-                    (S::closed(), vec![A::Fail { message }])
+                    (S::Closed { last: last.clone() }, vec![A::Fail { message }])
                 } else {
                     (
                         S::Waiting {
                             uid: o,
                             until: env.now + env.retry_delay,
                             retry: true,
+                            last: last.clone(),
                         },
                         Vec::new(),
                     )
                 }
             }
-            (S::Waiting { .. }, E::Stop | E::IdleClose) => (S::closed(), Vec::new()),
+            (S::Waiting { .. }, E::Stop) => (S::Closed { last }, Vec::new()),
+            (S::Waiting { .. }, E::IdleClose) => (S::closed(), Vec::new()),
             (S::Waiting { .. }, _) => unchanged,
         }
     }
@@ -718,20 +783,42 @@ mod owner_tests {
         }
     }
 
+    fn change(uid: &str, fresh: bool, at: Instant) -> Option<Change> {
+        Some(Change {
+            uid: uid.into(),
+            fresh,
+            at,
+        })
+    }
+
     fn releasing_open(uid: &str, not_before: Instant) -> S {
+        releasing_open_last(uid, not_before, None)
+    }
+
+    fn releasing_open_last(uid: &str, not_before: Instant, last: Option<Change>) -> S {
         S::Releasing {
             then: Then::Open {
                 uid: uid.into(),
                 not_before,
             },
+            last,
         }
     }
 
+    fn releasing(then: Then, last: Option<Change>) -> S {
+        S::Releasing { then, last }
+    }
+
     fn waiting(uid: &str, until: Instant, retry: bool) -> S {
+        waiting_last(uid, until, retry, None)
+    }
+
+    fn waiting_last(uid: &str, until: Instant, retry: bool, last: Option<Change>) -> S {
         S::Waiting {
             uid: uid.into(),
             until,
             retry,
+            last,
         }
     }
 
@@ -742,18 +829,14 @@ mod owner_tests {
     }
 
     /// Closed row. **Fails if** a default change is not kept (mutation: `Closed { last: None }` on
-    /// `DefaultChanged`: the fresh-window cell below cannot wait), if `NoDefault` keeps a stale
-    /// `last` (a later `Play` would open a device that is gone), or if a device event or a
-    /// command other than `Play` changes anything with no output to act on.
+    /// `DefaultChanged`: the fresh-window cell below cannot wait), if `NoDefault` or the idle close
+    /// keeps a stale `last`, or if a device event or a command other than `Play` changes anything
+    /// with no output to act on.
     #[test]
     fn closed_keeps_the_last_change_and_ignores_the_rest() {
         let t = Instant::now();
         let kept = S::Closed {
-            last: Some(Change {
-                uid: "hp".into(),
-                fresh: true,
-                at: t,
-            }),
+            last: change("hp", true, t),
         };
         assert_eq!(
             decide_output(&S::closed(), changed("hp", true), &env(t)),
@@ -761,6 +844,10 @@ mod owner_tests {
         );
         assert_eq!(
             decide_output(&kept, E::NoDefault, &env(t)),
+            (S::closed(), vec![])
+        );
+        assert_eq!(
+            decide_output(&kept, E::IdleClose, &env(t)),
             (S::closed(), vec![])
         );
         for ev in [
@@ -775,7 +862,6 @@ mod owner_tests {
             },
             E::Pause,
             E::Stop,
-            E::IdleClose,
         ] {
             assert_eq!(
                 decide_output(&kept, ev.clone(), &env(t)),
@@ -785,40 +871,38 @@ mod owner_tests {
         }
     }
 
-    /// Closed + Play (R2, R5). **Fails if** a Play inside a fresh device's window opens at once
-    /// (mutation: drop the `fresh && now < at + wait` arm: F9's window, the plan's exit line), if
-    /// the wait is counted from the Play instead of the change (`until` would be `now + wait`), if
-    /// a Play outside the window or on a device that existed waits, if `last` is ignored in favour
-    /// of the current default, or if no device at all is anything but `Fail` with R5's text.
+    /// Closed + Play (R2, R5, C1). **Fails if** a Play inside a fresh device's window opens at once
+    /// (mutation: drop the `fresh && …` arm of `Change::not_before`: F9's window, the plan's exit
+    /// line), if the wait is counted from the Play instead of the change (`until` would be
+    /// `now + wait`), if a Play outside the window or on a device that existed waits, or if no
+    /// device at all is anything but `Fail` with R5's text. `last` is kept into `Waiting`.
     #[test]
     fn closed_play_respects_a_fresh_device_and_no_device() {
         let t0 = Instant::now();
         let fresh = S::Closed {
-            last: Some(Change {
-                uid: "hp".into(),
-                fresh: true,
-                at: t0,
-            }),
+            last: change("spk", true, t0),
         };
         // Inside the window: wait until the change + 3 s, the session in Buffering.
         let (s, a) = decide_output(&fresh, E::Play, &env(t0 + Duration::from_secs(1)));
-        assert_eq!(s, waiting("hp", t0 + WAIT, false));
+        assert_eq!(
+            s,
+            waiting_last("spk", t0 + WAIT, false, change("spk", true, t0))
+        );
         assert_eq!(a, vec![A::SessionBuffering]);
         // At the window's edge: open now.
         let (s, a) = decide_output(&fresh, E::Play, &env(t0 + WAIT));
-        assert_eq!(s, waiting("hp", t0 + WAIT, false));
-        assert_eq!(a, vec![A::Open { uid: "hp".into() }]);
+        assert_eq!(
+            s,
+            waiting_last("spk", t0 + WAIT, false, change("spk", true, t0))
+        );
+        assert_eq!(a, vec![A::Open { uid: "spk".into() }]);
         // A device that existed: open now, whatever the time.
         let existed = S::Closed {
-            last: Some(Change {
-                uid: "hp".into(),
-                fresh: false,
-                at: t0,
-            }),
+            last: change("spk", false, t0),
         };
         let (s, a) = decide_output(&existed, E::Play, &env(t0));
-        assert_eq!(s, waiting("hp", t0, false));
-        assert_eq!(a, vec![A::Open { uid: "hp".into() }]);
+        assert_eq!(s, waiting_last("spk", t0, false, change("spk", false, t0)));
+        assert_eq!(a, vec![A::Open { uid: "spk".into() }]);
         // No change kept: the current default, now.
         let (s, a) = decide_output(&S::closed(), E::Play, &env(t0));
         assert_eq!(s, waiting("spk", t0, false));
@@ -849,14 +933,14 @@ mod owner_tests {
         assert_eq!(
             decide_output(&spk, changed("hp", true), &env(t)),
             (
-                releasing_open("hp", t + WAIT),
+                releasing_open_last("hp", t + WAIT, change("hp", true, t)),
                 vec![A::Release, A::SessionBuffering]
             )
         );
         assert_eq!(
             decide_output(&spk, changed("bt", false), &env(t)),
             (
-                releasing_open("bt", t),
+                releasing_open_last("bt", t, change("bt", false, t)),
                 vec![A::Release, A::SessionBuffering]
             )
         );
@@ -870,7 +954,7 @@ mod owner_tests {
         assert_eq!(
             decide_output(&spk, E::NoDefault, &env(t)),
             (
-                S::Releasing { then: Then::Close },
+                releasing(Then::Close, None),
                 vec![A::Release, fail_no_output()]
             )
         );
@@ -889,7 +973,7 @@ mod owner_tests {
         assert_eq!(
             decide_output(&open("hp"), E::DeviceGone, &gone),
             (
-                S::Releasing { then: Then::Close },
+                releasing(Then::Close, None),
                 vec![A::Release, fail_no_output()]
             )
         );
@@ -902,63 +986,76 @@ mod owner_tests {
         }
         assert_eq!(
             decide_output(&spk, E::IdleClose, &env(t)),
-            (S::Releasing { then: Then::Close }, vec![A::Release])
+            (releasing(Then::Close, None), vec![A::Release])
         );
     }
 
-    /// Releasing row. **Fails if** `Dropped` opens before `not_before` (mutation: `open_now`
-    /// unconditionally: "a new device waits"), if it does not open at once when the wait has
-    /// passed, if a second default change during the release does not restart the wait for the
-    /// newest default, if a `Dropped` after a Close or Pause does not end `Closed`, if a Play
-    /// while nothing was going to be opened does not schedule the current default, or if Stop
-    /// leaves a pending open for nobody.
+    /// Releasing row (OCR a2-1, a3-5). **Fails if** `Dropped` opens before `not_before`
+    /// (mutation: `due = true` in `open_at`: "a new device waits"), if it does not open at once
+    /// when the wait has passed, if a second default change during a pending open does not restart
+    /// the wait for the newest default, if a change during a close or a pause turns it into an
+    /// open (a3-5) or is not recorded (a2-1), if `Dropped` after a close or a pause loses `last`
+    /// (a2-1: a Play then starts inside F9's window), if a Play while nothing was going to be
+    /// opened does not schedule the current default after its window, or if Stop leaves a pending
+    /// open for nobody.
     #[test]
     fn releasing_moves_on_at_dropped_and_restarts_on_a_newer_default() {
         let t = Instant::now();
         let later = t + WAIT;
-        let pending = releasing_open("hp", later);
+        let hp = change("hp", true, t);
+        let pending = releasing_open_last("hp", later, hp.clone());
         assert_eq!(
             decide_output(&pending, E::Dropped, &env(t + Duration::from_millis(20))),
-            (waiting("hp", later, false), vec![])
+            (waiting_last("hp", later, false, hp.clone()), vec![])
         );
         assert_eq!(
             decide_output(&pending, E::Dropped, &env(later)),
             (
-                waiting("hp", later, false),
+                waiting_last("hp", later, false, hp.clone()),
                 vec![A::Open { uid: "hp".into() }]
             )
         );
+        let t1 = t + Duration::from_secs(1);
         assert_eq!(
-            decide_output(
-                &pending,
-                changed("bt", false),
-                &env(t + Duration::from_secs(1))
-            ),
+            decide_output(&pending, changed("bt", false), &env(t1)),
             (
-                releasing_open("bt", t + Duration::from_secs(1)),
+                releasing_open_last("bt", t1, change("bt", false, t1)),
                 vec![A::SessionBuffering]
             )
         );
         assert_eq!(
-            decide_output(
-                &pending,
-                changed("hp2", true),
-                &env(t + Duration::from_secs(1))
-            ),
+            decide_output(&pending, changed("hp2", true), &env(t1)),
             (
-                releasing_open("hp2", t + Duration::from_secs(1) + WAIT),
+                releasing_open_last("hp2", t1 + WAIT, change("hp2", true, t1)),
                 vec![A::SessionBuffering]
             )
         );
         for then in [Then::Close, Then::Pause] {
+            // A change during a close or a pause is recorded, nothing opens (a3-5).
             assert_eq!(
-                decide_output(&S::Releasing { then: then.clone() }, E::Dropped, &env(t)),
-                (S::closed(), vec![]),
+                decide_output(&releasing(then.clone(), None), changed("hp", true), &env(t)),
+                (releasing(then.clone(), hp.clone()), vec![]),
+                "{then:?}"
+            );
+            // The drop keeps `last` (a2-1).
+            assert_eq!(
+                decide_output(&releasing(then.clone(), hp.clone()), E::Dropped, &env(t)),
+                (S::Closed { last: hp.clone() }, vec![]),
+                "{then:?}"
+            );
+            // A Play while the drop is in flight: the current default, after its window if it is
+            // the fresh device (a2-1), else now.
+            let mut on_hp = env(t1);
+            on_hp.current_default = Some("hp".into());
+            assert_eq!(
+                decide_output(&releasing(then.clone(), hp.clone()), E::Play, &on_hp),
+                (releasing_open_last("hp", later, hp.clone()), vec![]),
                 "{then:?}"
             );
             assert_eq!(
-                decide_output(&S::Releasing { then }, E::Play, &env(t)),
-                (releasing_open("spk", t), vec![])
+                decide_output(&releasing(then.clone(), hp.clone()), E::Play, &env(t1)),
+                (releasing_open_last("spk", t1, hp.clone()), vec![]),
+                "{then:?}"
             );
         }
         assert_eq!(
@@ -967,11 +1064,19 @@ mod owner_tests {
         );
         assert_eq!(
             decide_output(&pending, E::Stop, &env(t)),
-            (S::Releasing { then: Then::Close }, vec![])
+            (releasing(Then::Close, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_output(&pending, E::IdleClose, &env(t)),
+            (releasing(Then::Close, None), vec![])
         );
         assert_eq!(
             decide_output(&pending, E::NoDefault, &env(t)),
-            (S::Releasing { then: Then::Close }, vec![fail_no_output()])
+            (releasing(Then::Close, None), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&releasing(Then::Close, hp.clone()), E::NoDefault, &env(t)),
+            (releasing(Then::Close, None), vec![])
         );
         for ev in [E::DeviceGone, E::Reopen, E::Tick, E::Pause] {
             assert_eq!(
@@ -1029,19 +1134,29 @@ mod owner_tests {
         );
         assert_eq!(
             decide_output(&w, changed("spk", false), &env(t)),
-            (waiting("spk", t, false), vec![])
+            (
+                waiting_last("spk", t, false, change("spk", false, t)),
+                vec![]
+            )
         );
         assert_eq!(
             decide_output(&w, E::NoDefault, &env(t)),
             (S::closed(), vec![fail_no_output()])
         );
-        for ev in [E::Stop, E::IdleClose] {
-            assert_eq!(
-                decide_output(&w, ev.clone(), &env(t)),
-                (S::closed(), vec![]),
-                "{ev:?}"
-            );
-        }
+        assert_eq!(
+            decide_output(&w, E::IdleClose, &env(t)),
+            (S::closed(), vec![])
+        );
+        let hp = change("hp", true, t);
+        assert_eq!(
+            decide_output(
+                &waiting_last("hp", until, false, hp.clone()),
+                E::Stop,
+                &env(t)
+            ),
+            (S::Closed { last: hp }, vec![]),
+            "Stop lost the last change (a2-1)"
+        );
         for ev in [E::DeviceGone, E::Reopen, E::Dropped, E::Pause] {
             assert_eq!(
                 decide_output(&w, ev.clone(), &env(t)),
@@ -1049,6 +1164,47 @@ mod owner_tests {
                 "{ev:?}"
             );
         }
+    }
+
+    /// The chat's C1 (2026-11-19): a `Play` opens the **current default**; `last` only supplies
+    /// the fresh wait, and only when it names that same device. **Fails if** `last.uid` is opened
+    /// (stale after the watcher stopped: a device that is gone or no longer the default).
+    #[test]
+    fn closed_play_opens_the_current_default_not_the_last_change() {
+        let t = Instant::now();
+        let last_a = S::Closed {
+            last: change("a", true, t),
+        };
+        let mut e = env(t + Duration::from_secs(1));
+        e.current_default = Some("b".into());
+        assert_eq!(
+            decide_output(&last_a, E::Play, &e),
+            (
+                waiting_last("b", t + Duration::from_secs(1), false, change("a", true, t)),
+                vec![A::Open { uid: "b".into() }]
+            )
+        );
+    }
+
+    /// OCR a3-5: a default change while an idle close or a loss is releasing only records the
+    /// change; it does not turn the release into an open (the slot is empty, a Play in the wait
+    /// would give the decode thread no output). **Fails if** `Releasing { Close }` +
+    /// `DefaultChanged` becomes `Then::Open`.
+    #[test]
+    fn a_change_during_an_idle_close_is_recorded_not_opened() {
+        let t = Instant::now();
+        let (s, a) = decide_output(&releasing(Then::Close, None), changed("hp", true), &env(t));
+        assert!(
+            matches!(
+                s,
+                S::Releasing {
+                    then: Then::Close,
+                    ..
+                }
+            ),
+            "the idle close became an open: {s:?}"
+        );
+        assert_eq!(a, vec![]);
     }
 
     /// R1's flag: every state but `Open` is "switching". **Fails if** `Waiting` or `Releasing`

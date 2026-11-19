@@ -975,6 +975,7 @@ impl Engine {
             | OutputState::Waiting { uid, .. }
             | OutputState::Releasing {
                 then: Then::Open { uid, .. },
+                ..
             } => Some(uid.clone()),
             OutputState::Releasing { .. } | OutputState::Closed { .. } => None,
         };
