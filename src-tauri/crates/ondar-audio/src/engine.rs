@@ -71,6 +71,13 @@ const OUTPUT_STALL_TICKS: u32 = 50;
 /// on every command, and a volume drag must not shorten it. See [`output_close`].
 const OUTPUT_IDLE_CLOSE: Duration = Duration::from_secs(30);
 
+/// How far behind live a session may drift through output switches before the next switch
+/// reconnects it live instead of re-attaching (plan §3, review R6; beta item 1). Each re-attach
+/// keeps every byte buffered while the output was away (`stream-download`'s 256 KiB: 16 s at
+/// 128 kbit/s, 6.5 s at 320 kbit/s) and discards the old ring's 2 s, so the audio falls `away +
+/// 2 s` further behind each time; past this the user is better served live.
+const MAX_LAG: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
     /// `bitrate_kbps`: the station record's, for the prefetch (M3b commit 6); `None` when the
@@ -319,8 +326,15 @@ struct SessionCtx {
     /// Set by the engine after it reopened the output (0.1.2, F1): the decode thread leaves its
     /// stream, ring and attach, whatever it is waiting on (a network read, or a full ring that a
     /// dead output no longer drains), and reconnects onto the new output. Cleared by the decode
-    /// thread when it acts on it.
+    /// thread when it acts on it. Since beta item 1 (A4) the switch takes [`Self::reattach`]
+    /// instead; this one serves the lag bound (plan §3, review R6) and merge B's resume after a
+    /// loss.
     restart: Arc<AtomicBool>,
+    /// Set by the engine once the owner has opened the new output (beta item 1, A4): the decode
+    /// thread drops its `Player`, makes a new ring and attaches on the new output at its format,
+    /// keeping its stream and every byte buffered meanwhile. Cleared by the decode thread when it
+    /// acts on it.
+    reattach: Arc<AtomicBool>,
     shared: Shared,
 }
 
@@ -375,6 +389,12 @@ impl SessionCtx {
         }
         drop(slot.replace(player));
         true
+    }
+
+    /// Drop the current attach's `Player` (two atomic stores, silence within 5 ms, never a wait):
+    /// the re-attach's first step.
+    fn drop_player(&self) {
+        drop(lock(&self.player).take());
     }
 
     /// `f` on the current attach's player, if there is one.
@@ -490,6 +510,14 @@ struct Engine {
     /// retry of a failed start; on the engine so a test harness can shorten them.
     fresh_wait: Duration,
     retry_delay: Duration,
+    /// When the owner left `Open` (the release), for the lag the re-attach adds.
+    switch_began: Option<Instant>,
+    /// How far behind live the session's audio is estimated to be, from its re-attaches (each
+    /// adds the time the output was away plus the ring it discards, plan §3 / review R6): reset by
+    /// a new session and by any reconnect. Past [`Self::max_lag`] a switch reconnects instead.
+    lag_estimate: Duration,
+    /// [`MAX_LAG`], on the engine so a test harness can shorten it.
+    max_lag: Duration,
     /// The mixer and format every session's next attach uses; see [`SessionCtx::output`].
     output_slot: OutputSlot,
     session: Option<SessionCtx>,
@@ -585,6 +613,9 @@ impl Engine {
             feeding: false,
             fresh_wait: crate::output::owner::FRESH_DEVICE_WAIT,
             retry_delay: crate::output::owner::RETRY_DELAY,
+            switch_began: None,
+            lag_estimate: Duration::ZERO,
+            max_lag: MAX_LAG,
             output_slot: Arc::new(Mutex::new(None)),
             session: None,
             volume: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
@@ -678,6 +709,10 @@ impl Engine {
     /// which detected it inside the decode loop and so never noticed a hang at all.
     fn tick(&mut self) {
         let current = self.shared.state();
+        // A reconnect of any kind plays live again (the lag bound, R6).
+        if matches!(current, PlaybackState::Reconnecting { .. }) {
+            self.lag_estimate = Duration::ZERO;
+        }
         if current == PlaybackState::Playing {
             if self.last_state != PlaybackState::Playing {
                 self.playing_since = Some(Instant::now());
@@ -1019,7 +1054,10 @@ impl Engine {
 
     fn apply(&mut self, action: Action) {
         match action {
-            Action::Release => self.release_output(),
+            Action::Release => {
+                self.switch_began.get_or_insert_with(Instant::now);
+                self.release_output();
+            }
             Action::Open { uid } => self.open_output(&uid),
             Action::SessionBuffering => {
                 if self.session.is_some() && self.shared.state() == PlaybackState::Playing {
@@ -1028,14 +1066,36 @@ impl Engine {
             }
             Action::SessionPause => self.pause(),
             Action::SessionReattach => {
-                // Until A4's re-attach: the session restarts onto the new output through the
-                // reconnect path (0.1.2, F1): the decode thread may be waiting on a full ring
-                // the released output no longer drains, so its download is cancelled in place.
-                if let Some(session) = &self.session {
+                let away = self
+                    .switch_began
+                    .take()
+                    .map_or(Duration::ZERO, |t| t.elapsed());
+                let Some(session) = &self.session else {
+                    return;
+                };
+                self.lag_estimate += away + Duration::from_secs(ring::RING_SECONDS as u64);
+                if self.lag_estimate > self.max_lag {
+                    // The lag bound (R6): live again through the reconnect path (0.1.2, F1):
+                    // the decode thread may be waiting on a full ring the released output no
+                    // longer drains, so its download is cancelled in place.
+                    log::info!(
+                        "output replaced; the stream is {:.1} s behind live, reconnecting live",
+                        self.lag_estimate.as_secs_f64()
+                    );
+                    self.lag_estimate = Duration::ZERO;
                     session.restart.store(true, Ordering::Relaxed);
                     if let Some(t) = lock(&session.download).as_ref() {
                         t.cancel();
                     }
+                } else {
+                    // The re-attach (plan §3): the decode thread keeps its stream and every byte
+                    // buffered while the output was away, drops its `Player`, and attaches a new
+                    // ring on the new output at its format. No reconnect, no second `Started`.
+                    log::info!(
+                        "output replaced; the session re-attaches, {:.1} s behind live",
+                        self.lag_estimate.as_secs_f64()
+                    );
+                    session.reattach.store(true, Ordering::Relaxed);
                 }
             }
             Action::Fail { message } => {
@@ -1113,6 +1173,7 @@ impl Engine {
         // silent with no reopen until a relaunch. Here, not in `cancel_session`: `stop` plays
         // nothing, so it needs no episode, and the next session clears it anyway.
         self.stall_reopened = false;
+        self.lag_estimate = Duration::ZERO;
         self.cancel_session();
         let generation = self.shared.begin_session(args.station_id.clone(), started);
         self.shared.paused.store(false, Ordering::Relaxed);
@@ -1150,6 +1211,7 @@ impl Engine {
             volume: self.volume.clone(),
             output: self.output_slot.clone(),
             restart: Arc::new(AtomicBool::new(false)),
+            reattach: Arc::new(AtomicBool::new(false)),
             shared: self.shared.clone(),
         };
         self.session = Some(ctx.clone());
@@ -1244,6 +1306,27 @@ impl Engine {
             s.cancel();
         }
     }
+}
+
+/// The re-attach (beta item 1, A4; plan §3): the attached `Player` is dropped (silence, no wait),
+/// and a new ring of the same format replaces the old, whose consumer went with the `Player`.
+/// `source` is `Some` again, so the decode loop's attach arm refills it to the fill target and
+/// attaches on the new output at that output's format, as the first attach did. The old ring's
+/// ≤ 2 s of audio is discarded; the stream and its buffered bytes are kept, so nothing is lost
+/// to the network, only delayed (the lag bound, review R6, is the engine's).
+fn reattach_ring(
+    ctx: &SessionCtx,
+    sample_rate: SampleRate,
+    channels: ChannelCount,
+    ring: &mut ring::RingHandle,
+    source: &mut Option<RingSource>,
+) {
+    ctx.drop_player();
+    let (new_ring, new_source) = ring::ring(sample_rate, channels);
+    *ring = new_ring;
+    *lock(&ctx.ring) = Some(ring.stats.clone());
+    *source = Some(new_source);
+    log::info!("output replaced; the session re-attaches on it");
 }
 
 /// `Read + Seek` can't be combined directly in a trait object (only one non-auto trait is
@@ -1438,6 +1521,11 @@ fn run_session(
             if source.is_none() && ctx.restart.load(Ordering::Relaxed) {
                 break;
             }
+            // The re-attach (beta item 1, A4): only an attached session has a `Player` to drop and
+            // a ring to replace; one before its attach reads the new output at the attach itself.
+            if source.is_none() && ctx.reattach.swap(false, Ordering::Relaxed) {
+                reattach_ring(ctx, sample_rate, channels, &mut ring, &mut source);
+            }
             let Some(sample) = decoder.next() else {
                 // EOF, or a read error (including our own cancellation, checked above).
                 break;
@@ -1456,6 +1544,12 @@ fn run_session(
                         }
                         if source.is_none() && ctx.restart.load(Ordering::Relaxed) {
                             break 'decode;
+                        }
+                        // A full ring nobody drains (the output away) is where a re-attach is
+                        // usually waited for: the new, empty ring takes the pending sample.
+                        if source.is_none() && ctx.reattach.swap(false, Ordering::Relaxed) {
+                            reattach_ring(ctx, sample_rate, channels, &mut ring, &mut source);
+                            continue;
                         }
                         thread::sleep(Duration::from_millis(5));
                     }
@@ -1497,8 +1591,18 @@ fn run_session(
                     *lock(&ctx.ring) = None;
                     return;
                 }
+                log::info!(
+                    "attached sample_rate={} channels={}",
+                    output.sample_rate,
+                    output.channels
+                );
+                // `Playing` is never written while the output owner is not `Open` (review R1):
+                // an attach on the stale slot during a switch holds `Buffering`, and the re-attach
+                // after the open writes `Playing`.
                 if ctx.shared.paused.load(Ordering::Relaxed) {
                     ctx.set_state(PlaybackState::Paused);
+                } else if ctx.shared.output_switching.load(Ordering::Relaxed) {
+                    ctx.set_state(PlaybackState::Buffering);
                 } else {
                     ctx.set_state(PlaybackState::Playing);
                 }
@@ -2226,6 +2330,7 @@ mod session_tests {
             volume: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             output: Arc::new(Mutex::new(None)),
             restart: Arc::new(AtomicBool::new(false)),
+            reattach: Arc::new(AtomicBool::new(false)),
             shared,
         }
     }
@@ -2436,9 +2541,11 @@ mod session_tests {
         }
         fn log(&self, r: &log::Record) {
             let msg = r.args().to_string();
-            const KEPT: [&str; 11] = [
+            const KEPT: [&str; 13] = [
                 "output lost",
                 "output opened",
+                "output replaced",
+                "attached",
                 "output closed",
                 "adts front end",
                 "build",
@@ -2650,6 +2757,9 @@ mod session_tests {
         watch_stops: Arc<AtomicUsize>,
         /// The stops that joined the thread (the shutdown's), OCR a3-1.
         watch_joins: Arc<AtomicUsize>,
+        /// The sample rate the next opens report (A4: a Bluetooth device at 44.1 kHz after the
+        /// speakers at 48 kHz, and the chain converts to it).
+        sample_rate: Arc<AtomicU32>,
         /// Every `current_default()` and `present()` the engine asked (the chat's C2: none on a
         /// `Tick`).
         host_calls: Arc<AtomicUsize>,
@@ -2685,6 +2795,7 @@ mod session_tests {
                 watch_stops: Arc::new(AtomicUsize::new(0)),
                 watch_joins: Arc::new(AtomicUsize::new(0)),
                 host_calls: Arc::new(AtomicUsize::new(0)),
+                sample_rate: Arc::new(AtomicU32::new(44_100)),
             }
         }
 
@@ -2705,6 +2816,7 @@ mod session_tests {
                 watch_stops: self.watch_stops.clone(),
                 watch_joins: self.watch_joins.clone(),
                 host_calls: self.host_calls.clone(),
+                sample_rate: self.sample_rate.clone(),
             }
         }
     }
@@ -2726,6 +2838,7 @@ mod session_tests {
         watch_stops: Arc<AtomicUsize>,
         watch_joins: Arc<AtomicUsize>,
         host_calls: Arc<AtomicUsize>,
+        sample_rate: Arc<AtomicU32>,
     }
 
     impl TestOutput {
@@ -2857,10 +2970,10 @@ mod session_tests {
             *lock(&self.signal) = Some(signal);
             let loud = Arc::new(AtomicU64::new(0));
             lock(&self.loud).push(loud.clone());
-            let (mixer, mixer_out) = rodio::mixer::mixer(
-                std::num::NonZero::new(2).expect("2"),
-                std::num::NonZero::new(44_100).expect("44100"),
-            );
+            let rate = std::num::NonZero::new(self.sample_rate.load(Ordering::SeqCst))
+                .expect("a non-zero test sample rate");
+            let (mixer, mixer_out) =
+                rodio::mixer::mixer(std::num::NonZero::new(2).expect("2"), rate);
             let (halted, closed) = (self.halted.clone(), Arc::new(AtomicBool::new(false)));
             lock(&self.closed).push(closed.clone());
             let ended = closed.clone();
@@ -2878,7 +2991,7 @@ mod session_tests {
                 mixer,
                 format: OutputFormat {
                     channels: std::num::NonZero::new(2).expect("2"),
-                    sample_rate: std::num::NonZero::new(44_100).expect("44100"),
+                    sample_rate: rate,
                 },
                 guard: Box::new(StopOnDrop {
                     closed,
@@ -3072,12 +3185,14 @@ mod session_tests {
 
     /// F1 test 2 (0.1.2): the output reports its device gone (cpal 0.18's `DeviceNotAvailable`,
     /// here the test opener's loss signal) while a session plays. **What it pins:** the engine
-    /// opens the output again (a second `open()`), the session goes through `Reconnecting` back to
-    /// `Playing`, and its audio reaches the **new** output (loud samples pulled from the second
-    /// mixer, read after awaiting `Playing`), with one `output lost` WARN. **Fails if** the loss is
-    /// ignored (no second open: the plant `_handover/v012/plants/f1-loss-ignored.patch` on this
-    /// commit's tree), if the session is not restarted (no `Reconnecting`), or if the restarted
-    /// session attaches to the old mixer (nothing loud on the second).
+    /// opens the output again (a second `open()`), the session goes `Buffering` and back to
+    /// `Playing` (beta item 1 A4: a re-attach on the new output, no `Reconnecting`; merge A still
+    /// treats a loss as a switch to the current default), and its audio reaches the **new**
+    /// output (loud samples pulled from the second mixer, read after awaiting `Playing`), with one
+    /// `output lost` WARN. **Fails if** the loss is ignored (no second open: the plant
+    /// `_handover/v012/plants/f1-loss-ignored.patch` on this commit's tree), if the session is
+    /// not moved (no `Buffering` then `Playing`), or if it attaches to the old mixer (nothing loud
+    /// on the second).
     #[test]
     fn a_lost_output_reopens_and_the_session_plays_on_the_new_one() {
         capture_logs();
@@ -3099,17 +3214,15 @@ mod session_tests {
             "the first output never heard the session"
         );
         out.fire_loss();
-        assert!(
-            await_event(&ev_rx, GUARD, |ev| matches!(
-                ev,
-                EngineEvent::State(PlaybackState::Reconnecting { .. })
-            )),
-            "the session was not restarted after the loss"
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Buffering),
+            "the session was not moved after the loss"
         );
-        assert!(
-            await_event(&ev_rx, GUARD, |ev| *ev
-                == EngineEvent::State(PlaybackState::Playing)),
-            "the restarted session never played"
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Playing),
+            "the moved session never played"
         );
         assert_eq!(out.opens.load(Ordering::SeqCst), 2, "one reopen");
         assert!(
@@ -3651,6 +3764,259 @@ mod session_tests {
             eventually(GUARD, || out.loud(1) > 0),
             "nothing heard on the second output"
         );
+        drop(tx);
+    }
+
+    /// Beta item 1, A4 (plan §3): a switch re-attaches the session on the new output without a
+    /// reconnect. **What it pins:** read off the event stream, a switch while `Playing` shows
+    /// exactly `Buffering` then `Playing`; no `Reconnecting`, no `Reconnect` event, no second
+    /// `Started`; the server saw one connection; the new output hears the session; the engine
+    /// logged the re-attach, not a reconnect. **Fails if** the switch goes through `restart`
+    /// (mutation: `session.restart.store(true)` in `SessionReattach`: `Reconnecting`, a second
+    /// connection), or if the re-attach writes a state of its own.
+    #[test]
+    fn a_switch_reattaches_the_session_without_a_reconnect() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let name = "ondar-audio:test-reattach";
+        let (tx, ev_rx) = spawn_engine(name, opener);
+        play(&tx, &server.url, "st-reattach");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.default_changed("bt", false);
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + GUARD;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(ev) = ev_rx.recv_timeout(left) else {
+                panic!("no Playing after the switch: {seen:?}");
+            };
+            let playing = ev == EngineEvent::State(PlaybackState::Playing);
+            seen.push(ev);
+            if playing {
+                break;
+            }
+        }
+        assert_eq!(
+            states_of(&seen),
+            vec![PlaybackState::Buffering, PlaybackState::Playing],
+            "{seen:?}"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|ev| matches!(ev, EngineEvent::Reconnect(_) | EngineEvent::Started { .. })),
+            "{seen:?}"
+        );
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            1,
+            "the switch reconnected"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "the new output never heard the session"
+        );
+        let replaced = thread_lines(name, "output replaced");
+        assert_eq!(replaced.len(), 1, "{replaced:?}");
+        assert!(replaced[0].contains("re-attaches"), "{replaced:?}");
+        drop(tx);
+    }
+
+    /// Beta item 1, A4 (review R1, the attach arm's half): a Play inside the wait for a fresh
+    /// device attaches on the stale slot and holds `Buffering`; `Playing` comes after the open.
+    /// **What it pins:** with `fresh_wait` 2 s, Play of a second station during the wait shows,
+    /// from its `Connecting`, exactly `Connecting`, `Buffering`, `Playing`, the last once the
+    /// second open exists. **Fails if** the attach arm writes `Playing` while the owner is
+    /// switching (mutation: drop the `output_switching` branch there: `Playing` with one open).
+    #[test]
+    fn a_play_inside_the_wait_holds_buffering_until_the_open() {
+        let server = tone_server();
+        let two = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-play-in-wait", opener, |e| {
+            e.fresh_wait = Duration::from_secs(2);
+        });
+        play(&tx, &server.url, "st-in-wait-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the first station never played"
+        );
+        out.default_changed("hp", true);
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
+        play(&tx, &two.url, "st-in-wait-two");
+        let mut states = Vec::new();
+        let opens_at_playing = std::cell::Cell::new(None);
+        let deadline = Instant::now() + GUARD;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(ev) = ev_rx.recv_timeout(left) else {
+                panic!("no Playing for the second station: {states:?}");
+            };
+            if let EngineEvent::State(s) = ev {
+                let playing = s == PlaybackState::Playing;
+                if playing {
+                    opens_at_playing.set(Some(out.opens.load(Ordering::SeqCst)));
+                }
+                states.push(s);
+                if playing {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            states,
+            vec![
+                PlaybackState::Connecting,
+                PlaybackState::Buffering,
+                PlaybackState::Playing
+            ]
+        );
+        assert_eq!(
+            opens_at_playing.get(),
+            Some(2),
+            "Playing was written on the stale slot, before the open"
+        );
+        assert!(
+            eventually(GUARD, || out.loud(1) > 0),
+            "nothing heard on the new output"
+        );
+        drop(tx);
+    }
+
+    /// Beta item 1, A4: the re-attach converts to the new output's format. **What it pins:** the
+    /// first attach logs the first output's 44 100, the re-attach the second output's 48 000 (the
+    /// `attached sample_rate=` lines on the decode thread). **Fails if** the re-attach reuses the
+    /// old `OutputFormat` (mutation: keep `output` from the first attach).
+    #[test]
+    fn the_reattach_uses_the_new_outputs_format() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine("ondar-audio:test-reattach-format", opener);
+        play(&tx, &server.url, "st-format");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.sample_rate.store(48_000, Ordering::SeqCst);
+        out.default_changed("bt", false);
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Playing));
+        let attached = thread_lines("ondar-decode:st-format", "attached");
+        assert_eq!(attached.len(), 2, "{attached:?}");
+        assert!(attached[0].contains("sample_rate=44100"), "{attached:?}");
+        assert!(attached[1].contains("sample_rate=48000"), "{attached:?}");
+        drop(tx);
+    }
+
+    /// Beta item 1, A4 (review R5 during a wait): no output device left while the owner waits
+    /// cancels the open and ends the session in `Error { Device }`. **What it pins:** `NoDefault`
+    /// during a 2 s wait → the Error with `NO_OUTPUT_MESSAGE`, and no second open. **Fails if**
+    /// the wait runs on and opens a device that is gone.
+    #[test]
+    fn no_device_during_the_wait_cancels_the_open() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-wait-nodev", opener, |e| {
+            e.fresh_wait = Duration::from_secs(2);
+        });
+        play(&tx, &server.url, "st-wait-nodev");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.default_changed("hp", true);
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
+        thread::sleep(Duration::from_millis(300));
+        out.no_devices();
+        let message = std::cell::RefCell::new(None);
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| match ev {
+                EngineEvent::State(PlaybackState::Error {
+                    code: ErrorCode::Device,
+                    message: m,
+                }) => {
+                    *message.borrow_mut() = Some(m.clone());
+                    true
+                }
+                _ => false,
+            }),
+            "no Device error"
+        );
+        assert_eq!(
+            message.borrow().as_deref(),
+            Some(crate::output::owner::NO_OUTPUT_MESSAGE)
+        );
+        thread::sleep(Duration::from_secs(2));
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            1,
+            "the cancelled open happened"
+        );
+        drop(tx);
+    }
+
+    /// Beta item 1, A4 (review R6): past `max_lag` the next switch reconnects live instead of
+    /// re-attaching. **What it pins:** with `max_lag` 1 ms, a switch shows `Reconnecting` once
+    /// and the server a second connection; with the default, the re-attach test above shows one.
+    /// **Fails if** the bound is not applied (no `Reconnecting`, one connection) or reconnects
+    /// every time (the other test).
+    #[test]
+    fn past_the_lag_bound_a_switch_reconnects_live() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let name = "ondar-audio:test-lag-bound";
+        let (tx, ev_rx) = spawn_engine_configured(name, opener, |e| {
+            e.max_lag = Duration::from_millis(1);
+        });
+        play(&tx, &server.url, "st-lag");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        out.default_changed("bt", false);
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::State(PlaybackState::Reconnecting { .. })
+            )),
+            "the switch past the lag bound did not reconnect"
+        );
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Playing)),
+            "the reconnected session never played"
+        );
+        assert_eq!(server.connections.load(Ordering::SeqCst), 2);
+        assert_eq!(out.opens.load(Ordering::SeqCst), 2);
+        let replaced = thread_lines(name, "output replaced");
+        assert_eq!(replaced.len(), 1, "{replaced:?}");
+        assert!(replaced[0].contains("reconnecting live"), "{replaced:?}");
         drop(tx);
     }
 
@@ -5733,6 +6099,7 @@ mod session_tests {
                     },
                 )))),
                 restart: Arc::new(AtomicBool::new(false)),
+                reattach: Arc::new(AtomicBool::new(false)),
                 shared: shared.clone(),
             };
             shared.set_state(PlaybackState::Connecting);
@@ -6786,6 +7153,7 @@ mod started_tests {
             volume: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             output: Arc::new(Mutex::new(None)),
             restart: Arc::new(AtomicBool::new(false)),
+            reattach: Arc::new(AtomicBool::new(false)),
             shared: s.clone(),
         }
     }
