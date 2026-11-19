@@ -1,17 +1,26 @@
-//! The output owner's seam (0.1.2, F1). The engine opens its output through an
-//! [`OutputOpener`], so the session tests can stand a bare `rodio::mixer::mixer` and a puller
-//! thread in for the device, and count the opens; production opens the default device.
+//! The output owner's seam and its machinery (0.1.2 F1; beta item 1, merge A). The engine opens
+//! its output through an [`OutputOpener`], so the session tests can stand a bare
+//! `rodio::mixer::mixer` and a puller thread in for the device and script devices appearing and
+//! leaving; production opens a device **pinned by UID** and runs the default-output watcher.
 //!
 //! What the engine keeps of an open is the [`Mixer`] (each attach connects its own `Player` to
 //! it, `engine.rs::run_session`), the [`OutputFormat`] every session converts to, and a guard
-//! whose drop closes the device. Nothing here is on the audio callback's path.
+//! whose drop closes the device. The decisions live in [`owner::decide_output`], pure. Nothing
+//! here is on the audio callback's path.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use rodio::DeviceSinkBuilder;
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::mixer::Mixer;
 
 use crate::engine::{OutputFormat, log_output_error};
+pub(crate) use owner::OutputEvent;
 
 /// One open output.
 pub(crate) struct Opened {
@@ -23,62 +32,250 @@ pub(crate) struct Opened {
     pub(crate) guard: Box<dyn Send>,
 }
 
-/// How an open output tells the engine it is gone: the open's generation, on a channel the
-/// engine drains every wake (`Engine::check_output_lost`). The generation lets the engine ignore
-/// a late signal from an output it has already replaced. Sending never blocks (an unbounded
-/// `mpsc`), so it is safe from cpal's error-callback thread.
+/// A message on the engine's output channel, drained every wake (`Engine::drain_output_events`).
+/// `generation` is the open the message is about (the open stream's callbacks, the drop thread);
+/// the engine drops one from an output it has already replaced. The watcher's messages carry none.
+/// Sending never blocks (an unbounded `mpsc`), so it is safe from cpal's callback threads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputMsg {
+    pub(crate) generation: Option<u64>,
+    pub(crate) event: OutputEvent,
+}
+
+/// How an open output and its drop thread reach the engine: the open's generation on the channel.
 #[derive(Clone)]
-pub(crate) struct LossSignal {
-    tx: Sender<u64>,
+pub(crate) struct OutputSignal {
+    tx: Sender<OutputMsg>,
     generation: u64,
 }
 
-impl LossSignal {
-    pub(crate) fn new(tx: Sender<u64>, generation: u64) -> Self {
+impl OutputSignal {
+    pub(crate) fn new(tx: Sender<OutputMsg>, generation: u64) -> Self {
         Self { tx, generation }
     }
 
-    pub(crate) fn fire(&self) {
+    pub(crate) fn fire(&self, event: OutputEvent) {
         // A send error means the engine is gone; there is nothing to tell.
-        let _ = self.tx.send(self.generation);
+        let _ = self.tx.send(OutputMsg {
+            generation: Some(self.generation),
+            event,
+        });
     }
 }
 
-/// How the engine opens its output. `lost` is fired when the output reports that its device is
-/// gone.
-pub(crate) trait OutputOpener: Send {
-    fn open(&mut self, lost: LossSignal) -> Result<Opened, String>;
+/// An open that failed: `message` is what the `Error { code: Device }` shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenError {
+    pub(crate) message: String,
 }
 
-/// The default output device.
+/// How the engine reaches the output devices. Production is cpal through rodio; the tests script
+/// every call.
+pub(crate) trait OutputOpener: Send {
+    /// Open the device `uid`, pinned (no follow); `signal` carries its `DeviceGone` and `Reopen`.
+    fn open(&mut self, uid: &str, signal: OutputSignal) -> Result<Opened, OpenError>;
+    /// The current default output's UID, `None` with no output device at all.
+    fn default_output(&self) -> Option<String>;
+    /// Whether the device `uid` still exists (`device_by_id`).
+    fn present(&self, uid: &str) -> bool;
+    /// Start the default-output watcher sending on `tx`; a no-op while one runs.
+    fn start_watch(&mut self, tx: Sender<OutputMsg>);
+    /// Stop the watcher and wait for its thread; a no-op without one.
+    fn stop_watch(&mut self);
+}
+
+/// How often the watcher polls (R2, 2026-11-19: 35–191 ms per poll in its own thread).
+pub(crate) const WATCH_PERIOD: Duration = Duration::from_millis(100);
+
+/// A device that appeared within this long before becoming the default is "fresh" too (the
+/// MOMENTUM 4 appears ~60 ms before the default moves; the Audio Pro picked 3.3 s after it
+/// reappeared was rightly not fresh, R1 2026-11-19).
+pub(crate) const FRESH_WINDOW: Duration = Duration::from_secs(3);
+
+/// What one poll of the host sees.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Snapshot {
+    pub(crate) default_uid: Option<String>,
+    pub(crate) outputs: Vec<String>,
+}
+
+/// The watcher's memory between polls, pure: [`WatchState::observe`] turns a snapshot into at most
+/// one event. The first snapshot only seeds it (nothing is known, so nothing is fresh and no
+/// change is reported: the review's addendum).
+#[derive(Debug, Default)]
+pub(crate) struct WatchState {
+    last: Option<Snapshot>,
+    appeared: HashMap<String, Instant>,
+}
+
+impl WatchState {
+    pub(crate) fn observe(&mut self, snap: Snapshot, now: Instant) -> Option<OutputEvent> {
+        let Some(last) = self.last.take() else {
+            self.last = Some(snap);
+            return None;
+        };
+        for uid in &snap.outputs {
+            if !last.outputs.contains(uid) {
+                self.appeared.insert(uid.clone(), now);
+            }
+        }
+        self.appeared.retain(|uid, _| snap.outputs.contains(uid));
+        let event = if snap.default_uid == last.default_uid {
+            None
+        } else {
+            match &snap.default_uid {
+                None => Some(OutputEvent::NoDefault),
+                Some(uid) => {
+                    let recent = self
+                        .appeared
+                        .get(uid)
+                        .is_some_and(|at| now.duration_since(*at) < FRESH_WINDOW);
+                    Some(OutputEvent::DefaultChanged {
+                        uid: uid.clone(),
+                        fresh: !last.outputs.contains(uid) || recent,
+                    })
+                }
+            }
+        };
+        self.last = Some(snap);
+        event
+    }
+}
+
+/// The watcher thread: `poll` every `period`, [`WatchState::observe`], the events on `tx`.
+pub(crate) struct WatchHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl WatchHandle {
+    pub(crate) fn spawn(
+        name: &str,
+        period: Duration,
+        poll: impl Fn() -> Snapshot + Send + 'static,
+        tx: Sender<OutputMsg>,
+    ) -> Option<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let spawned = thread::Builder::new().name(name.into()).spawn(move || {
+            let mut state = WatchState::default();
+            while !stopping.load(Ordering::Relaxed) {
+                if let Some(event) = state.observe(poll(), Instant::now())
+                    && tx
+                        .send(OutputMsg {
+                            generation: None,
+                            event,
+                        })
+                        .is_err()
+                {
+                    return;
+                }
+                thread::sleep(period);
+            }
+        });
+        match spawned {
+            Ok(join) => Some(Self {
+                stop,
+                join: Some(join),
+            }),
+            Err(e) => {
+                log::warn!("output watcher thread refused ({e}); the default is not watched");
+                None
+            }
+        }
+    }
+
+    /// Stop the thread and wait for it (at most one `period` plus one poll).
+    pub(crate) fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+/// The output devices through cpal 0.18.2 (rodio 0.23.0).
+///
+/// **Pinned by UID:** `device_by_id(uid)` + `DeviceSinkBuilder::from_device` build cpal's
+/// `HalOutput` unit on that device (`host/coreaudio/macos/device.rs:243-255`), which does not
+/// follow the default; the follow is the engine's (the watcher). Never `from_default_device()`:
+/// its `DefaultOutput` unit follows by itself, and on the jack's codec the first start after a
+/// plug-in fails inside coreaudiod with no error to cpal, leaving the process silent until the
+/// device leaves (F9, 2026-11-11; `_handover/f9-step0-report-2026-11-11.md`).
 ///
 /// The device's own buffer (`BufferSize::Default`), not rodio's: rodio 0.23.0 asks for a `Fixed`
 /// ~50 ms (2048 frames at 44.1 kHz, `stream.rs:207-217`), which cpal 0.18.2 refuses on a device
-/// whose range is lower (`14..=1024` on an Audio Pro A15 W, measured 2026-10-30), so
-/// `open_default_sink` failed on every device. `Default` gave 512 frames on both devices measured
-/// (11.6 ms at 44.1 kHz, 10.7 ms at 48 kHz). No fallback to another device: an open on an output
+/// whose range is lower (`14..=1024` on an Audio Pro A15 W, measured 2026-10-30). `Default` gave
+/// 512 frames on both devices measured. No fallback to another device: an open on an output
 /// nobody hears is worse than an honest `Error { code: Device }` (rodio PR #914, which clamps the
 /// buffer, is unreleased; re-check at each rodio release). ONDAR.md, "0.1.2: decisions", 1.
 ///
-/// The loss: on rodio 0.23.0 / cpal 0.18.2 a stream on the default device follows a new default
-/// by itself (`DeviceChanged`, measured 5 of 5 Bluetooth losses and 10 of 10 switches,
-/// 2026-10-30); `DeviceNotAvailable` means no output was left to follow (with no output device
-/// at all, cpal pauses the stream, the F1 shape), so it fires `lost` (decision 4).
-pub(crate) struct DeviceOpener;
+/// The callbacks on a pinned stream (cpal 0.18.2 `host/coreaudio/macos/mod.rs:136-230`, the
+/// `DisconnectManager`): `DeviceNotAvailable` when the device's `IsAlive` drops → `DeviceGone`;
+/// `StreamInvalidated` when its nominal sample rate changes (cpal pauses the stream first) →
+/// `Reopen`; `Xrun` on a processor overload → logged. A `DeviceChanged` cannot come from a pinned
+/// stream; one in a log is a finding.
+pub(crate) struct DeviceOpener {
+    watch: Option<WatchHandle>,
+}
+
+impl DeviceOpener {
+    pub(crate) fn new() -> Self {
+        Self { watch: None }
+    }
+}
+
+fn uid_of(device: &rodio::cpal::Device) -> Option<String> {
+    device.id().ok().map(|id| id.id().to_string())
+}
+
+fn device_id(uid: &str) -> rodio::cpal::DeviceId {
+    rodio::cpal::DeviceId::new(rodio::cpal::HostId::CoreAudio, uid)
+}
+
+fn poll_host() -> Snapshot {
+    let host = rodio::cpal::default_host();
+    let default_uid = host.default_output_device().and_then(|d| uid_of(&d));
+    let outputs = host
+        .output_devices()
+        .map(|devices| devices.filter_map(|d| uid_of(&d)).collect())
+        .unwrap_or_default();
+    Snapshot {
+        default_uid,
+        outputs,
+    }
+}
 
 impl OutputOpener for DeviceOpener {
-    fn open(&mut self, lost: LossSignal) -> Result<Opened, String> {
-        let mut sink = DeviceSinkBuilder::from_default_device()
-            .map_err(|e| e.to_string())?
+    fn open(&mut self, uid: &str, signal: OutputSignal) -> Result<Opened, OpenError> {
+        let host = rodio::cpal::default_host();
+        let Some(device) = host.device_by_id(&device_id(uid)) else {
+            return Err(OpenError {
+                message: format!("the output device {uid} is gone"),
+            });
+        };
+        let name = device
+            .description()
+            .map_or_else(|_| uid.to_string(), |d| d.name().to_string());
+        let mut sink = DeviceSinkBuilder::from_device(device)
+            .map_err(|e| OpenError {
+                message: format!("{name}: {e}"),
+            })?
             .with_buffer_size(rodio::cpal::BufferSize::Default)
             .with_error_callback(move |e| {
                 log_output_error(&e);
-                if e.kind() == rodio::CpalErrorKind::DeviceNotAvailable {
-                    lost.fire();
+                match e.kind() {
+                    rodio::CpalErrorKind::DeviceNotAvailable => {
+                        signal.fire(OutputEvent::DeviceGone);
+                    }
+                    rodio::CpalErrorKind::StreamInvalidated => signal.fire(OutputEvent::Reopen),
+                    _ => {}
                 }
             })
             .open_stream()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| OpenError {
+                message: format!("{name}: {e}"),
+            })?;
         sink.log_on_drop(false);
         let format = OutputFormat {
             channels: sink.config().channel_count(),
@@ -90,6 +287,30 @@ impl OutputOpener for DeviceOpener {
             guard: Box::new(sink),
         })
     }
+
+    fn default_output(&self) -> Option<String> {
+        rodio::cpal::default_host()
+            .default_output_device()
+            .and_then(|d| uid_of(&d))
+    }
+
+    fn present(&self, uid: &str) -> bool {
+        rodio::cpal::default_host()
+            .device_by_id(&device_id(uid))
+            .is_some()
+    }
+
+    fn start_watch(&mut self, tx: Sender<OutputMsg>) {
+        if self.watch.is_none() {
+            self.watch = WatchHandle::spawn("ondar-output-watch", WATCH_PERIOD, poll_host, tx);
+        }
+    }
+
+    fn stop_watch(&mut self) {
+        if let Some(watch) = self.watch.take() {
+            watch.stop();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -99,8 +320,6 @@ impl OutputOpener for DeviceOpener {
 // ---------------------------------------------------------------------------------------------
 
 /// The owner's state machine; see the banner above.
-// Commit A2 defines the machine; A3 wires it into the engine and removes this allow.
-#[allow(dead_code)]
 pub(crate) mod owner {
     use std::time::{Duration, Instant};
 
@@ -132,6 +351,7 @@ pub(crate) mod owner {
         /// Open `uid`, not before `not_before` (the fresh-device wait counts from the change).
         Open { uid: String, not_before: Instant },
         /// Nothing: the session was paused at the loss (merge B; unused by merge A's table).
+        #[allow(dead_code, reason = "merge B wires the loss pause")]
         Pause,
         /// Nothing: the idle close, or a Stop while an open was pending.
         Close,
@@ -213,6 +433,7 @@ pub(crate) mod owner {
         /// A live, unpaused session shows `Buffering` while the output is away (review R1).
         SessionBuffering,
         /// The session is paused (merge B's loss).
+        #[allow(dead_code, reason = "merge B wires the loss pause")]
         SessionPause,
         /// The session attaches a new `Player` on the new output (plan §3).
         SessionReattach,
@@ -225,6 +446,10 @@ pub(crate) mod owner {
     pub(crate) struct Env {
         pub(crate) now: Instant,
         /// `device_by_id(previous).is_some()` for the device the owner holds or waits for.
+        #[allow(
+            dead_code,
+            reason = "merge B reads it: a device gone pauses, one present switches"
+        )]
         pub(crate) previous_present: bool,
         /// `default_output_device()`'s UID right now, for the cells that open "the current default".
         pub(crate) current_default: Option<String>,
@@ -835,5 +1060,141 @@ mod owner_tests {
         assert!(releasing_open("hp", t).is_switching());
         assert!(waiting("hp", t, false).is_switching());
         assert!(!open("spk").is_switching());
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    //! The default-output watcher (plan §4): the pure step on scripted snapshots, and the thread's
+    //! stop. No device, no sleep but the thread test's period.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::{FRESH_WINDOW, OutputEvent, Snapshot, WatchHandle, WatchState};
+    use crate::sync::lock;
+
+    fn snap(default: Option<&str>, outputs: &[&str]) -> Snapshot {
+        Snapshot {
+            default_uid: default.map(str::to_string),
+            outputs: outputs.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn changed(uid: &str, fresh: bool) -> Option<OutputEvent> {
+        Some(OutputEvent::DefaultChanged {
+            uid: uid.into(),
+            fresh,
+        })
+    }
+
+    /// The first poll seeds the state and reports nothing (the review's addendum: nothing is
+    /// known, so nothing is fresh and no change is reported); the same default again reports
+    /// nothing. **Fails if** the first snapshot is reported as a change (the engine would release
+    /// and reopen its output at every start), or if an unchanged default is.
+    #[test]
+    fn the_first_poll_seeds_and_an_unchanged_default_is_silent() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk", "bt"]), t), None);
+    }
+
+    /// A default change to a device that was in the previous list is not fresh; to one that was
+    /// not is fresh (the jack: the device and the default change land in one poll). **Fails if**
+    /// `fresh` is read from the new list instead of the previous one (both would be "present"),
+    /// or if the change is not reported.
+    #[test]
+    fn a_default_change_is_fresh_only_for_a_device_the_previous_poll_did_not_list() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk", "bt"]), t);
+        assert_eq!(
+            w.observe(snap(Some("bt"), &["spk", "bt"]), t),
+            changed("bt", false)
+        );
+        assert_eq!(
+            w.observe(snap(Some("hp"), &["spk", "bt", "hp"]), t),
+            changed("hp", true)
+        );
+    }
+
+    /// The 3 s clause: a device that appeared within `FRESH_WINDOW` before becoming the default is
+    /// fresh (the MOMENTUM 4: listed ~60 ms before the default moves); one that appeared longer
+    /// ago is not (the Audio Pro picked 3.3 s after it reappeared, R1). **Fails if** `appeared` is
+    /// not kept across polls, or if the window is not applied.
+    #[test]
+    fn a_device_that_appeared_within_the_window_is_fresh_and_an_older_one_is_not() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk"]), t);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk", "bt"]), t), None);
+        assert_eq!(
+            w.observe(
+                snap(Some("bt"), &["spk", "bt"]),
+                t + Duration::from_millis(2_999)
+            ),
+            changed("bt", true)
+        );
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk"]), t);
+        w.observe(snap(Some("spk"), &["spk", "bt"]), t);
+        assert_eq!(
+            w.observe(snap(Some("bt"), &["spk", "bt"]), t + FRESH_WINDOW),
+            changed("bt", false)
+        );
+    }
+
+    /// No output device at all is `NoDefault` (review R5), and a device that comes back after
+    /// that is reported as a fresh change. **Fails if** `None` is treated as "unchanged" or
+    /// reported as a change to an empty UID.
+    #[test]
+    fn no_default_is_its_own_event() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk"]), t);
+        assert_eq!(w.observe(snap(None, &[]), t), Some(OutputEvent::NoDefault));
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(
+            w.observe(snap(Some("spk"), &["spk"]), t),
+            changed("spk", true)
+        );
+    }
+
+    /// The thread: it polls, reports a change on the channel, and `stop()` joins it. **What it
+    /// pins:** one `DefaultChanged` after the scripted snapshot changes, then `stop()` returns
+    /// (the join is the claim; the hang guard is the test's own timeout). **Fails if** the stop
+    /// flag is not read between polls or the thread is not joined.
+    #[test]
+    fn the_thread_reports_and_stops() {
+        let script = Arc::new(Mutex::new(snap(Some("spk"), &["spk"])));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (poll_script, poll_count) = (script.clone(), polls.clone());
+        let (tx, rx) = mpsc::channel();
+        let handle = WatchHandle::spawn(
+            "ondar-audio:test-watch",
+            Duration::from_millis(5),
+            move || {
+                poll_count.fetch_add(1, Ordering::SeqCst);
+                lock(&poll_script).clone()
+            },
+            tx,
+        )
+        .expect("the watcher thread");
+        // The first poll seeds the state; the change comes after it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while polls.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        *lock(&script) = snap(Some("bt"), &["spk", "bt"]);
+        let msg = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a message from the watcher");
+        assert_eq!(msg.generation, None);
+        assert_eq!(Some(msg.event), changed("bt", true));
+        handle.stop();
     }
 }
