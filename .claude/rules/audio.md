@@ -25,7 +25,8 @@ in ONDAR.md under the section named.
    merge A, 2026-11-19; `output.rs`): opened **pinned** (`device_by_id` + `from_device`, cpal's
    `HalOutput` unit, never `from_default_device()`, whose own follow leaves the process silent on
    the jack's codec: F9), the default watched by the owner's thread (`DefaultWatcher`, 100 ms, run
-   from the first open to the idle close), every transition through the pure `decide_output`
+   from the first open to the idle close, seeded with the UID just opened so a default that moved
+   during the open is its first report), every transition through the pure `decide_output`
    (`output::owner`, the sibling of rule 13). **A switch** = release the old output → its drop
    thread reports `Dropped` → wait 3 s **only for the built-in jack** (`BuiltInHeadphoneOutputDevice`,
    `needs_power_up_wait`) when it appeared at the change, none for any other device (D5,
@@ -34,8 +35,15 @@ in ONDAR.md under the section named.
    for every client by the 3 s gap before the open, 0 of 3) → open the new default by UID; the
    old unit is always gone before the new one is created. Debug builds take
    `ONDAR_TEST_FRESH_WAIT_MS` for the wait; a release build reads nothing.
-   While the owner is not `Open` nothing writes `Playing` (`output_switching`: the attach arm and
-   `decide_tick` hold `Buffering`). **The session re-attaches** on the new output without a
+   **`Playing` requires the session to be attached to the output that is open now** (F6b,
+   2026-11-23): the slot carries the open's generation, the session records the one it attached
+   at (`SessionCtx::attached`), and the three writers of `Playing` (the attach arm through
+   `Shared::write_attached`, `resume`, `decide_tick`'s `unattached`) compare it with
+   `Shared::open_generation`, which is 0 while the owner is not `Open`; otherwise `Buffering`.
+   No flag says "re-attach": the decode thread does it when the two generations differ. The
+   engine zeroes the generation before a release's actions, publishes it under the slot's lock
+   before the slot, and lowers `output_pending` only after the slot is filled; do not reorder
+   them. **The session re-attaches** on the new output without a
    reconnect: its `Player` dropped, a new ring at the new output's format, the stream and its
    buffered bytes kept, so the audio falls `away + 2 s` further behind live at each switch; past
    30 s (`MAX_LAG`) the next switch reconnects live. **A failed start** (`PlayError`, which blocks the

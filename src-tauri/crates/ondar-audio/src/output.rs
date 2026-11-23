@@ -95,8 +95,10 @@ pub(crate) trait OutputOpener: Send + owner::Host {
         reason = "merge B asks it at a default change: gone pauses, present switches"
     )]
     fn present(&self, uid: &str) -> bool;
-    /// Start the default-output watcher sending on `tx`; a no-op while one runs.
-    fn start_watch(&mut self, tx: Sender<OutputMsg>);
+    /// Start the default-output watcher sending on `tx`, seeded with `opened`, the UID of the
+    /// output just opened (F6b, OCR finding 5): if the default is another by its first poll, that
+    /// is its first report. A no-op while one runs: a running watcher saw the change itself.
+    fn start_watch(&mut self, tx: Sender<OutputMsg>, opened: &str);
     /// Stop the watcher: at the idle close `join` is false and the thread is only told to stop
     /// (OCR a3-1: a join would hold the engine thread for a period plus a poll, to ~191 ms); at
     /// shutdown `join` is true. A no-op without one.
@@ -127,10 +129,13 @@ pub(crate) const NO_DEFAULT_POLLS: u32 = 3;
 
 /// The watcher's memory between polls, pure: [`WatchState::observe`] turns a snapshot into at most
 /// one event. The first snapshot only seeds it (nothing is known, so nothing is fresh and no
-/// change is reported: the review's addendum). A poll with no readable default is held for
-/// [`NO_DEFAULT_POLLS`] before it counts.
+/// change is reported: the review's addendum), unless the state was made [`Self::seeded`] with
+/// the UID the engine holds open and the default is already another (F6b, OCR finding 5). A poll
+/// with no readable default is held for [`NO_DEFAULT_POLLS`] before it counts.
 #[derive(Debug, Default)]
 pub(crate) struct WatchState {
+    /// The UID the engine opened just before this watcher started, until the first poll.
+    seed: Option<String>,
     last: Option<Snapshot>,
     appeared: HashMap<String, Instant>,
     /// Consecutive polls that read no default output.
@@ -138,10 +143,29 @@ pub(crate) struct WatchState {
 }
 
 impl WatchState {
+    /// A watcher started after the engine opened `opened`: the watcher runs only from an open, and
+    /// that open (or a failed start and its retry, 2.5 s and more) is time in which nobody polled.
+    pub(crate) fn seeded(opened: &str) -> Self {
+        Self {
+            seed: Some(opened.into()),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn observe(&mut self, mut snap: Snapshot, now: Instant) -> Option<OutputEvent> {
         let Some(last) = self.last.take() else {
+            // The first poll. With a seed, a default that is already another device moved while
+            // nobody watched: reported as fresh, since when it appeared is unknown and only the
+            // jack waits on that (D5), which plugged in during an open is inside its window.
+            let moved = match (self.seed.take(), &snap.default_uid) {
+                (Some(seed), Some(uid)) if seed != *uid => Some(OutputEvent::DefaultChanged {
+                    uid: uid.clone(),
+                    fresh: true,
+                }),
+                _ => None,
+            };
             self.last = Some(snap);
-            return None;
+            return moved;
         };
         for uid in &snap.outputs {
             if !last.outputs.contains(uid) {
@@ -192,11 +216,11 @@ impl WatchHandle {
         period: Duration,
         poll: impl Fn() -> Snapshot + Send + 'static,
         tx: Sender<OutputMsg>,
+        mut state: WatchState,
     ) -> Option<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let spawned = thread::Builder::new().name(name.into()).spawn(move || {
-            let mut state = WatchState::default();
             while !stopping.load(Ordering::Relaxed) {
                 if let Some(event) = state.observe(poll(), Instant::now())
                     && tx
@@ -354,9 +378,15 @@ impl OutputOpener for DeviceOpener {
             .is_some()
     }
 
-    fn start_watch(&mut self, tx: Sender<OutputMsg>) {
+    fn start_watch(&mut self, tx: Sender<OutputMsg>, opened: &str) {
         if self.watch.is_none() {
-            self.watch = WatchHandle::spawn("ondar-output-watch", WATCH_PERIOD, poll_host, tx);
+            self.watch = WatchHandle::spawn(
+                "ondar-output-watch",
+                WATCH_PERIOD,
+                poll_host,
+                tx,
+                WatchState::seeded(opened),
+            );
         }
     }
 
@@ -1872,6 +1902,34 @@ mod watch_tests {
         assert_eq!(w.observe(snap(Some("spk"), &["spk", "bt"]), t), None);
     }
 
+    /// F6b (OCR finding 5): a watcher seeded with the UID the engine opened reports, at its first
+    /// poll, a default that is already another device, as fresh (its age is unknown; only the
+    /// jack waits on that). **What it pins:** seeded with `spk`, a first poll reading `hp` is
+    /// `DefaultChanged { hp, fresh }`, and the next poll reading `hp` is silent; a first poll
+    /// reading `spk` is silent; a first poll reading no default is silent, and the default read
+    /// afterwards is reported by the ordinary rule. **Fails if** the seed is ignored (the
+    /// unfixed first poll: silent, and the engine stays on `spk` until some later change).
+    #[test]
+    fn a_seeded_watcher_reports_a_default_that_moved_before_its_first_poll() {
+        let t = Instant::now();
+        let mut w = WatchState::seeded("spk");
+        assert_eq!(
+            w.observe(snap(Some("hp"), &["spk", "hp"]), t),
+            changed("hp", true)
+        );
+        assert_eq!(w.observe(snap(Some("hp"), &["spk", "hp"]), t), None);
+        assert_eq!(
+            w.observe(snap(Some("spk"), &["spk", "hp"]), t),
+            changed("spk", false)
+        );
+        let mut w = WatchState::seeded("spk");
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        let mut w = WatchState::seeded("spk");
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(w.observe(snap(Some("hp"), &["hp"]), t), changed("hp", true));
+    }
+
     /// A default change to a device that was in the previous list is not fresh; to one that was
     /// not is fresh (the jack: the device and the default change land in one poll). **Fails if**
     /// `fresh` is read from the new list instead of the previous one (both would be "present"),
@@ -1961,6 +2019,7 @@ mod watch_tests {
                 lock(&poll_script).clone()
             },
             tx,
+            WatchState::default(),
         )
         .expect("the watcher thread");
         // The first poll seeds the state; the change comes after it.
@@ -1995,6 +2054,7 @@ mod watch_tests {
                     snap(Some("spk"), &["spk"])
                 },
                 tx,
+                WatchState::default(),
             )
             .expect("the watcher thread");
             if detach {
