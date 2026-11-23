@@ -78,6 +78,25 @@ const OUTPUT_IDLE_CLOSE: Duration = Duration::from_secs(30);
 /// 2 s` further behind each time; past this the user is better served live.
 const MAX_LAG: Duration = Duration::from_secs(30);
 
+/// `ONDAR_TEST_FRESH_WAIT_MS`: the owner's fresh-device wait, **debug builds only** (the by-hand
+/// controls of 2026-11-23 could not tell the wait from the release-then-open for want of it,
+/// C7). A release build reads nothing. `None` when unset or unparsable.
+#[cfg(debug_assertions)]
+fn fresh_wait_override() -> Option<Duration> {
+    parse_fresh_wait_ms(std::env::var("ONDAR_TEST_FRESH_WAIT_MS").ok().as_deref())
+}
+
+#[cfg(not(debug_assertions))]
+fn fresh_wait_override() -> Option<Duration> {
+    None
+}
+
+/// The override's value: whole milliseconds, nothing else.
+#[cfg(debug_assertions)]
+fn parse_fresh_wait_ms(value: Option<&str>) -> Option<Duration> {
+    value?.trim().parse::<u64>().ok().map(Duration::from_millis)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
     /// `bitrate_kbps`: the station record's, for the prefetch (M3b commit 6); `None` when the
@@ -618,7 +637,16 @@ impl Engine {
             output_failed: None,
             output_queue: VecDeque::new(),
             feeding: false,
-            fresh_wait: crate::output::owner::FRESH_DEVICE_WAIT,
+            fresh_wait: fresh_wait_override().map_or(
+                crate::output::owner::FRESH_DEVICE_WAIT,
+                |d| {
+                    log::info!(
+                        "fresh-device wait overridden: {} ms (ONDAR_TEST_FRESH_WAIT_MS)",
+                        d.as_millis()
+                    );
+                    d
+                },
+            ),
             retry_delay: crate::output::owner::RETRY_DELAY,
             switch_began: None,
             lag_estimate: Duration::ZERO,
@@ -2802,6 +2830,8 @@ mod session_tests {
     }
 
     const TEST_OUT: &str = "test-out";
+    /// The fresh device whose open waits (D5: the jack alone).
+    const JACK: &str = crate::output::owner::JACK_UID;
 
     impl TestOpener {
         fn new(halted: Arc<AtomicBool>) -> Self {
@@ -3396,7 +3426,7 @@ mod session_tests {
             "the station never played"
         );
         let changed_at = Instant::now();
-        out.default_changed("hp", true);
+        out.default_changed(JACK, true);
         assert_eq!(
             next_state(&ev_rx),
             Some(PlaybackState::Buffering),
@@ -3734,7 +3764,7 @@ mod session_tests {
             )),
             "the station never played"
         );
-        out.default_changed("hp", true);
+        out.default_changed(JACK, true);
         assert_eq!(
             next_state(&ev_rx),
             Some(PlaybackState::Buffering),
@@ -3892,7 +3922,7 @@ mod session_tests {
             )),
             "the first station never played"
         );
-        out.default_changed("hp", true);
+        out.default_changed(JACK, true);
         assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
         play(&tx, &two.url, "st-in-wait-two");
         let mut states = Vec::new();
@@ -3984,7 +4014,7 @@ mod session_tests {
             )),
             "the station never played"
         );
-        out.default_changed("hp", true);
+        out.default_changed(JACK, true);
         assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
         thread::sleep(Duration::from_millis(300));
         out.no_devices();
@@ -4090,7 +4120,7 @@ mod session_tests {
             )),
             "the first station never played"
         );
-        out.default_changed("hp", true);
+        out.default_changed(JACK, true);
         assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
         play(&tx, &slow.url, "st-one-attach-two");
         assert!(
@@ -4158,7 +4188,7 @@ mod session_tests {
             "the failed switch did not end in Error"
         );
         thread::sleep(Duration::from_millis(1500));
-        out.default_changed("hp", true);
+        out.default_changed(JACK, true);
         // The engine drains the watcher's channel after each command: a Stop (Error → Idle)
         // answered puts the change before the Play, so the Play lands inside the fresh window.
         tx.send(AudioCommand::Stop).expect("send");
@@ -4248,6 +4278,22 @@ mod session_tests {
             Ok(true),
             "await_output did not return the filled slot"
         );
+    }
+
+    /// D5 (2026-11-23): the debug override of the fresh-device wait takes whole milliseconds and
+    /// nothing else. **Fails if** `0` is not a zero wait, if `3000` is not 3 s, or if garbage or an
+    /// unset variable is anything but `None` (the constant then stands).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_fresh_wait_override_parses_whole_milliseconds() {
+        assert_eq!(parse_fresh_wait_ms(Some("0")), Some(Duration::ZERO));
+        assert_eq!(
+            parse_fresh_wait_ms(Some(" 3000 ")),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(parse_fresh_wait_ms(Some("3 s")), None);
+        assert_eq!(parse_fresh_wait_ms(Some("")), None);
+        assert_eq!(parse_fresh_wait_ms(None), None);
     }
 
     /// Beta item 1, A5 (plan §6): a failed start is retried once, after `retry_delay`, with the

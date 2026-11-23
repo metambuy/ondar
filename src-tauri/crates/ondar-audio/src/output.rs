@@ -381,10 +381,26 @@ impl OutputOpener for DeviceOpener {
 pub(crate) mod owner {
     use std::time::{Duration, Instant};
 
-    /// How long the owner waits before opening a device that appeared at the default change (F9:
+    /// How long the owner waits before opening the jack when it appeared at the default change (F9:
     /// the jack's codec fails any start inside ~1.2 s of publication, measured 2026-11-11; 2 s and
-    /// 3 s started 7 of 7, 1 s failed 2 of 2; 3 s is the margin, decision D4.4).
+    /// 3 s started 7 of 7, 1 s failed 2 of 2; 3 s is the margin, decision D4.4). Only for the
+    /// device in [`needs_power_up_wait`] (D5).
     pub(crate) const FRESH_DEVICE_WAIT: Duration = Duration::from_secs(3);
+
+    /// The built-in jack's output device, the one device measured to need the power-up wait
+    /// (`External Headphones`; F9 Step 0, 2026-11-11).
+    pub(crate) const JACK_UID: &str = "BuiltInHeadphoneOutputDevice";
+
+    /// Whether a freshly appeared `uid` is opened only after [`FRESH_DEVICE_WAIT`] (decision D5,
+    /// 2026-11-23): the jack alone. F9's window was measured on its codec only; Bluetooth
+    /// (MOMENTUM 4, 3 of 3) and `AirPlay` (3 of 3) started within 130 ms of publication with no
+    /// window (P5, 2026-11-11), and the `AirPlay` route device a Control Centre pick creates
+    /// (`…-Audio`, fresh at every pick) was silent for every client while the switch's 3 s gap
+    /// preceded the open, 0 of 3 heard (`_handover/last-report-2026-11-23.md`). Any other device
+    /// with a window nobody has measured is covered by the retry and `Error { Device }`.
+    pub(crate) fn needs_power_up_wait(uid: &str) -> bool {
+        uid == JACK_UID
+    }
 
     /// The pause before the one retry of a failed start (P2g, 2026-11-11: a retry with the failed
     /// unit gone started 1 of 1).
@@ -407,10 +423,14 @@ pub(crate) mod owner {
 
     impl Change {
         /// When `uid` may be opened: the change's `at + wait` if this is a fresh change to that
-        /// device still inside its window, else now.
+        /// device, one that needs the power-up wait (D5), still inside its window; else now.
         fn not_before(last: Option<&Change>, uid: &str, now: Instant, wait: Duration) -> Instant {
             match last {
-                Some(c) if c.fresh && c.uid == uid && now < c.at + wait => c.at + wait,
+                Some(c)
+                    if c.fresh && c.uid == uid && needs_power_up_wait(uid) && now < c.at + wait =>
+                {
+                    c.at + wait
+                }
                 _ => now,
             }
         }
@@ -572,8 +592,9 @@ pub(crate) mod owner {
         use OutputEvent as E;
         use OutputState as S;
 
-        let wait = |fresh: bool| {
-            if fresh {
+        // The power-up wait: a fresh device that needs one (the jack alone, D5); none otherwise.
+        let wait = |uid: &str, fresh: bool| {
+            if fresh && needs_power_up_wait(uid) {
                 env.fresh_wait
             } else {
                 Duration::ZERO
@@ -645,7 +666,7 @@ pub(crate) mod owner {
                     S::Releasing {
                         then: Then::Open {
                             uid: d.clone(),
-                            not_before: env.now + wait(fresh),
+                            not_before: env.now + wait(&d, fresh),
                         },
                         last: changed(&d, fresh),
                     },
@@ -705,7 +726,7 @@ pub(crate) mod owner {
                     S::Releasing {
                         then: Then::Open {
                             uid: d.clone(),
-                            not_before: env.now + wait(fresh),
+                            not_before: env.now + wait(&d, fresh),
                         },
                         last: changed(&d, fresh),
                     },
@@ -779,7 +800,7 @@ pub(crate) mod owner {
             (S::Waiting { .. }, E::DefaultChanged { uid: d, fresh }) => (
                 S::Waiting {
                     uid: d.clone(),
-                    until: env.now + wait(fresh),
+                    until: env.now + wait(&d, fresh),
                     retry: false,
                     last: changed(&d, fresh),
                 },
@@ -863,6 +884,11 @@ mod owner_tests {
 
     const WAIT: Duration = Duration::from_secs(3);
     const RETRY: Duration = Duration::from_secs(1);
+    /// The headphones in the jack: the one device whose fresh change waits (D5).
+    const HP: &str = super::owner::JACK_UID;
+    /// A Bluetooth device's UID and the `AirPlay` route device's, as macOS names them (2026-11-23).
+    const BT: &str = "80-C3-BA-70-AB-96:output";
+    const AIRPLAY: &str = "db5e0f44-f454-4b06-b307-b1df5b4663c0-945626112205333-Audio";
 
     fn env(now: Instant) -> Env {
         Env {
@@ -928,14 +954,53 @@ mod owner_tests {
         }
     }
 
+    /// D5 (2026-11-23): the fresh-device wait is the jack's alone. **Fails if** a fresh Bluetooth
+    /// or `AirPlay` device waits on a switch (mutation: `wait` ignores the UID: `not_before` is
+    /// `t + WAIT`), if `Closed` + `Play` inside such a device's fresh window waits (mutation:
+    /// `Change::not_before` ignores the UID), or if the jack no longer waits (the cell above).
+    #[test]
+    fn only_the_jack_waits_when_fresh() {
+        let t = Instant::now();
+        for uid in [BT, AIRPLAY] {
+            assert_eq!(
+                decide_output(&open("spk"), changed(uid, true), &env(t)),
+                (
+                    releasing_open_last(uid, t, change(uid, true, t)),
+                    vec![A::Release, A::SessionBuffering]
+                ),
+                "{uid} waited on a switch"
+            );
+            let closed = S::Closed {
+                last: change(uid, true, t),
+            };
+            assert_eq!(
+                decide_on(&closed, E::Play, &env(t), Some(uid)),
+                (
+                    waiting_last(uid, t, false, change(uid, true, t)),
+                    vec![A::Open { uid: uid.into() }]
+                ),
+                "{uid} waited on Play"
+            );
+        }
+        assert_eq!(
+            decide_output(&open("spk"), changed(HP, true), &env(t)),
+            (
+                releasing_open_last(HP, t + WAIT, change(HP, true, t)),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        assert!(super::owner::needs_power_up_wait(HP));
+        assert!(!super::owner::needs_power_up_wait(BT));
+    }
+
     /// OCR f2-1: an open is pending in `Releasing { Open }` and `Waiting` only. **Fails if**
     /// `open_pending` is true for `Closed`, `Open` or a release ending in a close or a pause
     /// (mutation: `open_pending = is_switching`: `Closed` and `Releasing { Close }` read true).
     #[test]
     fn an_open_is_pending_only_while_one_is_coming() {
         let t = Instant::now();
-        assert!(releasing_open("hp", t).open_pending());
-        assert!(waiting("hp", t, false).open_pending());
+        assert!(releasing_open(HP, t).open_pending());
+        assert!(waiting(HP, t, false).open_pending());
         assert!(!S::closed().open_pending());
         assert!(!open("spk").open_pending());
         assert!(!releasing(Then::Close, None).open_pending());
@@ -950,10 +1015,10 @@ mod owner_tests {
     fn closed_keeps_the_last_change_and_ignores_the_rest() {
         let t = Instant::now();
         let kept = S::Closed {
-            last: change("hp", true, t),
+            last: change(HP, true, t),
         };
         assert_eq!(
-            decide_output(&S::closed(), changed("hp", true), &env(t)),
+            decide_output(&S::closed(), changed(HP, true), &env(t)),
             (kept.clone(), vec![])
         );
         assert_eq!(
@@ -969,9 +1034,9 @@ mod owner_tests {
             E::Reopen,
             E::Dropped,
             E::Tick,
-            E::Opened { uid: "hp".into() },
+            E::Opened { uid: HP.into() },
             E::OpenFailed {
-                uid: "hp".into(),
+                uid: HP.into(),
                 message: "x".into(),
             },
             E::Pause,
@@ -994,27 +1059,16 @@ mod owner_tests {
     fn closed_play_respects_a_fresh_device_and_no_device() {
         let t0 = Instant::now();
         let fresh = S::Closed {
-            last: change("spk", true, t0),
+            last: change(HP, true, t0),
         };
         // Inside the window: wait until the change + 3 s, the session in Buffering.
-        let (s, a) = decide_on(
-            &fresh,
-            E::Play,
-            &env(t0 + Duration::from_secs(1)),
-            Some("spk"),
-        );
-        assert_eq!(
-            s,
-            waiting_last("spk", t0 + WAIT, false, change("spk", true, t0))
-        );
+        let (s, a) = decide_on(&fresh, E::Play, &env(t0 + Duration::from_secs(1)), Some(HP));
+        assert_eq!(s, waiting_last(HP, t0 + WAIT, false, change(HP, true, t0)));
         assert_eq!(a, vec![A::SessionBuffering]);
         // At the window's edge: open now.
-        let (s, a) = decide_on(&fresh, E::Play, &env(t0 + WAIT), Some("spk"));
-        assert_eq!(
-            s,
-            waiting_last("spk", t0 + WAIT, false, change("spk", true, t0))
-        );
-        assert_eq!(a, vec![A::Open { uid: "spk".into() }]);
+        let (s, a) = decide_on(&fresh, E::Play, &env(t0 + WAIT), Some(HP));
+        assert_eq!(s, waiting_last(HP, t0 + WAIT, false, change(HP, true, t0)));
+        assert_eq!(a, vec![A::Open { uid: HP.into() }]);
         // A device that existed: open now, whatever the time.
         let existed = S::Closed {
             last: change("spk", false, t0),
@@ -1048,9 +1102,9 @@ mod owner_tests {
             (spk.clone(), vec![])
         );
         assert_eq!(
-            decide_output(&spk, changed("hp", true), &env(t)),
+            decide_output(&spk, changed(HP, true), &env(t)),
             (
-                releasing_open_last("hp", t + WAIT, change("hp", true, t)),
+                releasing_open_last(HP, t + WAIT, change(HP, true, t)),
                 vec![A::Release, A::SessionBuffering]
             )
         );
@@ -1077,14 +1131,14 @@ mod owner_tests {
         );
         // Merge A: the held device gone = a switch to the current default, now.
         assert_eq!(
-            decide_on(&open("hp"), E::DeviceGone, &env(t), Some("spk")),
+            decide_on(&open(HP), E::DeviceGone, &env(t), Some("spk")),
             (
                 releasing_open("spk", t),
                 vec![A::Release, A::SessionBuffering]
             )
         );
         assert_eq!(
-            decide_on(&open("hp"), E::DeviceGone, &env(t), None),
+            decide_on(&open(HP), E::DeviceGone, &env(t), None),
             (
                 releasing(Then::Close, None),
                 vec![A::Release, fail_no_output()]
@@ -1115,17 +1169,17 @@ mod owner_tests {
     fn releasing_moves_on_at_dropped_and_restarts_on_a_newer_default() {
         let t = Instant::now();
         let later = t + WAIT;
-        let hp = change("hp", true, t);
-        let pending = releasing_open_last("hp", later, hp.clone());
+        let hp = change(HP, true, t);
+        let pending = releasing_open_last(HP, later, hp.clone());
         assert_eq!(
             decide_output(&pending, E::Dropped, &env(t + Duration::from_millis(20))),
-            (waiting_last("hp", later, false, hp.clone()), vec![])
+            (waiting_last(HP, later, false, hp.clone()), vec![])
         );
         assert_eq!(
             decide_output(&pending, E::Dropped, &env(later)),
             (
-                waiting_last("hp", later, false, hp.clone()),
-                vec![A::Open { uid: "hp".into() }]
+                waiting_last(HP, later, false, hp.clone()),
+                vec![A::Open { uid: HP.into() }]
             )
         );
         let t1 = t + Duration::from_secs(1);
@@ -1136,17 +1190,27 @@ mod owner_tests {
                 vec![A::SessionBuffering]
             )
         );
+        // A pending open for a Bluetooth device, then the jack appears: the wait is the jack's,
+        // counted from its change (D5: a fresh device other than the jack restarts nothing).
+        let pending_bt = releasing_open_last("bt", t, change("bt", false, t));
         assert_eq!(
-            decide_output(&pending, changed("hp2", true), &env(t1)),
+            decide_output(&pending_bt, changed(HP, true), &env(t1)),
             (
-                releasing_open_last("hp2", t1 + WAIT, change("hp2", true, t1)),
+                releasing_open_last(HP, t1 + WAIT, change(HP, true, t1)),
+                vec![A::SessionBuffering]
+            )
+        );
+        assert_eq!(
+            decide_output(&pending, changed(AIRPLAY, true), &env(t1)),
+            (
+                releasing_open_last(AIRPLAY, t1, change(AIRPLAY, true, t1)),
                 vec![A::SessionBuffering]
             )
         );
         for then in [Then::Close, Then::Pause] {
             // A change during a close or a pause is recorded, nothing opens (a3-5).
             assert_eq!(
-                decide_output(&releasing(then.clone(), None), changed("hp", true), &env(t)),
+                decide_output(&releasing(then.clone(), None), changed(HP, true), &env(t)),
                 (releasing(then.clone(), hp.clone()), vec![]),
                 "{then:?}"
             );
@@ -1163,9 +1227,9 @@ mod owner_tests {
                     &releasing(then.clone(), hp.clone()),
                     E::Play,
                     &env(t1),
-                    Some("hp")
+                    Some(HP)
                 ),
-                (releasing_open_last("hp", later, hp.clone()), vec![]),
+                (releasing_open_last(HP, later, hp.clone()), vec![]),
                 "{then:?}"
             );
             assert_eq!(
@@ -1218,29 +1282,29 @@ mod owner_tests {
     fn waiting_opens_on_time_retries_once_and_never_early() {
         let t = Instant::now();
         let until = t + WAIT;
-        let w = waiting("hp", until, false);
+        let w = waiting(HP, until, false);
         assert_eq!(
             decide_output(&w, E::Tick, &env(t + Duration::from_millis(2_999))),
             (w.clone(), vec![])
         );
         assert_eq!(
             decide_output(&w, E::Tick, &env(until)),
-            (w.clone(), vec![A::Open { uid: "hp".into() }])
+            (w.clone(), vec![A::Open { uid: HP.into() }])
         );
         assert_eq!(
-            decide_output(&w, E::Opened { uid: "hp".into() }, &env(until)),
-            (open("hp"), vec![A::SessionReattach])
+            decide_output(&w, E::Opened { uid: HP.into() }, &env(until)),
+            (open(HP), vec![A::SessionReattach])
         );
         let failed = E::OpenFailed {
-            uid: "hp".into(),
+            uid: HP.into(),
             message: "No sound on hp".into(),
         };
         assert_eq!(
             decide_output(&w, failed.clone(), &env(until)),
-            (waiting("hp", until + RETRY, true), vec![])
+            (waiting(HP, until + RETRY, true), vec![])
         );
         assert_eq!(
-            decide_output(&waiting("hp", until, true), failed, &env(until)),
+            decide_output(&waiting(HP, until, true), failed, &env(until)),
             (
                 S::closed(),
                 vec![A::Fail {
@@ -1250,7 +1314,7 @@ mod owner_tests {
         );
         assert_eq!(decide_output(&w, E::Play, &env(t)), (w.clone(), vec![]));
         assert_eq!(
-            decide_output(&w, changed("hp", true), &env(t)),
+            decide_output(&w, changed(HP, true), &env(t)),
             (w.clone(), vec![])
         );
         assert_eq!(
@@ -1268,10 +1332,10 @@ mod owner_tests {
             decide_output(&w, E::IdleClose, &env(t)),
             (S::closed(), vec![])
         );
-        let hp = change("hp", true, t);
+        let hp = change(HP, true, t);
         assert_eq!(
             decide_output(
-                &waiting_last("hp", until, false, hp.clone()),
+                &waiting_last(HP, until, false, hp.clone()),
                 E::Stop,
                 &env(t)
             ),
@@ -1317,7 +1381,7 @@ mod owner_tests {
     #[test]
     fn a_change_during_an_idle_close_is_recorded_not_opened() {
         let t = Instant::now();
-        let (s, a) = decide_output(&releasing(Then::Close, None), changed("hp", true), &env(t));
+        let (s, a) = decide_output(&releasing(Then::Close, None), changed(HP, true), &env(t));
         assert!(
             matches!(
                 s,
@@ -1337,8 +1401,8 @@ mod owner_tests {
     fn every_state_but_open_is_switching() {
         let t = Instant::now();
         assert!(S::closed().is_switching());
-        assert!(releasing_open("hp", t).is_switching());
-        assert!(waiting("hp", t, false).is_switching());
+        assert!(releasing_open(HP, t).is_switching());
+        assert!(waiting(HP, t, false).is_switching());
         assert!(!open("spk").is_switching());
     }
 }

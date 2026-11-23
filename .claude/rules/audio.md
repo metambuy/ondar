@@ -27,8 +27,13 @@ in ONDAR.md under the section named.
    the jack's codec: F9), the default watched by the owner's thread (`DefaultWatcher`, 100 ms, run
    from the first open to the idle close), every transition through the pure `decide_output`
    (`output::owner`, the sibling of rule 13). **A switch** = release the old output → its drop
-   thread reports `Dropped` → wait 3 s for a device that appeared at the change, none for one that
-   existed → open the new default by UID; the old unit is always gone before the new one is created.
+   thread reports `Dropped` → wait 3 s **only for the built-in jack** (`BuiltInHeadphoneOutputDevice`,
+   `needs_power_up_wait`) when it appeared at the change, none for any other device (D5,
+   2026-11-23: F9's window was measured on the jack's codec alone; Bluetooth and AirPlay had none,
+   and the AirPlay route device a Control Centre pick creates, fresh at every pick, was silenced
+   for every client by the 3 s gap before the open, 0 of 3) → open the new default by UID; the
+   old unit is always gone before the new one is created. Debug builds take
+   `ONDAR_TEST_FRESH_WAIT_MS` for the wait; a release build reads nothing.
    While the owner is not `Open` nothing writes `Playing` (`output_switching`: the attach arm and
    `decide_tick` hold `Buffering`). **The session re-attaches** on the new output without a
    reconnect: its `Player` dropped, a new ring at the new output's format, the stream and its
