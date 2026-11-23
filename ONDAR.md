@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-11-23 ("Beta item 1 A: the output owner": D5, the fresh wait is the jack's alone, after the AirPlay controls; the Audio Pro's two faces). Previously 2026-11-19 ("Beta item 1 A: the output owner" after "M5e1: media keys and Now Playing": F9, decisions D1–D4, the Step 0 of 2026-11-11/19, the owner's design, the stack row). Previously 2026-11-09 ("Release 0.1.3" after "M5e1: media keys and Now Playing": 0.1.3 released and merged, spike 5, the 9b table, G as read, G-a and G-b, RUSTSEC-2026-0459 and `fab9b9b`; two lessons for the release steps). Previously 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-11-23, latest ("Beta item 1 A: the output owner": F6, the code review of merge A and the generation invariant). Previously 2026-11-23 ("Beta item 1 A: the output owner": D5, the fresh wait is the jack's alone, after the AirPlay controls; the Audio Pro's two faces). Previously 2026-11-19 ("Beta item 1 A: the output owner" after "M5e1: media keys and Now Playing": F9, decisions D1–D4, the Step 0 of 2026-11-11/19, the owner's design, the stack row). Previously 2026-11-09 ("Release 0.1.3" after "M5e1: media keys and Now Playing": 0.1.3 released and merged, spike 5, the 9b table, G as read, G-a and G-b, RUSTSEC-2026-0459 and `fab9b9b`; two lessons for the release steps). Previously 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -2254,6 +2254,51 @@ merge: `d90f596` (deps: cookie 0.18.3, url 2.5.9, two advisories), F4 (OCR a4-1,
 F5 (this decision). Seen, not hunted: the Control Centre pick sent `remote cmd=pause` once (0.1.3,
 round 4), 1.2 s before the default changed, so a tester may see a Pause on entering AirPlay as on
 leaving it (C2).
+
+**F6, the code review of merge A and the generation invariant (2026-11-23).** `/code-review` on
+`62f2c00..684319e` (Claude, read-only; `_handover/output-owner-code-review-claude-2026-11-23.md`,
+triage `output-owner-code-review-triage-2026-11-23.md`): 7 important, 2 nits, all nine fixed before
+the merge, in three commits. Four of the seven were F9's own exit line by another road (`Playing`
+in silence), and F4's fix of a4-1 was incomplete: the flags were the weak point.
+
+- **The invariant (F6b, `d47454e`): `Playing` requires the session to be attached to the output
+  that is open now.** The slot carries the open's generation (`Published`), the session records the
+  one it attached at (`SessionCtx::attached`), and the three writers of `Playing` compare it with
+  `Shared::open_generation` (0 while the owner is not `Open`): the attach arm
+  (`Shared::write_attached`, decided under the session lock, as the owner's `SessionBuffering` is),
+  `resume` and `decide_tick` (`TickInputs::unattached`; the watchdog still runs there).
+  `output_switching` and `reattach` are gone: the decode thread re-attaches when the two
+  generations differ. The order it rests on is the engine's: the generation zeroed before a
+  release's actions; the lag bound's restart decided, then the generation and the slot published
+  under the slot's lock, generation first; `output_pending` lowered after the event's actions, and
+  `await_output` reading the slot again once it reads down. The watcher is seeded with the UID just
+  opened (`WatchState::seeded`), so a default that moved during the open, or during a failed start
+  and its retry, is its first report (fresh: its age is unknown, and only the jack waits).
+- **The owner (F6a, `fe2e2c3`).** `Releasing` carries a deadline (`RELEASE_LIMIT` 5 s): the drop is
+  three HAL calls with no timeout (coreaudio-rs 0.14.2 `audio_unit/mod.rs:378-395`), so it cannot be
+  shown never to block; none has been seen to. Past it the release is given up with a WARN, and
+  `Error { Device }` ("The audio output did not close. Quit and reopen Ondar.") only if an open was
+  pending: an idle close or a Stop that hangs writes no Error on an app nobody is listening to
+  (**decided, Martín**; the triage read "Fail" for every case). One read of "no default output" is
+  never believed: `Closed` + `Play`, `Open` + `DeviceGone` and `Releasing { Close | Pause }` + `Play`
+  enter `Seeking`, where the owner asks the host again on each `Tick` for `NO_DEFAULT_HOLD` (300 ms,
+  the watcher's three polls) and opens the first default it reads. **Not the watcher's verdict
+  alone, as the triage had it (decided, Martín):** a held unreadable poll followed by the same
+  default reports nothing, and after an idle close no watcher runs, so the session would have sat in
+  `Buffering` for ever. The cost is up to three `current_default()` calls on the engine thread
+  (35–191 ms each, R2) in that state only. The 2026-11-19 logs show the two events 13 ms apart: the
+  false Error at 15:46:55.162, "Device 176 died" at 15:46:55.175 (`unified-airplay-1.log:186`); no
+  `DeviceNotAvailable` from Ondar's own stream sits inside an unreadable window in those logs, so
+  finding 7's path through `DeviceGone` stays inferred, and closed.
+- **The lag and the watcher (F6c, `2136b29`).** A switch adds the time the output was away to the lag
+  estimate and no longer the discarded ring's 2 s, which was unplayed audio and moves the session
+  forward: 13 quick switches had reconnected a session a few seconds behind at most (31.3 s by the
+  estimate, `f5/ondar-dev-f5.log`). The estimate is now an upper bound. The watcher is stopped at
+  the idle limit also when it is all that is left (the owner `Closed` after a failed switch).
+- **Not pinned by a test:** `OutputState::at_rest()` in the watcher's stop (in every state the
+  engine reaches with no session past the idle limit the owner is `Closed`); a dispose that
+  actually hangs (the deadline is tested with a slow drop, not a wedged HAL); a unit that starts
+  with no error, pulls, and is inaudible, which no part of the design can see (the review's Part 2).
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 
