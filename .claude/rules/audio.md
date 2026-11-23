@@ -41,7 +41,11 @@ in ONDAR.md under the section named.
    30 s (`MAX_LAG`) the next switch reconnects live. **A failed start** (`PlayError`, which blocks the
    engine thread ~1.5 s, measured 7 of 7 2026-11-11; commands queue meanwhile) is retried once after
    1 s, then `Error { code: Device }` naming the device, never `Playing`; no output device at all is
-   that Error at once. cpal's `DeviceNotAvailable` on the pinned stream is a loss: **until merge B**
+   that Error once it has held for 300 ms (`Seeking`, `NO_DEFAULT_HOLD`, F6a: one read of "no
+   default" is never believed, by the watcher or by the owner, which asks again on its `Tick`).
+   **A release whose drop does not return in 5 s is given up** (`RELEASE_LIMIT`: the dispose is
+   three HAL calls with no timeout): a WARN, and `Error { code: Device }` if a session was waiting
+   for the open. cpal's `DeviceNotAvailable` on the pinned stream is a loss: **until merge B**
    it is a switch to the current default with no wait (F1's outcome); merge B makes it the pause.
    `StreamInvalidated` (a nominal-rate change; cpal pauses the stream) reopens the same device.
    7d's stall WARN (5 s `Playing` with nothing pulled) still reopens, once per episode

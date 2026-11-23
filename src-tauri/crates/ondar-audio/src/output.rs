@@ -410,6 +410,25 @@ pub(crate) mod owner {
     pub(crate) const NO_OUTPUT_MESSAGE: &str =
         "No audio output found. Connect one, then press Play.";
 
+    /// How long a released output's drop may take before the owner gives it up (F6a, OCR finding
+    /// 6, 2026-11-23). The drop is three synchronous calls into the HAL with no timeout
+    /// (`AudioOutputUnitStop`, `AudioUnitUninitialize`, `AudioComponentInstanceDispose`:
+    /// coreaudio-rs 0.14.2 `audio_unit/mod.rs:378-395`, reached from cpal 0.18.2's `StreamInner`),
+    /// so it cannot be shown never to block; measured it took 74-289 ms (2026-10-30). No hang has
+    /// been observed: this bounds one.
+    pub(crate) const RELEASE_LIMIT: Duration = Duration::from_secs(5);
+
+    /// The `Error { code: Device }` message when a release with an open pending passed
+    /// [`RELEASE_LIMIT`] (the chat's text, triage 2026-11-23).
+    pub(crate) const RELEASE_STUCK_MESSAGE: &str =
+        "The audio output did not close. Quit and reopen Ondar.";
+
+    /// How long the owner keeps asking for a default output before it believes there is none
+    /// (F6a, OCR finding 7): the watcher's own hold, [`super::NO_DEFAULT_POLLS`] polls of
+    /// [`super::WATCH_PERIOD`] (F3: `coreaudiod` read no default for ~150 ms inside a Bluetooth →
+    /// `AirPlay` switch). Pinned to those two by `the_owners_hold_is_the_watchers`.
+    pub(crate) const NO_DEFAULT_HOLD: Duration = Duration::from_millis(300);
+
     /// The watcher's last `DefaultChanged`, kept while the owner has no open output (`Closed`,
     /// `Releasing`, `Waiting`; review R2, OCR a2-1): a `Play` on that same device inside its fresh
     /// window waits for it instead of starting inside F9's window. It never names the device to
@@ -446,6 +465,9 @@ pub(crate) mod owner {
         Pause,
         /// Nothing: the idle close, or a Stop while an open was pending.
         Close,
+        /// Look for a default output until `until` ([`OutputState::Seeking`]): a session wants
+        /// one and the host read none when asked.
+        Seek { until: Instant },
     }
 
     /// The owner's state. The open itself is synchronous on the engine thread (9–318 ms measured
@@ -458,8 +480,22 @@ pub(crate) mod owner {
         Closed { last: Option<Change> },
         /// The normal state: one output, pinned to `uid`.
         Open { uid: String },
-        /// The guard is dropping off the engine thread; `Dropped` moves on to `then`.
-        Releasing { then: Then, last: Option<Change> },
+        /// The guard is dropping off the engine thread; `Dropped` moves on to `then`. Past
+        /// `deadline` ([`RELEASE_LIMIT`] from the release) the drop is given up (F6a).
+        Releasing {
+            then: Then,
+            last: Option<Change>,
+            deadline: Instant,
+        },
+        /// No output, a session that wants one, and a host that read no default when asked (F6a,
+        /// OCR finding 7): the owner asks again on every `Tick` until `until`
+        /// ([`NO_DEFAULT_HOLD`]), and opens the first default it reads. The watcher's verdict is
+        /// honoured too, but cannot be the only way out: a held unreadable poll followed by the
+        /// same default reports nothing, and after an idle close no watcher runs.
+        Seeking {
+            until: Instant,
+            last: Option<Change>,
+        },
         /// The old unit is gone; `uid` is opened at `until`. `retry` marks the one retry after a
         /// failed start: a second failure is final.
         Waiting {
@@ -481,24 +517,42 @@ pub(crate) mod owner {
             !matches!(self, Self::Open { .. })
         }
 
-        /// Set while an open is coming (OCR f2-1): the release before a switch, or the wait for
-        /// the device; the attach arm waits for the slot only then. `Closed`, `Open` and a
-        /// release that ends in a close or a pause are not.
+        /// Set while an open is coming (OCR f2-1): the release before a switch, the wait for
+        /// the device, or the search for a default; the attach arm waits for the slot only then.
+        /// `Closed`, `Open` and a release that ends in a close or a pause are not.
         pub(crate) fn open_pending(&self) -> bool {
             matches!(
                 self,
                 Self::Releasing {
-                    then: Then::Open { .. },
+                    then: Then::Open { .. } | Then::Seek { .. },
                     ..
                 } | Self::Waiting { .. }
+                    | Self::Seeking { .. }
             )
+        }
+
+        /// Set while the owner needs its clock (`Tick`): a wait for a device, a release's
+        /// deadline, the search for a default. `Closed` and `Open` need none.
+        pub(crate) fn needs_tick(&self) -> bool {
+            matches!(
+                self,
+                Self::Waiting { .. } | Self::Releasing { .. } | Self::Seeking { .. }
+            )
+        }
+
+        /// Set while the owner rests with no output and none coming (`Closed`): nothing is left
+        /// for the watcher to tell it but `last`, which the idle close forgets (OCR finding 8).
+        #[allow(dead_code, reason = "F6c stops the watcher on it (OCR finding 8)")]
+        pub(crate) fn at_rest(&self) -> bool {
+            matches!(self, Self::Closed { .. })
         }
 
         fn last(&self) -> Option<&Change> {
             match self {
                 Self::Closed { last }
                 | Self::Releasing { last, .. }
-                | Self::Waiting { last, .. } => last.as_ref(),
+                | Self::Waiting { last, .. }
+                | Self::Seeking { last, .. } => last.as_ref(),
                 Self::Open { .. } => None,
             }
         }
@@ -555,6 +609,9 @@ pub(crate) mod owner {
         SessionReattach,
         /// End the session in `Error { code: Device, message }`; the slot is emptied.
         Fail { message: String },
+        /// The release passed its deadline and is given up: one WARN. The drop thread is left to
+        /// itself; its late `Dropped` finds `Closed` and changes nothing.
+        ReleaseAbandoned,
     }
 
     /// What the engine knows at the moment of the event, without asking the host.
@@ -563,12 +620,17 @@ pub(crate) mod owner {
         pub(crate) now: Instant,
         pub(crate) fresh_wait: Duration,
         pub(crate) retry_delay: Duration,
+        /// [`RELEASE_LIMIT`], shortened by the tests.
+        pub(crate) release_limit: Duration,
+        /// [`NO_DEFAULT_HOLD`], shortened by the tests.
+        pub(crate) no_default_hold: Duration,
     }
 
     /// The host, asked lazily (the chat's C2, 2026-11-19): only the cells that open "the current
     /// default" call it (`Closed` + `Play`, `Releasing { Close | Pause }` + `Play`, `Open` +
-    /// `DeviceGone`); a `Tick` while `Waiting` asks nothing, because `default_output_device()`
-    /// took 35–191 ms during exactly that window (R2) and this runs on the engine thread.
+    /// `DeviceGone`, and `Seeking` + `Tick` or `Play`, at most [`NO_DEFAULT_HOLD`] long); a `Tick`
+    /// while `Waiting` or `Releasing` asks nothing, because `default_output_device()` took
+    /// 35–191 ms during exactly that window (R2) and this runs on the engine thread.
     pub(crate) trait Host {
         /// `default_output_device()`'s UID right now, `None` with no output device at all.
         fn current_default(&self) -> Option<String>;
@@ -637,6 +699,10 @@ pub(crate) mod owner {
             })
         };
         let unchanged = (state.clone(), Vec::new());
+        // A release that begins now.
+        let deadline = env.now + env.release_limit;
+        // The host read no default: look for one until then (finding 7), never `Fail` on one read.
+        let seek_until = env.now + env.no_default_hold;
 
         match (state, ev) {
             // ---- Closed ---------------------------------------------------------------------
@@ -648,7 +714,13 @@ pub(crate) mod owner {
             ),
             (S::Closed { .. }, E::NoDefault | E::IdleClose) => (S::closed(), Vec::new()),
             (S::Closed { .. }, E::Play) => match play_target() {
-                None => (S::closed(), vec![fail_no_output()]),
+                None => (
+                    S::Seeking {
+                        until: seek_until,
+                        last,
+                    },
+                    Vec::new(),
+                ),
                 Some((uid, nb)) if nb <= env.now => open_at(uid, nb, last),
                 Some((uid, nb)) => {
                     let (s, _) = open_at(uid, nb, last);
@@ -669,6 +741,7 @@ pub(crate) mod owner {
                             not_before: env.now + wait(&d, fresh),
                         },
                         last: changed(&d, fresh),
+                        deadline,
                     },
                     vec![A::Release, A::SessionBuffering],
                 )
@@ -677,6 +750,7 @@ pub(crate) mod owner {
                 S::Releasing {
                     then: Then::Close,
                     last: None,
+                    deadline,
                 },
                 vec![A::Release, fail_no_output()],
             ),
@@ -688,15 +762,17 @@ pub(crate) mod owner {
                             not_before: env.now,
                         },
                         last: None,
+                        deadline,
                     },
                     vec![A::Release, A::SessionBuffering],
                 ),
                 None => (
                     S::Releasing {
-                        then: Then::Close,
+                        then: Then::Seek { until: seek_until },
                         last: None,
+                        deadline,
                     },
-                    vec![A::Release, fail_no_output()],
+                    vec![A::Release, A::SessionBuffering],
                 ),
             },
             (S::Open { uid }, E::Reopen) => (
@@ -706,6 +782,7 @@ pub(crate) mod owner {
                         not_before: env.now,
                     },
                     last: None,
+                    deadline,
                 },
                 vec![A::Release, A::SessionBuffering],
             ),
@@ -713,6 +790,7 @@ pub(crate) mod owner {
                 S::Releasing {
                     then: Then::Close,
                     last: None,
+                    deadline,
                 },
                 vec![A::Release],
             ),
@@ -721,30 +799,35 @@ pub(crate) mod owner {
             // ---- Releasing ------------------------------------------------------------------
             // A pending open follows the newest default (the wait restarts); a close or a pause
             // only records the change (OCR a3-5: the slot is empty, nothing may open on it).
-            (S::Releasing { then, .. }, E::DefaultChanged { uid: d, fresh }) => match then {
-                Then::Open { .. } => (
-                    S::Releasing {
-                        then: Then::Open {
-                            uid: d.clone(),
-                            not_before: env.now + wait(&d, fresh),
+            (S::Releasing { then, deadline, .. }, E::DefaultChanged { uid: d, fresh }) => {
+                match then {
+                    Then::Open { .. } | Then::Seek { .. } => (
+                        S::Releasing {
+                            then: Then::Open {
+                                uid: d.clone(),
+                                not_before: env.now + wait(&d, fresh),
+                            },
+                            last: changed(&d, fresh),
+                            deadline: *deadline,
                         },
-                        last: changed(&d, fresh),
-                    },
-                    vec![A::SessionBuffering],
-                ),
-                Then::Pause | Then::Close => (
-                    S::Releasing {
-                        then: then.clone(),
-                        last: changed(&d, fresh),
-                    },
-                    Vec::new(),
-                ),
-            },
-            (S::Releasing { then, .. }, E::NoDefault) => match then {
-                Then::Open { .. } => (
+                        vec![A::SessionBuffering],
+                    ),
+                    Then::Pause | Then::Close => (
+                        S::Releasing {
+                            then: then.clone(),
+                            last: changed(&d, fresh),
+                            deadline: *deadline,
+                        },
+                        Vec::new(),
+                    ),
+                }
+            }
+            (S::Releasing { then, deadline, .. }, E::NoDefault) => match then {
+                Then::Open { .. } | Then::Seek { .. } => (
                     S::Releasing {
                         then: Then::Close,
                         last: None,
+                        deadline: *deadline,
                     },
                     vec![fail_no_output()],
                 ),
@@ -752,44 +835,74 @@ pub(crate) mod owner {
                     S::Releasing {
                         then: then.clone(),
                         last: None,
+                        deadline: *deadline,
                     },
                     Vec::new(),
                 ),
             },
-            (S::Releasing { then, last }, E::Dropped) => match then {
+            (S::Releasing { then, last, .. }, E::Dropped) => match then {
                 Then::Open { uid, not_before } => open_at(uid.clone(), *not_before, last.clone()),
+                Then::Seek { until } => (
+                    S::Seeking {
+                        until: *until,
+                        last: last.clone(),
+                    },
+                    Vec::new(),
+                ),
                 Then::Pause | Then::Close => (S::Closed { last: last.clone() }, Vec::new()),
             },
-            (S::Releasing { then, .. }, E::Play) => match then {
-                Then::Open { .. } => unchanged,
+            // The drop did not return (finding 6): given up. A session was waiting for the open
+            // only if one was pending; an idle close or a Stop has nobody to tell but the log.
+            (
+                S::Releasing {
+                    then,
+                    last,
+                    deadline,
+                },
+                E::Tick,
+            ) if *deadline <= env.now => {
+                let mut actions = vec![A::ReleaseAbandoned];
+                if matches!(then, Then::Open { .. } | Then::Seek { .. }) {
+                    actions.push(A::Fail {
+                        message: RELEASE_STUCK_MESSAGE.into(),
+                    });
+                }
+                (S::Closed { last: last.clone() }, actions)
+            }
+            (S::Releasing { then, deadline, .. }, E::Play) => match then {
+                Then::Open { .. } | Then::Seek { .. } => unchanged,
                 Then::Pause | Then::Close => match play_target() {
                     Some((uid, not_before)) => (
                         S::Releasing {
                             then: Then::Open { uid, not_before },
                             last,
+                            deadline: *deadline,
                         },
                         Vec::new(),
                     ),
                     None => (
                         S::Releasing {
-                            then: Then::Close,
-                            last: None,
+                            then: Then::Seek { until: seek_until },
+                            last,
+                            deadline: *deadline,
                         },
-                        vec![fail_no_output()],
+                        Vec::new(),
                     ),
                 },
             },
-            (S::Releasing { .. }, E::Stop) => (
+            (S::Releasing { deadline, .. }, E::Stop) => (
                 S::Releasing {
                     then: Then::Close,
                     last,
+                    deadline: *deadline,
                 },
                 Vec::new(),
             ),
-            (S::Releasing { .. }, E::IdleClose) => (
+            (S::Releasing { deadline, .. }, E::IdleClose) => (
                 S::Releasing {
                     then: Then::Close,
                     last: None,
+                    deadline: *deadline,
                 },
                 Vec::new(),
             ),
@@ -836,6 +949,24 @@ pub(crate) mod owner {
             (S::Waiting { .. }, E::Stop) => (S::Closed { last }, Vec::new()),
             (S::Waiting { .. }, E::IdleClose) => (S::closed(), Vec::new()),
             (S::Waiting { .. }, _) => unchanged,
+
+            // ---- Seeking --------------------------------------------------------------------
+            // The watcher's verdict, when it has one.
+            (S::Seeking { .. }, E::DefaultChanged { uid: d, fresh }) => {
+                let nb = env.now + wait(&d, fresh);
+                open_at(d.clone(), nb, changed(&d, fresh))
+            }
+            (S::Seeking { .. }, E::NoDefault) => (S::closed(), vec![fail_no_output()]),
+            // The owner's own: ask again; the first default read is opened, and none by `until`
+            // is believed.
+            (S::Seeking { until, .. }, E::Tick | E::Play) => match play_target() {
+                Some((uid, nb)) => open_at(uid, nb, last),
+                None if *until <= env.now => (S::closed(), vec![fail_no_output()]),
+                None => unchanged,
+            },
+            (S::Seeking { .. }, E::Stop) => (S::Closed { last }, Vec::new()),
+            (S::Seeking { .. }, E::IdleClose) => (S::closed(), Vec::new()),
+            (S::Seeking { .. }, _) => unchanged,
         }
     }
 }
@@ -848,9 +979,11 @@ mod owner_tests {
 
     use std::time::{Duration, Instant};
 
+    use std::sync::LazyLock;
+
     use super::owner::{
-        Action as A, Change, Env, Host, NO_OUTPUT_MESSAGE, OutputEvent as E, OutputState as S,
-        Then, decide_output as decide_with,
+        Action as A, Change, Env, Host, NO_DEFAULT_HOLD, NO_OUTPUT_MESSAGE, OutputEvent as E,
+        OutputState as S, RELEASE_STUCK_MESSAGE, Then, decide_output as decide_with,
     };
 
     /// A host whose default is scripted; the speakers unless a test says otherwise.
@@ -872,18 +1005,39 @@ mod owner_tests {
         }
     }
 
+    /// The deadline every `Releasing` built by the helpers below carries: far enough that no
+    /// test's `Tick` reaches it. The table's cells are compared with it in place
+    /// ([`any_deadline`]); the deadline itself (set at the release, kept across events, acted on
+    /// by `Tick`) is pinned on the raw decision by `a_release_past_its_deadline_is_given_up`.
+    static FAR: LazyLock<Instant> = LazyLock::new(|| Instant::now() + Duration::from_hours(24));
+
+    /// `state` with a `Releasing`'s deadline replaced by [`FAR`].
+    fn any_deadline((state, actions): (S, Vec<A>)) -> (S, Vec<A>) {
+        let state = match state {
+            S::Releasing { then, last, .. } => S::Releasing {
+                then,
+                last,
+                deadline: *FAR,
+            },
+            other => other,
+        };
+        (state, actions)
+    }
+
     /// Every cell is decided against the host that must not be asked, except the ones that open
     /// the current default, which name their host.
     fn decide_output(state: &S, ev: E, env: &Env) -> (S, Vec<A>) {
-        decide_with(state, ev, env, &Unasked)
+        any_deadline(decide_with(state, ev, env, &Unasked))
     }
 
     fn decide_on(state: &S, ev: E, env: &Env, default: Option<&'static str>) -> (S, Vec<A>) {
-        decide_with(state, ev, env, &Scripted(default))
+        any_deadline(decide_with(state, ev, env, &Scripted(default)))
     }
 
     const WAIT: Duration = Duration::from_secs(3);
     const RETRY: Duration = Duration::from_secs(1);
+    const LIMIT: Duration = Duration::from_secs(5);
+    const HOLD: Duration = Duration::from_millis(300);
     /// The headphones in the jack: the one device whose fresh change waits (D5).
     const HP: &str = super::owner::JACK_UID;
     /// A Bluetooth device's UID and the `AirPlay` route device's, as macOS names them (2026-11-23).
@@ -895,6 +1049,8 @@ mod owner_tests {
             now,
             fresh_wait: WAIT,
             retry_delay: RETRY,
+            release_limit: LIMIT,
+            no_default_hold: HOLD,
         }
     }
 
@@ -928,11 +1084,26 @@ mod owner_tests {
                 not_before,
             },
             last,
+            deadline: *FAR,
         }
     }
 
     fn releasing(then: Then, last: Option<Change>) -> S {
-        S::Releasing { then, last }
+        S::Releasing {
+            then,
+            last,
+            deadline: *FAR,
+        }
+    }
+
+    fn seeking(until: Instant, last: Option<Change>) -> S {
+        S::Seeking { until, last }
+    }
+
+    fn release_stuck() -> A {
+        A::Fail {
+            message: RELEASE_STUCK_MESSAGE.into(),
+        }
     }
 
     fn waiting(uid: &str, until: Instant, retry: bool) -> S {
@@ -1005,6 +1176,257 @@ mod owner_tests {
         assert!(!open("spk").open_pending());
         assert!(!releasing(Then::Close, None).open_pending());
         assert!(!releasing(Then::Pause, None).open_pending());
+        // F6a: the search for a default is an open coming too (the decode thread waits for it).
+        assert!(seeking(t, None).open_pending());
+        assert!(releasing(Then::Seek { until: t }, None).open_pending());
+    }
+
+    /// F6a: the owner is ticked while it waits, releases or seeks, and rests only in `Closed`.
+    /// **Fails if** `Releasing` or `Seeking` gets no `Tick` (mutation: `needs_tick` = `Waiting`
+    /// alone: a release's deadline and the search for a default never run), or if `at_rest` is
+    /// true with an output open or coming (finding 8's signal would stop the watcher under it).
+    #[test]
+    fn the_owner_is_ticked_while_it_waits_releases_or_seeks() {
+        let t = Instant::now();
+        assert!(waiting(HP, t, false).needs_tick());
+        assert!(releasing_open(HP, t).needs_tick());
+        assert!(releasing(Then::Close, None).needs_tick());
+        assert!(seeking(t, None).needs_tick());
+        assert!(!S::closed().needs_tick());
+        assert!(!open("spk").needs_tick());
+        assert!(S::closed().at_rest());
+        for busy in [
+            open("spk"),
+            waiting(HP, t, false),
+            releasing(Then::Close, None),
+            seeking(t, None),
+        ] {
+            assert!(!busy.at_rest(), "{busy:?}");
+        }
+    }
+
+    /// F6a (OCR finding 6): a release whose drop does not return is given up at its deadline.
+    /// **What it pins**, on the raw decision: the deadline is `now + release_limit` at the release
+    /// and is kept by every later event of that release; a `Tick` before it changes nothing and
+    /// asks the host nothing; at it, a release with an open pending ends `Closed` with
+    /// `ReleaseAbandoned` then `Fail` carrying `RELEASE_STUCK_MESSAGE`, and one with nothing
+    /// pending (an idle close, a Stop, a pause) ends `Closed` with `ReleaseAbandoned` alone (no
+    /// Error on an app nobody is listening to); `last` survives. **Fails if** the `Tick` arm is
+    /// missing (the unfixed table: `Releasing` + `Tick` unchanged for ever), if a newer default
+    /// restarts the deadline (mutation: `deadline` for `*deadline` in the `DefaultChanged` arm),
+    /// or if a close fails the session.
+    #[test]
+    fn a_release_past_its_deadline_is_given_up() {
+        let t = Instant::now();
+        let hp = change(HP, false, t);
+        let (released, _) = decide_with(&open("spk"), changed(HP, false), &env(t), &Unasked);
+        let at = |deadline: Instant, then: Then, last: Option<Change>| S::Releasing {
+            then,
+            last,
+            deadline,
+        };
+        let open_then = Then::Open {
+            uid: HP.into(),
+            not_before: t,
+        };
+        assert_eq!(released, at(t + LIMIT, open_then.clone(), hp.clone()));
+        // Kept across the release's later events.
+        let t1 = t + Duration::from_secs(1);
+        for ev in [changed("bt", false), E::Stop, E::IdleClose, E::NoDefault] {
+            let (s, _) = decide_with(&released, ev.clone(), &env(t1), &Unasked);
+            assert!(
+                matches!(s, S::Releasing { deadline, .. } if deadline == t + LIMIT),
+                "{ev:?} moved the deadline: {s:?}"
+            );
+        }
+        let (s, _) = decide_with(
+            &at(t + LIMIT, Then::Close, None),
+            E::Play,
+            &env(t1),
+            &Scripted(Some("spk")),
+        );
+        assert!(matches!(s, S::Releasing { deadline, .. } if deadline == t + LIMIT));
+        // Before the deadline: nothing.
+        let before = env(t + Duration::from_millis(4_999));
+        assert_eq!(
+            decide_with(&released, E::Tick, &before, &Unasked),
+            (released.clone(), vec![])
+        );
+        // At it, with an open pending: given up, and the session told.
+        let due = env(t + LIMIT);
+        assert_eq!(
+            decide_with(&released, E::Tick, &due, &Unasked),
+            (
+                S::Closed { last: hp.clone() },
+                vec![A::ReleaseAbandoned, release_stuck()]
+            )
+        );
+        let seek = at(t + LIMIT, Then::Seek { until: t }, None);
+        assert_eq!(
+            decide_with(&seek, E::Tick, &due, &Unasked),
+            (S::closed(), vec![A::ReleaseAbandoned, release_stuck()])
+        );
+        // With nothing pending: given up, nobody to tell but the log.
+        for then in [Then::Close, Then::Pause] {
+            assert_eq!(
+                decide_with(
+                    &at(t + LIMIT, then.clone(), hp.clone()),
+                    E::Tick,
+                    &due,
+                    &Unasked
+                ),
+                (S::Closed { last: hp.clone() }, vec![A::ReleaseAbandoned]),
+                "{then:?}"
+            );
+        }
+    }
+
+    /// F6a (OCR finding 7): one read of "no default output" is not believed. **What it pins:**
+    /// the three cells that ask the host (`Closed` + `Play`, `Open` + `DeviceGone`, `Releasing {
+    /// Close | Pause }` + `Play`), on `None`, look for a default until `now + no_default_hold`
+    /// and fail nothing; the open output is released first and a playing session shows
+    /// `Buffering`; `last` is kept. **Fails if** any of them is `Fail` on the one read (the
+    /// unfixed table: F3's false `No audio output found`, through another door).
+    #[test]
+    fn one_read_of_no_default_is_looked_for_not_failed() {
+        let t = Instant::now();
+        let hp = change(HP, true, t);
+        assert_eq!(
+            decide_on(&S::Closed { last: hp.clone() }, E::Play, &env(t), None),
+            (seeking(t + HOLD, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_on(&open(HP), E::DeviceGone, &env(t), None),
+            (
+                releasing(Then::Seek { until: t + HOLD }, None),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        for then in [Then::Close, Then::Pause] {
+            assert_eq!(
+                decide_on(&releasing(then.clone(), hp.clone()), E::Play, &env(t), None),
+                (
+                    releasing(Then::Seek { until: t + HOLD }, hp.clone()),
+                    vec![]
+                ),
+                "{then:?}"
+            );
+        }
+    }
+
+    /// F6a (OCR finding 7), the Seeking row and `Releasing { Seek }`. **Fails if** a `Tick` that
+    /// reads a default does not open it at once (the session waits out the hold for nothing), if
+    /// it opens the jack inside its fresh window (F9), if a `Tick` that reads none before `until`
+    /// fails (mutation: drop the `until` guard: one more read, the same false Error) or at
+    /// `until` does not (mutation: `None => unchanged` alone: `Buffering` for ever with no
+    /// device), if the watcher's `DefaultChanged` or `NoDefault` is ignored, if Stop or the idle
+    /// close leaves the search running for nobody, if the drop's `Dropped` loses `until`
+    /// (the hold would restart after every release), or if any other event asks the host.
+    #[test]
+    fn seeking_opens_the_first_default_it_reads_and_gives_up_at_its_hold() {
+        let t = Instant::now();
+        let until = t + HOLD;
+        let s = seeking(until, None);
+        let soon = env(t + Duration::from_millis(100));
+        assert_eq!(decide_on(&s, E::Tick, &soon, None), (s.clone(), vec![]));
+        assert_eq!(
+            decide_on(&s, E::Tick, &soon, Some("spk")),
+            (
+                waiting("spk", soon.now, false),
+                vec![A::Open { uid: "spk".into() }]
+            )
+        );
+        assert_eq!(
+            decide_on(&s, E::Play, &soon, Some("spk")),
+            (
+                waiting("spk", soon.now, false),
+                vec![A::Open { uid: "spk".into() }]
+            )
+        );
+        // The jack, fresh 100 ms ago: found, and opened only after its window.
+        let hp = change(HP, true, t);
+        assert_eq!(
+            decide_on(&seeking(until, hp.clone()), E::Tick, &soon, Some(HP)),
+            (waiting_last(HP, t + WAIT, false, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_on(&s, E::Tick, &env(until), None),
+            (S::closed(), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&s, changed("bt", false), &soon),
+            (
+                waiting_last("bt", soon.now, false, change("bt", false, soon.now)),
+                vec![A::Open { uid: "bt".into() }]
+            )
+        );
+        assert_eq!(
+            decide_output(&s, changed(HP, true), &soon),
+            (
+                waiting_last(HP, soon.now + WAIT, false, change(HP, true, soon.now)),
+                vec![]
+            )
+        );
+        assert_eq!(
+            decide_output(&s, E::NoDefault, &soon),
+            (S::closed(), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&seeking(until, hp.clone()), E::Stop, &soon),
+            (S::Closed { last: hp.clone() }, vec![])
+        );
+        assert_eq!(
+            decide_output(&seeking(until, hp.clone()), E::IdleClose, &soon),
+            (S::closed(), vec![])
+        );
+        for ev in [
+            E::DeviceGone,
+            E::Reopen,
+            E::Dropped,
+            E::Pause,
+            E::Opened { uid: HP.into() },
+        ] {
+            assert_eq!(
+                decide_output(&s, ev.clone(), &soon),
+                (s.clone(), vec![]),
+                "{ev:?}"
+            );
+        }
+        // The release that precedes the search.
+        let r = releasing(Then::Seek { until }, hp.clone());
+        assert_eq!(
+            decide_output(&r, E::Dropped, &soon),
+            (seeking(until, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_output(&r, changed("bt", false), &soon),
+            (
+                releasing_open_last("bt", soon.now, change("bt", false, soon.now)),
+                vec![A::SessionBuffering]
+            )
+        );
+        assert_eq!(
+            decide_output(&r, E::NoDefault, &soon),
+            (releasing(Then::Close, None), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&r, E::Stop, &soon),
+            (releasing(Then::Close, hp.clone()), vec![])
+        );
+        assert_eq!(decide_output(&r, E::Play, &soon), (r.clone(), vec![]));
+        assert_eq!(decide_output(&r, E::Tick, &soon), (r.clone(), vec![]));
+    }
+
+    /// F6a: the owner's hold for a default that reads as none is the watcher's
+    /// (`NO_DEFAULT_POLLS` polls of `WATCH_PERIOD`, F3's measurement), one figure in two places.
+    /// **Fails if** either side is changed alone.
+    #[test]
+    fn the_owners_hold_is_the_watchers() {
+        assert_eq!(
+            NO_DEFAULT_HOLD,
+            super::WATCH_PERIOD * super::NO_DEFAULT_POLLS
+        );
+        assert_eq!(super::owner::RELEASE_LIMIT, LIMIT);
     }
 
     /// Closed row. **Fails if** a default change is not kept (mutation: `Closed { last: None }` on
@@ -1053,8 +1475,8 @@ mod owner_tests {
     /// Closed + Play (R2, R5, C1). **Fails if** a Play inside a fresh device's window opens at once
     /// (mutation: drop the `fresh && …` arm of `Change::not_before`: F9's window, the plan's exit
     /// line), if the wait is counted from the Play instead of the change (`until` would be
-    /// `now + wait`), if a Play outside the window or on a device that existed waits, or if no
-    /// device at all is anything but `Fail` with R5's text. `last` is kept into `Waiting`.
+    /// `now + wait`), if a Play outside the window or on a device that existed waits, or if a
+    /// default that reads as none is failed on that one read (F6a). `last` is kept into `Waiting`.
     #[test]
     fn closed_play_respects_a_fresh_device_and_no_device() {
         let t0 = Instant::now();
@@ -1080,10 +1502,11 @@ mod owner_tests {
         let (s, a) = decide_on(&S::closed(), E::Play, &env(t0), Some("spk"));
         assert_eq!(s, waiting("spk", t0, false));
         assert_eq!(a, vec![A::Open { uid: "spk".into() }]);
-        // No device at all.
+        // No default read: looked for, not failed on the one read (F6a, finding 7; the row is
+        // `seeking_opens_the_first_default_it_reads_and_gives_up_at_its_hold`).
         assert_eq!(
             decide_on(&S::closed(), E::Play, &env(t0), None),
-            (S::closed(), vec![fail_no_output()])
+            (seeking(t0 + HOLD, None), vec![])
         );
     }
 
@@ -1137,11 +1560,12 @@ mod owner_tests {
                 vec![A::Release, A::SessionBuffering]
             )
         );
+        // No default read at the loss: released, and looked for (F6a, finding 7).
         assert_eq!(
             decide_on(&open(HP), E::DeviceGone, &env(t), None),
             (
-                releasing(Then::Close, None),
-                vec![A::Release, fail_no_output()]
+                releasing(Then::Seek { until: t + HOLD }, None),
+                vec![A::Release, A::SessionBuffering]
             )
         );
         for ev in [E::Play, E::Pause, E::Stop, E::Dropped, E::Tick] {
@@ -1403,6 +1827,7 @@ mod owner_tests {
         assert!(S::closed().is_switching());
         assert!(releasing_open(HP, t).is_switching());
         assert!(waiting(HP, t, false).is_switching());
+        assert!(seeking(t, None).is_switching());
         assert!(!open("spk").is_switching());
     }
 }

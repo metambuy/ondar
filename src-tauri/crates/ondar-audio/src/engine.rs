@@ -536,6 +536,10 @@ struct Engine {
     /// retry of a failed start; on the engine so a test harness can shorten them.
     fresh_wait: Duration,
     retry_delay: Duration,
+    /// The owner's bound on a release's drop and its hold for a default that reads as none
+    /// (F6a); on the engine for the same reason.
+    release_limit: Duration,
+    no_default_hold: Duration,
     /// When the owner left `Open` (the release), for the lag the re-attach adds.
     switch_began: Option<Instant>,
     /// How far behind live the session's audio is estimated to be, from its re-attaches (each
@@ -648,6 +652,8 @@ impl Engine {
                 },
             ),
             retry_delay: crate::output::owner::RETRY_DELAY,
+            release_limit: crate::output::owner::RELEASE_LIMIT,
+            no_default_hold: crate::output::owner::NO_DEFAULT_HOLD,
             switch_began: None,
             lag_estimate: Duration::ZERO,
             max_lag: MAX_LAG,
@@ -1043,7 +1049,7 @@ impl Engine {
 
     /// Drain the output channel into the owner: a message from an output already replaced (an
     /// older generation) is dropped; the watcher's carry none. Then the owner's clock, while it
-    /// waits.
+    /// needs one (a wait for a device, a release's deadline, the search for a default).
     fn drain_output_events(&mut self) {
         while let Ok(msg) = self.output_rx.try_recv() {
             if msg.generation.is_some_and(|g| g != self.output_generation) {
@@ -1054,7 +1060,7 @@ impl Engine {
             }
             self.feed(msg.event);
         }
-        if matches!(self.owner, OutputState::Waiting { .. }) {
+        if self.owner.needs_tick() {
             self.feed(OutputEvent::Tick);
         }
     }
@@ -1074,6 +1080,8 @@ impl Engine {
                 now: Instant::now(),
                 fresh_wait: self.fresh_wait,
                 retry_delay: self.retry_delay,
+                release_limit: self.release_limit,
+                no_default_hold: self.no_default_hold,
             };
             let (state, actions) = decide_output(&self.owner, event, &env, &*self.opener);
             self.owner = state;
@@ -1158,6 +1166,14 @@ impl Engine {
                     message: message.clone(),
                 });
                 self.output_failed = Some(message);
+            }
+            Action::ReleaseAbandoned => {
+                // The drop thread still holds the guard; nothing here can take it back.
+                self.switch_began = None;
+                log::warn!(
+                    "output close abandoned: it did not return within {:.1} s",
+                    self.release_limit.as_secs_f64()
+                );
             }
         }
     }
@@ -2599,7 +2615,8 @@ mod session_tests {
         }
         fn log(&self, r: &log::Record) {
             let msg = r.args().to_string();
-            const KEPT: [&str; 13] = [
+            const KEPT: [&str; 14] = [
+                "output close abandoned",
                 "output lost",
                 "output opened",
                 "output replaced",
@@ -3578,8 +3595,10 @@ mod session_tests {
 
     /// Beta item 1, A3 (review R5): no output device at all. **What it pins:** a `play` with the
     /// host reporting no default output ends in `Error { code: Device }` with
-    /// `NO_OUTPUT_MESSAGE`, and no open is attempted. **Fails if** the owner waits or opens
-    /// (mutation: `current_default.unwrap_or_default()` in the Closed + Play cell).
+    /// `NO_OUTPUT_MESSAGE` (since F6a after the owner's hold, 300 ms, not on the first read), and
+    /// no open is attempted. **Fails if** the owner opens (mutation:
+    /// `current_default.unwrap_or_default()` in the Closed + Play cell) or looks for a default
+    /// without end (mutation: drop `Seeking`'s `until` arm: no Error within the guard).
     #[test]
     fn a_play_with_no_output_device_fails_with_the_no_output_text() {
         let server = tone_server();
@@ -3607,6 +3626,109 @@ mod session_tests {
             Some(crate::output::owner::NO_OUTPUT_MESSAGE)
         );
         assert_eq!(out.opens.load(Ordering::SeqCst), 0, "an open was attempted");
+        drop(tx);
+    }
+
+    /// F6a (OCR finding 7): a `play` whose one read of the default finds none still plays when a
+    /// default is readable a moment later (`coreaudiod` read none for ~150 ms inside a Bluetooth →
+    /// `AirPlay` switch, F3). **What it pins:** with the host's default unreadable at the `Play`
+    /// and readable again 100 ms later, and no watcher running to say so (the engine has opened
+    /// nothing yet), the states up to `Playing` contain no `Error` and the output was opened
+    /// once. **Fails if** the `Closed` + `Play` cell fails on the one read (the unfixed
+    /// table: `Error { Device }` with `NO_OUTPUT_MESSAGE` at once), or if the search relies on the
+    /// watcher (no event ever comes: `Error` at the hold).
+    #[test]
+    fn a_play_that_reads_no_default_once_still_plays() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        lock(&out.devices).default = None;
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-seek", opener, |e| {
+            e.no_default_hold = Duration::from_secs(5);
+        });
+        play(&tx, &server.url, "st-seek");
+        let devices = out.devices.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            lock(&devices).default = Some(TEST_OUT.into());
+        });
+        let mut states = Vec::new();
+        let deadline = Instant::now() + GUARD;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(ev) = ev_rx.recv_timeout(left) else {
+                panic!("neither Playing nor Error: {states:?}");
+            };
+            if let EngineEvent::State(s) = ev {
+                let ended = s == PlaybackState::Playing || is_error(&s);
+                states.push(s);
+                if ended {
+                    break;
+                }
+            }
+        }
+        // The test engine's state starts at `Connecting` (`test_ctx`), so the play's own
+        // `Connecting` is a repeat and sends no event.
+        assert_eq!(
+            states,
+            vec![PlaybackState::Buffering, PlaybackState::Playing]
+        );
+        assert_eq!(out.opened(), vec![TEST_OUT.to_string()]);
+        drop(tx);
+    }
+
+    /// F6a (OCR finding 6): a release whose drop does not return is given up at the owner's
+    /// deadline, and the session waiting for the new output is told. **What it pins:** with the
+    /// old output's drop taking 1.5 s and `release_limit` 300 ms, a switch while `Playing` shows
+    /// `Buffering` then `Error { Device }` with `RELEASE_STUCK_MESSAGE`, one WARN line on the
+    /// engine thread, and no second open, read again after the late drop has returned (its
+    /// `Dropped` finds `Closed`). **Fails if** `Releasing` gets no `Tick` or has no deadline (the
+    /// unfixed engine: `Buffering` until the drop returns, then `Playing` on the second open), or
+    /// if the late `Dropped` opens anything.
+    #[test]
+    fn a_release_that_does_not_return_ends_in_the_stuck_error() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let name = "ondar-audio:test-stuck-release";
+        let (tx, ev_rx) = spawn_engine_configured(name, opener, |e| {
+            e.release_limit = Duration::from_millis(300);
+        });
+        play(&tx, &server.url, "st-stuck");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        *lock(&out.drop_delay) = Duration::from_millis(1500);
+        // The guard's delay is read at the open: reopen the same device so the next release is
+        // the slow one.
+        out.fire_reopen();
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Playing));
+        out.default_changed("bt", false);
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
+        assert_eq!(
+            next_state(&ev_rx),
+            Some(PlaybackState::Error {
+                code: ErrorCode::Device,
+                message: crate::output::owner::RELEASE_STUCK_MESSAGE.into(),
+            })
+        );
+        assert_eq!(thread_lines(name, "output close abandoned").len(), 1);
+        assert!(
+            eventually(GUARD, || out.closed(1)),
+            "the slow drop never returned"
+        );
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            2,
+            "the late Dropped opened an output"
+        );
         drop(tx);
     }
 
