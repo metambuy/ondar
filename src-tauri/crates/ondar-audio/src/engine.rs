@@ -116,6 +116,7 @@ impl AudioEngine {
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
             output_switching: Arc::new(AtomicBool::new(false)),
+            output_pending: Arc::new(AtomicBool::new(false)),
         };
         let engine_shared = shared.clone();
         // The OS refused a thread: the app cannot run (.claude/rules/rust.md, the exemption).
@@ -155,6 +156,10 @@ struct Shared {
     /// released, waited for or opened, so nothing may write `Playing` (`decide_tick` holds
     /// `Buffering`; the attach arm's part comes with the re-attach, A4).
     output_switching: Arc<AtomicBool>,
+    /// Set while an open is coming (`Releasing { then: Open }`, `Waiting`; OCR f2-1): the attach
+    /// arm waits for the slot on this one, not on `output_switching`, which is true for `Closed`
+    /// too (merge B's loss pause is `Closed` with a live paused session).
+    output_pending: Arc<AtomicBool>,
     /// The session the last `Play` began — its generation, the id `Started` will carry, and
     /// whether it has reached `Playing` yet — under **one** lock with every state write that
     /// comes from a session, so the write and the decision it feeds cannot interleave with
@@ -346,15 +351,17 @@ impl SessionCtx {
         self.cancel.load(Ordering::Relaxed)
     }
 
-    /// The output for an attach: the slot's pair, waited for while the owner is switching and the
+    /// The output for an attach: the slot's pair, waited for while an open is coming and the
     /// session is not cancelled (polled every 20 ms; the wait is the owner's, at most the fresh
-    /// device's 3 s plus the drop). `None` once the slot is empty with nothing coming, or on cancel.
+    /// device's 3 s plus the drop). `None` once the slot is empty with nothing coming, or on
+    /// cancel. The flag is `output_pending`, not `output_switching` (OCR f2-1): the latter is true
+    /// for `Closed` too, where merge B's loss pause keeps a live session for as long as it lasts.
     fn await_output(&self) -> Option<(Mixer, OutputFormat)> {
         loop {
             if let Some(pair) = lock(&self.output).clone() {
                 return Some(pair);
             }
-            if self.cancelled() || !self.shared.output_switching.load(Ordering::Relaxed) {
+            if self.cancelled() || !self.shared.output_pending.load(Ordering::Relaxed) {
                 return None;
             }
             thread::sleep(Duration::from_millis(20));
@@ -1045,6 +1052,9 @@ impl Engine {
             self.shared
                 .output_switching
                 .store(self.owner.is_switching(), Ordering::Relaxed);
+            self.shared
+                .output_pending
+                .store(self.owner.open_pending(), Ordering::Relaxed);
             for action in actions {
                 self.apply(action);
             }
@@ -1055,7 +1065,13 @@ impl Engine {
     fn apply(&mut self, action: Action) {
         match action {
             Action::Release => {
-                self.switch_began.get_or_insert_with(Instant::now);
+                // The clock of a switch's "away", for the lag its re-attach adds; a release that
+                // opens nothing (an idle close, a failure) times nothing (OCR a4-2).
+                if self.owner.open_pending() {
+                    self.switch_began.get_or_insert_with(Instant::now);
+                } else {
+                    self.switch_began = None;
+                }
                 self.release_output();
             }
             Action::Open { uid } => self.open_output(&uid),
@@ -1073,6 +1089,14 @@ impl Engine {
                 let Some(session) = &self.session else {
                     return;
                 };
+                // A session that has not attached yet reads the new output at its attach, which
+                // clears this flag; it discards no ring and has no lag to add (OCR a4-1, a4-3).
+                // The flag is still set: the decode thread may be between reading the slot (the
+                // old pair) and attaching, and then re-attaches on the next loop.
+                if lock(&session.player).is_none() {
+                    session.reattach.store(true, Ordering::Relaxed);
+                    return;
+                }
                 self.lag_estimate += away + Duration::from_secs(ring::RING_SECONDS as u64);
                 if self.lag_estimate > self.max_lag {
                     // The lag bound (R6): live again through the reconnect path (0.1.2, F1):
@@ -1174,6 +1198,8 @@ impl Engine {
         // nothing, so it needs no episode, and the next session clears it anyway.
         self.stall_reopened = false;
         self.lag_estimate = Duration::ZERO;
+        // A new session starts live: a release before it is not its lag (OCR a4-2).
+        self.switch_began = None;
         self.cancel_session();
         let generation = self.shared.begin_session(args.station_id.clone(), started);
         self.shared.paused.store(false, Ordering::Relaxed);
@@ -1574,9 +1600,12 @@ fn run_session(
             // The output is read at each attach: after a loss the engine has replaced it, and a
             // `None` means it is closed (the session is being ended).
             if let Some(src) = source.take_if(|_| filled >= fill_target) {
-                // The engine replaces the output before it sets `restart`, so a restart asked
-                // before this read is already answered by it.
+                // The engine replaces the output before it sets `restart` or `reattach`, so one
+                // asked before this read is already answered by it; cleared before the read, so
+                // one set after it is seen on the next loop (OCR a4-1: left set, it re-attached
+                // the session right after its first attach).
                 ctx.restart.store(false, Ordering::Relaxed);
+                ctx.reattach.store(false, Ordering::Relaxed);
                 // An empty slot while the owner is switching (an idle close's drop in flight, a
                 // wait for a fresh device; OCR a3-5) is not "closed": the open is coming, so wait
                 // for it. An empty slot otherwise means the session is being ended.
@@ -2313,6 +2342,7 @@ mod session_tests {
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
             output_switching: Arc::new(AtomicBool::new(false)),
+            output_pending: Arc::new(AtomicBool::new(false)),
             session: Arc::new(Mutex::new(Session::default())),
         };
         let generation = shared.begin_session("u1".into(), false);
@@ -4027,6 +4057,197 @@ mod session_tests {
         assert_eq!(replaced.len(), 1, "{replaced:?}");
         assert!(replaced[0].contains("reconnecting live"), "{replaced:?}");
         drop(tx);
+    }
+
+    /// OCR a4-1 (2026-11-23): an open that lands before the session's first attach (a Play inside
+    /// a fresh device's wait, whose ring fills slower than the wait) must not make that session
+    /// re-attach a second time: the first attach already reads the new output. **What it pins:**
+    /// with a 1 s wait and a server paced so the half ring takes ~1.8 s, the second station's
+    /// decode thread logs exactly one `attached` and no `output replaced` line, read 3 s after
+    /// its `Playing` (time enough for a wrongful re-attach to refill and show). **Fails if** the
+    /// attach arm does not clear `reattach` before it reads the slot (mutation: drop that store:
+    /// the loop sees the flag set by `SessionReattach`, drops the just-attached `Player`, and a
+    /// second `attached` follows).
+    #[test]
+    fn an_open_before_the_first_attach_does_not_reattach_twice() {
+        capture_logs();
+        let slow = paced_server(vec![Answer {
+            head: Vec::new(),
+            body: Arc::new(tone_wav_response(44_100, 2, 440.0, 60.0)),
+            bytes_per_sec: 100_000,
+            after: After::Hold,
+        }]);
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-one-attach", opener, |e| {
+            e.fresh_wait = Duration::from_secs(1);
+        });
+        play(&tx, &slow.url, "st-one-attach-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the first station never played"
+        );
+        out.default_changed("hp", true);
+        assert_eq!(next_state(&ev_rx), Some(PlaybackState::Buffering));
+        play(&tx, &slow.url, "st-one-attach-two");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { station_id } if station_id == "st-one-attach-two"
+            )),
+            "the second station never played"
+        );
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            2,
+            "the open did not precede the attach"
+        );
+        thread::sleep(Duration::from_secs(3));
+        let decode = "ondar-decode:st-one-attach-two";
+        let attached = thread_lines(decode, "attached");
+        assert_eq!(attached.len(), 1, "{attached:?}");
+        let replaced = thread_lines(decode, "output replaced");
+        assert!(replaced.is_empty(), "{replaced:?}");
+        drop(tx);
+    }
+
+    /// OCR a4-2 and a4-3 (2026-11-23): the time the output was away counts for a switch only, and
+    /// the discarded ring only for a session that had attached. A release whose switch never
+    /// completed (here: the new output fails twice, `Error { Device }`) used to leave
+    /// `switch_began` set; the next session's open on a fresh device then read the whole gap
+    /// (plus a ring it never had) as that session's lag, past `max_lag`, and reconnected a
+    /// session that had just connected. **What it pins:** with `max_lag` 1 s, a Play inside a
+    /// fresh device's window 1.5 s after the failed switch plays with no `Reconnecting`, on the
+    /// second connection (not a third), and no `reconnecting live` line. **Fails if**
+    /// `switch_began` outlives the release it timed (mutation: do not clear it in
+    /// `start_session`), or if the ring is added for an open that replaced nothing (mutation: add
+    /// `RING_SECONDS` whether or not the session is attached: 2 s alone passes the 1 s bound).
+    #[test]
+    fn a_play_after_a_failed_switch_does_not_inherit_its_lag() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let name = "ondar-audio:test-stale-switch-clock";
+        let (tx, ev_rx) = spawn_engine_configured(name, opener, |e| {
+            e.fresh_wait = Duration::from_secs(1);
+            e.retry_delay = Duration::from_millis(100);
+            e.max_lag = Duration::from_secs(1);
+        });
+        play(&tx, &server.url, "st-stale-clock-one");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the first station never played"
+        );
+        out.fail_next_open(2);
+        out.default_changed("bt", false);
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::State(PlaybackState::Error {
+                    code: ErrorCode::Device,
+                    ..
+                })
+            )),
+            "the failed switch did not end in Error"
+        );
+        thread::sleep(Duration::from_millis(1500));
+        out.default_changed("hp", true);
+        // The engine drains the watcher's channel after each command: a Stop (Error → Idle)
+        // answered puts the change before the Play, so the Play lands inside the fresh window.
+        tx.send(AudioCommand::Stop).expect("send");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| *ev
+                == EngineEvent::State(PlaybackState::Idle)),
+            "no Idle after Stop"
+        );
+        play(&tx, &server.url, "st-stale-clock-two");
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + GUARD;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(ev) = ev_rx.recv_timeout(left) else {
+                panic!("the second station never played: {seen:?}");
+            };
+            let playing = ev == EngineEvent::State(PlaybackState::Playing);
+            seen.push(ev);
+            if playing {
+                break;
+            }
+        }
+        assert!(
+            !states_of(&seen)
+                .iter()
+                .any(|s| matches!(s, PlaybackState::Reconnecting { .. })),
+            "{seen:?}"
+        );
+        assert_eq!(server.connections.load(Ordering::SeqCst), 2, "a reconnect");
+        assert_eq!(
+            out.opens.load(Ordering::SeqCst),
+            4,
+            "one open, two failed, one more"
+        );
+        let replaced = thread_lines(name, "output replaced");
+        assert!(replaced.is_empty(), "{replaced:?}");
+        drop(tx);
+    }
+
+    /// OCR f2-1 (2026-11-23): the attach's wait for the slot ends when no open is coming, not
+    /// when the owner is `Open`. `output_switching` is true for `Closed` too, and merge B's loss
+    /// pause is `Closed` with a live paused session: on that flag the decode thread would spin
+    /// at 20 ms for the whole pause. **What it pins:** with the slot empty, `output_switching`
+    /// set and no open pending, `await_output` returns `None` within the guard; with an open
+    /// pending it waits, and returns the pair once the slot is filled. **Fails if** the wait
+    /// reads `output_switching` (mutation: the first call never returns; the guard trips).
+    #[test]
+    fn the_slot_wait_ends_when_no_open_is_pending() {
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let ctx = test_ctx(ev_tx);
+        ctx.shared.output_switching.store(true, Ordering::Relaxed);
+        ctx.shared.output_pending.store(false, Ordering::Relaxed);
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = ctx.clone();
+        thread::spawn(move || {
+            let _ = done_tx.send(waiter.await_output().is_none());
+        });
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(2)),
+            Ok(true),
+            "await_output did not return with no open pending"
+        );
+
+        ctx.shared.output_pending.store(true, Ordering::Relaxed);
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = ctx.clone();
+        thread::spawn(move || {
+            let _ = done_tx.send(waiter.await_output().is_some());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "await_output returned while an open was pending"
+        );
+        let (mixer, _pull) = rodio::mixer::mixer(
+            std::num::NonZero::new(2).expect("channels"),
+            std::num::NonZero::new(44_100).expect("rate"),
+        );
+        *lock(&ctx.output) = Some((
+            mixer,
+            OutputFormat {
+                channels: std::num::NonZero::new(2).expect("channels"),
+                sample_rate: std::num::NonZero::new(44_100).expect("rate"),
+            },
+        ));
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(2)),
+            Ok(true),
+            "await_output did not return the filled slot"
+        );
     }
 
     /// Beta item 1, A5 (plan §6): a failed start is retried once, after `retry_delay`, with the
@@ -6190,6 +6411,7 @@ mod session_tests {
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
             output_switching: Arc::new(AtomicBool::new(false)),
+            output_pending: Arc::new(AtomicBool::new(false)),
             session: Arc::new(Mutex::new(Session::default())),
         };
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -7274,6 +7496,7 @@ mod started_tests {
             gains: EqGains::default(),
             paused: Arc::new(AtomicBool::new(false)),
             output_switching: Arc::new(AtomicBool::new(false)),
+            output_pending: Arc::new(AtomicBool::new(false)),
             session: Arc::new(Mutex::new(Session::default())),
         };
         (s, rx)

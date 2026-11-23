@@ -461,6 +461,19 @@ pub(crate) mod owner {
             !matches!(self, Self::Open { .. })
         }
 
+        /// Set while an open is coming (OCR f2-1): the release before a switch, or the wait for
+        /// the device; the attach arm waits for the slot only then. `Closed`, `Open` and a
+        /// release that ends in a close or a pause are not.
+        pub(crate) fn open_pending(&self) -> bool {
+            matches!(
+                self,
+                Self::Releasing {
+                    then: Then::Open { .. },
+                    ..
+                } | Self::Waiting { .. }
+            )
+        }
+
         fn last(&self) -> Option<&Change> {
             match self {
                 Self::Closed { last }
@@ -913,6 +926,20 @@ mod owner_tests {
         A::Fail {
             message: NO_OUTPUT_MESSAGE.into(),
         }
+    }
+
+    /// OCR f2-1: an open is pending in `Releasing { Open }` and `Waiting` only. **Fails if**
+    /// `open_pending` is true for `Closed`, `Open` or a release ending in a close or a pause
+    /// (mutation: `open_pending = is_switching`: `Closed` and `Releasing { Close }` read true).
+    #[test]
+    fn an_open_is_pending_only_while_one_is_coming() {
+        let t = Instant::now();
+        assert!(releasing_open("hp", t).open_pending());
+        assert!(waiting("hp", t, false).open_pending());
+        assert!(!S::closed().open_pending());
+        assert!(!open("spk").open_pending());
+        assert!(!releasing(Then::Close, None).open_pending());
+        assert!(!releasing(Then::Pause, None).open_pending());
     }
 
     /// Closed row. **Fails if** a default change is not kept (mutation: `Closed { last: None }` on
