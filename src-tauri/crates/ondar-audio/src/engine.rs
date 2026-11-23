@@ -74,8 +74,12 @@ const OUTPUT_IDLE_CLOSE: Duration = Duration::from_secs(30);
 /// How far behind live a session may drift through output switches before the next switch
 /// reconnects it live instead of re-attaching (plan §3, review R6; beta item 1). Each re-attach
 /// keeps every byte buffered while the output was away (`stream-download`'s 256 KiB: 16 s at
-/// 128 kbit/s, 6.5 s at 320 kbit/s) and discards the old ring's 2 s, so the audio falls `away +
-/// 2 s` further behind each time; past this the user is better served live.
+/// 128 kbit/s, 6.5 s at 320 kbit/s), so the audio falls further behind by at most the time
+/// away; past this the user is better served live. The old ring's ≤ 2 s are discarded unplayed,
+/// which moves the session **forward**: they are not added (F6c, OCR finding 9; until then the
+/// estimate grew ~2.3 s per switch with no drift, and 13 quick switches reconnected a session a
+/// few seconds behind at most, 2026-11-23), and not credited either, so the estimate is an
+/// upper bound.
 const MAX_LAG: Duration = Duration::from_secs(30);
 
 /// `ONDAR_TEST_FRESH_WAIT_MS`: the owner's fresh-device wait, **debug builds only** (the by-hand
@@ -635,9 +639,9 @@ struct Engine {
     no_default_hold: Duration,
     /// When the owner left `Open` (the release), for the lag the re-attach adds.
     switch_began: Option<Instant>,
-    /// How far behind live the session's audio is estimated to be, from its re-attaches (each
-    /// adds the time the output was away plus the ring it discards, plan §3 / review R6): reset by
-    /// a new session and by any reconnect. Past [`Self::max_lag`] a switch reconnects instead.
+    /// How far behind live the session's audio is estimated to be, at most, from its re-attaches
+    /// (each adds the time the output was away, plan §3 / review R6; see [`MAX_LAG`]): reset by a
+    /// new session and by any reconnect. Past [`Self::max_lag`] a switch reconnects instead.
     lag_estimate: Duration,
     /// [`MAX_LAG`], on the engine so a test harness can shorten it.
     max_lag: Duration,
@@ -685,6 +689,10 @@ struct Engine {
     output_idle_close: Duration,
     /// When the output became closable, as [`output_close`] keeps it; `None` while it is not.
     idle_since: Option<Instant>,
+    /// Whether the default-output watcher runs: from an open's `start_watch` to
+    /// [`Self::close_output`]. It outlives the output when a switch fails (`Error`, `Closed`),
+    /// and is then stopped at the idle limit like an open output (F6c, OCR finding 8).
+    watching: bool,
     /// The `Play` of the live session (M5e1), kept for the paused close to park.
     live_play: Option<PlayArgs>,
     /// The `Play` a paused close ended, which `resume` replays; see [`Engine::resume`].
@@ -767,6 +775,7 @@ impl Engine {
             stall_reopened: false,
             output_idle_close: OUTPUT_IDLE_CLOSE,
             idle_since: None,
+            watching: false,
             live_play: None,
             parked: None,
             tick_index: 0,
@@ -809,6 +818,7 @@ impl Engine {
         *lock(&self.output_slot) = None;
         self.feed(OutputEvent::IdleClose);
         self.opener.stop_watch(join);
+        self.watching = false;
     }
 
     /// Release the open output off the engine thread (0.1.2 decision 3): the device's dispose
@@ -856,11 +866,15 @@ impl Engine {
         }
         self.last_state = current.clone();
 
-        // Before the session's early return: the close is for an engine with no session.
+        // Before the session's early return: the close is for an engine with no session. There
+        // is something to close while an output is open, and also while the watcher runs with
+        // the owner at rest (`Closed` after a failed switch, `NoDefault`, a Stop inside a wait):
+        // an idle Ondar polls nothing (F6c, OCR finding 8).
+        let has_output = self.opened.is_some();
         let (close, idle_since) = output_close(
             &current,
             self.session.is_some(),
-            self.opened.is_some(),
+            has_output || (self.watching && self.owner.at_rest()),
             self.idle_since,
             Instant::now(),
             self.output_idle_close,
@@ -870,10 +884,17 @@ impl Engine {
             Close::Keep => {}
             Close::Release => {
                 self.close_output(false);
-                log::info!(
-                    "output closed after {} s with no session",
-                    self.output_idle_close.as_secs()
-                );
+                if has_output {
+                    log::info!(
+                        "output closed after {} s with no session",
+                        self.output_idle_close.as_secs()
+                    );
+                } else {
+                    log::info!(
+                        "output watcher stopped after {} s with no session and no output",
+                        self.output_idle_close.as_secs()
+                    );
+                }
             }
             Close::ReleaseAndPark => {
                 // The session ends before the slot is emptied, so no live decode thread can read
@@ -1225,14 +1246,15 @@ impl Engine {
                     .switch_began
                     .take()
                     .map_or(Duration::ZERO, |t| t.elapsed());
-                // Only a session with a `Player` has a ring to discard and a lag to add (OCR
-                // a4-1, a4-3): one that has not attached yet reads the new output at its attach.
+                // Only a session with a `Player` was playing when the output went away and has
+                // a lag to add (OCR a4-1, a4-3): one that has not attached yet reads the new
+                // output at its attach. The time away only (F6c): see `MAX_LAG`.
                 // Decided before the output is published, so a `restart` is set before the decode
                 // thread can see the new generation and begin a re-attach instead.
                 if let Some(session) = &self.session
                     && session.attached.load(Ordering::Relaxed) != 0
                 {
-                    self.lag_estimate += away + Duration::from_secs(ring::RING_SECONDS as u64);
+                    self.lag_estimate += away;
                     if self.lag_estimate > self.max_lag {
                         // The lag bound (R6): live again through the reconnect path (0.1.2, F1):
                         // the decode thread may be waiting on a full ring the released output no
@@ -1323,6 +1345,7 @@ impl Engine {
                 // during the open, or during a failed start and its retry, is the watcher's
                 // first report instead of its silent seed.
                 self.opener.start_watch(self.output_tx.clone(), uid);
+                self.watching = true;
                 self.feed(OutputEvent::Opened { uid: uid.into() });
             }
             Err(OpenError { message, cause }) => {
@@ -1516,8 +1539,8 @@ impl Engine {
 /// and a new ring of the same format replaces the old, whose consumer went with the `Player`.
 /// `source` is `Some` again, so the decode loop's attach arm refills it to the fill target and
 /// attaches on the new output at that output's format, as the first attach did. The old ring's
-/// ≤ 2 s of audio is discarded; the stream and its buffered bytes are kept, so nothing is lost
-/// to the network, only delayed (the lag bound, review R6, is the engine's).
+/// ≤ 2 s of audio is discarded, unplayed; the stream and its buffered bytes are kept, so nothing
+/// is lost to the network, only delayed (the lag bound, review R6, is the engine's).
 fn reattach_ring(
     ctx: &SessionCtx,
     sample_rate: SampleRate,
@@ -2150,7 +2173,8 @@ enum Close {
 }
 
 /// The output close, pure (M5e1): whether to close the output at `now`, and the `idle_since` to
-/// keep. The output is closable while it is open and no session can use it: none at all, or
+/// keep. The output is closable while it is open (`has_output`; since F6c also while only the
+/// watcher is left running, the owner at rest) and no session can use it: none at all, or
 /// one that ended (`Idle` after Stop, `Error`, whose decode thread has returned). The time is
 /// counted from the first closable tick and restarts on any tick that is not closable, so a play
 /// inside the window keeps the output.
@@ -3979,6 +4003,115 @@ mod session_tests {
         );
     }
 
+    /// F6c (OCR finding 8): the watcher stops when the owner rests `Closed` with no session for
+    /// the idle limit, whether or not an output is open. Until F6c only a close of an open output
+    /// stopped it, so after a switch that failed twice (`Error { Device }`, nothing open) an idle
+    /// Ondar polled the host at 10 Hz until some later play succeeded. **What it pins:** with the
+    /// idle limit at 300 ms, a switch whose two starts fail ends in `Error`; the watcher is then
+    /// stopped once, without a join, with one output ever opened and two opens failed; and the
+    /// next play starts it again. **Fails if** the close is decided on "an output is open" alone
+    /// (the unfixed tick: no stop within the guard).
+    #[test]
+    fn the_watcher_stops_when_the_owner_rests_with_no_output() {
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let (tx, ev_rx) = spawn_engine_configured("ondar-audio:test-watch-rest", opener, |e| {
+            e.output_idle_close = Duration::from_millis(300);
+            e.retry_delay = Duration::from_millis(100);
+        });
+        play(&tx, &server.url, "st-watch-rest");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        assert_eq!(out.watch_starts(), 1);
+        out.fail_next_open(2);
+        out.default_changed("bt", false);
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::State(PlaybackState::Error {
+                    code: ErrorCode::Device,
+                    ..
+                })
+            )),
+            "the failed switch did not end in Error"
+        );
+        assert_eq!(out.opens.load(Ordering::SeqCst), 3, "one open, two failed");
+        assert!(
+            eventually(Duration::from_secs(5), || out.watch_stops() == 1),
+            "the watcher polls on with the owner at rest and no output"
+        );
+        assert_eq!(out.watch_joins(), 0, "the idle stop joined the watcher");
+        play(&tx, &server.url, "st-watch-rest-two");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { station_id } if station_id == "st-watch-rest-two"
+            )),
+            "the next station never played"
+        );
+        assert_eq!(
+            out.watch_starts(),
+            2,
+            "the next open did not start it again"
+        );
+        drop(tx);
+    }
+
+    /// F6c (OCR finding 9): a switch adds the time the output was away to the lag estimate, not
+    /// the discarded ring's 2 s as well: the discarded ring was audio not yet played, which moves
+    /// the session forward. With the 2 s, 13 quick switches reconnected a session that was a few
+    /// seconds behind at most (`the stream is 31.3 s behind live`, `f5/ondar-dev-f5.log`,
+    /// 2026-11-23). **What it pins:** with `max_lag` 5 s, four quick switches between two devices
+    /// show `Buffering` then `Playing` each, no `Reconnecting`, one connection, four
+    /// `re-attaches` lines and no `reconnecting live`. **Fails if** each switch adds the ring
+    /// (the unfixed estimate: 2.0 s, 4.1 s, 6.1 s: the third switch reconnects).
+    #[test]
+    fn quick_switches_do_not_reach_the_lag_bound() {
+        capture_logs();
+        let server = tone_server();
+        let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
+        let out = opener.handles();
+        let name = "ondar-audio:test-quick-switches";
+        let (tx, ev_rx) = spawn_engine_configured(name, opener, |e| {
+            e.max_lag = Duration::from_secs(5);
+        });
+        play(&tx, &server.url, "st-quick-switches");
+        assert!(
+            await_event(&ev_rx, GUARD, |ev| matches!(
+                ev,
+                EngineEvent::Started { .. }
+            )),
+            "the station never played"
+        );
+        for (n, uid) in ["bt", TEST_OUT, "bt", TEST_OUT].into_iter().enumerate() {
+            out.default_changed(uid, false);
+            assert_eq!(
+                next_state(&ev_rx),
+                Some(PlaybackState::Buffering),
+                "switch {n}"
+            );
+            assert_eq!(
+                next_state(&ev_rx),
+                Some(PlaybackState::Playing),
+                "switch {n} did not re-attach"
+            );
+        }
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1, "a reconnect");
+        let replaced = thread_lines(name, "output replaced");
+        assert_eq!(replaced.len(), 4, "{replaced:?}");
+        assert!(
+            replaced.iter().all(|l| l.contains("re-attaches")),
+            "{replaced:?}"
+        );
+        drop(tx);
+    }
+
     /// F2 (OCR a3-4/8): `feed` is not re-entrant: an event produced while the owner's actions are
     /// applied is handled after them. **What it pins:** on an engine driven directly, a `Tick` in
     /// `Waiting` whose open succeeds ends `Open` with the session's re-attach asked, and the
@@ -4370,19 +4503,24 @@ mod session_tests {
     }
 
     /// Beta item 1, A4 (review R6): past `max_lag` the next switch reconnects live instead of
-    /// re-attaching. **What it pins:** with `max_lag` 1 ms, a switch shows `Reconnecting` once
-    /// and the server a second connection; with the default, the re-attach test above shows one.
-    /// **Fails if** the bound is not applied (no `Reconnecting`, one connection) or reconnects
-    /// every time (the other test).
+    /// re-attaching. **What it pins:** with the old output's drop taking 200 ms and `max_lag`
+    /// 100 ms (since F6c the estimate is the time away alone, so the test gives it one: a 1 ms
+    /// bound was passed by the discarded ring's 2 s, and with those gone a switch under a
+    /// millisecond did not reach it), a switch shows `Reconnecting` once and the server a second
+    /// connection; with the default, the re-attach test above shows one. **Fails if** the bound
+    /// is not applied (no `Reconnecting`, one connection) or reconnects every time (the other
+    /// test).
     #[test]
     fn past_the_lag_bound_a_switch_reconnects_live() {
         capture_logs();
         let server = tone_server();
         let opener = TestOpener::new(Arc::new(AtomicBool::new(false)));
         let out = opener.handles();
+        // Read at each open: the first output's guard takes 200 ms to drop.
+        *lock(&out.drop_delay) = Duration::from_millis(200);
         let name = "ondar-audio:test-lag-bound";
         let (tx, ev_rx) = spawn_engine_configured(name, opener, |e| {
-            e.max_lag = Duration::from_millis(1);
+            e.max_lag = Duration::from_millis(100);
         });
         play(&tx, &server.url, "st-lag");
         assert!(
@@ -4470,7 +4608,8 @@ mod session_tests {
     }
 
     /// OCR a4-2 and a4-3 (2026-11-23): the time the output was away counts for a switch only, and
-    /// the discarded ring only for a session that had attached. A release whose switch never
+    /// only for a session that had attached (since F6c the discarded ring is not added at all:
+    /// `quick_switches_do_not_reach_the_lag_bound`). A release whose switch never
     /// completed (here: the new output fails twice, `Error { Device }`) used to leave
     /// `switch_began` set; the next session's open on a fresh device then read the whole gap
     /// (plus a ring it never had) as that session's lag, past `max_lag`, and reconnected a
@@ -4478,8 +4617,8 @@ mod session_tests {
     /// fresh device's window 1.5 s after the failed switch plays with no `Reconnecting`, on the
     /// second connection (not a third), and no `reconnecting live` line. **Fails if**
     /// `switch_began` outlives the release it timed (mutation: do not clear it in
-    /// `start_session`), or if the ring is added for an open that replaced nothing (mutation: add
-    /// `RING_SECONDS` whether or not the session is attached: 2 s alone passes the 1 s bound).
+    /// `start_session`), or if a ring's 2 s are added for an open that replaced nothing (2 s
+    /// alone passes the 1 s bound).
     #[test]
     fn a_play_after_a_failed_switch_does_not_inherit_its_lag() {
         capture_logs();

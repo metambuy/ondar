@@ -45,8 +45,9 @@ in ONDAR.md under the section named.
    before the slot, and lowers `output_pending` only after the slot is filled; do not reorder
    them. **The session re-attaches** on the new output without a
    reconnect: its `Player` dropped, a new ring at the new output's format, the stream and its
-   buffered bytes kept, so the audio falls `away + 2 s` further behind live at each switch; past
-   30 s (`MAX_LAG`) the next switch reconnects live. **A failed start** (`PlayError`, which blocks the
+   buffered bytes kept, so the audio falls behind live by at most the time away at each switch
+   (the discarded ring was unplayed audio and moves it forward: not added, F6c); past 30 s
+   (`MAX_LAG`) the next switch reconnects live. **A failed start** (`PlayError`, which blocks the
    engine thread ~1.5 s, measured 7 of 7 2026-11-11; commands queue meanwhile) is retried once after
    1 s, then `Error { code: Device }` naming the device, never `Playing`; no output device at all is
    that Error once it has held for 300 ms (`Seeking`, `NO_DEFAULT_HOLD`, F6a: one read of "no
@@ -59,8 +60,9 @@ in ONDAR.md under the section named.
    7d's stall WARN (5 s `Playing` with nothing pulled) still reopens, once per episode
    (`stall_reopen`'s latch, cleared only by a pull), through the same path. **Closed after 30 s
    with no session** (`Idle`, `Error`; `OUTPUT_IDLE_CLOSE`, elapsed time, not ticks), the watcher
-   stopped with it, so an idle Ondar holds no sleep assertion and polls nothing; the next play
-   reopens it. **A session `Paused` for 30 s is ended** (`cancel_session` before the slot empties)
+   stopped with it, and stopped on the same limit when it is all that is left (the owner `Closed`
+   after a failed switch; F6c), so an idle Ondar holds no sleep assertion and polls nothing; the
+   next play reopens it. **A session `Paused` for 30 s is ended** (`cancel_session` before the slot empties)
    and its `Play` parked; it stays `Paused`, and Resume replays it as a fresh session
    (`Connecting` → `Buffering` → `Playing`); Stop or a play forgets it. The close writes no state.
    (M5e1; "Beta item 1 A: the output owner")

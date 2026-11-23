@@ -571,8 +571,8 @@ pub(crate) mod owner {
         }
 
         /// Set while the owner rests with no output and none coming (`Closed`): nothing is left
-        /// for the watcher to tell it but `last`, which the idle close forgets (OCR finding 8).
-        #[allow(dead_code, reason = "F6c stops the watcher on it (OCR finding 8)")]
+        /// for the watcher to tell it but `last`, which the idle close forgets. The engine stops
+        /// a watcher still running there at the idle limit (F6c, OCR finding 8).
         pub(crate) fn at_rest(&self) -> bool {
             matches!(self, Self::Closed { .. })
         }
