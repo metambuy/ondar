@@ -18,7 +18,7 @@ Lista de países com pesquisa, lista de estações, reproduzir e pausar, volume,
 
 ## O que ainda não existe (não precisas de reportar isto)
 
-Não há controlos de equalizador nem visualização de espetro. As teclas multimédia de seguinte e anterior ainda não fazem nada, e as teclas de volume mudam o volume do Mac, não o controlo do Ondar. Se uma coluna ou uns auscultadores Bluetooth perderem a ligação, o Ondar pode continuar a tocar pelas colunas do Mac; é a próxima coisa a corrigir. Não há temporizador para adormecer. O ícone da barra de menus não se anima durante a reprodução. Algumas emissões não vão tocar: as emissões HE-AAC v2 e Opus, e algumas estações cuja emissão está simplesmente em baixo. Quando uma emissão falha, a app diz; se não disser, diz-me tu.
+Não há controlos de equalizador nem visualização de espetro. As teclas multimédia de seguinte e anterior ainda não fazem nada, e as teclas de volume mudam o volume do Mac, não o controlo do Ondar. Se uma coluna ou uns auscultadores Bluetooth perderem a ligação, o Ondar pode continuar a tocar pelas colunas do Mac; a correção está prevista. Ao ligar uns auscultadores à entrada de jack enquanto toca, o som pára uns três segundos e depois continua neles. Não há temporizador para adormecer. O ícone da barra de menus não se anima durante a reprodução. Algumas emissões não vão tocar: as emissões HE-AAC v2 e Opus, e algumas estações cuja emissão está simplesmente em baixo. Quando uma emissão falha, a app diz; se não disser, diz-me tu.
 
 ## O que quero saber
 

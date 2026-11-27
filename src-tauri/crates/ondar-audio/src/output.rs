@@ -1,17 +1,26 @@
-//! The output owner's seam (0.1.2, F1). The engine opens its output through an
-//! [`OutputOpener`], so the session tests can stand a bare `rodio::mixer::mixer` and a puller
-//! thread in for the device, and count the opens; production opens the default device.
+//! The output owner's seam and its machinery (0.1.2 F1; beta item 1, merge A). The engine opens
+//! its output through an [`OutputOpener`], so the session tests can stand a bare
+//! `rodio::mixer::mixer` and a puller thread in for the device and script devices appearing and
+//! leaving; production opens a device **pinned by UID** and runs the default-output watcher.
 //!
 //! What the engine keeps of an open is the [`Mixer`] (each attach connects its own `Player` to
 //! it, `engine.rs::run_session`), the [`OutputFormat`] every session converts to, and a guard
-//! whose drop closes the device. Nothing here is on the audio callback's path.
+//! whose drop closes the device. The decisions live in [`owner::decide_output`], pure. Nothing
+//! here is on the audio callback's path.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use rodio::DeviceSinkBuilder;
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::mixer::Mixer;
 
 use crate::engine::{OutputFormat, log_output_error};
+pub(crate) use owner::OutputEvent;
 
 /// One open output.
 pub(crate) struct Opened {
@@ -23,62 +32,334 @@ pub(crate) struct Opened {
     pub(crate) guard: Box<dyn Send>,
 }
 
-/// How an open output tells the engine it is gone: the open's generation, on a channel the
-/// engine drains every wake (`Engine::check_output_lost`). The generation lets the engine ignore
-/// a late signal from an output it has already replaced. Sending never blocks (an unbounded
-/// `mpsc`), so it is safe from cpal's error-callback thread.
+/// A message on the engine's output channel, drained every wake (`Engine::drain_output_events`).
+/// `generation` is the open the message is about (the open stream's callbacks, the drop thread);
+/// the engine drops one from an output it has already replaced. The watcher's messages carry none.
+/// Sending never blocks (an unbounded `mpsc`), so it is safe from cpal's callback threads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputMsg {
+    pub(crate) generation: Option<u64>,
+    pub(crate) event: OutputEvent,
+}
+
+/// How an open output and its drop thread reach the engine: the open's generation on the channel.
 #[derive(Clone)]
-pub(crate) struct LossSignal {
-    tx: Sender<u64>,
+pub(crate) struct OutputSignal {
+    tx: Sender<OutputMsg>,
     generation: u64,
 }
 
-impl LossSignal {
-    pub(crate) fn new(tx: Sender<u64>, generation: u64) -> Self {
+impl OutputSignal {
+    pub(crate) fn new(tx: Sender<OutputMsg>, generation: u64) -> Self {
         Self { tx, generation }
     }
 
-    pub(crate) fn fire(&self) {
+    pub(crate) fn fire(&self, event: OutputEvent) {
         // A send error means the engine is gone; there is nothing to tell.
-        let _ = self.tx.send(self.generation);
+        let _ = self.tx.send(OutputMsg {
+            generation: Some(self.generation),
+            event,
+        });
     }
 }
 
-/// How the engine opens its output. `lost` is fired when the output reports that its device is
-/// gone.
-pub(crate) trait OutputOpener: Send {
-    fn open(&mut self, lost: LossSignal) -> Result<Opened, String>;
+/// An open that failed: `message` is what the `Error { code: Device }` shows (the chat's text,
+/// review 2026-11-19), `cause` what the log says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenError {
+    pub(crate) message: String,
+    pub(crate) cause: String,
 }
 
-/// The default output device.
+impl OpenError {
+    /// The one user-facing text for a device that did not start, whatever the cause: the device's
+    /// name (its UID when the name cannot be read), what to do, and that Play is the way back.
+    pub(crate) fn did_not_start(device: &str, cause: impl Into<String>) -> Self {
+        Self {
+            message: format!(
+                "No sound on {device}: the output did not start. Reconnect it or pick another output, then press Play."
+            ),
+            cause: cause.into(),
+        }
+    }
+}
+
+/// How the engine reaches the output devices. Production is cpal through rodio; the tests script
+/// every call.
+pub(crate) trait OutputOpener: Send + owner::Host {
+    /// Open the device `uid`, pinned (no follow); `signal` carries its `DeviceGone` and `Reopen`.
+    fn open(&mut self, uid: &str, signal: OutputSignal) -> Result<Opened, OpenError>;
+    /// Whether the device `uid` still exists (`device_by_id`).
+    #[allow(
+        dead_code,
+        reason = "merge B asks it at a default change: gone pauses, present switches"
+    )]
+    fn present(&self, uid: &str) -> bool;
+    /// Start the default-output watcher sending on `tx`, seeded with `opened`, the UID of the
+    /// output just opened (F6b, OCR finding 5): if the default is another by its first poll, that
+    /// is its first report. A no-op while one runs: a running watcher saw the change itself.
+    fn start_watch(&mut self, tx: Sender<OutputMsg>, opened: &str);
+    /// Stop the watcher: at the idle close `join` is false and the thread is only told to stop
+    /// (OCR a3-1: a join would hold the engine thread for a period plus a poll, to ~191 ms); at
+    /// shutdown `join` is true. A no-op without one.
+    fn stop_watch(&mut self, join: bool);
+}
+
+/// How often the watcher polls (R2, 2026-11-19: 35–191 ms per poll in its own thread).
+pub(crate) const WATCH_PERIOD: Duration = Duration::from_millis(100);
+
+/// A device that appeared within this long before becoming the default is "fresh" too (the
+/// MOMENTUM 4 appears ~60 ms before the default moves; the Audio Pro picked 3.3 s after it
+/// reappeared was rightly not fresh, R1 2026-11-19).
+pub(crate) const FRESH_WINDOW: Duration = Duration::from_secs(3);
+
+/// What one poll of the host sees.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Snapshot {
+    pub(crate) default_uid: Option<String>,
+    pub(crate) outputs: Vec<String>,
+}
+
+/// How many consecutive polls must read no default output before `NoDefault` is reported (F3,
+/// 2026-11-19): during a Bluetooth → `AirPlay` switch of one speaker, `coreaudiod` moved the default
+/// through the speakers in 150 ms and one poll read none, which ended the session in a false
+/// `Error`. Three polls are ~300 ms: not a wait anyone sees, and no transport switch measured
+/// (jack, Bluetooth, `AirPlay`, 2026-11-09 to 11-19) left the default unreadable that long.
+pub(crate) const NO_DEFAULT_POLLS: u32 = 3;
+
+/// The watcher's memory between polls, pure: [`WatchState::observe`] turns a snapshot into at most
+/// one event. The first snapshot only seeds it (nothing is known, so nothing is fresh and no
+/// change is reported: the review's addendum), unless the state was made [`Self::seeded`] with
+/// the UID the engine holds open and the default is already another (F6b, OCR finding 5). A poll
+/// with no readable default is held for [`NO_DEFAULT_POLLS`] before it counts.
+#[derive(Debug, Default)]
+pub(crate) struct WatchState {
+    /// The UID the engine opened just before this watcher started, until the first poll.
+    seed: Option<String>,
+    last: Option<Snapshot>,
+    appeared: HashMap<String, Instant>,
+    /// Consecutive polls that read no default output.
+    none_polls: u32,
+}
+
+impl WatchState {
+    /// A watcher started after the engine opened `opened`: the watcher runs only from an open, and
+    /// that open (or a failed start and its retry, 2.5 s and more) is time in which nobody polled.
+    pub(crate) fn seeded(opened: &str) -> Self {
+        Self {
+            seed: Some(opened.into()),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn observe(&mut self, mut snap: Snapshot, now: Instant) -> Option<OutputEvent> {
+        let Some(last) = self.last.take() else {
+            // The first poll. With a seed, a default that is already another device moved while
+            // nobody watched: reported as fresh, since when it appeared is unknown and only the
+            // jack waits on that (D5), which plugged in during an open is inside its window.
+            let moved = match (self.seed.take(), &snap.default_uid) {
+                (Some(seed), Some(uid)) if seed != *uid => Some(OutputEvent::DefaultChanged {
+                    uid: uid.clone(),
+                    fresh: true,
+                }),
+                _ => None,
+            };
+            self.last = Some(snap);
+            return moved;
+        };
+        for uid in &snap.outputs {
+            if !last.outputs.contains(uid) {
+                self.appeared.insert(uid.clone(), now);
+            }
+        }
+        self.appeared.retain(|uid, _| snap.outputs.contains(uid));
+        if snap.default_uid.is_none() {
+            self.none_polls += 1;
+            if self.none_polls < NO_DEFAULT_POLLS {
+                // Not yet believed: the last readable default stands.
+                snap.default_uid.clone_from(&last.default_uid);
+            }
+        } else {
+            self.none_polls = 0;
+        }
+        let event = if snap.default_uid == last.default_uid {
+            None
+        } else {
+            match &snap.default_uid {
+                None => Some(OutputEvent::NoDefault),
+                Some(uid) => {
+                    let recent = self
+                        .appeared
+                        .get(uid)
+                        .is_some_and(|at| now.duration_since(*at) < FRESH_WINDOW);
+                    Some(OutputEvent::DefaultChanged {
+                        uid: uid.clone(),
+                        fresh: !last.outputs.contains(uid) || recent,
+                    })
+                }
+            }
+        };
+        self.last = Some(snap);
+        event
+    }
+}
+
+/// The watcher thread: `poll` every `period`, [`WatchState::observe`], the events on `tx`.
+pub(crate) struct WatchHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl WatchHandle {
+    pub(crate) fn spawn(
+        name: &str,
+        period: Duration,
+        poll: impl Fn() -> Snapshot + Send + 'static,
+        tx: Sender<OutputMsg>,
+        mut state: WatchState,
+    ) -> Option<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let spawned = thread::Builder::new().name(name.into()).spawn(move || {
+            while !stopping.load(Ordering::Relaxed) {
+                if let Some(event) = state.observe(poll(), Instant::now())
+                    && tx
+                        .send(OutputMsg {
+                            generation: None,
+                            event,
+                        })
+                        .is_err()
+                {
+                    return;
+                }
+                thread::sleep(period);
+            }
+        });
+        match spawned {
+            Ok(join) => Some(Self {
+                stop,
+                join: Some(join),
+            }),
+            Err(e) => {
+                log::warn!("output watcher thread refused ({e}); the default is not watched");
+                None
+            }
+        }
+    }
+
+    /// Stop the thread and wait for it (at most one `period` plus one poll): the shutdown.
+    pub(crate) fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+
+    /// Tell the thread to stop and let it go (the idle close, OCR a3-1): it ends within one
+    /// `period` plus one poll, on its own. A watcher started meanwhile cannot double-report with
+    /// it: each thread has its own `WatchState`, whose first poll only seeds; at worst the old
+    /// thread's last in-flight poll reports the same change the new one will, and the owner's
+    /// `Open { uid }` + `DefaultChanged { uid }` is "nothing".
+    pub(crate) fn detach(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.join = None;
+    }
+}
+
+/// A handle dropped without `stop` or `detach` still ends its thread (OCR a3-2).
+impl Drop for WatchHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The output devices through cpal 0.18.2 (rodio 0.23.0).
+///
+/// **Pinned by UID:** `device_by_id(uid)` + `DeviceSinkBuilder::from_device` build cpal's
+/// `HalOutput` unit on that device (`host/coreaudio/macos/device.rs:243-255`), which does not
+/// follow the default; the follow is the engine's (the watcher). Never `from_default_device()`:
+/// its `DefaultOutput` unit follows by itself, and on the jack's codec the first start after a
+/// plug-in fails inside coreaudiod with no error to cpal, leaving the process silent until the
+/// device leaves (F9, 2026-11-11; `_handover/f9-step0-report-2026-11-11.md`).
 ///
 /// The device's own buffer (`BufferSize::Default`), not rodio's: rodio 0.23.0 asks for a `Fixed`
 /// ~50 ms (2048 frames at 44.1 kHz, `stream.rs:207-217`), which cpal 0.18.2 refuses on a device
-/// whose range is lower (`14..=1024` on an Audio Pro A15 W, measured 2026-10-30), so
-/// `open_default_sink` failed on every device. `Default` gave 512 frames on both devices measured
-/// (11.6 ms at 44.1 kHz, 10.7 ms at 48 kHz). No fallback to another device: an open on an output
+/// whose range is lower (`14..=1024` on an Audio Pro A15 W, measured 2026-10-30). `Default` gave
+/// 512 frames on both devices measured. No fallback to another device: an open on an output
 /// nobody hears is worse than an honest `Error { code: Device }` (rodio PR #914, which clamps the
 /// buffer, is unreleased; re-check at each rodio release). ONDAR.md, "0.1.2: decisions", 1.
 ///
-/// The loss: on rodio 0.23.0 / cpal 0.18.2 a stream on the default device follows a new default
-/// by itself (`DeviceChanged`, measured 5 of 5 Bluetooth losses and 10 of 10 switches,
-/// 2026-10-30); `DeviceNotAvailable` means no output was left to follow (with no output device
-/// at all, cpal pauses the stream, the F1 shape), so it fires `lost` (decision 4).
-pub(crate) struct DeviceOpener;
+/// The callbacks on a pinned stream (cpal 0.18.2 `host/coreaudio/macos/mod.rs:136-230`, the
+/// `DisconnectManager`): `DeviceNotAvailable` when the device's `IsAlive` drops → `DeviceGone`;
+/// `StreamInvalidated` when its nominal sample rate changes (cpal pauses the stream first) →
+/// `Reopen`; `Xrun` on a processor overload → logged. A `DeviceChanged` cannot come from a pinned
+/// stream; one in a log is a finding.
+pub(crate) struct DeviceOpener {
+    watch: Option<WatchHandle>,
+}
+
+impl DeviceOpener {
+    pub(crate) fn new() -> Self {
+        Self { watch: None }
+    }
+}
+
+fn uid_of(device: &rodio::cpal::Device) -> Option<String> {
+    device.id().ok().map(|id| id.id().to_string())
+}
+
+fn device_id(uid: &str) -> rodio::cpal::DeviceId {
+    rodio::cpal::DeviceId::new(rodio::cpal::HostId::CoreAudio, uid)
+}
+
+fn poll_host() -> Snapshot {
+    let host = rodio::cpal::default_host();
+    let default_uid = host.default_output_device().and_then(|d| uid_of(&d));
+    let outputs = host
+        .output_devices()
+        .map(|devices| devices.filter_map(|d| uid_of(&d)).collect())
+        .unwrap_or_default();
+    Snapshot {
+        default_uid,
+        outputs,
+    }
+}
+
+impl owner::Host for DeviceOpener {
+    fn current_default(&self) -> Option<String> {
+        rodio::cpal::default_host()
+            .default_output_device()
+            .and_then(|d| uid_of(&d))
+    }
+}
 
 impl OutputOpener for DeviceOpener {
-    fn open(&mut self, lost: LossSignal) -> Result<Opened, String> {
-        let mut sink = DeviceSinkBuilder::from_default_device()
-            .map_err(|e| e.to_string())?
+    fn open(&mut self, uid: &str, signal: OutputSignal) -> Result<Opened, OpenError> {
+        let host = rodio::cpal::default_host();
+        let Some(device) = host.device_by_id(&device_id(uid)) else {
+            return Err(OpenError::did_not_start(
+                uid,
+                "device_by_id found no such device",
+            ));
+        };
+        let name = device
+            .description()
+            .map_or_else(|_| uid.to_string(), |d| d.name().to_string());
+        let mut sink = DeviceSinkBuilder::from_device(device)
+            .map_err(|e| OpenError::did_not_start(&name, e.to_string()))?
             .with_buffer_size(rodio::cpal::BufferSize::Default)
             .with_error_callback(move |e| {
                 log_output_error(&e);
-                if e.kind() == rodio::CpalErrorKind::DeviceNotAvailable {
-                    lost.fire();
+                match e.kind() {
+                    rodio::CpalErrorKind::DeviceNotAvailable => {
+                        signal.fire(OutputEvent::DeviceGone);
+                    }
+                    rodio::CpalErrorKind::StreamInvalidated => signal.fire(OutputEvent::Reopen),
+                    _ => {}
                 }
             })
             .open_stream()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| OpenError::did_not_start(&name, e.to_string()))?;
         sink.log_on_drop(false);
         let format = OutputFormat {
             channels: sink.config().channel_count(),
@@ -89,5 +370,1706 @@ impl OutputOpener for DeviceOpener {
             format,
             guard: Box::new(sink),
         })
+    }
+
+    fn present(&self, uid: &str) -> bool {
+        rodio::cpal::default_host()
+            .device_by_id(&device_id(uid))
+            .is_some()
+    }
+
+    fn start_watch(&mut self, tx: Sender<OutputMsg>, opened: &str) {
+        if self.watch.is_none() {
+            self.watch = WatchHandle::spawn(
+                "ondar-output-watch",
+                WATCH_PERIOD,
+                poll_host,
+                tx,
+                WatchState::seeded(opened),
+            );
+        }
+    }
+
+    fn stop_watch(&mut self, join: bool) {
+        if let Some(watch) = self.watch.take() {
+            if join {
+                watch.stop();
+            } else {
+                watch.detach();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The owner's state machine (beta item 1, merge A, commit A2 of `_handover/output-owner-plan.md`).
+// Pure: the engine feeds it every output event and applies the actions it returns, in order
+// (`Engine::drain_output_events`, A3). Nothing here touches a device or a thread.
+// ---------------------------------------------------------------------------------------------
+
+/// The owner's state machine; see the banner above.
+pub(crate) mod owner {
+    use std::time::{Duration, Instant};
+
+    /// How long the owner waits before opening the jack when it appeared at the default change (F9:
+    /// the jack's codec fails any start inside ~1.2 s of publication, measured 2026-11-11; 2 s and
+    /// 3 s started 7 of 7, 1 s failed 2 of 2; 3 s is the margin, decision D4.4). Only for the
+    /// device in [`needs_power_up_wait`] (D5).
+    pub(crate) const FRESH_DEVICE_WAIT: Duration = Duration::from_secs(3);
+
+    /// The built-in jack's output device, the one device measured to need the power-up wait
+    /// (`External Headphones`; F9 Step 0, 2026-11-11).
+    pub(crate) const JACK_UID: &str = "BuiltInHeadphoneOutputDevice";
+
+    /// Whether a freshly appeared `uid` is opened only after [`FRESH_DEVICE_WAIT`] (decision D5,
+    /// 2026-11-23): the jack alone. F9's window was measured on its codec only; Bluetooth
+    /// (MOMENTUM 4, 3 of 3) and `AirPlay` (3 of 3) started within 130 ms of publication with no
+    /// window (P5, 2026-11-11), and the `AirPlay` route device a Control Centre pick creates
+    /// (`…-Audio`, fresh at every pick) was silent for every client while the switch's 3 s gap
+    /// preceded the open, 0 of 3 heard (`_handover/last-report-2026-11-23.md`). Any other device
+    /// with a window nobody has measured is covered by the retry and `Error { Device }`.
+    pub(crate) fn needs_power_up_wait(uid: &str) -> bool {
+        uid == JACK_UID
+    }
+
+    /// The pause before the one retry of a failed start (P2g, 2026-11-11: a retry with the failed
+    /// unit gone started 1 of 1).
+    pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(1);
+
+    /// The `Error { code: Device }` message when no output device exists at all (review R5).
+    pub(crate) const NO_OUTPUT_MESSAGE: &str =
+        "No audio output found. Connect one, then press Play.";
+
+    /// How long a released output's drop may take before the owner gives it up (F6a, OCR finding
+    /// 6, 2026-11-23). The drop is three synchronous calls into the HAL with no timeout
+    /// (`AudioOutputUnitStop`, `AudioUnitUninitialize`, `AudioComponentInstanceDispose`:
+    /// coreaudio-rs 0.14.2 `audio_unit/mod.rs:378-395`, reached from cpal 0.18.2's `StreamInner`),
+    /// so it cannot be shown never to block; measured it took 74-289 ms (2026-10-30). No hang has
+    /// been observed: this bounds one.
+    pub(crate) const RELEASE_LIMIT: Duration = Duration::from_secs(5);
+
+    /// The `Error { code: Device }` message when a release with an open pending passed
+    /// [`RELEASE_LIMIT`] (the chat's text, triage 2026-11-23).
+    pub(crate) const RELEASE_STUCK_MESSAGE: &str =
+        "The audio output did not close. Quit and reopen Ondar.";
+
+    /// How long the owner keeps asking for a default output before it believes there is none
+    /// (F6a, OCR finding 7): the watcher's own hold, [`super::NO_DEFAULT_POLLS`] polls of
+    /// [`super::WATCH_PERIOD`] (F3: `coreaudiod` read no default for ~150 ms inside a Bluetooth →
+    /// `AirPlay` switch). Pinned to those two by `the_owners_hold_is_the_watchers`.
+    pub(crate) const NO_DEFAULT_HOLD: Duration = Duration::from_millis(300);
+
+    /// The watcher's last `DefaultChanged`, kept while the owner has no open output (`Closed`,
+    /// `Releasing`, `Waiting`; review R2, OCR a2-1): a `Play` on that same device inside its fresh
+    /// window waits for it instead of starting inside F9's window. It never names the device to
+    /// open (the chat's C1: the current default is opened; `last` only supplies the wait).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct Change {
+        pub(crate) uid: String,
+        pub(crate) fresh: bool,
+        pub(crate) at: Instant,
+    }
+
+    impl Change {
+        /// When `uid` may be opened: the change's `at + wait` if this is a fresh change to that
+        /// device, one that needs the power-up wait (D5), still inside its window; else now.
+        fn not_before(last: Option<&Change>, uid: &str, now: Instant, wait: Duration) -> Instant {
+            match last {
+                Some(c)
+                    if c.fresh && c.uid == uid && needs_power_up_wait(uid) && now < c.at + wait =>
+                {
+                    c.at + wait
+                }
+                _ => now,
+            }
+        }
+    }
+
+    /// What the owner does once the releasing output's drop is reported.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum Then {
+        /// Open `uid`, not before `not_before` (the fresh-device wait counts from the change).
+        Open { uid: String, not_before: Instant },
+        /// Nothing: the session was paused at the loss (merge B; unused by merge A's table).
+        #[allow(dead_code, reason = "merge B wires the loss pause")]
+        Pause,
+        /// Nothing: the idle close, or a Stop while an open was pending.
+        Close,
+        /// Look for a default output until `until` ([`OutputState::Seeking`]): a session wants
+        /// one and the host read none when asked.
+        Seek { until: Instant },
+    }
+
+    /// The owner's state. The open itself is synchronous on the engine thread (9–318 ms measured
+    /// 2026-11-19), so there is no `Opening`: an `Action::Open` is answered by `Opened` or
+    /// `OpenFailed` before the next event, and `Waiting { until <= now }` is "the open is due".
+    /// Every state without an open output carries `last`, the watcher's last change (OCR a2-1).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum OutputState {
+        /// No output.
+        Closed { last: Option<Change> },
+        /// The normal state: one output, pinned to `uid`.
+        Open { uid: String },
+        /// The guard is dropping off the engine thread; `Dropped` moves on to `then`. Past
+        /// `deadline` ([`RELEASE_LIMIT`] from the release) the drop is given up (F6a).
+        Releasing {
+            then: Then,
+            last: Option<Change>,
+            deadline: Instant,
+        },
+        /// No output, a session that wants one, and a host that read no default when asked (F6a,
+        /// OCR finding 7): the owner asks again on every `Tick` until `until`
+        /// ([`NO_DEFAULT_HOLD`]), and opens the first default it reads. The watcher's verdict is
+        /// honoured too, but cannot be the only way out: a held unreadable poll followed by the
+        /// same default reports nothing, and after an idle close no watcher runs.
+        Seeking {
+            until: Instant,
+            last: Option<Change>,
+        },
+        /// The old unit is gone; `uid` is opened at `until`. `retry` marks the one retry after a
+        /// failed start: a second failure is final.
+        Waiting {
+            uid: String,
+            until: Instant,
+            retry: bool,
+            last: Option<Change>,
+        },
+    }
+
+    impl OutputState {
+        pub(crate) fn closed() -> Self {
+            Self::Closed { last: None }
+        }
+
+        /// Set while the owner is anything but `Open` (review R1): the attach arm writes `Buffering`
+        /// instead of `Playing`, and `decide_tick` never resumes to `Playing`.
+        pub(crate) fn is_switching(&self) -> bool {
+            !matches!(self, Self::Open { .. })
+        }
+
+        /// Set while an open is coming (OCR f2-1): the release before a switch, the wait for
+        /// the device, or the search for a default; the attach arm waits for the slot only then.
+        /// `Closed`, `Open` and a release that ends in a close or a pause are not.
+        pub(crate) fn open_pending(&self) -> bool {
+            matches!(
+                self,
+                Self::Releasing {
+                    then: Then::Open { .. } | Then::Seek { .. },
+                    ..
+                } | Self::Waiting { .. }
+                    | Self::Seeking { .. }
+            )
+        }
+
+        /// Set while the owner needs its clock (`Tick`): a wait for a device, a release's
+        /// deadline, the search for a default. `Closed` and `Open` need none.
+        pub(crate) fn needs_tick(&self) -> bool {
+            matches!(
+                self,
+                Self::Waiting { .. } | Self::Releasing { .. } | Self::Seeking { .. }
+            )
+        }
+
+        /// Set while the owner rests with no output and none coming (`Closed`): nothing is left
+        /// for the watcher to tell it but `last`, which the idle close forgets. The engine stops
+        /// a watcher still running there at the idle limit (F6c, OCR finding 8).
+        pub(crate) fn at_rest(&self) -> bool {
+            matches!(self, Self::Closed { .. })
+        }
+
+        fn last(&self) -> Option<&Change> {
+            match self {
+                Self::Closed { last }
+                | Self::Releasing { last, .. }
+                | Self::Waiting { last, .. }
+                | Self::Seeking { last, .. } => last.as_ref(),
+                Self::Open { .. } => None,
+            }
+        }
+    }
+
+    /// Everything that moves the owner. The device events arrive on the engine's output channel
+    /// (the watcher, the open guard's callbacks, the drop thread); the commands are the engine's own.
+    /// Messages from an output already replaced are dropped by their generation before they get here.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum OutputEvent {
+        /// The watcher: the default output is now `uid`; `fresh` if it was not in the previous poll's
+        /// list or appeared within the last 3 s.
+        DefaultChanged { uid: String, fresh: bool },
+        /// The watcher found no output device at all (review R5).
+        NoDefault,
+        /// cpal's `DeviceNotAvailable` on the open stream: its device is gone.
+        DeviceGone,
+        /// Reopen the same device: cpal's `StreamInvalidated` on the open stream (its device changed
+        /// its nominal sample rate and cpal paused the stream; review R4, cpal 0.18.2
+        /// `host/coreaudio/macos/mod.rs:170-181`, `:224-228`), or the stall WARN's backstop reopen.
+        Reopen,
+        /// The drop thread: the released guard is gone.
+        Dropped,
+        /// The engine's tick: `Waiting`'s clock.
+        Tick,
+        /// The opener: the open of `uid` succeeded.
+        Opened { uid: String },
+        /// The opener: the open or the start of `uid` failed; `message` is the user-facing text.
+        OpenFailed { uid: String, message: String },
+        /// A `play`: a session needs an output now.
+        Play,
+        /// A `pause`.
+        Pause,
+        /// A `stop`.
+        Stop,
+        /// The tick found no session for the idle limit: the output is to be released. The watcher
+        /// stops with it, so `last` is forgotten too.
+        IdleClose,
+    }
+
+    /// What the engine does for an event, in the order returned.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum Action {
+        /// Drop the open output's guard off-thread; the thread reports `Dropped`.
+        Release,
+        /// Open `uid` now, synchronously, and feed back `Opened` or `OpenFailed`.
+        Open { uid: String },
+        /// A live, unpaused session shows `Buffering` while the output is away (review R1).
+        SessionBuffering,
+        /// The session is paused (merge B's loss).
+        #[allow(dead_code, reason = "merge B wires the loss pause")]
+        SessionPause,
+        /// The session attaches a new `Player` on the new output (plan §3).
+        SessionReattach,
+        /// End the session in `Error { code: Device, message }`; the slot is emptied.
+        Fail { message: String },
+        /// The release passed its deadline and is given up: one WARN. The drop thread is left to
+        /// itself; its late `Dropped` finds `Closed` and changes nothing.
+        ReleaseAbandoned,
+    }
+
+    /// What the engine knows at the moment of the event, without asking the host.
+    #[derive(Debug, Clone)]
+    pub(crate) struct Env {
+        pub(crate) now: Instant,
+        pub(crate) fresh_wait: Duration,
+        pub(crate) retry_delay: Duration,
+        /// [`RELEASE_LIMIT`], shortened by the tests.
+        pub(crate) release_limit: Duration,
+        /// [`NO_DEFAULT_HOLD`], shortened by the tests.
+        pub(crate) no_default_hold: Duration,
+    }
+
+    /// The host, asked lazily (the chat's C2, 2026-11-19): only the cells that open "the current
+    /// default" call it (`Closed` + `Play`, `Releasing { Close | Pause }` + `Play`, `Open` +
+    /// `DeviceGone`, and `Seeking` + `Tick` or `Play`, at most [`NO_DEFAULT_HOLD`] long); a `Tick`
+    /// while `Waiting` or `Releasing` asks nothing, because `default_output_device()` took
+    /// 35–191 ms during exactly that window (R2) and this runs on the engine thread.
+    pub(crate) trait Host {
+        /// `default_output_device()`'s UID right now, `None` with no output device at all.
+        fn current_default(&self) -> Option<String>;
+    }
+
+    /// The owner's table (plan §2, with reviews R1–R5 and the OCR triage of A1–A3), pure. Merge A's
+    /// loss column: a device that is gone is a switch to the current default with no wait (today's
+    /// F1 outcome through the new path); merge B replaces it with the pause (`Then::Pause`,
+    /// `Action::SessionPause`).
+    #[allow(
+        clippy::match_same_arms,
+        reason = "one fall-through arm per row of the table keeps each row readable on its own"
+    )]
+    pub(crate) fn decide_output(
+        state: &OutputState,
+        ev: OutputEvent,
+        env: &Env,
+        host: &dyn Host,
+    ) -> (OutputState, Vec<Action>) {
+        use Action as A;
+        use OutputEvent as E;
+        use OutputState as S;
+
+        // The power-up wait: a fresh device that needs one (the jack alone, D5); none otherwise.
+        let wait = |uid: &str, fresh: bool| {
+            if fresh && needs_power_up_wait(uid) {
+                env.fresh_wait
+            } else {
+                Duration::ZERO
+            }
+        };
+        let fail_no_output = || A::Fail {
+            message: NO_OUTPUT_MESSAGE.into(),
+        };
+        let last = state.last().cloned();
+        let changed = |uid: &str, fresh: bool| {
+            Some(Change {
+                uid: uid.into(),
+                fresh,
+                at: env.now,
+            })
+        };
+        // Open `uid` at `not_before`: due now, the open action comes with the state.
+        let open_at = |uid: String, not_before: Instant, last: Option<Change>| {
+            let due = not_before <= env.now;
+            (
+                S::Waiting {
+                    uid: uid.clone(),
+                    until: not_before,
+                    retry: false,
+                    last,
+                },
+                if due {
+                    vec![A::Open { uid }]
+                } else {
+                    Vec::new()
+                },
+            )
+        };
+        // A `Play` with no open output: the current default, after its fresh window if `last` is
+        // that device's fresh change (R2, C1).
+        let play_target = || {
+            host.current_default().map(|d| {
+                let nb = Change::not_before(last.as_ref(), &d, env.now, env.fresh_wait);
+                (d, nb)
+            })
+        };
+        let unchanged = (state.clone(), Vec::new());
+        // A release that begins now.
+        let deadline = env.now + env.release_limit;
+        // The host read no default: look for one until then (finding 7), never `Fail` on one read.
+        let seek_until = env.now + env.no_default_hold;
+
+        match (state, ev) {
+            // ---- Closed ---------------------------------------------------------------------
+            (S::Closed { .. }, E::DefaultChanged { uid, fresh }) => (
+                S::Closed {
+                    last: changed(&uid, fresh),
+                },
+                Vec::new(),
+            ),
+            (S::Closed { .. }, E::NoDefault | E::IdleClose) => (S::closed(), Vec::new()),
+            (S::Closed { .. }, E::Play) => match play_target() {
+                None => (
+                    S::Seeking {
+                        until: seek_until,
+                        last,
+                    },
+                    Vec::new(),
+                ),
+                Some((uid, nb)) if nb <= env.now => open_at(uid, nb, last),
+                Some((uid, nb)) => {
+                    let (s, _) = open_at(uid, nb, last);
+                    (s, vec![A::SessionBuffering])
+                }
+            },
+            (S::Closed { .. }, _) => unchanged,
+
+            // ---- Open -----------------------------------------------------------------------
+            (S::Open { uid }, E::DefaultChanged { uid: d, .. }) if *uid == d => unchanged,
+            (S::Open { .. }, E::DefaultChanged { uid: d, fresh }) => {
+                // Merge A: present or gone (merge B asks the host `present(previous)` here and
+                // pauses on gone), the new default is opened; only the wait differs.
+                (
+                    S::Releasing {
+                        then: Then::Open {
+                            uid: d.clone(),
+                            not_before: env.now + wait(&d, fresh),
+                        },
+                        last: changed(&d, fresh),
+                        deadline,
+                    },
+                    vec![A::Release, A::SessionBuffering],
+                )
+            }
+            (S::Open { .. }, E::NoDefault) => (
+                S::Releasing {
+                    then: Then::Close,
+                    last: None,
+                    deadline,
+                },
+                vec![A::Release, fail_no_output()],
+            ),
+            (S::Open { .. }, E::DeviceGone) => match host.current_default() {
+                Some(d) => (
+                    S::Releasing {
+                        then: Then::Open {
+                            uid: d,
+                            not_before: env.now,
+                        },
+                        last: None,
+                        deadline,
+                    },
+                    vec![A::Release, A::SessionBuffering],
+                ),
+                None => (
+                    S::Releasing {
+                        then: Then::Seek { until: seek_until },
+                        last: None,
+                        deadline,
+                    },
+                    vec![A::Release, A::SessionBuffering],
+                ),
+            },
+            (S::Open { uid }, E::Reopen) => (
+                S::Releasing {
+                    then: Then::Open {
+                        uid: uid.clone(),
+                        not_before: env.now,
+                    },
+                    last: None,
+                    deadline,
+                },
+                vec![A::Release, A::SessionBuffering],
+            ),
+            (S::Open { .. }, E::IdleClose) => (
+                S::Releasing {
+                    then: Then::Close,
+                    last: None,
+                    deadline,
+                },
+                vec![A::Release],
+            ),
+            (S::Open { .. }, _) => unchanged,
+
+            // ---- Releasing ------------------------------------------------------------------
+            // A pending open follows the newest default (the wait restarts); a close or a pause
+            // only records the change (OCR a3-5: the slot is empty, nothing may open on it).
+            (S::Releasing { then, deadline, .. }, E::DefaultChanged { uid: d, fresh }) => {
+                match then {
+                    Then::Open { .. } | Then::Seek { .. } => (
+                        S::Releasing {
+                            then: Then::Open {
+                                uid: d.clone(),
+                                not_before: env.now + wait(&d, fresh),
+                            },
+                            last: changed(&d, fresh),
+                            deadline: *deadline,
+                        },
+                        vec![A::SessionBuffering],
+                    ),
+                    Then::Pause | Then::Close => (
+                        S::Releasing {
+                            then: then.clone(),
+                            last: changed(&d, fresh),
+                            deadline: *deadline,
+                        },
+                        Vec::new(),
+                    ),
+                }
+            }
+            (S::Releasing { then, deadline, .. }, E::NoDefault) => match then {
+                Then::Open { .. } | Then::Seek { .. } => (
+                    S::Releasing {
+                        then: Then::Close,
+                        last: None,
+                        deadline: *deadline,
+                    },
+                    vec![fail_no_output()],
+                ),
+                Then::Pause | Then::Close => (
+                    S::Releasing {
+                        then: then.clone(),
+                        last: None,
+                        deadline: *deadline,
+                    },
+                    Vec::new(),
+                ),
+            },
+            (S::Releasing { then, last, .. }, E::Dropped) => match then {
+                Then::Open { uid, not_before } => open_at(uid.clone(), *not_before, last.clone()),
+                Then::Seek { until } => (
+                    S::Seeking {
+                        until: *until,
+                        last: last.clone(),
+                    },
+                    Vec::new(),
+                ),
+                Then::Pause | Then::Close => (S::Closed { last: last.clone() }, Vec::new()),
+            },
+            // The drop did not return (finding 6): given up. A session was waiting for the open
+            // only if one was pending; an idle close or a Stop has nobody to tell but the log.
+            (
+                S::Releasing {
+                    then,
+                    last,
+                    deadline,
+                },
+                E::Tick,
+            ) if *deadline <= env.now => {
+                let mut actions = vec![A::ReleaseAbandoned];
+                if matches!(then, Then::Open { .. } | Then::Seek { .. }) {
+                    actions.push(A::Fail {
+                        message: RELEASE_STUCK_MESSAGE.into(),
+                    });
+                }
+                (S::Closed { last: last.clone() }, actions)
+            }
+            (S::Releasing { then, deadline, .. }, E::Play) => match then {
+                Then::Open { .. } | Then::Seek { .. } => unchanged,
+                Then::Pause | Then::Close => match play_target() {
+                    Some((uid, not_before)) => (
+                        S::Releasing {
+                            then: Then::Open { uid, not_before },
+                            last,
+                            deadline: *deadline,
+                        },
+                        Vec::new(),
+                    ),
+                    None => (
+                        S::Releasing {
+                            then: Then::Seek { until: seek_until },
+                            last,
+                            deadline: *deadline,
+                        },
+                        Vec::new(),
+                    ),
+                },
+            },
+            (S::Releasing { deadline, .. }, E::Stop) => (
+                S::Releasing {
+                    then: Then::Close,
+                    last,
+                    deadline: *deadline,
+                },
+                Vec::new(),
+            ),
+            (S::Releasing { deadline, .. }, E::IdleClose) => (
+                S::Releasing {
+                    then: Then::Close,
+                    last: None,
+                    deadline: *deadline,
+                },
+                Vec::new(),
+            ),
+            (S::Releasing { .. }, _) => unchanged,
+
+            // ---- Waiting --------------------------------------------------------------------
+            (S::Waiting { uid, .. }, E::DefaultChanged { uid: d, .. }) if *uid == d => unchanged,
+            (S::Waiting { .. }, E::DefaultChanged { uid: d, fresh }) => (
+                S::Waiting {
+                    uid: d.clone(),
+                    until: env.now + wait(&d, fresh),
+                    retry: false,
+                    last: changed(&d, fresh),
+                },
+                Vec::new(),
+            ),
+            (S::Waiting { .. }, E::NoDefault) => (S::closed(), vec![fail_no_output()]),
+            (S::Waiting { uid, until, .. }, E::Tick) if *until <= env.now => {
+                (state.clone(), vec![A::Open { uid: uid.clone() }])
+            }
+            (S::Waiting { uid, .. }, E::Opened { uid: o }) if *uid == o => {
+                (S::Open { uid: o }, vec![A::SessionReattach])
+            }
+            (
+                S::Waiting {
+                    uid, retry, last, ..
+                },
+                E::OpenFailed { uid: o, message },
+            ) if *uid == o => {
+                if *retry {
+                    (S::Closed { last: last.clone() }, vec![A::Fail { message }])
+                } else {
+                    (
+                        S::Waiting {
+                            uid: o,
+                            until: env.now + env.retry_delay,
+                            retry: true,
+                            last: last.clone(),
+                        },
+                        Vec::new(),
+                    )
+                }
+            }
+            (S::Waiting { .. }, E::Stop) => (S::Closed { last }, Vec::new()),
+            (S::Waiting { .. }, E::IdleClose) => (S::closed(), Vec::new()),
+            (S::Waiting { .. }, _) => unchanged,
+
+            // ---- Seeking --------------------------------------------------------------------
+            // The watcher's verdict, when it has one.
+            (S::Seeking { .. }, E::DefaultChanged { uid: d, fresh }) => {
+                let nb = env.now + wait(&d, fresh);
+                open_at(d.clone(), nb, changed(&d, fresh))
+            }
+            (S::Seeking { .. }, E::NoDefault) => (S::closed(), vec![fail_no_output()]),
+            // The owner's own: ask again; the first default read is opened, and none by `until`
+            // is believed.
+            (S::Seeking { until, .. }, E::Tick | E::Play) => match play_target() {
+                Some((uid, nb)) => open_at(uid, nb, last),
+                None if *until <= env.now => (S::closed(), vec![fail_no_output()]),
+                None => unchanged,
+            },
+            (S::Seeking { .. }, E::Stop) => (S::Closed { last }, Vec::new()),
+            (S::Seeking { .. }, E::IdleClose) => (S::closed(), Vec::new()),
+            (S::Seeking { .. }, _) => unchanged,
+        }
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    //! The owner's table (`_handover/output-owner-plan.md` §2, reviews R1–R5), one assertion per
+    //! cell, named `row_column`. Every test says the mutation that fails it. Times are explicit
+    //! `Instant`s, so no test sleeps.
+
+    use std::time::{Duration, Instant};
+
+    use std::sync::LazyLock;
+
+    use super::owner::{
+        Action as A, Change, Env, Host, NO_DEFAULT_HOLD, NO_OUTPUT_MESSAGE, OutputEvent as E,
+        OutputState as S, RELEASE_STUCK_MESSAGE, Then, decide_output as decide_with,
+    };
+
+    /// A host whose default is scripted; the speakers unless a test says otherwise.
+    struct Scripted(Option<&'static str>);
+
+    impl Host for Scripted {
+        fn current_default(&self) -> Option<String> {
+            self.0.map(str::to_string)
+        }
+    }
+
+    /// A host that must not be asked (the chat's C2): every cell but the three that open "the
+    /// current default" decides without it.
+    struct Unasked;
+
+    impl Host for Unasked {
+        fn current_default(&self) -> Option<String> {
+            panic!("the owner asked the host in a cell that does not open the current default")
+        }
+    }
+
+    /// The deadline every `Releasing` built by the helpers below carries: far enough that no
+    /// test's `Tick` reaches it. The table's cells are compared with it in place
+    /// ([`any_deadline`]); the deadline itself (set at the release, kept across events, acted on
+    /// by `Tick`) is pinned on the raw decision by `a_release_past_its_deadline_is_given_up`.
+    static FAR: LazyLock<Instant> = LazyLock::new(|| Instant::now() + Duration::from_hours(24));
+
+    /// `state` with a `Releasing`'s deadline replaced by [`FAR`].
+    fn any_deadline((state, actions): (S, Vec<A>)) -> (S, Vec<A>) {
+        let state = match state {
+            S::Releasing { then, last, .. } => S::Releasing {
+                then,
+                last,
+                deadline: *FAR,
+            },
+            other => other,
+        };
+        (state, actions)
+    }
+
+    /// Every cell is decided against the host that must not be asked, except the ones that open
+    /// the current default, which name their host.
+    fn decide_output(state: &S, ev: E, env: &Env) -> (S, Vec<A>) {
+        any_deadline(decide_with(state, ev, env, &Unasked))
+    }
+
+    fn decide_on(state: &S, ev: E, env: &Env, default: Option<&'static str>) -> (S, Vec<A>) {
+        any_deadline(decide_with(state, ev, env, &Scripted(default)))
+    }
+
+    const WAIT: Duration = Duration::from_secs(3);
+    const RETRY: Duration = Duration::from_secs(1);
+    const LIMIT: Duration = Duration::from_secs(5);
+    const HOLD: Duration = Duration::from_millis(300);
+    /// The headphones in the jack: the one device whose fresh change waits (D5).
+    const HP: &str = super::owner::JACK_UID;
+    /// A Bluetooth device's UID and the `AirPlay` route device's, as macOS names them (2026-11-23).
+    const BT: &str = "80-C3-BA-70-AB-96:output";
+    const AIRPLAY: &str = "db5e0f44-f454-4b06-b307-b1df5b4663c0-945626112205333-Audio";
+
+    fn env(now: Instant) -> Env {
+        Env {
+            now,
+            fresh_wait: WAIT,
+            retry_delay: RETRY,
+            release_limit: LIMIT,
+            no_default_hold: HOLD,
+        }
+    }
+
+    fn open(uid: &str) -> S {
+        S::Open { uid: uid.into() }
+    }
+
+    fn changed(uid: &str, fresh: bool) -> E {
+        E::DefaultChanged {
+            uid: uid.into(),
+            fresh,
+        }
+    }
+
+    fn change(uid: &str, fresh: bool, at: Instant) -> Option<Change> {
+        Some(Change {
+            uid: uid.into(),
+            fresh,
+            at,
+        })
+    }
+
+    fn releasing_open(uid: &str, not_before: Instant) -> S {
+        releasing_open_last(uid, not_before, None)
+    }
+
+    fn releasing_open_last(uid: &str, not_before: Instant, last: Option<Change>) -> S {
+        S::Releasing {
+            then: Then::Open {
+                uid: uid.into(),
+                not_before,
+            },
+            last,
+            deadline: *FAR,
+        }
+    }
+
+    fn releasing(then: Then, last: Option<Change>) -> S {
+        S::Releasing {
+            then,
+            last,
+            deadline: *FAR,
+        }
+    }
+
+    fn seeking(until: Instant, last: Option<Change>) -> S {
+        S::Seeking { until, last }
+    }
+
+    fn release_stuck() -> A {
+        A::Fail {
+            message: RELEASE_STUCK_MESSAGE.into(),
+        }
+    }
+
+    fn waiting(uid: &str, until: Instant, retry: bool) -> S {
+        waiting_last(uid, until, retry, None)
+    }
+
+    fn waiting_last(uid: &str, until: Instant, retry: bool, last: Option<Change>) -> S {
+        S::Waiting {
+            uid: uid.into(),
+            until,
+            retry,
+            last,
+        }
+    }
+
+    fn fail_no_output() -> A {
+        A::Fail {
+            message: NO_OUTPUT_MESSAGE.into(),
+        }
+    }
+
+    /// D5 (2026-11-23): the fresh-device wait is the jack's alone. **Fails if** a fresh Bluetooth
+    /// or `AirPlay` device waits on a switch (mutation: `wait` ignores the UID: `not_before` is
+    /// `t + WAIT`), if `Closed` + `Play` inside such a device's fresh window waits (mutation:
+    /// `Change::not_before` ignores the UID), or if the jack no longer waits (the cell above).
+    #[test]
+    fn only_the_jack_waits_when_fresh() {
+        let t = Instant::now();
+        for uid in [BT, AIRPLAY] {
+            assert_eq!(
+                decide_output(&open("spk"), changed(uid, true), &env(t)),
+                (
+                    releasing_open_last(uid, t, change(uid, true, t)),
+                    vec![A::Release, A::SessionBuffering]
+                ),
+                "{uid} waited on a switch"
+            );
+            let closed = S::Closed {
+                last: change(uid, true, t),
+            };
+            assert_eq!(
+                decide_on(&closed, E::Play, &env(t), Some(uid)),
+                (
+                    waiting_last(uid, t, false, change(uid, true, t)),
+                    vec![A::Open { uid: uid.into() }]
+                ),
+                "{uid} waited on Play"
+            );
+        }
+        assert_eq!(
+            decide_output(&open("spk"), changed(HP, true), &env(t)),
+            (
+                releasing_open_last(HP, t + WAIT, change(HP, true, t)),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        assert!(super::owner::needs_power_up_wait(HP));
+        assert!(!super::owner::needs_power_up_wait(BT));
+    }
+
+    /// OCR f2-1: an open is pending in `Releasing { Open }` and `Waiting` only. **Fails if**
+    /// `open_pending` is true for `Closed`, `Open` or a release ending in a close or a pause
+    /// (mutation: `open_pending = is_switching`: `Closed` and `Releasing { Close }` read true).
+    #[test]
+    fn an_open_is_pending_only_while_one_is_coming() {
+        let t = Instant::now();
+        assert!(releasing_open(HP, t).open_pending());
+        assert!(waiting(HP, t, false).open_pending());
+        assert!(!S::closed().open_pending());
+        assert!(!open("spk").open_pending());
+        assert!(!releasing(Then::Close, None).open_pending());
+        assert!(!releasing(Then::Pause, None).open_pending());
+        // F6a: the search for a default is an open coming too (the decode thread waits for it).
+        assert!(seeking(t, None).open_pending());
+        assert!(releasing(Then::Seek { until: t }, None).open_pending());
+    }
+
+    /// F6a: the owner is ticked while it waits, releases or seeks, and rests only in `Closed`.
+    /// **Fails if** `Releasing` or `Seeking` gets no `Tick` (mutation: `needs_tick` = `Waiting`
+    /// alone: a release's deadline and the search for a default never run), or if `at_rest` is
+    /// true with an output open or coming (finding 8's signal would stop the watcher under it).
+    #[test]
+    fn the_owner_is_ticked_while_it_waits_releases_or_seeks() {
+        let t = Instant::now();
+        assert!(waiting(HP, t, false).needs_tick());
+        assert!(releasing_open(HP, t).needs_tick());
+        assert!(releasing(Then::Close, None).needs_tick());
+        assert!(seeking(t, None).needs_tick());
+        assert!(!S::closed().needs_tick());
+        assert!(!open("spk").needs_tick());
+        assert!(S::closed().at_rest());
+        for busy in [
+            open("spk"),
+            waiting(HP, t, false),
+            releasing(Then::Close, None),
+            seeking(t, None),
+        ] {
+            assert!(!busy.at_rest(), "{busy:?}");
+        }
+    }
+
+    /// F6a (OCR finding 6): a release whose drop does not return is given up at its deadline.
+    /// **What it pins**, on the raw decision: the deadline is `now + release_limit` at the release
+    /// and is kept by every later event of that release; a `Tick` before it changes nothing and
+    /// asks the host nothing; at it, a release with an open pending ends `Closed` with
+    /// `ReleaseAbandoned` then `Fail` carrying `RELEASE_STUCK_MESSAGE`, and one with nothing
+    /// pending (an idle close, a Stop, a pause) ends `Closed` with `ReleaseAbandoned` alone (no
+    /// Error on an app nobody is listening to); `last` survives. **Fails if** the `Tick` arm is
+    /// missing (the unfixed table: `Releasing` + `Tick` unchanged for ever), if a newer default
+    /// restarts the deadline (mutation: `deadline` for `*deadline` in the `DefaultChanged` arm),
+    /// or if a close fails the session.
+    #[test]
+    fn a_release_past_its_deadline_is_given_up() {
+        let t = Instant::now();
+        let hp = change(HP, false, t);
+        let (released, _) = decide_with(&open("spk"), changed(HP, false), &env(t), &Unasked);
+        let at = |deadline: Instant, then: Then, last: Option<Change>| S::Releasing {
+            then,
+            last,
+            deadline,
+        };
+        let open_then = Then::Open {
+            uid: HP.into(),
+            not_before: t,
+        };
+        assert_eq!(released, at(t + LIMIT, open_then.clone(), hp.clone()));
+        // Kept across the release's later events.
+        let t1 = t + Duration::from_secs(1);
+        for ev in [changed("bt", false), E::Stop, E::IdleClose, E::NoDefault] {
+            let (s, _) = decide_with(&released, ev.clone(), &env(t1), &Unasked);
+            assert!(
+                matches!(s, S::Releasing { deadline, .. } if deadline == t + LIMIT),
+                "{ev:?} moved the deadline: {s:?}"
+            );
+        }
+        let (s, _) = decide_with(
+            &at(t + LIMIT, Then::Close, None),
+            E::Play,
+            &env(t1),
+            &Scripted(Some("spk")),
+        );
+        assert!(matches!(s, S::Releasing { deadline, .. } if deadline == t + LIMIT));
+        // Before the deadline: nothing.
+        let before = env(t + Duration::from_millis(4_999));
+        assert_eq!(
+            decide_with(&released, E::Tick, &before, &Unasked),
+            (released.clone(), vec![])
+        );
+        // At it, with an open pending: given up, and the session told.
+        let due = env(t + LIMIT);
+        assert_eq!(
+            decide_with(&released, E::Tick, &due, &Unasked),
+            (
+                S::Closed { last: hp.clone() },
+                vec![A::ReleaseAbandoned, release_stuck()]
+            )
+        );
+        let seek = at(t + LIMIT, Then::Seek { until: t }, None);
+        assert_eq!(
+            decide_with(&seek, E::Tick, &due, &Unasked),
+            (S::closed(), vec![A::ReleaseAbandoned, release_stuck()])
+        );
+        // With nothing pending: given up, nobody to tell but the log.
+        for then in [Then::Close, Then::Pause] {
+            assert_eq!(
+                decide_with(
+                    &at(t + LIMIT, then.clone(), hp.clone()),
+                    E::Tick,
+                    &due,
+                    &Unasked
+                ),
+                (S::Closed { last: hp.clone() }, vec![A::ReleaseAbandoned]),
+                "{then:?}"
+            );
+        }
+    }
+
+    /// F6a (OCR finding 7): one read of "no default output" is not believed. **What it pins:**
+    /// the three cells that ask the host (`Closed` + `Play`, `Open` + `DeviceGone`, `Releasing {
+    /// Close | Pause }` + `Play`), on `None`, look for a default until `now + no_default_hold`
+    /// and fail nothing; the open output is released first and a playing session shows
+    /// `Buffering`; `last` is kept. **Fails if** any of them is `Fail` on the one read (the
+    /// unfixed table: F3's false `No audio output found`, through another door).
+    #[test]
+    fn one_read_of_no_default_is_looked_for_not_failed() {
+        let t = Instant::now();
+        let hp = change(HP, true, t);
+        assert_eq!(
+            decide_on(&S::Closed { last: hp.clone() }, E::Play, &env(t), None),
+            (seeking(t + HOLD, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_on(&open(HP), E::DeviceGone, &env(t), None),
+            (
+                releasing(Then::Seek { until: t + HOLD }, None),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        for then in [Then::Close, Then::Pause] {
+            assert_eq!(
+                decide_on(&releasing(then.clone(), hp.clone()), E::Play, &env(t), None),
+                (
+                    releasing(Then::Seek { until: t + HOLD }, hp.clone()),
+                    vec![]
+                ),
+                "{then:?}"
+            );
+        }
+    }
+
+    /// F6a (OCR finding 7), the Seeking row and `Releasing { Seek }`. **Fails if** a `Tick` that
+    /// reads a default does not open it at once (the session waits out the hold for nothing), if
+    /// it opens the jack inside its fresh window (F9), if a `Tick` that reads none before `until`
+    /// fails (mutation: drop the `until` guard: one more read, the same false Error) or at
+    /// `until` does not (mutation: `None => unchanged` alone: `Buffering` for ever with no
+    /// device), if the watcher's `DefaultChanged` or `NoDefault` is ignored, if Stop or the idle
+    /// close leaves the search running for nobody, if the drop's `Dropped` loses `until`
+    /// (the hold would restart after every release), or if any other event asks the host.
+    #[test]
+    fn seeking_opens_the_first_default_it_reads_and_gives_up_at_its_hold() {
+        let t = Instant::now();
+        let until = t + HOLD;
+        let s = seeking(until, None);
+        let soon = env(t + Duration::from_millis(100));
+        assert_eq!(decide_on(&s, E::Tick, &soon, None), (s.clone(), vec![]));
+        assert_eq!(
+            decide_on(&s, E::Tick, &soon, Some("spk")),
+            (
+                waiting("spk", soon.now, false),
+                vec![A::Open { uid: "spk".into() }]
+            )
+        );
+        assert_eq!(
+            decide_on(&s, E::Play, &soon, Some("spk")),
+            (
+                waiting("spk", soon.now, false),
+                vec![A::Open { uid: "spk".into() }]
+            )
+        );
+        // The jack, fresh 100 ms ago: found, and opened only after its window.
+        let hp = change(HP, true, t);
+        assert_eq!(
+            decide_on(&seeking(until, hp.clone()), E::Tick, &soon, Some(HP)),
+            (waiting_last(HP, t + WAIT, false, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_on(&s, E::Tick, &env(until), None),
+            (S::closed(), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&s, changed("bt", false), &soon),
+            (
+                waiting_last("bt", soon.now, false, change("bt", false, soon.now)),
+                vec![A::Open { uid: "bt".into() }]
+            )
+        );
+        assert_eq!(
+            decide_output(&s, changed(HP, true), &soon),
+            (
+                waiting_last(HP, soon.now + WAIT, false, change(HP, true, soon.now)),
+                vec![]
+            )
+        );
+        assert_eq!(
+            decide_output(&s, E::NoDefault, &soon),
+            (S::closed(), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&seeking(until, hp.clone()), E::Stop, &soon),
+            (S::Closed { last: hp.clone() }, vec![])
+        );
+        assert_eq!(
+            decide_output(&seeking(until, hp.clone()), E::IdleClose, &soon),
+            (S::closed(), vec![])
+        );
+        for ev in [
+            E::DeviceGone,
+            E::Reopen,
+            E::Dropped,
+            E::Pause,
+            E::Opened { uid: HP.into() },
+        ] {
+            assert_eq!(
+                decide_output(&s, ev.clone(), &soon),
+                (s.clone(), vec![]),
+                "{ev:?}"
+            );
+        }
+        // The release that precedes the search.
+        let r = releasing(Then::Seek { until }, hp.clone());
+        assert_eq!(
+            decide_output(&r, E::Dropped, &soon),
+            (seeking(until, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_output(&r, changed("bt", false), &soon),
+            (
+                releasing_open_last("bt", soon.now, change("bt", false, soon.now)),
+                vec![A::SessionBuffering]
+            )
+        );
+        assert_eq!(
+            decide_output(&r, E::NoDefault, &soon),
+            (releasing(Then::Close, None), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&r, E::Stop, &soon),
+            (releasing(Then::Close, hp.clone()), vec![])
+        );
+        assert_eq!(decide_output(&r, E::Play, &soon), (r.clone(), vec![]));
+        assert_eq!(decide_output(&r, E::Tick, &soon), (r.clone(), vec![]));
+    }
+
+    /// F6a: the owner's hold for a default that reads as none is the watcher's
+    /// (`NO_DEFAULT_POLLS` polls of `WATCH_PERIOD`, F3's measurement), one figure in two places.
+    /// **Fails if** either side is changed alone.
+    #[test]
+    fn the_owners_hold_is_the_watchers() {
+        assert_eq!(
+            NO_DEFAULT_HOLD,
+            super::WATCH_PERIOD * super::NO_DEFAULT_POLLS
+        );
+        assert_eq!(super::owner::RELEASE_LIMIT, LIMIT);
+    }
+
+    /// Closed row. **Fails if** a default change is not kept (mutation: `Closed { last: None }` on
+    /// `DefaultChanged`: the fresh-window cell below cannot wait), if `NoDefault` or the idle close
+    /// keeps a stale `last`, or if a device event or a command other than `Play` changes anything
+    /// with no output to act on.
+    #[test]
+    fn closed_keeps_the_last_change_and_ignores_the_rest() {
+        let t = Instant::now();
+        let kept = S::Closed {
+            last: change(HP, true, t),
+        };
+        assert_eq!(
+            decide_output(&S::closed(), changed(HP, true), &env(t)),
+            (kept.clone(), vec![])
+        );
+        assert_eq!(
+            decide_output(&kept, E::NoDefault, &env(t)),
+            (S::closed(), vec![])
+        );
+        assert_eq!(
+            decide_output(&kept, E::IdleClose, &env(t)),
+            (S::closed(), vec![])
+        );
+        for ev in [
+            E::DeviceGone,
+            E::Reopen,
+            E::Dropped,
+            E::Tick,
+            E::Opened { uid: HP.into() },
+            E::OpenFailed {
+                uid: HP.into(),
+                message: "x".into(),
+            },
+            E::Pause,
+            E::Stop,
+        ] {
+            assert_eq!(
+                decide_output(&kept, ev.clone(), &env(t)),
+                (kept.clone(), vec![]),
+                "{ev:?}"
+            );
+        }
+    }
+
+    /// Closed + Play (R2, R5, C1). **Fails if** a Play inside a fresh device's window opens at once
+    /// (mutation: drop the `fresh && …` arm of `Change::not_before`: F9's window, the plan's exit
+    /// line), if the wait is counted from the Play instead of the change (`until` would be
+    /// `now + wait`), if a Play outside the window or on a device that existed waits, or if a
+    /// default that reads as none is failed on that one read (F6a). `last` is kept into `Waiting`.
+    #[test]
+    fn closed_play_respects_a_fresh_device_and_no_device() {
+        let t0 = Instant::now();
+        let fresh = S::Closed {
+            last: change(HP, true, t0),
+        };
+        // Inside the window: wait until the change + 3 s, the session in Buffering.
+        let (s, a) = decide_on(&fresh, E::Play, &env(t0 + Duration::from_secs(1)), Some(HP));
+        assert_eq!(s, waiting_last(HP, t0 + WAIT, false, change(HP, true, t0)));
+        assert_eq!(a, vec![A::SessionBuffering]);
+        // At the window's edge: open now.
+        let (s, a) = decide_on(&fresh, E::Play, &env(t0 + WAIT), Some(HP));
+        assert_eq!(s, waiting_last(HP, t0 + WAIT, false, change(HP, true, t0)));
+        assert_eq!(a, vec![A::Open { uid: HP.into() }]);
+        // A device that existed: open now, whatever the time.
+        let existed = S::Closed {
+            last: change("spk", false, t0),
+        };
+        let (s, a) = decide_on(&existed, E::Play, &env(t0), Some("spk"));
+        assert_eq!(s, waiting_last("spk", t0, false, change("spk", false, t0)));
+        assert_eq!(a, vec![A::Open { uid: "spk".into() }]);
+        // No change kept: the current default, now.
+        let (s, a) = decide_on(&S::closed(), E::Play, &env(t0), Some("spk"));
+        assert_eq!(s, waiting("spk", t0, false));
+        assert_eq!(a, vec![A::Open { uid: "spk".into() }]);
+        // No default read: looked for, not failed on the one read (F6a, finding 7; the row is
+        // `seeking_opens_the_first_default_it_reads_and_gives_up_at_its_hold`).
+        assert_eq!(
+            decide_on(&S::closed(), E::Play, &env(t0), None),
+            (seeking(t0 + HOLD, None), vec![])
+        );
+    }
+
+    /// Open row (R4, R5; merge A's loss column). **Fails if** a change to the held UID moves
+    /// anything, if a switch to a fresh device does not wait 3 s from the change (mutation:
+    /// `not_before: now`), if one to an existing device waits, if the release does not come
+    /// first with the session's `Buffering` (R1), if a rate change does not reopen the same UID at
+    /// once, if no default at all waits instead of failing, if a Play, Pause or Stop touches the
+    /// open output, or if the idle close does not release it.
+    #[test]
+    fn open_switches_reopens_on_a_rate_change_and_releases_on_idle() {
+        let t = Instant::now();
+        let spk = open("spk");
+        assert_eq!(
+            decide_output(&spk, changed("spk", false), &env(t)),
+            (spk.clone(), vec![])
+        );
+        assert_eq!(
+            decide_output(&spk, changed(HP, true), &env(t)),
+            (
+                releasing_open_last(HP, t + WAIT, change(HP, true, t)),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        assert_eq!(
+            decide_output(&spk, changed("bt", false), &env(t)),
+            (
+                releasing_open_last("bt", t, change("bt", false, t)),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        assert_eq!(
+            decide_output(&spk, E::Reopen, &env(t)),
+            (
+                releasing_open("spk", t),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        assert_eq!(
+            decide_output(&spk, E::NoDefault, &env(t)),
+            (
+                releasing(Then::Close, None),
+                vec![A::Release, fail_no_output()]
+            )
+        );
+        // Merge A: the held device gone = a switch to the current default, now.
+        assert_eq!(
+            decide_on(&open(HP), E::DeviceGone, &env(t), Some("spk")),
+            (
+                releasing_open("spk", t),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        // No default read at the loss: released, and looked for (F6a, finding 7).
+        assert_eq!(
+            decide_on(&open(HP), E::DeviceGone, &env(t), None),
+            (
+                releasing(Then::Seek { until: t + HOLD }, None),
+                vec![A::Release, A::SessionBuffering]
+            )
+        );
+        for ev in [E::Play, E::Pause, E::Stop, E::Dropped, E::Tick] {
+            assert_eq!(
+                decide_output(&spk, ev.clone(), &env(t)),
+                (spk.clone(), vec![]),
+                "{ev:?}"
+            );
+        }
+        assert_eq!(
+            decide_output(&spk, E::IdleClose, &env(t)),
+            (releasing(Then::Close, None), vec![A::Release])
+        );
+    }
+
+    /// Releasing row (OCR a2-1, a3-5). **Fails if** `Dropped` opens before `not_before`
+    /// (mutation: `due = true` in `open_at`: "a new device waits"), if it does not open at once
+    /// when the wait has passed, if a second default change during a pending open does not restart
+    /// the wait for the newest default, if a change during a close or a pause turns it into an
+    /// open (a3-5) or is not recorded (a2-1), if `Dropped` after a close or a pause loses `last`
+    /// (a2-1: a Play then starts inside F9's window), if a Play while nothing was going to be
+    /// opened does not schedule the current default after its window, or if Stop leaves a pending
+    /// open for nobody.
+    #[test]
+    fn releasing_moves_on_at_dropped_and_restarts_on_a_newer_default() {
+        let t = Instant::now();
+        let later = t + WAIT;
+        let hp = change(HP, true, t);
+        let pending = releasing_open_last(HP, later, hp.clone());
+        assert_eq!(
+            decide_output(&pending, E::Dropped, &env(t + Duration::from_millis(20))),
+            (waiting_last(HP, later, false, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_output(&pending, E::Dropped, &env(later)),
+            (
+                waiting_last(HP, later, false, hp.clone()),
+                vec![A::Open { uid: HP.into() }]
+            )
+        );
+        let t1 = t + Duration::from_secs(1);
+        assert_eq!(
+            decide_output(&pending, changed("bt", false), &env(t1)),
+            (
+                releasing_open_last("bt", t1, change("bt", false, t1)),
+                vec![A::SessionBuffering]
+            )
+        );
+        // A pending open for a Bluetooth device, then the jack appears: the wait is the jack's,
+        // counted from its change (D5: a fresh device other than the jack restarts nothing).
+        let pending_bt = releasing_open_last("bt", t, change("bt", false, t));
+        assert_eq!(
+            decide_output(&pending_bt, changed(HP, true), &env(t1)),
+            (
+                releasing_open_last(HP, t1 + WAIT, change(HP, true, t1)),
+                vec![A::SessionBuffering]
+            )
+        );
+        assert_eq!(
+            decide_output(&pending, changed(AIRPLAY, true), &env(t1)),
+            (
+                releasing_open_last(AIRPLAY, t1, change(AIRPLAY, true, t1)),
+                vec![A::SessionBuffering]
+            )
+        );
+        for then in [Then::Close, Then::Pause] {
+            // A change during a close or a pause is recorded, nothing opens (a3-5).
+            assert_eq!(
+                decide_output(&releasing(then.clone(), None), changed(HP, true), &env(t)),
+                (releasing(then.clone(), hp.clone()), vec![]),
+                "{then:?}"
+            );
+            // The drop keeps `last` (a2-1).
+            assert_eq!(
+                decide_output(&releasing(then.clone(), hp.clone()), E::Dropped, &env(t)),
+                (S::Closed { last: hp.clone() }, vec![]),
+                "{then:?}"
+            );
+            // A Play while the drop is in flight: the current default, after its window if it is
+            // the fresh device (a2-1), else now.
+            assert_eq!(
+                decide_on(
+                    &releasing(then.clone(), hp.clone()),
+                    E::Play,
+                    &env(t1),
+                    Some(HP)
+                ),
+                (releasing_open_last(HP, later, hp.clone()), vec![]),
+                "{then:?}"
+            );
+            assert_eq!(
+                decide_on(
+                    &releasing(then.clone(), hp.clone()),
+                    E::Play,
+                    &env(t1),
+                    Some("spk")
+                ),
+                (releasing_open_last("spk", t1, hp.clone()), vec![]),
+                "{then:?}"
+            );
+        }
+        assert_eq!(
+            decide_output(&pending, E::Play, &env(t)),
+            (pending.clone(), vec![])
+        );
+        assert_eq!(
+            decide_output(&pending, E::Stop, &env(t)),
+            (releasing(Then::Close, hp.clone()), vec![])
+        );
+        assert_eq!(
+            decide_output(&pending, E::IdleClose, &env(t)),
+            (releasing(Then::Close, None), vec![])
+        );
+        assert_eq!(
+            decide_output(&pending, E::NoDefault, &env(t)),
+            (releasing(Then::Close, None), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&releasing(Then::Close, hp.clone()), E::NoDefault, &env(t)),
+            (releasing(Then::Close, None), vec![])
+        );
+        for ev in [E::DeviceGone, E::Reopen, E::Tick, E::Pause] {
+            assert_eq!(
+                decide_output(&pending, ev.clone(), &env(t)),
+                (pending.clone(), vec![]),
+                "{ev:?}"
+            );
+        }
+    }
+
+    /// Waiting row (the retry, R5). **Fails if** a Tick before `until` opens (mutation: drop the
+    /// guard), if a Tick at `until` does not, if `Opened` does not end `Open` with the session
+    /// re-attached, if the first failure does not schedule one retry 1 s later (mutation: `Fail`
+    /// at once: F9's P2g recovery lost) or the second does not `Fail` with the opener's message,
+    /// if a Play opens early, if a newer default does not restart the wait, or if Stop and the
+    /// idle close leave an open pending.
+    #[test]
+    fn waiting_opens_on_time_retries_once_and_never_early() {
+        let t = Instant::now();
+        let until = t + WAIT;
+        let w = waiting(HP, until, false);
+        assert_eq!(
+            decide_output(&w, E::Tick, &env(t + Duration::from_millis(2_999))),
+            (w.clone(), vec![])
+        );
+        assert_eq!(
+            decide_output(&w, E::Tick, &env(until)),
+            (w.clone(), vec![A::Open { uid: HP.into() }])
+        );
+        assert_eq!(
+            decide_output(&w, E::Opened { uid: HP.into() }, &env(until)),
+            (open(HP), vec![A::SessionReattach])
+        );
+        let failed = E::OpenFailed {
+            uid: HP.into(),
+            message: "No sound on hp".into(),
+        };
+        assert_eq!(
+            decide_output(&w, failed.clone(), &env(until)),
+            (waiting(HP, until + RETRY, true), vec![])
+        );
+        assert_eq!(
+            decide_output(&waiting(HP, until, true), failed, &env(until)),
+            (
+                S::closed(),
+                vec![A::Fail {
+                    message: "No sound on hp".into()
+                }]
+            )
+        );
+        assert_eq!(decide_output(&w, E::Play, &env(t)), (w.clone(), vec![]));
+        assert_eq!(
+            decide_output(&w, changed(HP, true), &env(t)),
+            (w.clone(), vec![])
+        );
+        assert_eq!(
+            decide_output(&w, changed("spk", false), &env(t)),
+            (
+                waiting_last("spk", t, false, change("spk", false, t)),
+                vec![]
+            )
+        );
+        assert_eq!(
+            decide_output(&w, E::NoDefault, &env(t)),
+            (S::closed(), vec![fail_no_output()])
+        );
+        assert_eq!(
+            decide_output(&w, E::IdleClose, &env(t)),
+            (S::closed(), vec![])
+        );
+        let hp = change(HP, true, t);
+        assert_eq!(
+            decide_output(
+                &waiting_last(HP, until, false, hp.clone()),
+                E::Stop,
+                &env(t)
+            ),
+            (S::Closed { last: hp }, vec![]),
+            "Stop lost the last change (a2-1)"
+        );
+        for ev in [E::DeviceGone, E::Reopen, E::Dropped, E::Pause] {
+            assert_eq!(
+                decide_output(&w, ev.clone(), &env(t)),
+                (w.clone(), vec![]),
+                "{ev:?}"
+            );
+        }
+    }
+
+    /// The chat's C1 (2026-11-19): a `Play` opens the **current default**; `last` only supplies
+    /// the fresh wait, and only when it names that same device. **Fails if** `last.uid` is opened
+    /// (stale after the watcher stopped: a device that is gone or no longer the default).
+    #[test]
+    fn closed_play_opens_the_current_default_not_the_last_change() {
+        let t = Instant::now();
+        let last_a = S::Closed {
+            last: change("a", true, t),
+        };
+        assert_eq!(
+            decide_on(
+                &last_a,
+                E::Play,
+                &env(t + Duration::from_secs(1)),
+                Some("b")
+            ),
+            (
+                waiting_last("b", t + Duration::from_secs(1), false, change("a", true, t)),
+                vec![A::Open { uid: "b".into() }]
+            )
+        );
+    }
+
+    /// OCR a3-5: a default change while an idle close or a loss is releasing only records the
+    /// change; it does not turn the release into an open (the slot is empty, a Play in the wait
+    /// would give the decode thread no output). **Fails if** `Releasing { Close }` +
+    /// `DefaultChanged` becomes `Then::Open`.
+    #[test]
+    fn a_change_during_an_idle_close_is_recorded_not_opened() {
+        let t = Instant::now();
+        let (s, a) = decide_output(&releasing(Then::Close, None), changed(HP, true), &env(t));
+        assert!(
+            matches!(
+                s,
+                S::Releasing {
+                    then: Then::Close,
+                    ..
+                }
+            ),
+            "the idle close became an open: {s:?}"
+        );
+        assert_eq!(a, vec![]);
+    }
+
+    /// R1's flag: every state but `Open` is "switching". **Fails if** `Waiting` or `Releasing`
+    /// reads as not switching (the attach arm would write `Playing` on a mixer nobody pulls).
+    #[test]
+    fn every_state_but_open_is_switching() {
+        let t = Instant::now();
+        assert!(S::closed().is_switching());
+        assert!(releasing_open(HP, t).is_switching());
+        assert!(waiting(HP, t, false).is_switching());
+        assert!(seeking(t, None).is_switching());
+        assert!(!open("spk").is_switching());
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    //! The default-output watcher (plan §4): the pure step on scripted snapshots, and the thread's
+    //! stop. No device, no sleep but the thread test's period.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::{FRESH_WINDOW, OutputEvent, Snapshot, WatchHandle, WatchState};
+    use crate::sync::lock;
+
+    fn snap(default: Option<&str>, outputs: &[&str]) -> Snapshot {
+        Snapshot {
+            default_uid: default.map(str::to_string),
+            outputs: outputs.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn changed(uid: &str, fresh: bool) -> Option<OutputEvent> {
+        Some(OutputEvent::DefaultChanged {
+            uid: uid.into(),
+            fresh,
+        })
+    }
+
+    /// The first poll seeds the state and reports nothing (the review's addendum: nothing is
+    /// known, so nothing is fresh and no change is reported); the same default again reports
+    /// nothing. **Fails if** the first snapshot is reported as a change (the engine would release
+    /// and reopen its output at every start), or if an unchanged default is.
+    #[test]
+    fn the_first_poll_seeds_and_an_unchanged_default_is_silent() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk", "bt"]), t), None);
+    }
+
+    /// F6b (OCR finding 5): a watcher seeded with the UID the engine opened reports, at its first
+    /// poll, a default that is already another device, as fresh (its age is unknown; only the
+    /// jack waits on that). **What it pins:** seeded with `spk`, a first poll reading `hp` is
+    /// `DefaultChanged { hp, fresh }`, and the next poll reading `hp` is silent; a first poll
+    /// reading `spk` is silent; a first poll reading no default is silent, and the default read
+    /// afterwards is reported by the ordinary rule. **Fails if** the seed is ignored (the
+    /// unfixed first poll: silent, and the engine stays on `spk` until some later change).
+    #[test]
+    fn a_seeded_watcher_reports_a_default_that_moved_before_its_first_poll() {
+        let t = Instant::now();
+        let mut w = WatchState::seeded("spk");
+        assert_eq!(
+            w.observe(snap(Some("hp"), &["spk", "hp"]), t),
+            changed("hp", true)
+        );
+        assert_eq!(w.observe(snap(Some("hp"), &["spk", "hp"]), t), None);
+        assert_eq!(
+            w.observe(snap(Some("spk"), &["spk", "hp"]), t),
+            changed("spk", false)
+        );
+        let mut w = WatchState::seeded("spk");
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        let mut w = WatchState::seeded("spk");
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(w.observe(snap(Some("hp"), &["hp"]), t), changed("hp", true));
+    }
+
+    /// A default change to a device that was in the previous list is not fresh; to one that was
+    /// not is fresh (the jack: the device and the default change land in one poll). **Fails if**
+    /// `fresh` is read from the new list instead of the previous one (both would be "present"),
+    /// or if the change is not reported.
+    #[test]
+    fn a_default_change_is_fresh_only_for_a_device_the_previous_poll_did_not_list() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk", "bt"]), t);
+        assert_eq!(
+            w.observe(snap(Some("bt"), &["spk", "bt"]), t),
+            changed("bt", false)
+        );
+        assert_eq!(
+            w.observe(snap(Some("hp"), &["spk", "bt", "hp"]), t),
+            changed("hp", true)
+        );
+    }
+
+    /// The 3 s clause: a device that appeared within `FRESH_WINDOW` before becoming the default is
+    /// fresh (the MOMENTUM 4: listed ~60 ms before the default moves); one that appeared longer
+    /// ago is not (the Audio Pro picked 3.3 s after it reappeared, R1). **Fails if** `appeared` is
+    /// not kept across polls, or if the window is not applied.
+    #[test]
+    fn a_device_that_appeared_within_the_window_is_fresh_and_an_older_one_is_not() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk"]), t);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk", "bt"]), t), None);
+        assert_eq!(
+            w.observe(
+                snap(Some("bt"), &["spk", "bt"]),
+                t + Duration::from_millis(2_999)
+            ),
+            changed("bt", true)
+        );
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk"]), t);
+        w.observe(snap(Some("spk"), &["spk", "bt"]), t);
+        assert_eq!(
+            w.observe(snap(Some("bt"), &["spk", "bt"]), t + FRESH_WINDOW),
+            changed("bt", false)
+        );
+    }
+
+    /// No output device at all is `NoDefault` (review R5), reported once it has held for
+    /// `NO_DEFAULT_POLLS` consecutive polls (F3, the by-hand checks of 2026-11-19: during a Bluetooth
+    /// → `AirPlay` switch of the same speaker, `coreaudiod` moved the default through the speakers in
+    /// 150 ms and one poll read no default, which ended the session in a false `Error`); a device
+    /// that comes back after that is a fresh change. **Fails if** one unreadable poll is reported
+    /// (mutation: `NO_DEFAULT_POLLS = 1`), if a steady absence is never reported, if `None` is
+    /// treated as "unchanged", or if it is reported as a change to an empty UID.
+    #[test]
+    fn no_default_is_reported_only_once_it_holds() {
+        let t = Instant::now();
+        let mut w = WatchState::default();
+        w.observe(snap(Some("spk"), &["spk"]), t);
+        // One unreadable poll inside a transport switch: nothing, and the default is still spk.
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(w.observe(snap(Some("spk"), &["spk"]), t), None);
+        // A steady absence: reported on the third poll, once.
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(w.observe(snap(None, &[]), t), Some(OutputEvent::NoDefault));
+        assert_eq!(w.observe(snap(None, &[]), t), None);
+        assert_eq!(
+            w.observe(snap(Some("spk"), &["spk"]), t),
+            changed("spk", true)
+        );
+    }
+
+    /// The thread: it polls, reports a change on the channel, and `stop()` joins it. **What it
+    /// pins:** one `DefaultChanged` after the scripted snapshot changes, then `stop()` returns
+    /// (the join is the claim; the hang guard is the test's own timeout). **Fails if** the stop
+    /// flag is not read between polls or the thread is not joined.
+    #[test]
+    fn the_thread_reports_and_stops() {
+        let script = Arc::new(Mutex::new(snap(Some("spk"), &["spk"])));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (poll_script, poll_count) = (script.clone(), polls.clone());
+        let (tx, rx) = mpsc::channel();
+        let handle = WatchHandle::spawn(
+            "ondar-audio:test-watch",
+            Duration::from_millis(5),
+            move || {
+                poll_count.fetch_add(1, Ordering::SeqCst);
+                lock(&poll_script).clone()
+            },
+            tx,
+            WatchState::default(),
+        )
+        .expect("the watcher thread");
+        // The first poll seeds the state; the change comes after it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while polls.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        *lock(&script) = snap(Some("bt"), &["spk", "bt"]);
+        let msg = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a message from the watcher");
+        assert_eq!(msg.generation, None);
+        assert_eq!(Some(msg.event), changed("bt", true));
+        handle.stop();
+    }
+
+    /// F2 (OCR a3-2): a handle dropped without `stop` or `detach` still ends its thread, and
+    /// `detach` does too. **What it pins:** after the drop (and after a `detach`), the poll count
+    /// stops growing within a few periods (read twice, 50 ms apart, after a 50 ms grace). **Fails
+    /// if** `Drop` does not set the flag (the thread polls on until the process ends).
+    #[test]
+    fn a_dropped_or_detached_handle_ends_its_thread() {
+        for detach in [false, true] {
+            let polls = Arc::new(AtomicUsize::new(0));
+            let poll_count = polls.clone();
+            let (tx, _rx) = mpsc::channel();
+            let handle = WatchHandle::spawn(
+                "ondar-audio:test-watch-drop",
+                Duration::from_millis(5),
+                move || {
+                    poll_count.fetch_add(1, Ordering::SeqCst);
+                    snap(Some("spk"), &["spk"])
+                },
+                tx,
+                WatchState::default(),
+            )
+            .expect("the watcher thread");
+            if detach {
+                handle.detach();
+            } else {
+                drop(handle);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            let settled = polls.load(Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                polls.load(Ordering::SeqCst),
+                settled,
+                "the thread polled on (detach = {detach})"
+            );
+        }
     }
 }

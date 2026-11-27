@@ -21,17 +21,51 @@ in ONDAR.md under the section named.
    keeps the device. **A `Player` per attach** (0.1.2, F1): the decode thread connects a new one
    to the output's mixer at each attach, and a session's end drops it. **Never
    `Player::clear()`**: it waits without a timeout for the output to pull (the F1 wedge); pinned
-   by `no_player_clear_scan` (`ondar-audio/src/lib.rs`). **One output, reopened on loss:** cpal's
-   `DeviceNotAvailable` reopens the default device and restarts the live session through the
-   reconnect path (`Reconnecting`, one backoff attempt), or ends it in `Error { code: Device }`
-   if nothing opens; a default change needs nothing (the stream follows). 7d's stall WARN (5 s
-   `Playing` with nothing pulled) also reopens, once per episode (`stall_reopen`'s latch, cleared
-   only by a pull). ("0.1.2: decisions") **Closed after 30 s with no session** (`Idle`, `Error`;
-   `OUTPUT_IDLE_CLOSE`, elapsed time, not ticks), so an idle Ondar holds no sleep assertion;
-   the next play reopens it. **A session `Paused` for 30 s is ended** (`cancel_session` before
-   the slot empties) and its `Play` parked; it stays `Paused`, and Resume replays it as a fresh
-   session (`Connecting` → `Buffering` → `Playing`); Stop or a play forgets it. The close writes
-   no state. (M5e1)
+   by `no_player_clear_scan` (`ondar-audio/src/lib.rs`). **One output, owned by UID** (beta item 1,
+   merge A, 2026-11-19; `output.rs`): opened **pinned** (`device_by_id` + `from_device`, cpal's
+   `HalOutput` unit, never `from_default_device()`, whose own follow leaves the process silent on
+   the jack's codec: F9), the default watched by the owner's thread (`DefaultWatcher`, 100 ms, run
+   from the first open to the idle close, seeded with the UID just opened so a default that moved
+   during the open is its first report), every transition through the pure `decide_output`
+   (`output::owner`, the sibling of rule 13). **A switch** = release the old output → its drop
+   thread reports `Dropped` → wait 3 s **only for the built-in jack** (`BuiltInHeadphoneOutputDevice`,
+   `needs_power_up_wait`) when it appeared at the change, none for any other device (D5,
+   2026-11-23: F9's window was measured on the jack's codec alone; Bluetooth and AirPlay had none,
+   and the AirPlay route device a Control Centre pick creates, fresh at every pick, was silenced
+   for every client by the 3 s gap before the open, 0 of 3) → open the new default by UID; the
+   old unit is always gone before the new one is created. Debug builds take
+   `ONDAR_TEST_FRESH_WAIT_MS` for the wait; a release build reads nothing.
+   **`Playing` requires the session to be attached to the output that is open now** (F6b,
+   2026-11-23): the slot carries the open's generation, the session records the one it attached
+   at (`SessionCtx::attached`), and the three writers of `Playing` (the attach arm through
+   `Shared::write_attached`, `resume`, `decide_tick`'s `unattached`) compare it with
+   `Shared::open_generation`, which is 0 while the owner is not `Open`; otherwise `Buffering`.
+   No flag says "re-attach": the decode thread does it when the two generations differ. The
+   engine zeroes the generation before a release's actions, publishes it under the slot's lock
+   before the slot, and lowers `output_pending` only after the slot is filled; do not reorder
+   them. **The session re-attaches** on the new output without a
+   reconnect: its `Player` dropped, a new ring at the new output's format, the stream and its
+   buffered bytes kept, so the audio falls behind live by at most the time away at each switch
+   (the discarded ring was unplayed audio and moves it forward: not added, F6c); past 30 s
+   (`MAX_LAG`) the next switch reconnects live. **A failed start** (`PlayError`, which blocks the
+   engine thread ~1.5 s, measured 7 of 7 2026-11-11; commands queue meanwhile) is retried once after
+   1 s, then `Error { code: Device }` naming the device, never `Playing`; no output device at all is
+   that Error once it has held for 300 ms (`Seeking`, `NO_DEFAULT_HOLD`, F6a: one read of "no
+   default" is never believed, by the watcher or by the owner, which asks again on its `Tick`).
+   **A release whose drop does not return in 5 s is given up** (`RELEASE_LIMIT`: the dispose is
+   three HAL calls with no timeout): a WARN, and `Error { code: Device }` if a session was waiting
+   for the open. cpal's `DeviceNotAvailable` on the pinned stream is a loss: **until merge B**
+   it is a switch to the current default with no wait (F1's outcome); merge B makes it the pause.
+   `StreamInvalidated` (a nominal-rate change; cpal pauses the stream) reopens the same device.
+   7d's stall WARN (5 s `Playing` with nothing pulled) still reopens, once per episode
+   (`stall_reopen`'s latch, cleared only by a pull), through the same path. **Closed after 30 s
+   with no session** (`Idle`, `Error`; `OUTPUT_IDLE_CLOSE`, elapsed time, not ticks), the watcher
+   stopped with it, and stopped on the same limit when it is all that is left (the owner `Closed`
+   after a failed switch; F6c), so an idle Ondar holds no sleep assertion and polls nothing; the
+   next play reopens it. **A session `Paused` for 30 s is ended** (`cancel_session` before the slot empties)
+   and its `Play` parked; it stays `Paused`, and Resume replays it as a fresh session
+   (`Connecting` → `Buffering` → `Playing`); Stop or a play forgets it. The close writes no state.
+   (M5e1; "Beta item 1 A: the output owner")
 2. **Ondar owns all reconnects** (own `Backoff` + a fresh `stream::open()`): stream-download's
    internal reconnect splices byte 0 onto a live mount. The one bounded exception: it stays live
    during the decoder build. ("Reconnect ownership and stream timeouts")
@@ -69,6 +103,7 @@ in ONDAR.md under the section named.
     Shoutcast v1 (`ICY 200 OK`) surfaces as `http`.
 13. **State changes go through `decide_tick`** (pure, at the bottom of `engine.rs`); do not route
     transitions around it. Buffering supervision lives on the engine thread, never the decode loop.
+    **The output's transitions go through `decide_output`** (pure, `output::owner`), the same way.
 14. **The per-sample DSP path** (`ring.rs`, `eq.rs`) has no allocation, lock, log or panic shape
     outside `#[cfg(test)]`.
 15. **No `log::` / `tracing::` call site in the Source chain the audio callback pulls** (ring
