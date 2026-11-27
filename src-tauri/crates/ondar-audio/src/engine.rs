@@ -278,6 +278,23 @@ impl Shared {
         });
     }
 
+    /// The engine's resume of a `Paused` session: `Playing` if the session is on the output that
+    /// is open now, `Buffering` if it is not, with `on_open_output` read under the session lock
+    /// (F7, the F6 review's finding 1). The attach's write ([`Self::write_attached`]) takes the
+    /// same lock after it has recorded the output it attached to, so the attach lands whole
+    /// before this read, which then sees it, or whole after this write, over the `Buffering`
+    /// written here. Read outside the lock, the decision could be `Buffering` from before the
+    /// attach and the write land after its `Playing`: `Buffering` on a session that played.
+    fn write_resumed(&self, on_open_output: impl FnOnce() -> bool) {
+        self.write_with(None, |_| {
+            Some(if on_open_output() {
+                PlaybackState::Playing
+            } else {
+                PlaybackState::Buffering
+            })
+        });
+    }
+
     /// The owner's `SessionBuffering`: a `Playing` state becomes `Buffering`, any other is left.
     /// Under the session lock ([`Self::write_attached`]).
     fn hold_buffering(&self) {
@@ -427,6 +444,14 @@ thread_local! {
     /// read of `output_pending`: the window OCR finding 3 names, held open by a test.
     static BETWEEN_SLOT_AND_PENDING: std::cell::RefCell<Option<Box<dyn Fn()>>> =
         const { std::cell::RefCell::new(None) };
+    /// Run by [`SessionCtx::attach`] on this thread between its read of `paused` and its state
+    /// write: the window the F6 review's finding 4 names (a pause landing there was lost).
+    static ATTACH_BEFORE_WRITE: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Run by [`Engine::resume`] on this thread before its state write: the window the F6
+    /// review's finding 1 names (the attach's `Playing` landing there was overwritten).
+    static RESUME_BEFORE_WRITE: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl SessionCtx {
@@ -493,22 +518,50 @@ impl SessionCtx {
     }
 
     /// The decode thread's attach: publish `player` as the session's, at the engine's volume,
-    /// playing unless the user paused. Decided under `player`'s lock, so it cannot interleave
-    /// with the engine's [`Self::cancel`], pause, resume or volume: a session already cancelled
-    /// gets no player (`false`; this one is dropped), and a volume or pause the engine set before
-    /// taking the lock is read here. The previous attach's player, if any, is dropped.
-    /// `generation` is the output's ([`Published::generation`]), recorded as [`Self::attached`].
-    fn attach(&self, player: Player, generation: u64) -> bool {
+    /// playing unless the user paused, and the state that goes with it (`Paused`, or
+    /// [`Shared::write_attached`]'s). Decided and written under `player`'s lock, so it cannot
+    /// interleave with the engine's [`Self::cancel`], pause, resume or volume: a session already
+    /// cancelled gets no player (`false`; this one is dropped), and a volume or pause the engine
+    /// set before taking the lock is read here; one that begins meanwhile waits for the lock and
+    /// writes its state after this one (F7). The previous attach's player, if any, is dropped.
+    /// `out` is the output attached to; its generation is recorded as [`Self::attached`].
+    fn attach(&self, player: Player, out: &Published) -> bool {
         let mut slot = lock(&self.player);
         if self.cancelled() {
             return false;
         }
         player.set_volume(f32::from_bits(self.volume.load(Ordering::Relaxed)));
-        if !self.shared.paused.load(Ordering::Relaxed) {
+        let paused = self.shared.paused.load(Ordering::Relaxed);
+        if !paused {
             player.play();
         }
         drop(slot.replace(player));
-        self.attached.store(generation, Ordering::Relaxed);
+        self.attached.store(out.generation, Ordering::Relaxed);
+        log::info!(
+            "attached sample_rate={} channels={}",
+            out.format.sample_rate,
+            out.format.channels
+        );
+        // The state, from the same read of `paused` that played or held the `Player`, and
+        // written before the lock is released (F7, the F6 review's finding 4): the engine's
+        // `pause` and `resume` reach the `Player` through this lock, so one that begins here
+        // finishes after this write and has the last word. Read after the lock, the engine's
+        // pause could finish in between and be overwritten with `Playing`; read before it, the
+        // `Player` could be left playing under `Paused`. `Playing` only if the output attached to
+        // is the one open now (F6b; review R1): an attach on the stale slot during a switch holds
+        // `Buffering`, and this thread re-attaches when it sees the new output's generation.
+        #[cfg(test)]
+        ATTACH_BEFORE_WRITE.with_borrow(|hook| {
+            if let Some(hook) = hook {
+                hook();
+            }
+        });
+        if paused {
+            self.set_state(PlaybackState::Paused);
+        } else {
+            self.shared.write_attached(self.generation, out.generation);
+        }
+        drop(slot);
         true
     }
 
@@ -1486,11 +1539,16 @@ impl Engine {
                 // switch, or before the session's attach, the resume shows `Buffering`, and the
                 // attach on the open output writes `Playing`. Otherwise tick() downgrades this to
                 // Buffering if the ring is starved.
-                self.shared.set_state(if s.on_open_output() {
-                    PlaybackState::Playing
-                } else {
-                    PlaybackState::Buffering
+                // Decided under the session lock, with the write (F7, the F6 review's finding
+                // 1): the decode thread's attach landed between a read here and the write, and
+                // its `Playing` was overwritten with `Buffering`, where the session then stayed.
+                #[cfg(test)]
+                RESUME_BEFORE_WRITE.with_borrow(|hook| {
+                    if let Some(hook) = hook {
+                        hook();
+                    }
                 });
+                self.shared.write_resumed(|| s.on_open_output());
             }
             // If we are Buffering, tick() resumes output once the ring refills.
         }
@@ -1817,22 +1875,9 @@ fn run_session(
                 let player = Player::connect_new(&out.mixer);
                 player.pause();
                 player.append(output_chain(src, out.format, ctx.shared.gains.clone()));
-                if !ctx.attach(player, out.generation) {
+                if !ctx.attach(player, &out) {
                     *lock(&ctx.ring) = None;
                     return;
-                }
-                log::info!(
-                    "attached sample_rate={} channels={}",
-                    out.format.sample_rate,
-                    out.format.channels
-                );
-                // `Playing` only if the output attached to is the one open now (F6b; review R1):
-                // an attach on the stale slot during a switch holds `Buffering`, and this thread
-                // re-attaches when it sees the new output's generation.
-                if ctx.shared.paused.load(Ordering::Relaxed) {
-                    ctx.set_state(PlaybackState::Paused);
-                } else {
-                    ctx.shared.write_attached(ctx.generation, out.generation);
                 }
             }
         }
@@ -4820,6 +4865,95 @@ mod session_tests {
             engine.tick();
         }
         assert_eq!(ctx.shared.state(), PlaybackState::Playing);
+    }
+
+    /// F7 (the F6 review's finding 1, 2026-11-23): a Resume whose session re-attaches on the open
+    /// output while the Resume is being handled ends in `Playing`, not `Buffering` for ever.
+    /// **What it pins:** a session `Paused` with its `Player` dropped for a re-attach (output 2
+    /// open, the session attached to nothing); `resume` runs, and the decode thread's attach on
+    /// output 2 lands in the seam before the resume's state write: the state is `Playing`
+    /// afterwards. **Fails if** the resume reads the session's output before it takes the lock
+    /// its write takes (mutation: `on_open_output` evaluated in `resume`, before the seam; the unfixed
+    /// `resume`: `Buffering` decided before the attach, written after it, on a session that
+    /// plays and stays `Buffering`).
+    #[test]
+    fn a_resume_does_not_overwrite_the_attach_that_lands_before_its_write() {
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let ctx = test_ctx(ev_tx);
+        ctx.shared.open_generation.store(2, Ordering::Relaxed);
+        ctx.shared.paused.store(true, Ordering::Relaxed);
+        ctx.shared.set_state(PlaybackState::Paused);
+        let mut engine = Engine::new(ctx.shared.clone(), "Ondar/test");
+        engine.session = Some(ctx.clone());
+        let attach = ctx.clone();
+        RESUME_BEFORE_WRITE.set(Some(Box::new(move || {
+            // The decode thread's attach on output 2, as `SessionCtx::attach` does it once the
+            // resume has cleared `paused`: the generation, then the write.
+            attach.attached.store(2, Ordering::Relaxed);
+            attach.shared.write_attached(attach.generation, 2);
+        })));
+        engine.resume();
+        RESUME_BEFORE_WRITE.set(None);
+        assert_eq!(
+            ctx.shared.state(),
+            PlaybackState::Playing,
+            "the resume overwrote the attach's Playing"
+        );
+    }
+
+    /// F7 (the F6 review's finding 4, 2026-11-23): a Pause that lands while the decode thread
+    /// attaches is kept. **What it pins:** output 1 open, the session `Buffering` and not paused;
+    /// the attach runs, and the engine's pause (its three steps: the flag, the `Player`, the
+    /// state) begins in the seam between the attach's read of `paused` and its state write; once
+    /// the pause has finished the state is `Paused` and the attached `Player` is paused. **Fails
+    /// if** the attach's read and write are not one step under the `Player`'s lock (mutation:
+    /// the write after the lock is released; the unfixed attach: the pause finished in the
+    /// window, and the attach then wrote `Playing` over it with the `Player` paused).
+    #[test]
+    fn a_pause_that_lands_during_the_attach_is_kept() {
+        let (ev_tx, _ev_rx) = mpsc::channel();
+        let ctx = test_ctx(ev_tx);
+        ctx.shared.open_generation.store(1, Ordering::Relaxed);
+        ctx.shared.set_state(PlaybackState::Buffering);
+        let out = bare_output(1);
+        let player = Player::connect_new(&out.mixer);
+        player.pause();
+        let done = Arc::new(AtomicBool::new(false));
+        let pauser = ctx.clone();
+        let finished = done.clone();
+        ATTACH_BEFORE_WRITE.set(Some(Box::new(move || {
+            // `Engine::pause`'s body, on the engine's thread.
+            let p = pauser.clone();
+            let done = finished.clone();
+            thread::spawn(move || {
+                p.shared.paused.store(true, Ordering::Relaxed);
+                p.with_player(Player::pause);
+                p.shared.set_state(PlaybackState::Paused);
+                done.store(true, Ordering::SeqCst);
+            });
+            // The pause has begun; if nothing holds it, it also finishes here.
+            assert!(
+                eventually(GUARD, || pauser.shared.paused.load(Ordering::Relaxed)),
+                "the pause never began"
+            );
+            let _ = eventually(Duration::from_millis(300), || {
+                finished.load(Ordering::SeqCst)
+            });
+        })));
+        assert!(ctx.attach(player, &out), "the attach was refused");
+        ATTACH_BEFORE_WRITE.set(None);
+        assert!(
+            eventually(GUARD, || done.load(Ordering::SeqCst)),
+            "the pause never finished"
+        );
+        assert_eq!(
+            ctx.shared.state(),
+            PlaybackState::Paused,
+            "the pause was lost"
+        );
+        let mut player_paused = None;
+        ctx.with_player(|p| player_paused = Some(p.is_paused()));
+        assert_eq!(player_paused, Some(true), "the Player plays under Paused");
     }
 
     /// F6b (OCR finding 4), through the engine: a switch once the ring is long past its dwell
