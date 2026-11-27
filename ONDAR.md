@@ -1,6 +1,6 @@
 # Ondar — project document
 
-*Last updated: 2026-11-27 ("Beta item 1 A: the output owner": F7, the F6 review's triage, 0.1.4 and the order after it; "Release steps", lesson 3). Previously 2026-11-23, latest ("Beta item 1 A: the output owner": F6, the code review of merge A and the generation invariant). Previously 2026-11-23 ("Beta item 1 A: the output owner": D5, the fresh wait is the jack's alone, after the AirPlay controls; the Audio Pro's two faces). Previously 2026-11-19 ("Beta item 1 A: the output owner" after "M5e1: media keys and Now Playing": F9, decisions D1–D4, the Step 0 of 2026-11-11/19, the owner's design, the stack row). Previously 2026-11-09 ("Release 0.1.3" after "M5e1: media keys and Now Playing": 0.1.3 released and merged, spike 5, the 9b table, G as read, G-a and G-b, RUSTSEC-2026-0459 and `fab9b9b`; two lessons for the release steps). Previously 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
+*Last updated: 2026-11-27, later ("Beta item 1 A: the output owner": "Release 0.1.4", 0.1.4 released and merged, spike 5, the 9b table, the first build's 403, the Audio Pro's faces named right; "Release steps", lessons 4 and 5). Previously 2026-11-27 ("Beta item 1 A: the output owner": F7, the F6 review's triage, 0.1.4 and the order after it; "Release steps", lesson 3). Previously 2026-11-23, latest ("Beta item 1 A: the output owner": F6, the code review of merge A and the generation invariant). Previously 2026-11-23 ("Beta item 1 A: the output owner": D5, the fresh wait is the jack's alone, after the AirPlay controls; the Audio Pro's two faces). Previously 2026-11-19 ("Beta item 1 A: the output owner" after "M5e1: media keys and Now Playing": F9, decisions D1–D4, the Step 0 of 2026-11-11/19, the owner's design, the stack row). Previously 2026-11-09 ("Release 0.1.3" after "M5e1: media keys and Now Playing": 0.1.3 released and merged, spike 5, the 9b table, G as read, G-a and G-b, RUSTSEC-2026-0459 and `fab9b9b`; two lessons for the release steps). Previously 2026-11-06 ("M5e1: media keys and Now Playing" after "0.1.2: decisions": decisions 1–7 and A1–A4, Part 0's sleep assertion and the output close, the buy-before-build row, the by-hand checks, G read from the unified log and G1–G3, the Xrun table). Previously 2026-11-03 ("Release 0.1.2" after "0.1.2: decisions": 0.1.2 released and merged, spike 5, test A on the dev and release builds, the known gap, the underrun instrument checked in the log file, the two OCR triages; the dSYM zip and its private Drive copy in "0.1.1: release symbols"). Previously 2026-10-30 (0.1.2 scoped and decided on branch `v0.1.2`: "0.1.2: decisions" after "Release 0.1.1", with the buy-before-build entries; the SRV verdict re-decided in "Buy before build"). Previously 2026-10-27, latest ("Release 0.1.1" after "0.1.1: release symbols": 0.1.1 released and merged, spike 5, the installed size explained (0.1.0's 10 880 KiB was a pre-release build; the shipped 0.1.0 was 11 960); the window-vibrancy 0.8.1 corners closed; F1 and F2 status; the dSYM path `ondar-<version>.dSYM`). Previously 2026-10-27 (0.1.1: 7d's stall count runs only while playing, in "0.1.1: F1's instruments"; the release build fixed and linted in CI, see "Repo tooling"; Error states logged at WARN and "0.1.1: release symbols", after "0.1.1: F1's instruments"). Previously 2026-10-26, latest (0.1.1 on branch `v0.1.1`: "0.1.1: F1's instruments" after "Release 0.1.0"; "B5 explained" in M4c Step 0; "The 750 cap explained" in M3a). Previously 2026-10-26, later (the Audio row's chain, the Log file row's filter, the advisory rule in "Repo tooling"; `1bc53ec` the lockfile answer). Previously 2026-10-26 (the drift audit of 2026-10-26: cargo deny's CI binary, the CI order, symbols cited for line numbers, the stack table's Shell row and a new Updater row, `window-vibrancy` dated, Product shape's pan/zoom bullet, 0.1.1 not started). Previously 2026-10-19 (M5 re-cut into five phases, 0.1.1 scoped — see "M5 re-cut (2026-10-19)"; the tray animate-vs-redesign item closed). Previously 2026-10-17/19 (the lints: pedantic at deny, the toolchain pinned, cargo deny in CI — see "Repo tooling"). Previously 2026-10-16, later (the buy-before-build rule and the audit's verdicts — see "Buy before build"). Previously 2026-10-16 (M6-lite merged to `main`, `cb6610f`; exit pending testers — see "Milestones"). Previously 2026-10-14, latest (M6-lite: **0.1.0 released**, tag `v0.1.0`, on CrabNebula Cloud — see "Release 0.1.0"). Previously 2026-10-14, later (tauri 2.12.3, the updater — see "Updater"). Previously 2026-10-14 (spike 1 accepted and the `.app` stapled, spike 2 complete; the log file plain and info-level — see "Signing and notarisation", "Log file").
 Previously 2026-10-13 (M6-lite Step 0: signing recorded, notarisation submitted and pending Apple, the release log path observed — see "M6-lite before M5", "Signing and notarisation").
 Previously 2026-10-12, latest (the plan change: M6-lite before M5 — see "M6-lite before M5"; Product shape's dot click and the six-rung ladder; instrument instance twenty).
 Previously 2026-10-12, later (M4c merged `d431568`, `m4c-done`; M4 complete). Previously 2026-10-12 (M4c built and measured: the decisions as built, the acceptance figures,
@@ -2145,6 +2145,16 @@ needed 0.1.2 still installed).
 3. **`cargo deny check` again right before `cn release publish`** (2026-11-23, for 0.1.4). An
    advisory can land between the bump's CI and the publish: RUSTSEC-2026-0459 was issued on
    0.1.3's publish day and was caught only at the merge. The bump commit's gate is not the last word.
+4. **The Info.plist read is two calls, each judged by its exit status** (0.1.4, 2026-11-27):
+   `/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' <app>/Contents/Info.plist` and
+   the same for `:CFBundleIdentifier` (or `defaults read <app>/Contents/Info CFBundleShortVersionString`),
+   each followed by `echo exit=$?`, and the step passes only on two zeros. 0.1.4's `checks.out` opened
+   with one PlistBuddy call carrying both `-c` pairs through a shell `eval`; it exited 1 ("Invalid
+   Arguments") and checked nothing, and the record read as a pass until the file was read.
+5. **Check developer.apple.com for a pending agreement before the build** (0.1.4, 2026-11-27):
+   Account → Agreements. The notary service answers `HTTP status code: 403. A required agreement is
+   missing or has expired.` to every submission until the Account Holder accepts it; 0.1.4's first
+   build failed there after the compile and the signing, and only Martín could clear it.
 
 ### Beta item 1 A: the output owner (2026-11-11 to 2026-11-19)
 
@@ -2337,6 +2347,73 @@ the pause rules, with the M5e1 review's findings 1, 2, 4, 5, 8 and finding 3 abo
 M5a and still lands before the strangers' beta; lighter process after this. The merge commit's
 message carries the correction to F5's message (`684319e`): the sha `0b2b2a0` it cites does not
 exist; the rule it names is `6cd6f39`'s. The F9 twin is marked FIXED 0.1.4 after the release.
+
+**Release 0.1.4 (2026-11-27).** Tag `v0.1.4` = `040d986` (the bump, on `lost-device`), built,
+checked and released 2026-11-27, merged to `main` with `--no-ff` the same day (`cdf4d34`, tag
+`beta1a-done`); `git diff v0.1.4 main` empty. Records: `_handover/v0.1.4/{build.log,
+build-attempt-1-403.log, dmg-notarize.log, checks.out, checks-9b.txt, cn-release.log, feed-check.out,
+ondar.2026-11-27-checks-release.log, ondar.2026-11-27-spike5.log, release-0.1.4/}`; the report
+`last-report-2026-11-27.md`. The steps were 0.1.3's (the built `.app` run from the bundle folder for
+the checks; spike 5 from the installed 0.1.3).
+
+- **The first build failed at the notarisation** (12:37 UTC): `HTTP status code: 403. A required
+  agreement is missing or has expired.` A pending Apple Developer Program agreement; only the
+  Account Holder can accept it, and the notary service refuses every submission until then. Martín
+  accepted it; the second build went through. In that first attempt the `.app`'s `codesign` took
+  11 m 46 s (4 s in the second, 46 s on 0.1.3); unexplained, seen once.
+- **Build** (attempt 2, `pnpm tauri build --bundles app,dmg`): compile 1 m 02 s; the `.app`
+  notarised in **20 s** (submission `76459b07-a6fe-411d-b05f-a84fae65b6d4`); `Stapling app...`, the
+  DMG, then `Ondar.app.tar.gz` (12:50:30Z).
+- **Checks, all exit 0.** The `.app` and the `.app` extracted from the tar.gz: `codesign --verify
+  --deep --strict`, `spctl` (`Notarized Developer ID`), `stapler validate`. The DMG after its own
+  notarisation (`418669c8-644c-4bc3-a592-1df6e976de8d`, Accepted in 26 s) and `stapler staple`:
+  codesign, `spctl -a -t open`, stapler validate. **One slip in `checks.out`:** its first command, a
+  PlistBuddy with two `-c Print :Key` pairs through `eval`, exited 1 ("Invalid Arguments") and
+  checked nothing; the version (0.1.4) and the identifier were read by a correctly quoted re-run
+  further down. Lesson 4 below.
+- **SHA-256.**
+  - `Ondar.app.tar.gz` (7 312 790 B): `558bb6184114c5cb339dbc4656f37dc18c93ec186fa71bb921311d0841a3a93c`.
+  - `Ondar.app.tar.gz.sig` (420 B): `e97779fd52d8917d6e7c994bc8f943741666d12b15b891e27282d4e230537672`.
+  - `Ondar_0.1.4_aarch64.dmg`, stapled (7 557 400 B): `ed480dbc23f87f4f41033fcb1d19954ffc24d8863b4633865261fb04fd514713`.
+    Before stapling it was `421ef316…052f`, not shipped.
+- **Installed size:** **11 668 KiB** (`du -sk`), against 0.1.3's 11 636 (+32 KiB, 0.3 %).
+- **The dSYM:** UUID `B4FB0999-607A-33CC-BD55-D899D871167D` (arm64), equal to the binary's;
+  `_handover/v0.1.4/ondar-0.1.4.dSYM` (47 016 KiB), zipped to `ondar-0.1.4.dSYM.zip` (10 968 509 B)
+  for Martín's private Drive, `Ondar/dSYM/`.
+- **CrabNebula Cloud.** Release **`01M8EJ63XDKTGHTAR6JQ74HDN7`**: DMG asset
+  `01M8EJ64KZZMQNB511XGNBNFT8` (`dmg-aarch64`), updater asset `01M8EJ6899ZNFKTGAJ91BPHMZE`
+  (`darwin-aarch64`), its signature equal to the `.sig`. `cn release publish` → `Published`,
+  `pubDate` 2026-11-27T13:46:47.171Z. No channel. `cargo deny check` was run again right before the
+  publish (lesson 3): green.
+- **Feed check** (2026-11-27): `…/darwin-aarch64/0.1.0`, `…/0.1.1`, `…/0.1.2` and `…/0.1.3` → **200**,
+  `version "0.1.4"`, the signature equal to the `.sig`, the served asset byte for byte the tar.gz;
+  `…/0.1.4` → **204**; the public DMG link → 302 → `Ondar_0.1.4_aarch64.dmg`, **the stapled DMG, byte
+  for byte**. Log grep for `@icloud`, `AuthKey`, `cn_`: 0 files hit.
+- **Spike 5** (`ondar.2026-11-27-spike5.log`): the installed 0.1.3, opened after the publish:
+  `update install: 0.1.4` 13:56:50Z, `update downloaded; installing` 13:56:55, `update installed;
+  restarting` 13:56:55, `Ondar 0.1.4 starting` 13:56:55 (`/Applications/Ondar.app`), `no update:
+  0.1.4 is current` 13:57:01. Download to restart 4.9 s.
+- **The release checks (9b), the signed `.app` from the bundle folder, 2026-11-27**
+  (`checks-9b.txt`; MediaMonkey and Music quit, the popover hidden for the keys):
+
+  | # | Check | Result |
+  |---|---|---|
+  | J | wired headphones in ×3, out ×3 | pass: heard within 4 s each time, the speakers at once, never `Playing` in silence; each jack open re-attached within 10 ms, the speakers 0.2 s after each `DeviceNotAvailable` |
+  | R | Pause, plug in, Resume within 1 s ×2 | pass: `buffering…` then sound, ends in `Playing` (F7) |
+  | A | Control Centre → the Audio Pro's AirPlay entry ×3 | pass: 3 of 3 heard; a fresh route UID each pick, no wait (D5), no reconnect |
+  | S | Control Centre speakers ↔ the Audio Pro over Bluetooth, 4 each way | pass: heard on every switch; `70-F7-54-E3-09-56:output` opened in 105–137 ms |
+  | M | F8 ×8, popover hidden; Stop then F8 | pass: every toggle reached Ondar; the F8 after Stop replayed the station, the output reused inside the idle window |
+  | P | Stop, 40 s, `pmset`; play, Pause, 40 s, `pmset` | pass: `output closed after 30 s with no session`, then `… after 30 s paused`; no Ondar assertion after either |
+
+  WARN over the run: 17, the two known kinds and the unplugs' own (`DeviceNotAvailable`, `output
+  lost`); 0 ERROR; no stall, no Xrun. The lag estimate over 20 switches: 3.2 → 19.8 s, no reconnect
+  (F6c's rule).
+- **The Audio Pro's two Core Audio faces are Bluetooth and the AirPlay route.** The 11-23 controls
+  (D5 above) called `70-F7-54-E3-09-56:output` the "native AirPlay face"; check S opened that very
+  UID for every Bluetooth pick, and its shape is the MOMENTUM 4's (`80-C3-BA-70-AB-96:output`). It
+  is the speaker's **Bluetooth** device, present while the speaker is Bluetooth-connected and gone
+  while the AirPlay route holds it. The 11-23 results stand (3 of 3 heard on both builds); the name
+  was wrong.
 
 ### Defect B: an unbounded `Connecting` — the build bound and the ADTS front end, built, accepted, reviewed twice and redesigned (2026-09-29/30)
 

@@ -462,12 +462,20 @@ state has a test.
   silence, a state stuck for ever, a crash or a lost pause block a release; ONDAR.md, "Beta item 1
   A", F7**).** Finding 2: after a release given up at its 5 s deadline, a Play opens before the old
   unit is gone (inferred; no hang has ever been observed). The deadline's exit trades "stuck for
-  ever" for "possibly 5 s silent, then the stall reopen"; kept as is. The review's other backlog
-  items, one line each, follow when the chat's list is in `_handover/` (the file the brief names,
-  `output-owner-code-review-f6-2026-11-23.md`, was not on this Mac on 2026-11-27). Also from it:
-  `an_open_is_coming_until_its_output_is_in_the_slot` times the engine's arrival at the publish
-  with a 200 ms sleep; replacing it needs a seam for "the engine waits for the slot's lock", not
-  one line, so it stays.
+  ever" for "possibly 5 s silent, then the stall reopen"; kept as is. The others, from the chat's
+  summary (the review's findings file was never written; `v014-merge-brief-2026-11-27.md`):
+  - Idle → `Error { Device }` with nothing playing (a failed open on an idle engine shows an Error
+    nobody asked for).
+  - A seeded watcher never reports `NoDefault` (the seed stands in for the first poll).
+  - The lag-bound reconnect is logged as a network failure (`stream ended or read failed`).
+  - `an_open_is_coming_until_its_output_is_in_the_slot` times the engine's arrival at the publish
+    with a 200 ms sleep; replacing it needs a seam for "the engine waits for the slot's lock", not
+    one line.
+  - The no-default hold (`NO_DEFAULT_HOLD`) is counted from the event, not from the first unreadable poll.
+  - A pending open with no session still opens after Stop (the idle close takes it 30 s later).
+  - Toggle ignores `Buffering` (`toggle_action`: only `Playing` pauses, only `Paused` resumes).
+  Under merge B: the F6 review's finding 3 (Reconnecting → Pause → Resume writes `Playing` with no
+  ring).
 
 ### Beta (decided 2026-11-06)
 
@@ -479,8 +487,8 @@ state has a test.
 with the state `Playing`; the output opened pinned by UID, our own follow, a 3 s wait for a device
 that just appeared, the session re-attached without a reconnect; exit: heard within 4 s, 4 of 4,
 never `Playing` in silence; built 2026-11-19 on `lost-device`, hardened by F4–F7 after two code
-reviews (2026-11-23/27), **ships as 0.1.4**: 0.1.3's release steps, with `cargo deny check` run
-again right before `cn release publish`); then **M5a**; then **B, the pause rules**: Ondar pausing
+reviews (2026-11-23/27), **released as 0.1.4 on 2026-11-27 and merged, tag `beta1a-done`**; ONDAR.md,
+"Release 0.1.4"); then **M5a, next**; then **B, the pause rules**: Ondar pausing
 itself when the previous output device no longer exists, on every output type, a manual switch
 playing on (the Step 0 of 2026-11-09: the device list is current at the change, 14 of 14 losses), a
 pause from any source in any state with a session, and with it the M5e1 review's findings 1, 2, 4,
