@@ -280,7 +280,8 @@ M1's EQ exit criterion 4 has been open since September; when the order was set n
 mentioned the map (F7 did on 2026-11-04: zoom does nothing on the Faroe Islands). Martín may swap
 c and d, the phases are independent. **M5e1 pulled forward 2026-11-04** (F5's play/pause).
 **Beta cut 2026-11-06:** M5e1, then the lost-device pause, then M5a and M5b; M5d out (see "Beta",
-below).
+below). **Re-ordered 2026-11-23** (Martín, after merge A's F6 review): **0.1.4 (merge A) → M5a →
+merge B (the lost-device pause and the pause rules) → M5b**; B still lands before the strangers' beta.
 
 **Every phase:** Step 0 with the buy-before-build paragraph — the crates and OS facilities checked,
 each with name, version, what it covers, what it misses against our use, why not (ONDAR.md, "Buy
@@ -457,6 +458,16 @@ state has a test.
   (`891df1b6`, Homebrew's npm: `/opt/homebrew/bin/npm i -g @alibaba-group/open-code-review@1.13.6`).
 - **rodio #914 re-check** (the buffer clamp, ONDAR.md "0.1.2: decisions", buy before build): at each
   rodio release; once it ships, the explicit buffer can go.
+- **Merge A's F6 review, the backlog (2026-11-23;** triaged by Martín's rule: only `Playing` in
+  silence, a state stuck for ever, a crash or a lost pause block a release; ONDAR.md, "Beta item 1
+  A", F7**).** Finding 2: after a release given up at its 5 s deadline, a Play opens before the old
+  unit is gone (inferred; no hang has ever been observed). The deadline's exit trades "stuck for
+  ever" for "possibly 5 s silent, then the stall reopen"; kept as is. The review's other backlog
+  items, one line each, follow when the chat's list is in `_handover/` (the file the brief names,
+  `output-owner-code-review-f6-2026-11-23.md`, was not on this Mac on 2026-11-27). Also from it:
+  `an_open_is_coming_until_its_output_is_in_the_slot` times the engine's arrival at the publish
+  with a 200 ms sleep; replacing it needs a seam for "the engine waits for the slot's lock", not
+  one line, so it stays.
 
 ### Beta (decided 2026-11-06)
 
@@ -467,10 +478,16 @@ state has a test.
 **A, the output owner** (F9, found 2026-11-11: wired headphones plugged in while playing were silent
 with the state `Playing`; the output opened pinned by UID, our own follow, a 3 s wait for a device
 that just appeared, the session re-attached without a reconnect; exit: heard within 4 s, 4 of 4,
-never `Playing` in silence; built 2026-11-19 on `lost-device`, merge pending its by-hand checks and
-review), then **B, the pause rules**: Ondar pausing itself when the previous output device no longer exists,
-on every output type, a manual switch playing on (the Step 0 of 2026-11-09: the device list is
-current at the change, 14 of 14 losses), a pause from any source in any state with a session; M5a; M5b; the empty, loading, offline and error states (from M5e); the
+never `Playing` in silence; built 2026-11-19 on `lost-device`, hardened by F4–F7 after two code
+reviews (2026-11-23/27), **ships as 0.1.4**: 0.1.3's release steps, with `cargo deny check` run
+again right before `cn release publish`); then **M5a**; then **B, the pause rules**: Ondar pausing
+itself when the previous output device no longer exists, on every output type, a manual switch
+playing on (the Step 0 of 2026-11-09: the device list is current at the change, 14 of 14 losses), a
+pause from any source in any state with a session, and with it the M5e1 review's findings 1, 2, 4,
+5 and 8 (`_handover/m5e1-code-review-claude-triage-2026-11-09.md`: a remote Pause ignored in the
+in-flight states, the replay's `Started`, the shell's state snapshot, the paused-close count, the
+stale ICY title) and the F6 review's finding 3 (Reconnecting → Pause → Resume writes `Playing` with
+no ring; pre-existing in 0.1.3); M5b; the empty, loading, offline and error states (from M5e); the
 periodic update check and page-error forwarding (from M6); zoom controls that show their limits
 (F7's note, from M5c); a README for strangers (what it is, screenshots, requirements, credits for
 Natural Earth and radio-browser.info, licence, privacy, how to report a problem); a `LICENSE` file
